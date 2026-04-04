@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { useSession, signOut } from "next-auth/react";
@@ -21,8 +21,12 @@ import {
 
 export function Navbar() {
   const { data: session } = useSession();
-  const { creditBalance } = useAppStore();
+  const { creditBalance, fetchCredits } = useAppStore();
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  useEffect(() => {
+    if (session) fetchCredits();
+  }, [session, fetchCredits]);
   const isAdmin = (session?.user as { role?: string })?.role === "admin" || (session?.user as { role?: string })?.role === "super_admin";
 
   const navLinks = [

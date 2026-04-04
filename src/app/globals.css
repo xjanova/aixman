@@ -249,3 +249,8 @@ body {
   box-shadow: 0 12px 40px rgba(59, 130, 246, 0.15),
               0 4px 12px rgba(139, 92, 246, 0.1);
 }
+
+/* Safe area for mobile bottom nav */
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
