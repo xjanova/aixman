@@ -1,24 +1,28 @@
 @import "tailwindcss";
 
 :root {
-  --background: #030712;
-  --foreground: #f1f5f9;
-  --primary: #6366f1;
-  --primary-light: #818cf8;
-  --primary-dark: #4f46e5;
-  --secondary: #06b6d4;
-  --accent: #f472b6;
-  --surface: #0f172a;
-  --surface-light: #1e293b;
-  --surface-lighter: #334155;
-  --border: #1e293b;
-  --border-light: #334155;
-  --muted: #94a3b8;
+  /* Logo-derived palette: Electric Blue, Purple/Violet, Cyan */
+  --background: #060A14;
+  --foreground: #e8edf5;
+  --primary: #3B82F6;
+  --primary-light: #60A5FA;
+  --primary-dark: #2563EB;
+  --secondary: #8B5CF6;
+  --secondary-light: #A78BFA;
+  --accent: #06B6D4;
+  --accent-light: #22D3EE;
+  --surface: #0C1425;
+  --surface-light: #162036;
+  --surface-lighter: #1E2D4A;
+  --border: #162036;
+  --border-light: #1E2D4A;
+  --muted: #8B9DC3;
   --success: #22c55e;
   --warning: #f59e0b;
   --error: #ef4444;
-  --gradient-start: #6366f1;
-  --gradient-end: #06b6d4;
+  --gradient-start: #3B82F6;
+  --gradient-mid: #8B5CF6;
+  --gradient-end: #06B6D4;
 }
 
 @theme inline {
@@ -28,7 +32,9 @@
   --color-primary-light: var(--primary-light);
   --color-primary-dark: var(--primary-dark);
   --color-secondary: var(--secondary);
+  --color-secondary-light: var(--secondary-light);
   --color-accent: var(--accent);
+  --color-accent-light: var(--accent-light);
   --color-surface: var(--surface);
   --color-surface-light: var(--surface-light);
   --color-surface-lighter: var(--surface-lighter);
@@ -56,22 +62,22 @@ body {
 
 /* Glassmorphism utility */
 .glass {
-  background: rgba(15, 23, 42, 0.6);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(99, 102, 241, 0.1);
+  background: rgba(12, 20, 37, 0.65);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(59, 130, 246, 0.1);
 }
 
 .glass-light {
-  background: rgba(30, 41, 59, 0.4);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(99, 102, 241, 0.15);
+  background: rgba(22, 32, 54, 0.5);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(59, 130, 246, 0.15);
 }
 
-/* Gradient text */
+/* Gradient text — blue → purple → cyan */
 .gradient-text {
-  background: linear-gradient(135deg, var(--primary-light), var(--secondary));
+  background: linear-gradient(135deg, var(--primary-light), var(--secondary), var(--accent));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -79,17 +85,22 @@ body {
 
 /* Glow effects */
 .glow {
-  box-shadow: 0 0 20px rgba(99, 102, 241, 0.3),
-              0 0 60px rgba(99, 102, 241, 0.1);
+  box-shadow: 0 0 20px rgba(59, 130, 246, 0.3),
+              0 0 60px rgba(139, 92, 246, 0.1);
 }
 
 .glow-sm {
-  box-shadow: 0 0 10px rgba(99, 102, 241, 0.2);
+  box-shadow: 0 0 10px rgba(59, 130, 246, 0.2);
 }
 
 .glow-cyan {
   box-shadow: 0 0 20px rgba(6, 182, 212, 0.3),
               0 0 60px rgba(6, 182, 212, 0.1);
+}
+
+.glow-purple {
+  box-shadow: 0 0 20px rgba(139, 92, 246, 0.3),
+              0 0 60px rgba(139, 92, 246, 0.1);
 }
 
 /* Animated gradient border */
@@ -112,25 +123,84 @@ body {
   mask-composite: exclude;
 }
 
-/* Pulse animation for generating state */
+/* ═══════════════════════════════════════════
+   Dreamy Ambient Animations
+   ═══════════════════════════════════════════ */
+
+/* Slow pulse glow */
 @keyframes pulse-glow {
-  0%, 100% { box-shadow: 0 0 20px rgba(99, 102, 241, 0.3); }
-  50% { box-shadow: 0 0 40px rgba(99, 102, 241, 0.6), 0 0 80px rgba(6, 182, 212, 0.2); }
+  0%, 100% { box-shadow: 0 0 20px rgba(59, 130, 246, 0.3); }
+  50% { box-shadow: 0 0 40px rgba(59, 130, 246, 0.5), 0 0 80px rgba(139, 92, 246, 0.2); }
 }
 
 .animate-pulse-glow {
-  animation: pulse-glow 2s ease-in-out infinite;
+  animation: pulse-glow 3s ease-in-out infinite;
 }
 
-/* Float animation for 3D elements */
+/* Floating elements */
 @keyframes float {
   0%, 100% { transform: translateY(0) rotate(0deg); }
-  33% { transform: translateY(-10px) rotate(1deg); }
-  66% { transform: translateY(-5px) rotate(-1deg); }
+  33% { transform: translateY(-12px) rotate(1deg); }
+  66% { transform: translateY(-6px) rotate(-1deg); }
 }
 
 .animate-float {
-  animation: float 6s ease-in-out infinite;
+  animation: float 8s ease-in-out infinite;
+}
+
+/* Dreamy drift — very slow ambient movement */
+@keyframes drift {
+  0% { transform: translate(0, 0) scale(1); }
+  25% { transform: translate(30px, -20px) scale(1.05); }
+  50% { transform: translate(-10px, 15px) scale(0.98); }
+  75% { transform: translate(-25px, -10px) scale(1.02); }
+  100% { transform: translate(0, 0) scale(1); }
+}
+
+@keyframes drift-reverse {
+  0% { transform: translate(0, 0) scale(1); }
+  25% { transform: translate(-20px, 15px) scale(0.97); }
+  50% { transform: translate(15px, -25px) scale(1.04); }
+  75% { transform: translate(20px, 10px) scale(0.99); }
+  100% { transform: translate(0, 0) scale(1); }
+}
+
+@keyframes drift-slow {
+  0% { transform: translate(0, 0) scale(1) rotate(0deg); }
+  33% { transform: translate(40px, -30px) scale(1.03) rotate(2deg); }
+  66% { transform: translate(-20px, 20px) scale(0.97) rotate(-1deg); }
+  100% { transform: translate(0, 0) scale(1) rotate(0deg); }
+}
+
+.animate-drift {
+  animation: drift 20s ease-in-out infinite;
+}
+
+.animate-drift-reverse {
+  animation: drift-reverse 25s ease-in-out infinite;
+}
+
+.animate-drift-slow {
+  animation: drift-slow 30s ease-in-out infinite;
+}
+
+/* Breathing glow for orbs */
+@keyframes breathe {
+  0%, 100% { opacity: 0.3; filter: blur(60px); }
+  50% { opacity: 0.5; filter: blur(80px); }
+}
+
+@keyframes breathe-soft {
+  0%, 100% { opacity: 0.15; filter: blur(80px); }
+  50% { opacity: 0.3; filter: blur(100px); }
+}
+
+.animate-breathe {
+  animation: breathe 8s ease-in-out infinite;
+}
+
+.animate-breathe-soft {
+  animation: breathe-soft 12s ease-in-out infinite;
 }
 
 /* Shimmer loading effect */
@@ -145,16 +215,37 @@ body {
   animation: shimmer 1.5s infinite;
 }
 
+/* Subtle rotating gradient for ambient bg */
+@keyframes rotate-gradient {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.animate-rotate-slow {
+  animation: rotate-gradient 60s linear infinite;
+}
+
 /* Grid pattern background */
 .bg-grid {
   background-image:
-    linear-gradient(rgba(99, 102, 241, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(99, 102, 241, 0.03) 1px, transparent 1px);
+    linear-gradient(rgba(59, 130, 246, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(59, 130, 246, 0.03) 1px, transparent 1px);
   background-size: 60px 60px;
 }
 
 /* Dot pattern */
 .bg-dots {
-  background-image: radial-gradient(circle, rgba(99, 102, 241, 0.08) 1px, transparent 1px);
+  background-image: radial-gradient(circle, rgba(59, 130, 246, 0.06) 1px, transparent 1px);
   background-size: 24px 24px;
+}
+
+/* Card hover lift */
+.card-hover {
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.card-hover:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 40px rgba(59, 130, 246, 0.15),
+              0 4px 12px rgba(139, 92, 246, 0.1);
 }
