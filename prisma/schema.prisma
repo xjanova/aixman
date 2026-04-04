@@ -37,6 +37,8 @@ model User {
   aiGenerations        AiGeneration[]
   aiFavorites          AiFavorite[]
   aiCreditTransactions AiCreditTransaction[]
+  referralsGiven       AiReferral[]  @relation("referrer")
+  referralsReceived    AiReferral[]  @relation("referred")
 
   @@map("users")
 }
@@ -219,8 +221,9 @@ model AiCreditTransaction {
   metadata     Json?
   createdAt    DateTime @default(now()) @map("created_at")
 
-  user    User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  package AiCreditPackage? @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  package     AiCreditPackage? @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  commissions AiReferralCommission[]
 
   @@index([userId, type])
   @@index([createdAt])
@@ -314,6 +317,45 @@ model AiFavorite {
 
   @@unique([userId, generationId])
   @@map("ai_favorites")
+}
+
+// --- Referral System ---
+
+model AiReferral {
+  id           Int       @id @default(autoincrement())
+  referrerId   Int       @map("referrer_id")
+  referredId   Int?      @map("referred_id")
+  referralCode String    @unique @map("referral_code") @db.VarChar(20)
+  status       String    @default("active") @db.VarChar(20)
+  bonusCredits Int       @default(0) @map("bonus_credits")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  referrer    User                   @relation("referrer", fields: [referrerId], references: [id], onDelete: Cascade)
+  referred    User?                  @relation("referred", fields: [referredId], references: [id], onDelete: SetNull)
+  commissions AiReferralCommission[]
+
+  @@index([referrerId])
+  @@index([referredId])
+  @@map("ai_referrals")
+}
+
+model AiReferralCommission {
+  id             Int       @id @default(autoincrement())
+  referralId     Int       @map("referral_id")
+  transactionId  Int       @map("transaction_id")
+  commissionRate Decimal   @map("commission_rate") @db.Decimal(5, 2)
+  creditAmount   Int       @map("credit_amount")
+  status         String    @default("pending") @db.VarChar(20)
+  creditedAt     DateTime? @map("credited_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  referral    AiReferral          @relation(fields: [referralId], references: [id], onDelete: Cascade)
+  transaction AiCreditTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([referralId])
+  @@index([status])
+  @@map("ai_referral_commissions")
 }
 
 // --- Usage Tracking ---

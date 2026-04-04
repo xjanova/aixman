@@ -6,6 +6,9 @@ import Image from "next/image";
 import dynamic from "next/dynamic";
 import { motion } from "framer-motion";
 import { Navbar } from "@/components/layout/navbar";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import {
   Sparkles,
   Image as ImageIcon,
@@ -87,10 +90,10 @@ export default function HomePage() {
           variants={stagger}
         >
           <motion.div variants={fadeUp} transition={{ duration: 0.6 }}>
-            <span className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full glass-light text-sm text-primary-light mb-6">
-              <Sparkles className="w-4 h-4" />
+            <Badge variant="glass" size="lg" className="mb-6 px-4 py-2">
+              <Sparkles className="w-4 h-4 text-primary-light" />
               AI Generation Platform
-            </span>
+            </Badge>
           </motion.div>
 
           <motion.h1
@@ -117,20 +120,15 @@ export default function HomePage() {
             variants={fadeUp}
             transition={{ duration: 0.6, delay: 0.3 }}
           >
-            <Link
-              href="/generate"
-              className="group inline-flex items-center gap-2 px-8 py-3.5 rounded-xl bg-gradient-to-r from-primary via-secondary to-accent text-white font-semibold text-lg hover:shadow-xl hover:shadow-primary/30 transition-all hover:scale-105"
-            >
-              <Wand2 className="w-5 h-5" />
-              เริ่มสร้างเลย
-              <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+            <Link href="/generate">
+              <Button size="xl" leftIcon={<Wand2 className="w-5 h-5" />} rightIcon={<ArrowRight className="w-4 h-4" />}>
+                เริ่มสร้างเลย
+              </Button>
             </Link>
-            <Link
-              href="/pricing"
-              className="inline-flex items-center gap-2 px-8 py-3.5 rounded-xl glass-light font-semibold text-lg hover:bg-surface-light transition-all"
-            >
-              <Star className="w-5 h-5 text-warning" />
-              ดูราคา
+            <Link href="/pricing">
+              <Button variant="secondary" size="xl" leftIcon={<Star className="w-5 h-5 text-warning" />}>
+                ดูราคา
+              </Button>
             </Link>
           </motion.div>
 
@@ -146,9 +144,7 @@ export default function HomePage() {
               { value: "24/7", label: "พร้อมใช้งาน" },
             ].map((stat) => (
               <div key={stat.label}>
-                <div className="text-2xl font-bold gradient-text">
-                  {stat.value}
-                </div>
+                <div className="text-2xl font-bold gradient-text">{stat.value}</div>
                 <div className="text-sm text-muted">{stat.label}</div>
               </div>
             ))}
@@ -178,17 +174,18 @@ export default function HomePage() {
             {features.map((feature, i) => (
               <motion.div
                 key={feature.title}
-                className="glass rounded-2xl p-6 hover:bg-surface-light/50 transition-all group card-hover"
                 initial={{ opacity: 0, y: 30 }}
                 whileInView={{ opacity: 1, y: 0 }}
                 viewport={{ once: true, margin: "-30px" }}
                 transition={{ duration: 0.5, delay: i * 0.1 }}
               >
-                <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary/20 to-secondary/20 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-                  <feature.icon className="w-6 h-6 text-primary-light" />
-                </div>
-                <h3 className="text-lg font-semibold mb-2">{feature.title}</h3>
-                <p className="text-sm text-muted">{feature.desc}</p>
+                <Card variant="interactive" className="p-6 h-full group">
+                  <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary/20 to-secondary/20 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform neu-raised-sm">
+                    <feature.icon className="w-6 h-6 text-primary-light" />
+                  </div>
+                  <h3 className="text-lg font-semibold mb-2">{feature.title}</h3>
+                  <p className="text-sm text-muted">{feature.desc}</p>
+                </Card>
               </motion.div>
             ))}
           </div>
@@ -242,20 +239,19 @@ export default function HomePage() {
                 viewport={{ once: true, margin: "-30px" }}
                 transition={{ duration: 0.5, delay: i * 0.15 }}
               >
-                <Link
-                  href={item.href}
-                  className="block glass rounded-2xl p-8 hover:bg-surface-light/50 transition-all group h-full card-hover"
-                >
-                  <div
-                    className={`w-16 h-16 rounded-2xl bg-gradient-to-br ${item.gradient} flex items-center justify-center mb-6 group-hover:scale-110 group-hover:shadow-xl transition-all`}
-                  >
-                    <item.icon className="w-8 h-8 text-white" />
-                  </div>
-                  <h3 className="text-xl font-bold mb-3">{item.title}</h3>
-                  <p className="text-muted">{item.desc}</p>
-                  <div className="mt-4 flex items-center gap-1 text-primary-light text-sm font-medium group-hover:gap-2 transition-all">
-                    เริ่มสร้าง <ArrowRight className="w-4 h-4" />
-                  </div>
+                <Link href={item.href} className="block h-full">
+                  <Card variant="interactive" className="p-8 h-full group">
+                    <div
+                      className={`w-16 h-16 rounded-2xl bg-gradient-to-br ${item.gradient} flex items-center justify-center mb-6 group-hover:scale-110 group-hover:shadow-xl transition-all neu-raised-sm`}
+                    >
+                      <item.icon className="w-8 h-8 text-white" />
+                    </div>
+                    <h3 className="text-xl font-bold mb-3">{item.title}</h3>
+                    <p className="text-muted">{item.desc}</p>
+                    <div className="mt-4 flex items-center gap-1 text-primary-light text-sm font-medium group-hover:gap-2 transition-all">
+                      เริ่มสร้าง <ArrowRight className="w-4 h-4" />
+                    </div>
+                  </Card>
                 </Link>
               </motion.div>
             ))}
@@ -286,19 +282,20 @@ export default function HomePage() {
             {providerList.map((provider, i) => (
               <motion.div
                 key={provider.name}
-                className="glass rounded-xl p-4 text-center hover:bg-surface-light/50 transition-all group cursor-default card-hover"
                 initial={{ opacity: 0, scale: 0.9 }}
                 whileInView={{ opacity: 1, scale: 1 }}
                 viewport={{ once: true, margin: "-20px" }}
                 transition={{ duration: 0.4, delay: i * 0.05 }}
               >
-                <div
-                  className={`w-10 h-10 rounded-lg bg-gradient-to-br ${provider.color} mx-auto mb-3 flex items-center justify-center text-white font-bold text-sm group-hover:scale-110 transition-transform`}
-                >
-                  {provider.name.charAt(0)}
-                </div>
-                <div className="font-semibold text-sm">{provider.name}</div>
-                <div className="text-xs text-muted mt-1">{provider.desc}</div>
+                <Card variant="interactive" className="p-4 text-center group cursor-default">
+                  <div
+                    className={`w-10 h-10 rounded-lg bg-gradient-to-br ${provider.color} mx-auto mb-3 flex items-center justify-center text-white font-bold text-sm group-hover:scale-110 transition-transform neu-raised-sm`}
+                  >
+                    {provider.name.charAt(0)}
+                  </div>
+                  <div className="font-semibold text-sm">{provider.name}</div>
+                  <div className="text-xs text-muted mt-1">{provider.desc}</div>
+                </Card>
               </motion.div>
             ))}
           </div>
@@ -309,28 +306,30 @@ export default function HomePage() {
       <section className="relative py-24 px-4">
         <div className="max-w-3xl mx-auto text-center">
           <motion.div
-            className="glass rounded-3xl p-12 relative overflow-hidden"
             initial={{ opacity: 0, y: 20 }}
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true, margin: "-50px" }}
             transition={{ duration: 0.6 }}
           >
-            <div className="absolute inset-0 bg-gradient-to-br from-primary/10 via-secondary/5 to-accent/10" />
-            <div className="relative">
-              <Sparkles className="w-12 h-12 text-primary-light mx-auto mb-6" />
-              <h2 className="text-3xl sm:text-4xl font-bold mb-4">
-                พร้อมสร้างสรรค์แล้วหรือยัง?
-              </h2>
-              <p className="text-muted text-lg mb-8">
-                สมัครฟรี รับเครดิตทดลองใช้ เริ่มสร้างภาพและวิดีโอ AI ได้ทันที
-              </p>
-              <Link
-                href="/generate"
-                className="inline-flex items-center gap-2 px-10 py-4 rounded-xl bg-gradient-to-r from-primary via-secondary to-accent text-white font-semibold text-lg hover:shadow-xl hover:shadow-primary/30 transition-all hover:scale-105"
-              >
-                <Wand2 className="w-5 h-5" /> เริ่มต้นใช้งาน
-              </Link>
-            </div>
+            <Card variant="elevated" className="p-12 relative overflow-hidden">
+              <div className="absolute inset-0 bg-gradient-to-br from-primary/10 via-secondary/5 to-accent/10" />
+              <div className="relative">
+                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary/20 to-accent/20 flex items-center justify-center mx-auto mb-6 neu-raised-sm">
+                  <Sparkles className="w-8 h-8 text-primary-light" />
+                </div>
+                <h2 className="text-3xl sm:text-4xl font-bold mb-4">
+                  พร้อมสร้างสรรค์แล้วหรือยัง?
+                </h2>
+                <p className="text-muted text-lg mb-8">
+                  สมัครฟรี รับเครดิตทดลองใช้ เริ่มสร้างภาพและวิดีโอ AI ได้ทันที
+                </p>
+                <Link href="/generate">
+                  <Button size="xl" leftIcon={<Wand2 className="w-5 h-5" />}>
+                    เริ่มต้นใช้งาน
+                  </Button>
+                </Link>
+              </div>
+            </Card>
           </motion.div>
         </div>
       </section>
@@ -349,10 +348,7 @@ export default function HomePage() {
             <span>XMAN AI Studio</span>
           </div>
           <div className="flex items-center gap-6">
-            <Link
-              href="/pricing"
-              className="hover:text-foreground transition-colors"
-            >
+            <Link href="/pricing" className="hover:text-foreground transition-colors">
               ราคา
             </Link>
             <a

@@ -6,6 +6,11 @@ import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAppStore } from "@/lib/store/app-store";
 import { useToast } from "@/components/ui/toast-provider";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
+import { Slider } from "@/components/ui/slider";
 import {
   Sparkles,
   Image as ImageIcon,
@@ -13,7 +18,7 @@ import {
   Wand2,
   Settings2,
   ChevronDown,
-  Loader2,
+  ChevronUp,
   Download,
   Heart,
   Share2,
@@ -24,6 +29,8 @@ import {
   Clock,
   Check,
   AlertCircle,
+  ZoomIn,
+  Layers,
 } from "lucide-react";
 
 type TabType = "image" | "video" | "edit";
@@ -72,22 +79,30 @@ export default function GeneratePage() {
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Redirect if not logged in
+  // Image-to-Image states
+  const [showRefImage, setShowRefImage] = useState(false);
+  const [refImage, setRefImage] = useState<string | null>(null);
+  const [refImagePreview, setRefImagePreview] = useState<string | null>(null);
+  const [strength, setStrength] = useState(0.75);
+
+  // Batch generation
+  const [numOutputs, setNumOutputs] = useState(1);
+
+  // Upscale
+  const [isUpscaling, setIsUpscaling] = useState(false);
+
   useEffect(() => {
     if (session === null) router.push("/login");
   }, [session, router]);
 
-  // Load data
   useEffect(() => {
     fetchModels();
     fetchStyles();
     fetchCredits();
   }, [fetchModels, fetchStyles, fetchCredits]);
 
-  // Filter models by tab
   const filteredModels = models.filter((m) => m.category === tab);
 
-  // Auto-select first model when tab changes or models load
   useEffect(() => {
     if (filteredModels.length > 0 && (!selectedModelId || !filteredModels.find((m) => m.id === selectedModelId))) {
       const featured = filteredModels.find((m) => m.isFeatured);
@@ -97,7 +112,6 @@ export default function GeneratePage() {
 
   const selectedModel = models.find((m) => m.id === selectedModelId);
 
-  // Close dropdown on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
@@ -108,22 +122,25 @@ export default function GeneratePage() {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  // Image upload
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>, isRef = false) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
       const base64 = reader.result as string;
-      setInputImage(base64);
-      setInputImagePreview(base64);
+      if (isRef) {
+        setRefImage(base64);
+        setRefImagePreview(base64);
+      } else {
+        setInputImage(base64);
+        setInputImagePreview(base64);
+      }
     };
     reader.readAsDataURL(file);
   };
 
-  // Poll for result
   const pollResult = useCallback(async (generationId: number) => {
-    const maxAttempts = 120; // 2 minutes max
+    const maxAttempts = 120;
     for (let i = 0; i < maxAttempts; i++) {
       await new Promise((r) => setTimeout(r, 2000));
       try {
@@ -158,7 +175,6 @@ export default function GeneratePage() {
     toast("error", "หมดเวลา", "การสร้างใช้เวลานานเกินไป กรุณาลองใหม่");
   }, [setIsGenerating, fetchCredits, toast]);
 
-  // Generate
   const handleGenerate = async () => {
     if (!prompt.trim() || !selectedModelId) return;
     if (isGenerating) return;
@@ -168,6 +184,9 @@ export default function GeneratePage() {
     setIsFavorited(false);
 
     const ar = aspectRatios.find((a) => a.value === aspectRatio);
+
+    // Use refImage for img2img, inputImage for edit/video
+    const imageToSend = tab === "image" ? refImage : inputImage;
 
     try {
       const res = await fetch("/api/generate", {
@@ -179,11 +198,13 @@ export default function GeneratePage() {
           prompt: prompt.trim(),
           negativePrompt: negativePrompt.trim() || undefined,
           styleId: selectedStyle || undefined,
-          inputImage: inputImage || undefined,
+          inputImage: imageToSend || undefined,
           params: {
             width: ar?.w || 1024,
             height: ar?.h || 1024,
             aspectRatio,
+            strength: refImage && tab === "image" ? strength : undefined,
+            numOutputs: tab === "image" ? numOutputs : undefined,
           },
         }),
       });
@@ -207,7 +228,6 @@ export default function GeneratePage() {
         fetchCredits();
         toast("error", "สร้างไม่สำเร็จ", data.error || "เกิดข้อผิดพลาด");
       } else {
-        // Still processing — poll
         pollResult(data.id);
       }
     } catch {
@@ -216,60 +236,96 @@ export default function GeneratePage() {
     }
   };
 
-  // Download
-  const handleDownload = async () => {
-    if (!result?.resultUrl) return;
+  const handleDownload = async (url?: string) => {
+    const downloadUrl = url || result?.resultUrl;
+    if (!downloadUrl) return;
     try {
-      const res = await fetch(result.resultUrl);
+      const res = await fetch(downloadUrl);
       const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
+      const blobUrl = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      a.href = url;
-      a.download = `xman-ai-${result.id}.${result.resultUrl.includes(".mp4") ? "mp4" : "webp"}`;
+      a.href = blobUrl;
+      a.download = `xman-ai-${result?.id || "gen"}.${downloadUrl.includes(".mp4") ? "mp4" : "webp"}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      URL.revokeObjectURL(blobUrl);
       toast("success", "ดาวน์โหลดสำเร็จ");
     } catch {
       toast("error", "ดาวน์โหลดไม่สำเร็จ");
     }
   };
 
-  // Favorite
   const handleFavorite = async () => {
     if (!result?.id) return;
     try {
       if (isFavorited) {
-        await fetch("/api/favorites", {
-          method: "DELETE",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ generationId: result.id }),
-        });
+        await fetch("/api/favorites", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ generationId: result.id }) });
         setIsFavorited(false);
       } else {
-        await fetch("/api/favorites", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ generationId: result.id }),
-        });
+        await fetch("/api/favorites", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ generationId: result.id }) });
         setIsFavorited(true);
       }
     } catch {}
   };
 
-  // Share
   const handleShare = async () => {
     if (!result?.resultUrl) return;
     if (navigator.share) {
-      try {
-        await navigator.share({ title: "XMAN AI Generation", url: result.resultUrl });
-      } catch {}
+      try { await navigator.share({ title: "XMAN AI Generation", url: result.resultUrl }); } catch {}
     } else {
       await navigator.clipboard.writeText(result.resultUrl);
       toast("info", "คัดลอกลิงก์แล้ว");
     }
   };
+
+  const handleUpscale = async () => {
+    if (!result?.id) return;
+    setIsUpscaling(true);
+    try {
+      const res = await fetch("/api/upscale", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ generationId: result.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast("error", "Upscale ไม่สำเร็จ", data.error || "เกิดข้อผิดพลาด");
+        setIsUpscaling(false);
+        return;
+      }
+      // If completed immediately
+      if (data.status === "completed" && data.resultUrl) {
+        setResult(prev => prev ? { ...prev, resultUrl: data.resultUrl } : prev);
+        fetchCredits();
+        toast("success", "Upscale สำเร็จ!", `ใช้ ${data.creditsUsed} เครดิต`);
+      } else {
+        // Poll for completion
+        const maxAttempts = 60;
+        for (let i = 0; i < maxAttempts; i++) {
+          await new Promise((r) => setTimeout(r, 3000));
+          const pollRes = await fetch(`/api/generate/${data.id}`);
+          if (!pollRes.ok) break;
+          const pollData = await pollRes.json();
+          if (pollData.status === "completed") {
+            setResult(prev => prev ? { ...prev, resultUrl: pollData.resultUrl } : prev);
+            fetchCredits();
+            toast("success", "Upscale สำเร็จ!", `ใช้ ${pollData.creditsUsed} เครดิต`);
+            break;
+          }
+          if (pollData.status === "failed") {
+            toast("error", "Upscale ไม่สำเร็จ", pollData.errorMessage);
+            break;
+          }
+        }
+      }
+    } catch {
+      toast("error", "Upscale ไม่สำเร็จ");
+    }
+    setIsUpscaling(false);
+  };
+
+  const totalCredits = selectedModel ? selectedModel.creditsPerUnit * numOutputs : 0;
 
   if (!session) return null;
 
@@ -282,52 +338,51 @@ export default function GeneratePage() {
           <div className="w-full lg:w-96 shrink-0 space-y-4">
 
             {/* Tabs */}
-            <div className="glass rounded-xl p-1 flex">
-              {([
-                { key: "image" as TabType, icon: ImageIcon, label: "สร้างภาพ" },
-                { key: "video" as TabType, icon: Video, label: "สร้างวิดีโอ" },
-                { key: "edit" as TabType, icon: Wand2, label: "แก้ไขภาพ" },
-              ]).map((t) => (
-                <button
-                  key={t.key}
-                  onClick={() => { setTab(t.key); setResult(null); }}
-                  className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                    tab === t.key
-                      ? "bg-gradient-to-r from-primary to-secondary text-white shadow-lg"
-                      : "text-muted hover:text-foreground"
-                  }`}
-                >
-                  <t.icon className="w-4 h-4" />
-                  {t.label}
-                </button>
-              ))}
-            </div>
+            <Card className="p-1.5">
+              <div className="flex gap-1 neu-inset-sm rounded-xl p-1">
+                {([
+                  { key: "image" as TabType, icon: ImageIcon, label: "สร้างภาพ" },
+                  { key: "video" as TabType, icon: Video, label: "สร้างวิดีโอ" },
+                  { key: "edit" as TabType, icon: Wand2, label: "แก้ไขภาพ" },
+                ] as const).map((t) => (
+                  <button
+                    key={t.key}
+                    onClick={() => { setTab(t.key); setResult(null); setNumOutputs(1); }}
+                    className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-sm font-medium transition-all cursor-pointer ${
+                      tab === t.key
+                        ? "bg-gradient-to-r from-primary to-secondary text-white neu-raised-sm shadow-[0_4px_12px_rgba(59,130,246,0.25)]"
+                        : "text-muted hover:text-foreground"
+                    }`}
+                  >
+                    <t.icon className="w-4 h-4" />
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </Card>
 
             {/* Model Selector */}
-            <div className="glass rounded-xl p-4" ref={dropdownRef}>
+            <Card className="p-4" ref={dropdownRef}>
               <label className="text-xs text-muted mb-2 block">โมเดล AI</label>
               <button
                 onClick={() => setShowModelDropdown(!showModelDropdown)}
-                className="w-full flex items-center justify-between p-3 rounded-lg bg-surface-light hover:bg-surface-lighter transition-all"
+                className="w-full flex items-center justify-between p-3 rounded-xl bg-surface-light/80 neu-inset-sm hover:bg-surface-lighter/80 transition-all cursor-pointer"
               >
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="text-sm font-medium truncate">
                     {selectedModel ? selectedModel.name : "เลือกโมเดล..."}
                   </span>
                   {selectedModel && (
-                    <span className="text-xs text-muted shrink-0">
-                      {selectedModel.provider.name}
-                    </span>
+                    <span className="text-xs text-muted shrink-0">{selectedModel.provider.name}</span>
                   )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   {selectedModel && (
-                    <span className="flex items-center gap-1 text-xs text-warning">
-                      <Coins className="w-3 h-3" />
-                      {selectedModel.creditsPerUnit}
-                    </span>
+                    <Badge variant="warning" size="sm">
+                      <Coins className="w-3 h-3" /> {selectedModel.creditsPerUnit}
+                    </Badge>
                   )}
-                  <ChevronDown className="w-4 h-4 text-muted" />
+                  <ChevronDown className={`w-4 h-4 text-muted transition-transform ${showModelDropdown ? "rotate-180" : ""}`} />
                 </div>
               </button>
 
@@ -337,7 +392,7 @@ export default function GeneratePage() {
                     initial={{ opacity: 0, y: -5 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -5 }}
-                    className="mt-2 max-h-64 overflow-y-auto rounded-lg bg-surface border border-border"
+                    className="mt-2 max-h-64 overflow-y-auto rounded-xl glass-neu border border-border/30"
                   >
                     {filteredModels.length === 0 ? (
                       <div className="p-4 text-center text-sm text-muted">ไม่มีโมเดลสำหรับหมวดนี้</div>
@@ -346,7 +401,7 @@ export default function GeneratePage() {
                         <button
                           key={m.id}
                           onClick={() => { setSelectedModelId(m.id); setShowModelDropdown(false); }}
-                          className={`w-full flex items-center justify-between p-3 hover:bg-surface-light transition-all text-left ${
+                          className={`w-full flex items-center justify-between p-3 hover:bg-surface-light/50 transition-all text-left cursor-pointer ${
                             selectedModelId === m.id ? "bg-primary/10" : ""
                           }`}
                         >
@@ -357,104 +412,185 @@ export default function GeneratePage() {
                             </div>
                             <div className="text-xs text-muted">{m.provider.name}{m.subcategory ? ` · ${m.subcategory}` : ""}</div>
                           </div>
-                          <span className="flex items-center gap-1 text-xs text-warning shrink-0">
+                          <Badge variant="warning" size="sm">
                             <Coins className="w-3 h-3" /> {m.creditsPerUnit}
-                          </span>
+                          </Badge>
                         </button>
                       ))
                     )}
                   </motion.div>
                 )}
               </AnimatePresence>
-            </div>
+            </Card>
 
             {/* Prompt */}
-            <div className="glass rounded-xl p-4">
+            <Card className="p-4">
               <label className="text-xs text-muted mb-2 block">Prompt</label>
-              <textarea
+              <Textarea
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
                 placeholder={tab === "video" ? "อธิบายวิดีโอที่ต้องการ..." : "อธิบายภาพที่ต้องการ..."}
                 rows={4}
-                className="w-full p-3 rounded-lg bg-surface-light text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary/50"
               />
-            </div>
+            </Card>
 
             {/* Style Selector */}
             {stylesLoaded && styles.length > 0 && tab !== "edit" && (
-              <div className="glass rounded-xl p-4">
+              <Card className="p-4">
                 <label className="text-xs text-muted mb-2 block">สไตล์</label>
                 <div className="grid grid-cols-3 gap-2">
                   {styles.slice(0, 12).map((s) => (
                     <button
                       key={s.id}
                       onClick={() => setSelectedStyle(selectedStyle === s.id ? null : s.id)}
-                      className={`p-2 rounded-lg text-xs text-center transition-all ${
+                      className={`p-2 rounded-lg text-xs text-center transition-all cursor-pointer ${
                         selectedStyle === s.id
-                          ? "bg-primary/20 border border-primary/40 text-primary-light"
-                          : "bg-surface-light hover:bg-surface-lighter text-muted"
+                          ? "bg-primary/20 border border-primary/40 text-primary-light neu-raised-sm"
+                          : "bg-surface-light/80 neu-inset-sm hover:bg-surface-lighter/80 text-muted"
                       }`}
                     >
                       {s.name}
                     </button>
                   ))}
                 </div>
-              </div>
+              </Card>
             )}
 
             {/* Aspect Ratio (image only) */}
             {tab === "image" && (
-              <div className="glass rounded-xl p-4">
+              <Card className="p-4">
                 <label className="text-xs text-muted mb-2 block">สัดส่วน</label>
                 <div className="flex gap-2">
                   {aspectRatios.map((ar) => (
                     <button
                       key={ar.value}
                       onClick={() => setAspectRatio(ar.value)}
-                      className={`flex-1 py-2 rounded-lg text-xs font-medium transition-all ${
+                      className={`flex-1 py-2 rounded-lg text-xs font-medium transition-all cursor-pointer ${
                         aspectRatio === ar.value
-                          ? "bg-primary/20 border border-primary/40 text-primary-light"
-                          : "bg-surface-light hover:bg-surface-lighter text-muted"
+                          ? "bg-primary/20 border border-primary/40 text-primary-light neu-raised-sm"
+                          : "bg-surface-light/80 neu-inset-sm hover:bg-surface-lighter/80 text-muted"
                       }`}
                     >
                       {ar.label}
                     </button>
                   ))}
                 </div>
-              </div>
+              </Card>
+            )}
+
+            {/* Batch Generation (image only) */}
+            {tab === "image" && (
+              <Card className="p-4">
+                <label className="text-xs text-muted mb-2 block">
+                  <Layers className="w-3 h-3 inline mr-1" />
+                  จำนวนภาพ
+                </label>
+                <div className="flex gap-2">
+                  {[1, 2, 3, 4].map((n) => (
+                    <button
+                      key={n}
+                      onClick={() => setNumOutputs(n)}
+                      className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all cursor-pointer ${
+                        numOutputs === n
+                          ? "bg-primary/20 border border-primary/40 text-primary-light neu-raised-sm"
+                          : "bg-surface-light/80 neu-inset-sm hover:bg-surface-lighter/80 text-muted"
+                      }`}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+              </Card>
+            )}
+
+            {/* Image-to-Image Reference (image tab only) */}
+            {tab === "image" && (
+              <Card className="p-4">
+                <button
+                  onClick={() => setShowRefImage(!showRefImage)}
+                  className="flex items-center justify-between w-full text-xs text-muted hover:text-foreground transition-all cursor-pointer"
+                >
+                  <span className="flex items-center gap-1.5">
+                    <ImageIcon className="w-3.5 h-3.5" />
+                    Image-to-Image (ภาพอ้างอิง)
+                  </span>
+                  {showRefImage ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                </button>
+
+                {showRefImage && (
+                  <div className="mt-3 space-y-3">
+                    {refImagePreview ? (
+                      <div className="relative">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={refImagePreview} alt="Reference" className="w-full rounded-xl max-h-48 object-cover" />
+                        <button
+                          onClick={() => { setRefImage(null); setRefImagePreview(null); }}
+                          className="absolute top-2 right-2 p-1.5 rounded-full bg-black/60 hover:bg-black/80 transition-colors cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ) : (
+                      <label className="flex flex-col items-center justify-center p-6 rounded-xl border-2 border-dashed border-border/50 neu-inset-sm hover:border-primary/30 cursor-pointer transition-all">
+                        <Upload className="w-6 h-6 text-muted mb-2" />
+                        <span className="text-xs text-muted">อัปโหลดภาพอ้างอิง</span>
+                        <input type="file" accept="image/*" className="hidden" onChange={(e) => handleImageUpload(e, true)} />
+                      </label>
+                    )}
+
+                    <div>
+                      <div className="flex items-center justify-between text-xs mb-2">
+                        <span className="text-muted">ความเข้มอ้างอิง</span>
+                        <span className="text-primary-light font-medium">{Math.round(strength * 100)}%</span>
+                      </div>
+                      <Slider
+                        value={[strength]}
+                        onValueChange={(v) => setStrength(v[0])}
+                        min={0}
+                        max={1}
+                        step={0.05}
+                      />
+                      <div className="flex justify-between text-[10px] text-muted mt-1">
+                        <span>ยึด prompt มาก</span>
+                        <span>ยึดภาพมาก</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </Card>
             )}
 
             {/* Image Upload (edit & video) */}
             {(tab === "edit" || tab === "video") && (
-              <div className="glass rounded-xl p-4">
+              <Card className="p-4">
                 <label className="text-xs text-muted mb-2 block">
                   {tab === "edit" ? "ภาพต้นฉบับ" : "ภาพเริ่มต้น (ไม่บังคับ)"}
                 </label>
                 {inputImagePreview ? (
                   <div className="relative">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={inputImagePreview} alt="Input" className="w-full rounded-lg max-h-48 object-cover" />
+                    <img src={inputImagePreview} alt="Input" className="w-full rounded-xl max-h-48 object-cover" />
                     <button
                       onClick={() => { setInputImage(null); setInputImagePreview(null); }}
-                      className="absolute top-2 right-2 p-1 rounded-full bg-black/60 hover:bg-black/80"
+                      className="absolute top-2 right-2 p-1.5 rounded-full bg-black/60 hover:bg-black/80 cursor-pointer"
                     >
-                      <X className="w-4 h-4" />
+                      <X className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 ) : (
-                  <label className="flex flex-col items-center justify-center p-8 rounded-lg border-2 border-dashed border-border hover:border-primary/30 cursor-pointer transition-all">
-                    <Upload className="w-8 h-8 text-muted mb-2" />
-                    <span className="text-sm text-muted">อัปโหลดภาพ</span>
-                    <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
+                  <label className="flex flex-col items-center justify-center p-6 rounded-xl border-2 border-dashed border-border/50 neu-inset-sm hover:border-primary/30 cursor-pointer transition-all">
+                    <Upload className="w-6 h-6 text-muted mb-2" />
+                    <span className="text-xs text-muted">อัปโหลดภาพ</span>
+                    <input type="file" accept="image/*" className="hidden" onChange={(e) => handleImageUpload(e)} />
                   </label>
                 )}
-              </div>
+              </Card>
             )}
 
             {/* Advanced Settings */}
             <button
               onClick={() => setShowAdvanced(!showAdvanced)}
-              className="flex items-center gap-2 text-xs text-muted hover:text-foreground transition-all"
+              className="flex items-center gap-2 text-xs text-muted hover:text-foreground transition-all cursor-pointer"
             >
               <Settings2 className="w-3.5 h-3.5" />
               ตั้งค่าขั้นสูง
@@ -462,41 +598,38 @@ export default function GeneratePage() {
             </button>
 
             {showAdvanced && (
-              <div className="glass rounded-xl p-4">
+              <Card className="p-4">
                 <label className="text-xs text-muted mb-2 block">Negative Prompt</label>
-                <textarea
+                <Textarea
                   value={negativePrompt}
                   onChange={(e) => setNegativePrompt(e.target.value)}
                   placeholder="สิ่งที่ไม่ต้องการในภาพ..."
                   rows={2}
-                  className="w-full p-3 rounded-lg bg-surface-light text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  className="min-h-[60px]"
                 />
-              </div>
+              </Card>
             )}
 
             {/* Generate Button */}
-            <button
+            <Button
               onClick={handleGenerate}
               disabled={isGenerating || !prompt.trim() || !selectedModelId}
-              className="w-full flex items-center justify-center gap-2 py-4 rounded-xl bg-gradient-to-r from-primary via-secondary to-accent text-white font-semibold text-lg disabled:opacity-50 hover:shadow-xl hover:shadow-primary/30 transition-all hover:scale-[1.02] disabled:hover:scale-100"
+              loading={isGenerating}
+              size="xl"
+              className="w-full"
+              leftIcon={!isGenerating ? <Sparkles className="w-5 h-5" /> : undefined}
             >
-              {isGenerating ? (
+              {isGenerating ? "กำลังสร้าง..." : (
                 <>
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  กำลังสร้าง...
-                </>
-              ) : (
-                <>
-                  <Sparkles className="w-5 h-5" />
                   สร้าง
                   {selectedModel && (
                     <span className="flex items-center gap-1 text-sm opacity-80">
-                      ({selectedModel.creditsPerUnit} <Coins className="w-3.5 h-3.5" />)
+                      ({totalCredits} <Coins className="w-3.5 h-3.5" />)
                     </span>
                   )}
                 </>
               )}
-            </button>
+            </Button>
 
             {/* Credit Balance */}
             <div className="flex items-center justify-center gap-2 text-sm text-muted">
@@ -507,16 +640,10 @@ export default function GeneratePage() {
 
           {/* Right Panel — Result */}
           <div className="flex-1 min-w-0">
-            <div className="glass rounded-2xl p-6 min-h-[500px] flex items-center justify-center">
+            <Card variant="elevated" className="p-6 min-h-[500px] flex items-center justify-center">
               <AnimatePresence mode="wait">
                 {isGenerating ? (
-                  <motion.div
-                    key="loading"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    className="text-center"
-                  >
+                  <motion.div key="loading" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="text-center">
                     <div className="relative w-24 h-24 mx-auto mb-6">
                       <div className="absolute inset-0 rounded-full border-4 border-primary/20" />
                       <div className="absolute inset-0 rounded-full border-4 border-primary border-t-transparent animate-spin" />
@@ -528,51 +655,85 @@ export default function GeneratePage() {
                     </p>
                   </motion.div>
                 ) : result?.status === "completed" && result.resultUrl ? (
-                  <motion.div
-                    key="result"
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0 }}
-                    className="w-full"
-                  >
-                    <div className="relative rounded-xl overflow-hidden mb-4">
-                      {tab === "video" || result.resultUrl.endsWith(".mp4") ? (
-                        <video
-                          src={result.resultUrl}
-                          controls
-                          autoPlay
-                          loop
-                          className="w-full rounded-xl max-h-[600px] mx-auto"
-                        />
-                      ) : (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={result.resultUrl}
-                          alt={prompt}
-                          className="w-full rounded-xl max-h-[600px] object-contain mx-auto"
-                        />
-                      )}
-                    </div>
+                  <motion.div key="result" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} className="w-full">
+                    {/* Batch results grid */}
+                    {result.resultUrls && result.resultUrls.length > 1 ? (
+                      <div className="grid grid-cols-2 gap-3 mb-4">
+                        {result.resultUrls.map((url, idx) => (
+                          <div key={idx} className="relative rounded-xl overflow-hidden group">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={url} alt={`Result ${idx + 1}`} className="w-full rounded-xl object-contain" />
+                            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-all flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
+                              <Button variant="icon" size="icon-sm" onClick={() => handleDownload(url)} className="bg-white/20 backdrop-blur-sm">
+                                <Download className="w-3.5 h-3.5" />
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="relative rounded-xl overflow-hidden mb-4">
+                        {/* Side-by-side comparison for img2img */}
+                        {refImagePreview && tab === "image" ? (
+                          <div className="grid grid-cols-2 gap-3">
+                            <div className="relative">
+                              <div className="absolute top-2 left-2 z-10">
+                                <Badge variant="glass" size="sm">ต้นฉบับ</Badge>
+                              </div>
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={refImagePreview} alt="Original" className="w-full rounded-xl object-contain opacity-70" />
+                            </div>
+                            <div className="relative">
+                              <div className="absolute top-2 left-2 z-10">
+                                <Badge variant="success" size="sm">ผลลัพธ์</Badge>
+                              </div>
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={result.resultUrl} alt={prompt} className="w-full rounded-xl object-contain" />
+                            </div>
+                          </div>
+                        ) : tab === "video" || result.resultUrl.endsWith(".mp4") ? (
+                          <video src={result.resultUrl} controls autoPlay loop className="w-full rounded-xl max-h-[600px] mx-auto" />
+                        ) : (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={result.resultUrl} alt={prompt} className="w-full rounded-xl max-h-[600px] object-contain mx-auto" />
+                        )}
+                      </div>
+                    )}
 
                     {/* Action Buttons */}
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
                       <div className="flex items-center gap-2">
-                        <button onClick={handleDownload} className="flex items-center gap-1.5 px-4 py-2 rounded-lg glass-light hover:bg-surface-light text-sm transition-all">
-                          <Download className="w-4 h-4" /> ดาวน์โหลด
-                        </button>
-                        <button onClick={handleFavorite} className={`flex items-center gap-1.5 px-4 py-2 rounded-lg glass-light hover:bg-surface-light text-sm transition-all ${isFavorited ? "text-error" : ""}`}>
-                          <Heart className={`w-4 h-4 ${isFavorited ? "fill-current" : ""}`} /> {isFavorited ? "บันทึกแล้ว" : "บันทึก"}
-                        </button>
-                        <button onClick={handleShare} className="flex items-center gap-1.5 px-4 py-2 rounded-lg glass-light hover:bg-surface-light text-sm transition-all">
-                          <Share2 className="w-4 h-4" /> แชร์
-                        </button>
+                        <Button variant="secondary" size="sm" onClick={() => handleDownload()} leftIcon={<Download className="w-4 h-4" />}>
+                          ดาวน์โหลด
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={handleFavorite}
+                          className={isFavorited ? "text-error" : ""}
+                          leftIcon={<Heart className={`w-4 h-4 ${isFavorited ? "fill-current" : ""}`} />}
+                        >
+                          {isFavorited ? "บันทึกแล้ว" : "บันทึก"}
+                        </Button>
+                        <Button variant="secondary" size="sm" onClick={handleShare} leftIcon={<Share2 className="w-4 h-4" />}>
+                          แชร์
+                        </Button>
+                        {/* Upscale button */}
+                        {tab !== "video" && !result.resultUrl.endsWith(".mp4") && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={handleUpscale}
+                            loading={isUpscaling}
+                            leftIcon={<ZoomIn className="w-4 h-4" />}
+                          >
+                            Upscale
+                          </Button>
+                        )}
                       </div>
-                      <button
-                        onClick={() => { setResult(null); }}
-                        className="flex items-center gap-1.5 px-4 py-2 rounded-lg glass-light hover:bg-surface-light text-sm transition-all"
-                      >
-                        <RotateCcw className="w-4 h-4" /> สร้างใหม่
-                      </button>
+                      <Button variant="ghost" size="sm" onClick={() => setResult(null)} leftIcon={<RotateCcw className="w-4 h-4" />}>
+                        สร้างใหม่
+                      </Button>
                     </div>
 
                     {/* Generation Info */}
@@ -587,49 +748,27 @@ export default function GeneratePage() {
                     </div>
                   </motion.div>
                 ) : result?.status === "failed" ? (
-                  <motion.div
-                    key="error"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    className="text-center"
-                  >
-                    <AlertCircle className="w-16 h-16 text-error mx-auto mb-4" />
+                  <motion.div key="error" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="text-center">
+                    <div className="w-20 h-20 rounded-2xl bg-error/10 flex items-center justify-center mx-auto mb-4 neu-raised-sm">
+                      <AlertCircle className="w-10 h-10 text-error" />
+                    </div>
                     <h3 className="text-lg font-semibold mb-2">สร้างไม่สำเร็จ</h3>
                     <p className="text-sm text-muted mb-4">{result.error || "เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ"}</p>
-                    <button
-                      onClick={() => setResult(null)}
-                      className="px-4 py-2 rounded-lg bg-primary text-white text-sm"
-                    >
-                      ลองอีกครั้ง
-                    </button>
+                    <Button onClick={() => setResult(null)}>ลองอีกครั้ง</Button>
                   </motion.div>
                 ) : (
-                  <motion.div
-                    key="empty"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="text-center"
-                  >
-                    <div className="w-24 h-24 rounded-2xl bg-gradient-to-br from-primary/10 to-secondary/10 flex items-center justify-center mx-auto mb-6">
-                      {tab === "video" ? (
-                        <Video className="w-10 h-10 text-primary-light" />
-                      ) : tab === "edit" ? (
-                        <Wand2 className="w-10 h-10 text-primary-light" />
-                      ) : (
-                        <ImageIcon className="w-10 h-10 text-primary-light" />
-                      )}
+                  <motion.div key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center">
+                    <div className="w-24 h-24 rounded-2xl bg-gradient-to-br from-primary/10 to-secondary/10 flex items-center justify-center mx-auto mb-6 neu-raised-sm">
+                      {tab === "video" ? <Video className="w-10 h-10 text-primary-light" /> : tab === "edit" ? <Wand2 className="w-10 h-10 text-primary-light" /> : <ImageIcon className="w-10 h-10 text-primary-light" />}
                     </div>
                     <h3 className="text-lg font-semibold mb-2">
                       {tab === "video" ? "สร้างวิดีโอ AI" : tab === "edit" ? "แก้ไขภาพ AI" : "สร้างภาพ AI"}
                     </h3>
-                    <p className="text-sm text-muted">
-                      เลือกโมเดล พิมพ์ prompt แล้วกดสร้าง
-                    </p>
+                    <p className="text-sm text-muted">เลือกโมเดล พิมพ์ prompt แล้วกดสร้าง</p>
                   </motion.div>
                 )}
               </AnimatePresence>
-            </div>
+            </Card>
           </div>
         </div>
       </div>

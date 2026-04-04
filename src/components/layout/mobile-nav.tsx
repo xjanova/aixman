@@ -22,11 +22,10 @@ export function MobileNav() {
   const pathname = usePathname();
 
   if (!session) return null;
-  // Don't show on admin pages
   if (pathname.startsWith("/admin")) return null;
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 z-40 glass border-t border-border md:hidden safe-bottom">
+    <nav className="fixed bottom-0 left-0 right-0 z-40 glass-neu border-t border-border/50 md:hidden safe-bottom">
       <div className="flex items-center justify-around py-2 px-4">
         {navItems.map((item) => {
           const isActive = pathname.startsWith(item.href);
@@ -34,8 +33,10 @@ export function MobileNav() {
             <Link
               key={item.href}
               href={item.href}
-              className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-lg transition-all ${
-                isActive ? "text-primary-light" : "text-muted"
+              className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl transition-all ${
+                isActive
+                  ? "text-primary-light bg-primary/10 neu-raised-sm"
+                  : "text-muted hover:text-foreground"
               }`}
             >
               <item.icon className={`w-5 h-5 ${isActive ? "text-primary-light" : ""}`} />

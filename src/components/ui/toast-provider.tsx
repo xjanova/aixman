@@ -53,7 +53,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         {toasts.map((t) => (
           <Toast.Root
             key={t.id}
-            className={`glass rounded-xl p-4 flex items-start gap-3 border ${borders[t.type]} shadow-lg`}
+            className={`glass-neu rounded-xl p-4 flex items-start gap-3 border ${borders[t.type]}`}
             open={true}
             onOpenChange={(open) => {
               if (!open) setToasts((prev) => prev.filter((x) => x.id !== t.id));
