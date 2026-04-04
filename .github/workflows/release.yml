@@ -1,0 +1,85 @@
+name: Release (Major/Minor)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: 'Version bump type'
+        required: true
+        default: 'minor'
+        type: choice
+        options:
+          - major
+          - minor
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Install semver
+        run: npm install -g semver
+
+      - name: Get current version
+        id: get_version
+        run: |
+          if [ -f VERSION ]; then
+            CURRENT_VERSION=$(cat VERSION | tr -d '[:space:]')
+          else
+            CURRENT_VERSION="0.0.0"
+          fi
+          echo "current=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Bump version
+        id: bump_version
+        run: |
+          BUMP_TYPE="${{ github.event.inputs.version_bump }}"
+          NEW_VERSION=$(semver -i $BUMP_TYPE "${{ steps.get_version.outputs.current }}")
+          echo "new=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "$NEW_VERSION" > VERSION
+          echo "New version: v$NEW_VERSION (bump type: $BUMP_TYPE)"
+
+      - name: Commit and push
+        run: |
+          VERSION="v${{ steps.bump_version.outputs.new }}"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add VERSION
+          git commit -m "chore: release $VERSION"
+          git push origin main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push tag
+        run: |
+          VERSION="v${{ steps.bump_version.outputs.new }}"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git tag -a "$VERSION" -m "Release $VERSION"
+          git push origin "$VERSION"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.bump_version.outputs.new }}
+          generate_release_notes: true
+          draft: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

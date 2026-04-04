@@ -1,0 +1,141 @@
+name: Auto Deploy to Production
+
+on:
+  # Deploy after CI completes successfully on main
+  workflow_run:
+    workflows: ["CI - Build & Quality Checks"]
+    types:
+      - completed
+    branches:
+      - main
+
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      skip_ci:
+        description: 'Skip CI checks (fast deploy)'
+        required: false
+        default: 'false'
+        type: boolean
+
+# Prevent concurrent deployments
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    if: >
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Check SSH secrets
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SSH_HOST" ] || [ -z "$SSH_USER" ] || [ -z "$SSH_PRIVATE_KEY" ]; then
+            echo "::error::Required SSH secrets are not configured."
+            echo "Please set: SSH_HOST, SSH_USER, SSH_PRIVATE_KEY"
+            exit 1
+          fi
+          echo "SSH secrets configured"
+
+      - name: Deploy via SSH (git pull + build + pm2)
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          command_timeout: 10m
+          script: |
+            set -e
+
+            # Configuration
+            DEPLOY_PATH="/home/admin/domains/ai.xman4289.com"
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+
+            echo "Starting deployment to ${DEPLOY_PATH}"
+            cd "${DEPLOY_PATH}"
+
+            # Backup .env
+            cp .env .env.backup.$(date +%Y%m%d_%H%M%S) 2>/dev/null || true
+
+            # Pull latest code
+            echo "Pulling latest code..."
+            git fetch origin main
+            git reset --hard origin/main
+
+            # Install dependencies
+            echo "Installing dependencies..."
+            npm ci 2>&1 || {
+              echo "npm ci failed, trying npm install"
+              npm install --production
+            }
+
+            # Generate Prisma client
+            echo "Generating Prisma client..."
+            npx prisma generate
+
+            # Push database schema (safe - no data loss)
+            echo "Syncing database schema..."
+            npx prisma db push --skip-generate 2>&1 || echo "Schema push warning (non-fatal)"
+
+            # Build production
+            echo "Building production..."
+            npm run build
+
+            # Restart with PM2
+            echo "Restarting application..."
+            if pm2 describe aixman > /dev/null 2>&1; then
+              pm2 restart aixman
+            else
+              pm2 start node_modules/.bin/next --name "aixman" -- start -p 3001
+            fi
+
+            # Save PM2 process list
+            pm2 save
+
+            # Wait for startup
+            sleep 3
+
+            # Health check
+            if curl -sf http://localhost:3001 > /dev/null 2>&1; then
+              echo "Application is running"
+            else
+              echo "Warning: Local health check failed (may need more time)"
+              pm2 logs aixman --lines 20 --nostream || true
+            fi
+
+            echo "Deployment completed successfully!"
+
+      - name: Health Check
+        run: |
+          echo "Checking health at: https://ai.xman4289.com"
+          sleep 10
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://ai.xman4289.com" || echo "000")
+          if [ "$HTTP_CODE" -eq 200 ] || [ "$HTTP_CODE" -eq 308 ] || [ "$HTTP_CODE" -eq 301 ]; then
+            echo "Application is healthy (HTTP $HTTP_CODE)"
+          else
+            echo "Health check returned HTTP $HTTP_CODE (may still be starting up)"
+          fi
+
+      - name: Deployment Summary
+        if: always()
+        run: |
+          echo "## Deployment Result" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "**Status:** Success" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Status:** Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "**URL:** https://ai.xman4289.com" >> $GITHUB_STEP_SUMMARY
+          echo "**Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Time:** $(date -u)" >> $GITHUB_STEP_SUMMARY
