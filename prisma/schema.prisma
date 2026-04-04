@@ -1,0 +1,339 @@
+// AIXMAN - AI Generation Platform
+// Shares MySQL database with xmanstudio (xman4289.com)
+// Tables prefixed with 'ai_' to avoid conflicts
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+// ============================================================
+// SHARED TABLES (owned by xmanstudio Laravel, read-only here)
+// DO NOT run prisma migrate on these - they are managed by Laravel
+// ============================================================
+
+model User {
+  id                 Int       @id @default(autoincrement())
+  name               String
+  email              String    @unique
+  emailVerifiedAt    DateTime? @map("email_verified_at")
+  password           String
+  avatar             String?
+  phone              String?
+  role               String    @default("user")
+  isActive           Boolean   @default(true) @map("is_active")
+  preferredTheme     String?   @map("preferred_theme")
+  stripeCustomerId   String?   @map("stripe_customer_id")
+  rememberToken      String?   @map("remember_token")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  // AI relationships
+  aiCredits            AiUserCredit?
+  aiGenerations        AiGeneration[]
+  aiFavorites          AiFavorite[]
+  aiCreditTransactions AiCreditTransaction[]
+
+  @@map("users")
+}
+
+model Wallet {
+  id             Int      @id @default(autoincrement())
+  userId         Int      @unique @map("user_id")
+  balance        Decimal  @default(0) @db.Decimal(12, 2)
+  totalDeposited Decimal  @default(0) @map("total_deposited") @db.Decimal(12, 2)
+  totalSpent     Decimal  @default(0) @map("total_spent") @db.Decimal(12, 2)
+  totalRefunded  Decimal  @default(0) @map("total_refunded") @db.Decimal(12, 2)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@map("wallets")
+}
+
+// ============================================================
+// AI PLATFORM TABLES (owned by aixman)
+// ============================================================
+
+// --- Settings & Configuration ---
+
+model AiSetting {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique @db.VarChar(255)
+  value     String?  @db.LongText
+  type      String   @default("string") @db.VarChar(50)
+  group     String   @default("general") @db.VarChar(100)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([group])
+  @@map("ai_settings")
+}
+
+// --- Providers & Account Pools ---
+
+model AiProvider {
+  id            Int      @id @default(autoincrement())
+  slug          String   @unique @db.VarChar(50)
+  name          String   @db.VarChar(100)
+  description   String?  @db.Text
+  logo          String?  @db.VarChar(500)
+  website       String?  @db.VarChar(500)
+  baseUrl       String?  @map("base_url") @db.VarChar(500)
+  authType      String   @default("bearer") @map("auth_type") @db.VarChar(50)
+  isActive      Boolean  @default(true) @map("is_active")
+  supportsImage Boolean  @default(false) @map("supports_image")
+  supportsVideo Boolean  @default(false) @map("supports_video")
+  supportsEdit  Boolean  @default(false) @map("supports_edit")
+  config        Json?
+  sortOrder     Int      @default(0) @map("sort_order")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  accounts AiAccountPool[]
+  models   AiModel[]
+
+  @@map("ai_providers")
+}
+
+model AiAccountPool {
+  id                 Int       @id @default(autoincrement())
+  providerId         Int       @map("provider_id")
+  label              String    @db.VarChar(255)
+  apiKey             String    @map("api_key") @db.Text
+  apiSecret          String?   @map("api_secret") @db.Text
+  apiEndpoint        String?   @map("api_endpoint") @db.VarChar(500)
+  isActive           Boolean   @default(true) @map("is_active")
+  priority           Int       @default(50)
+  rotationMode       String    @default("round_robin") @map("rotation_mode") @db.VarChar(50)
+  rateLimitPerMinute Int       @default(60) @map("rate_limit_per_minute")
+  dailyQuota         Int       @default(1000) @map("daily_quota")
+  monthlyQuota       Int       @default(0) @map("monthly_quota")
+  usageToday         Int       @default(0) @map("usage_today")
+  usageThisMonth     Int       @default(0) @map("usage_this_month")
+  totalUsage         Int       @default(0) @map("total_usage")
+  totalCost          Decimal   @default(0) @map("total_cost") @db.Decimal(12, 4)
+  lastUsedAt         DateTime? @map("last_used_at")
+  lastErrorAt        DateTime? @map("last_error_at")
+  lastError          String?   @map("last_error") @db.Text
+  errorCount         Int       @default(0) @map("error_count")
+  consecutiveErrors  Int       @default(0) @map("consecutive_errors")
+  cooldownUntil      DateTime? @map("cooldown_until")
+  metadata           Json?
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  provider  AiProvider   @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  usageLogs AiUsageLog[]
+
+  @@index([providerId, isActive])
+  @@index([cooldownUntil])
+  @@map("ai_account_pools")
+}
+
+// --- AI Models ---
+
+model AiModel {
+  id              Int      @id @default(autoincrement())
+  providerId      Int      @map("provider_id")
+  modelId         String   @map("model_id") @db.VarChar(255)
+  name            String   @db.VarChar(255)
+  description     String?  @db.Text
+  category        String   @db.VarChar(50)
+  subcategory     String?  @db.VarChar(50)
+  thumbnail       String?  @db.VarChar(500)
+  isActive        Boolean  @default(true) @map("is_active")
+  isFeatured      Boolean  @default(false) @map("is_featured")
+  costPerUnit     Decimal  @map("cost_per_unit") @db.Decimal(10, 6)
+  creditsPerUnit  Int      @map("credits_per_unit")
+  unitType        String   @default("per_image") @map("unit_type") @db.VarChar(50)
+  maxWidth        Int?     @map("max_width")
+  maxHeight       Int?     @map("max_height")
+  maxDuration     Int?     @map("max_duration")
+  supportedParams Json?    @map("supported_params")
+  defaultParams   Json?    @map("default_params")
+  sortOrder       Int      @default(0) @map("sort_order")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  provider    AiProvider     @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  generations AiGeneration[]
+
+  @@unique([providerId, modelId])
+  @@index([category, isActive])
+  @@map("ai_models")
+}
+
+// --- Credit System ---
+
+model AiCreditPackage {
+  id           Int      @id @default(autoincrement())
+  name         String   @db.VarChar(255)
+  slug         String   @unique @db.VarChar(100)
+  description  String?  @db.Text
+  credits      Int
+  priceThb     Decimal  @map("price_thb") @db.Decimal(10, 2)
+  priceUsd     Decimal  @map("price_usd") @db.Decimal(10, 2)
+  bonusCredits Int      @default(0) @map("bonus_credits")
+  badge        String?  @db.VarChar(100)
+  isActive     Boolean  @default(true) @map("is_active")
+  isFeatured   Boolean  @default(false) @map("is_featured")
+  sortOrder    Int      @default(0) @map("sort_order")
+  features     Json?
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  transactions AiCreditTransaction[]
+
+  @@map("ai_credit_packages")
+}
+
+model AiUserCredit {
+  id         Int      @id @default(autoincrement())
+  userId     Int      @unique @map("user_id")
+  balance    Int      @default(0)
+  totalBought Int     @default(0) @map("total_bought")
+  totalUsed  Int      @default(0) @map("total_used")
+  totalBonus Int      @default(0) @map("total_bonus")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("ai_user_credits")
+}
+
+model AiCreditTransaction {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @map("user_id")
+  type         String   @db.VarChar(50)
+  amount       Int
+  balanceAfter Int      @map("balance_after")
+  description  String?  @db.VarChar(500)
+  packageId    Int?     @map("package_id")
+  generationId Int?     @map("generation_id")
+  xmanOrderId  Int?     @map("xman_order_id")
+  metadata     Json?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user    User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  package AiCreditPackage? @relation(fields: [packageId], references: [id], onDelete: SetNull)
+
+  @@index([userId, type])
+  @@index([createdAt])
+  @@map("ai_credit_transactions")
+}
+
+// --- Generations ---
+
+model AiGeneration {
+  id             Int       @id @default(autoincrement())
+  userId         Int       @map("user_id")
+  modelId        Int       @map("model_id")
+  type           String    @db.VarChar(50)
+  status         String    @default("pending") @db.VarChar(50)
+  prompt         String?   @db.Text
+  negativePrompt String?   @map("negative_prompt") @db.Text
+  params         Json?
+  inputImage     String?   @map("input_image") @db.VarChar(500)
+  resultUrl      String?   @map("result_url") @db.VarChar(1000)
+  resultUrls     Json?     @map("result_urls")
+  thumbnailUrl   String?   @map("thumbnail_url") @db.VarChar(1000)
+  providerJobId  String?   @map("provider_job_id") @db.VarChar(500)
+  creditsUsed    Int       @default(0) @map("credits_used")
+  costUsd        Decimal   @default(0) @map("cost_usd") @db.Decimal(10, 6)
+  processingMs   Int?      @map("processing_ms")
+  errorMessage   String?   @map("error_message") @db.Text
+  isPublic       Boolean   @default(false) @map("is_public")
+  accountPoolId  Int?      @map("account_pool_id")
+  startedAt      DateTime? @map("started_at")
+  completedAt    DateTime? @map("completed_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  model     AiModel      @relation(fields: [modelId], references: [id])
+  favorites AiFavorite[]
+
+  @@index([userId, status])
+  @@index([status, createdAt])
+  @@index([providerJobId])
+  @@map("ai_generations")
+}
+
+// --- Templates & Styles ---
+
+model AiTemplate {
+  id             Int      @id @default(autoincrement())
+  name           String   @db.VarChar(255)
+  description    String?  @db.Text
+  category       String   @db.VarChar(100)
+  prompt         String   @db.Text
+  negativePrompt String?  @map("negative_prompt") @db.Text
+  thumbnail      String?  @db.VarChar(500)
+  params         Json?
+  isActive       Boolean  @default(true) @map("is_active")
+  isFeatured     Boolean  @default(false) @map("is_featured")
+  usageCount     Int      @default(0) @map("usage_count")
+  sortOrder      Int      @default(0) @map("sort_order")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@index([category, isActive])
+  @@map("ai_templates")
+}
+
+model AiStyle {
+  id           Int      @id @default(autoincrement())
+  name         String   @db.VarChar(255)
+  slug         String   @unique @db.VarChar(100)
+  description  String?  @db.Text
+  promptSuffix String?  @map("prompt_suffix") @db.Text
+  thumbnail    String?  @db.VarChar(500)
+  isActive     Boolean  @default(true) @map("is_active")
+  sortOrder    Int      @default(0) @map("sort_order")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("ai_styles")
+}
+
+// --- User Data ---
+
+model AiFavorite {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @map("user_id")
+  generationId Int      @map("generation_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  generation AiGeneration @relation(fields: [generationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, generationId])
+  @@map("ai_favorites")
+}
+
+// --- Usage Tracking ---
+
+model AiUsageLog {
+  id            Int      @id @default(autoincrement())
+  accountPoolId Int      @map("account_pool_id")
+  modelId       String   @map("model_id") @db.VarChar(255)
+  action        String   @db.VarChar(50)
+  status        String   @db.VarChar(50)
+  costUsd       Decimal  @default(0) @map("cost_usd") @db.Decimal(10, 6)
+  responseMs    Int?     @map("response_ms")
+  errorCode     String?  @map("error_code") @db.VarChar(100)
+  errorMessage  String?  @map("error_message") @db.Text
+  metadata      Json?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  accountPool AiAccountPool @relation(fields: [accountPoolId], references: [id], onDelete: Cascade)
+
+  @@index([accountPoolId, createdAt])
+  @@index([status, createdAt])
+  @@map("ai_usage_logs")
+}
