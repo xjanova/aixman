@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { useSession, signOut } from "next-auth/react";
 import { useAppStore } from "@/lib/store/app-store";
 import {
@@ -37,9 +38,13 @@ export function Navbar() {
         <div className="flex items-center justify-between h-16">
           {/* Logo */}
           <Link href="/" className="flex items-center gap-2 group">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-secondary flex items-center justify-center group-hover:shadow-lg group-hover:shadow-primary/30 transition-shadow">
-              <Sparkles className="w-5 h-5 text-white" />
-            </div>
+            <Image
+              src="/logo.webp"
+              alt="XMAN AI"
+              width={32}
+              height={32}
+              className="rounded-lg group-hover:shadow-lg group-hover:shadow-primary/30 transition-shadow"
+            />
             <span className="text-lg font-bold gradient-text hidden sm:block">
               XMAN AI
             </span>

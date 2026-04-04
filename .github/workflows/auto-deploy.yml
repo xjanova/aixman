@@ -53,7 +53,11 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
           command_timeout: 10m
-          script: |
+          envs: DATABASE_URL,AUTH_SECRET
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
+        script: |
             set -e
 
             # Configuration
@@ -71,6 +75,40 @@ jobs:
             echo "Pulling latest code..."
             git fetch origin main
             git reset --hard origin/main
+
+            # Ensure .env exists with required variables
+            if [ ! -f .env ]; then
+              echo "Creating .env from template..."
+              cp .env.example .env 2>/dev/null || touch .env
+            fi
+
+            # Set/update critical env vars (idempotent)
+            grep -q '^NEXTAUTH_URL=' .env && sed -i 's|^NEXTAUTH_URL=.*|NEXTAUTH_URL=https://ai.xman4289.com|' .env || echo 'NEXTAUTH_URL=https://ai.xman4289.com' >> .env
+            grep -q '^NEXT_PUBLIC_APP_URL=' .env && sed -i 's|^NEXT_PUBLIC_APP_URL=.*|NEXT_PUBLIC_APP_URL=https://ai.xman4289.com|' .env || echo 'NEXT_PUBLIC_APP_URL=https://ai.xman4289.com' >> .env
+            grep -q '^AUTH_TRUST_HOST=' .env || echo 'AUTH_TRUST_HOST=true' >> .env
+
+            # Set AUTH_SECRET from GitHub secret
+            if [ -n "$AUTH_SECRET" ]; then
+              grep -q '^AUTH_SECRET=' .env && sed -i "s|^AUTH_SECRET=.*|AUTH_SECRET=${AUTH_SECRET}|" .env || echo "AUTH_SECRET=${AUTH_SECRET}" >> .env
+              grep -q '^NEXTAUTH_SECRET=' .env && sed -i "s|^NEXTAUTH_SECRET=.*|NEXTAUTH_SECRET=${AUTH_SECRET}|" .env || echo "NEXTAUTH_SECRET=${AUTH_SECRET}" >> .env
+            fi
+
+            # Set DATABASE_URL from GitHub secret or derive from xmanstudio .env
+            if [ -n "$DATABASE_URL" ]; then
+              grep -q '^DATABASE_URL=' .env && sed -i "s|^DATABASE_URL=.*|DATABASE_URL=${DATABASE_URL}|" .env || echo "DATABASE_URL=${DATABASE_URL}" >> .env
+            elif ! grep -q '^DATABASE_URL=' .env; then
+              # Read DB credentials from xmanstudio's .env (same server, shared DB)
+              XMAN_ENV="/home/admin/domains/xman4289.com/.env"
+              if [ -f "$XMAN_ENV" ]; then
+                DB_HOST=$(grep '^DB_HOST=' "$XMAN_ENV" | cut -d= -f2)
+                DB_PORT=$(grep '^DB_PORT=' "$XMAN_ENV" | cut -d= -f2)
+                DB_DATABASE=$(grep '^DB_DATABASE=' "$XMAN_ENV" | cut -d= -f2)
+                DB_USERNAME=$(grep '^DB_USERNAME=' "$XMAN_ENV" | cut -d= -f2)
+                DB_PASSWORD=$(grep '^DB_PASSWORD=' "$XMAN_ENV" | cut -d= -f2)
+                echo "DATABASE_URL=mysql://${DB_USERNAME}:${DB_PASSWORD}@${DB_HOST:-127.0.0.1}:${DB_PORT:-3306}/${DB_DATABASE:-xmanstudio}" >> .env
+                echo "Derived DATABASE_URL from xmanstudio config"
+              fi
+            fi
 
             # Install dependencies
             echo "Installing dependencies..."
