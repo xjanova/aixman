@@ -29,15 +29,16 @@ export class CreditService {
   ) {
     const credit = await this.getUserCredits(userId);
 
-    await prisma.$transaction([
-      prisma.aiUserCredit.update({
+    const { transaction } = await prisma.$transaction(async (tx) => {
+      await tx.aiUserCredit.update({
         where: { userId },
         data: {
           balance: { increment: amount },
           totalBought: { increment: amount },
         },
-      }),
-      prisma.aiCreditTransaction.create({
+      });
+
+      const txn = await tx.aiCreditTransaction.create({
         data: {
           userId,
           type: 'purchase',
@@ -47,10 +48,12 @@ export class CreditService {
           packageId,
           xmanOrderId,
         },
-      }),
-    ]);
+      });
 
-    return { balance: credit.balance + amount };
+      return { transaction: txn };
+    });
+
+    return { balance: credit.balance + amount, transactionId: transaction.id };
   }
 
   /**

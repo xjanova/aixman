@@ -1,13 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { timingSafeEqual } from 'crypto';
 import { CreditService } from '@/lib/services/credits';
+import { ReferralService } from '@/lib/services/referral';
+import prisma from '@/lib/db';
 
 /**
  * Webhook endpoint called by xmanstudio after successful credit package purchase
  * xmanstudio sends: userId, packageId, orderId, amount (credits)
- *
- * This endpoint should be called from xmanstudio's order completion handler
- * with a shared webhook secret for authentication.
  */
 export async function POST(request: NextRequest) {
   // Verify webhook secret (constant-time comparison)
@@ -27,6 +26,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Missing or invalid required fields' }, { status: 400 });
     }
 
+    // Idempotency check — prevent duplicate credit addition if webhook is retried
+    if (orderId) {
+      const existing = await prisma.aiCreditTransaction.findFirst({
+        where: { xmanOrderId: orderId, type: 'purchase' },
+      });
+      if (existing) {
+        return NextResponse.json({ success: true, message: 'Already processed', balance: null });
+      }
+    }
+
     // Add purchased credits
     const result = await CreditService.addCredits(
       userId,
@@ -43,6 +52,17 @@ export async function POST(request: NextRequest) {
         bonusCredits,
         `โบนัสเครดิต ${bonusCredits} จากการซื้อแพ็กเกจ`
       );
+    }
+
+    // Process referral commission — if this user was referred, credit the referrer
+    if (result.transactionId) {
+      try {
+        const referralService = new ReferralService();
+        await referralService.processCommission(result.transactionId);
+      } catch (err) {
+        // Don't fail the webhook if referral processing fails
+        console.error('Referral commission error:', err);
+      }
     }
 
     return NextResponse.json({ success: true, balance: result.balance });

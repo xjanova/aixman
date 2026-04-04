@@ -27,7 +27,8 @@ export class GenerationService {
       throw new Error('Provider is currently unavailable');
     }
 
-    const requiredCredits = model.creditsPerUnit;
+    const numOutputs = request.params?.numOutputs || 1;
+    const requiredCredits = model.creditsPerUnit * numOutputs;
 
     // 2. Select an account from the pool
     const account = await AccountPoolManager.selectAccount(model.providerId);
