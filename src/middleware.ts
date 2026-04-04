@@ -3,7 +3,8 @@ import type { NextRequest } from 'next/server';
 import { getToken } from 'next-auth/jwt';
 
 export async function middleware(request: NextRequest) {
-  const token = await getToken({ req: request });
+  const secret = process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET;
+  const token = await getToken({ req: request, secret });
   const isLoggedIn = !!token;
   const role = token?.role as string | undefined;
   const isAdmin = role === 'admin' || role === 'super_admin';
