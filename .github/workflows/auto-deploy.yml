@@ -47,6 +47,9 @@ jobs:
 
       - name: Deploy via SSH (git pull + build + pm2)
         uses: appleboy/ssh-action@v1
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
@@ -54,10 +57,7 @@ jobs:
           port: ${{ secrets.SSH_PORT || 22 }}
           command_timeout: 10m
           envs: DATABASE_URL,AUTH_SECRET
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
-        script: |
+          script: |
             set -e
 
             # Configuration
