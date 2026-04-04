@@ -10,6 +10,8 @@ import {
   Coins,
   Server,
   AlertCircle,
+  Database,
+  Loader2,
 } from "lucide-react";
 
 interface Stats {
@@ -26,6 +28,8 @@ interface Stats {
 
 export default function AdminDashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
+  const [seeding, setSeeding] = useState(false);
+  const [seedResult, setSeedResult] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/admin/stats")
@@ -33,6 +37,25 @@ export default function AdminDashboard() {
       .then(setStats)
       .catch(() => {});
   }, []);
+
+  const runSeed = async () => {
+    setSeeding(true);
+    setSeedResult(null);
+    try {
+      const res = await fetch("/api/admin/seed", { method: "POST" });
+      const data = await res.json();
+      if (data.success) {
+        setSeedResult(`สำเร็จ: ${data.results.providers} providers, ${data.results.models} models, ${data.results.packages} packages, ${data.results.styles} styles, ${data.results.settings} settings`);
+        // Refresh stats
+        fetch("/api/admin/stats").then((r) => r.json()).then(setStats).catch(() => {});
+      } else {
+        setSeedResult(`ผิดพลาด: ${data.error}`);
+      }
+    } catch {
+      setSeedResult("ผิดพลาด: ไม่สามารถเชื่อมต่อ API ได้");
+    }
+    setSeeding(false);
+  };
 
   const cards = [
     { label: "Generations วันนี้", value: stats?.generationsToday || 0, icon: ImageIcon, color: "text-primary-light" },
@@ -61,6 +84,32 @@ export default function AdminDashboard() {
             </div>
           </div>
         ))}
+      </div>
+
+      {/* Seed Data */}
+      <div className="glass rounded-xl p-6 mb-8">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold flex items-center gap-2">
+              <Database className="w-5 h-5 text-accent" />
+              ข้อมูลเริ่มต้น (Seed Data)
+            </h2>
+            <p className="text-sm text-muted mt-1">สร้าง Providers, Models, Packages, Styles, Settings ทั้งหมด</p>
+          </div>
+          <button
+            onClick={runSeed}
+            disabled={seeding}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-primary to-secondary text-white font-medium disabled:opacity-50"
+          >
+            {seeding ? <Loader2 className="w-4 h-4 animate-spin" /> : <Database className="w-4 h-4" />}
+            {seeding ? "กำลังสร้าง..." : "สร้างข้อมูลเริ่มต้น"}
+          </button>
+        </div>
+        {seedResult && (
+          <div className={`mt-3 p-3 rounded-lg text-sm ${seedResult.startsWith("สำเร็จ") ? "bg-success/10 text-success" : "bg-error/10 text-error"}`}>
+            {seedResult}
+          </div>
+        )}
       </div>
 
       {/* Quick actions */}
