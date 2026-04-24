@@ -1,18 +1,23 @@
 "use client";
 
+/**
+ * /pricing — credit packages (X-DREAMER themed)
+ *
+ * Layout follows the X-DREAMER pricing pattern from the landing page +
+ * the bottom credit-cost table.
+ *
+ * Preserves all features from the previous pricing page:
+ *   currency toggle (THB/USD), live packages from /api/packages,
+ *   credit-cost breakdown derived from /api/models, wallet hint card.
+ */
+
 import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
-import { motion } from "framer-motion";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import {
-  Coins,
-  Check,
-  Sparkles,
-  ArrowRight,
-  Calculator,
-} from "lucide-react";
+
+const HUE = 70;
+const HUE_BY_SLUG: Record<string, number> = {
+  trial: 140, starter: 160, weaver: 200, creator: 220, pro: 260, studio: 280, enterprise: 300,
+};
 
 interface Package {
   id: number;
@@ -36,14 +41,6 @@ interface Model {
   provider: { name: string };
 }
 
-const gradients = [
-  "from-slate-500 to-slate-400",
-  "from-primary to-secondary",
-  "from-cyan-500 to-blue-500",
-  "from-amber-500 to-orange-500",
-  "from-emerald-500 to-green-400",
-];
-
 export default function PricingPage() {
   const [currency, setCurrency] = useState<"thb" | "usd">("thb");
   const [packages, setPackages] = useState<Package[]>([]);
@@ -53,15 +50,13 @@ export default function PricingPage() {
 
   useEffect(() => {
     Promise.all([
-      fetch("/api/packages").then((r) => r.json()),
-      fetch("/api/models").then((r) => r.json()),
-    ])
-      .then(([pkgData, modelData]) => {
-        setPackages(Array.isArray(pkgData) ? pkgData : pkgData.packages || pkgData);
-        setModels(modelData.models || []);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
+      fetch("/api/packages").then(r => r.json()),
+      fetch("/api/models").then(r => r.json()),
+    ]).then(([pkgData, modelData]) => {
+      setPackages(Array.isArray(pkgData) ? pkgData : pkgData.packages || pkgData);
+      setModels(modelData.models || []);
+      setLoading(false);
+    }).catch(() => setLoading(false));
   }, []);
 
   const creditCosts = useMemo(() => {
@@ -87,145 +82,173 @@ export default function PricingPage() {
   };
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-12">
-      <motion.div className="text-center mb-16" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
-        <Badge variant="glass" size="lg" className="mb-4 px-4 py-2">
-          <Coins className="w-4 h-4 text-warning" /> เติมเครดิต
-        </Badge>
-        <h1 className="text-4xl sm:text-5xl font-bold mb-4">
-          เลือกแพ็กเกจ<span className="gradient-text">ที่ใช่</span>
+    <div style={{ padding: "30px 48px 80px", maxWidth: 1400, margin: "0 auto", color: "#f1f5f9" }}>
+      {/* Header */}
+      <div style={{ textAlign: "center", marginBottom: 56 }}>
+        <div style={{ fontSize: 12, letterSpacing: "0.16em", color: "#a5f3fc", textTransform: "uppercase", marginBottom: 14 }}>· แผนการใช้งาน</div>
+        <h1 style={{ fontSize: "clamp(40px, 6vw, 80px)", fontWeight: 300, color: "#fff", letterSpacing: "-0.02em", lineHeight: 1.05, margin: 0 }}>
+          เลือกแพ็กเกจ<span className="xdr-italic-th" style={{ fontStyle: "italic", fontWeight: 200, color: "#c4b5fd" }}> ที่ใช่</span>
         </h1>
-        <p className="text-muted text-lg max-w-xl mx-auto">
-          ซื้อเครดิตใช้สร้างภาพและวิดีโอ AI ไม่มีวันหมดอายุ ใช้ได้ทุก Provider
+        <p style={{ marginTop: 18, color: "rgba(203,213,225,0.7)", fontSize: 17, fontWeight: 300, maxWidth: 560, margin: "18px auto 0" }}>
+          ซื้อเครดิตใช้สร้างภาพและวิดีโอ AI · ไม่มีวันหมดอายุ · ใช้ได้ทุก Provider
         </p>
 
-        <div className="flex items-center gap-1 justify-center mt-6 p-1 rounded-xl neu-inset-sm bg-surface/60 inline-flex">
-          <button onClick={() => setCurrency("thb")} className={`px-4 py-1.5 rounded-lg text-sm transition-all cursor-pointer ${currency === "thb" ? "bg-gradient-to-r from-primary to-secondary text-white neu-raised-sm" : "text-muted"}`}>
-            ฿ THB
-          </button>
-          <button onClick={() => setCurrency("usd")} className={`px-4 py-1.5 rounded-lg text-sm transition-all cursor-pointer ${currency === "usd" ? "bg-gradient-to-r from-primary to-secondary text-white neu-raised-sm" : "text-muted"}`}>
-            $ USD
-          </button>
+        {/* Currency toggle */}
+        <div style={{ display: "inline-flex", gap: 4, marginTop: 28, padding: 4, borderRadius: 999, background: "rgba(2,6,23,0.5)", border: "1px solid rgba(255,255,255,0.06)" }}>
+          {([["thb", "฿ THB"], ["usd", "$ USD"]] as const).map(([key, label]) => (
+            <button key={key} onClick={() => setCurrency(key)}
+              style={{
+                padding: "7px 18px", borderRadius: 999, fontSize: 12, cursor: "pointer", border: "none",
+                background: currency === key ? `linear-gradient(135deg, hsl(${160 + HUE},70%,50%), hsl(${280 + HUE},70%,55%))` : "transparent",
+                color: currency === key ? "#fff" : "#94a3b8", fontWeight: 500,
+              }}>{label}</button>
+          ))}
         </div>
-      </motion.div>
+      </div>
 
+      {/* Packages */}
       {loading ? (
-        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-20">
-          {[1, 2, 3, 4].map((i) => (<div key={i} className="glass rounded-2xl p-6 h-80 animate-shimmer" />))}
+        <div className="rp-grid-pkg" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 20, marginBottom: 64 }}>
+          {[1, 2, 3, 4].map(i => (
+            <div key={i} style={{ height: 380, borderRadius: 22, background: "rgba(15,23,42,0.45)", border: "1px solid rgba(255,255,255,0.05)", animation: "pulse 1.6s ease-in-out infinite" }} />
+          ))}
         </div>
       ) : (
-        <div className={`grid gap-6 mb-20 ${packages.length <= 3 ? "sm:grid-cols-3" : packages.length === 4 ? "sm:grid-cols-2 lg:grid-cols-4" : "sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5"}`}>
-          {packages.map((pkg, i) => {
+        <div className="rp-grid-pkg" style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(packages.length || 1, 5)}, 1fr)`, gap: 20, marginBottom: 64 }}>
+          {packages.map(pkg => {
             const features = parseFeatures(pkg.features);
+            const slug = pkg.slug || String(pkg.id);
+            const h = ((HUE_BY_SLUG[slug] ?? 220) + HUE) % 360;
+            const isFree = Number(pkg.priceThb) === 0;
+            const pop = pkg.isFeatured;
+            const href = isFree ? "/generate" : `${xmanCheckoutUrl}/checkout/ai-credits/${slug}?ref=ai`;
             return (
-              <motion.div key={pkg.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.1 }}>
-                <Card variant={pkg.isFeatured ? "elevated" : "default"} className={`relative p-6 flex flex-col h-full ${pkg.isFeatured ? "ring-2 ring-primary/40" : ""}`}>
-                  {pkg.badge && (
-                    <div className="absolute -top-3 left-1/2 -translate-x-1/2">
-                      <Badge variant="primary" size="default" className="bg-gradient-to-r from-primary to-secondary text-white border-0 whitespace-nowrap">
-                        {pkg.badge}
-                      </Badge>
-                    </div>
-                  )}
-
-                  <div className={`w-12 h-12 rounded-xl bg-gradient-to-br ${gradients[i % gradients.length]} flex items-center justify-center mb-4 neu-raised-sm`}>
-                    <Coins className="w-6 h-6 text-white" />
+              <div key={pkg.id} style={{
+                padding: 32, borderRadius: 22, position: "relative",
+                background: pop
+                  ? `linear-gradient(160deg, hsla(${h},60%,20%,0.65), hsla(${h + 40},60%,12%,0.65))`
+                  : "rgba(15,23,42,0.45)",
+                border: pop ? `1px solid hsla(${h},70%,55%,0.5)` : "1px solid rgba(255,255,255,0.08)",
+                backdropFilter: "blur(18px)",
+                boxShadow: pop ? `0 30px 60px -20px hsla(${h},70%,50%,0.35)` : "none",
+                display: "flex", flexDirection: "column",
+              }}>
+                {pkg.badge && (
+                  <div style={{ position: "absolute", top: -12, left: 24, padding: "4px 12px", borderRadius: 999, background: `linear-gradient(90deg, hsl(${h},80%,60%), hsl(${h + 40},80%,65%))`, fontSize: 11, fontWeight: 600, color: "#fff", letterSpacing: "0.08em" }}>
+                    {pkg.badge}
                   </div>
-
-                  <h3 className="text-xl font-bold mb-1">{pkg.name}</h3>
-                  <div className="flex items-baseline gap-1 mb-4">
-                    <span className="text-3xl font-bold">
-                      {currency === "thb" ? `฿${Number(pkg.priceThb).toLocaleString()}` : `$${Number(pkg.priceUsd)}`}
-                    </span>
+                )}
+                <div style={{ fontSize: 13, color: "#a5f3fc", letterSpacing: "0.08em", marginBottom: 14 }}>{pkg.name}</div>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 18 }}>
+                  <div style={{ fontSize: 38, fontWeight: 300, color: "#fff", letterSpacing: "-0.02em" }}>
+                    {currency === "thb" ? `฿${Number(pkg.priceThb).toLocaleString()}` : `$${Number(pkg.priceUsd)}`}
                   </div>
-
-                  <div className="text-sm text-muted mb-4">
-                    {pkg.credits.toLocaleString()}{pkg.bonusCredits > 0 ? ` + ${pkg.bonusCredits.toLocaleString()} โบนัส` : ""} เครดิต
-                  </div>
-
-                  <ul className="space-y-2 mb-6 flex-1">
-                    {features.map((feature) => (
-                      <li key={feature} className="flex items-start gap-2 text-sm">
-                        <Check className="w-4 h-4 text-success shrink-0 mt-0.5" />
-                        <span>{feature}</span>
-                      </li>
-                    ))}
-                  </ul>
-
-                  {Number(pkg.priceThb) === 0 ? (
-                    <Link href="/generate">
-                      <Button variant="secondary" className="w-full" rightIcon={<ArrowRight className="w-4 h-4" />}>
-                        เริ่มใช้ฟรี
-                      </Button>
-                    </Link>
-                  ) : (
-                    <a href={`${xmanCheckoutUrl}/checkout/ai-credits/${pkg.slug}?ref=ai`}>
-                      <Button variant={pkg.isFeatured ? "default" : "secondary"} className="w-full" rightIcon={<ArrowRight className="w-4 h-4" />}>
-                        ซื้อเลย
-                      </Button>
-                    </a>
-                  )}
-                </Card>
-              </motion.div>
+                </div>
+                <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 16 }}>
+                  ✦ {pkg.credits.toLocaleString()}{pkg.bonusCredits > 0 && (
+                    <span style={{ color: `hsl(${h},80%,75%)` }}> + {pkg.bonusCredits.toLocaleString()} โบนัส</span>
+                  )} เครดิต
+                </div>
+                <ul style={{ listStyle: "none", padding: 0, margin: "0 0 24px", flex: 1 }}>
+                  {features.map(f => (
+                    <li key={f} style={{ fontSize: 13, color: "rgba(226,232,240,0.8)", marginBottom: 8, display: "flex", gap: 10, fontWeight: 300 }}>
+                      <span style={{ color: `hsl(${h},80%,70%)`, flexShrink: 0 }}>✦</span> {f}
+                    </li>
+                  ))}
+                </ul>
+                {isFree ? (
+                  <Link href={href} style={{ display: "block", textAlign: "center", width: "100%", padding: 14, borderRadius: 12, background: "rgba(255,255,255,0.06)", color: "#fff", border: "1px solid rgba(255,255,255,0.15)", textDecoration: "none", fontSize: 14, fontWeight: 600 }}>
+                    เริ่มใช้ฟรี →
+                  </Link>
+                ) : (
+                  <a href={href} style={{
+                    display: "block", textAlign: "center", width: "100%", padding: 14, borderRadius: 12,
+                    background: pop
+                      ? `linear-gradient(135deg, hsl(${h},70%,50%), hsl(${h + 40},70%,60%))`
+                      : "rgba(255,255,255,0.06)",
+                    color: "#fff", border: pop ? "none" : "1px solid rgba(255,255,255,0.15)",
+                    textDecoration: "none", fontSize: 14, fontWeight: 600,
+                  }}>{pop ? "เริ่มทอเลย →" : "เลือกแผนนี้ →"}</a>
+                )}
+              </div>
             );
           })}
         </div>
       )}
 
+      {/* Credit cost table */}
       {creditCosts.length > 0 && (
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}>
-          <Card variant="elevated" className="p-8">
-            <div className="flex items-center gap-3 mb-6">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary/20 to-accent/20 flex items-center justify-center neu-raised-sm">
-                <Calculator className="w-5 h-5 text-primary-light" />
-              </div>
-              <h2 className="text-2xl font-bold">ตารางเครดิต</h2>
-            </div>
-            <p className="text-muted mb-6">เครดิตที่ใช้ขึ้นอยู่กับโมเดลและคุณภาพ</p>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border">
-                    <th className="text-left py-3 px-4 text-muted font-medium">ประเภท</th>
-                    <th className="text-center py-3 px-4 text-muted font-medium">เครดิต/ครั้ง</th>
-                    <th className="text-left py-3 px-4 text-muted font-medium">ตัวอย่างโมเดล</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {creditCosts.map((row) => (
-                    <tr key={row.type} className="border-b border-border/50 hover:bg-surface-light/30 transition-colors">
-                      <td className="py-3 px-4 font-medium">{row.type}</td>
-                      <td className="py-3 px-4 text-center">
-                        <Badge variant="primary" size="sm">{row.credits}</Badge>
-                      </td>
-                      <td className="py-3 px-4 text-muted">{row.examples}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Card>
-        </motion.div>
-      )}
-
-      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.5 }}>
-        <Card className="mt-8 p-6">
-          <div className="flex items-start gap-4">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary/20 to-secondary/20 flex items-center justify-center shrink-0 neu-raised-sm">
-              <Sparkles className="w-5 h-5 text-primary-light" />
+        <div style={{
+          padding: 32, borderRadius: 22,
+          background: "rgba(15,23,42,0.5)", border: "1px solid rgba(255,255,255,0.06)",
+          backdropFilter: "blur(18px)", marginBottom: 24,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 22 }}>
+            <div style={{ width: 42, height: 42, borderRadius: 10, background: `linear-gradient(135deg, hsla(${160 + HUE},60%,30%,0.4), hsla(${280 + HUE},60%,25%,0.4))`, border: "1px solid rgba(255,255,255,0.08)", display: "grid", placeItems: "center", color: `hsl(${220 + HUE},70%,75%)`, fontSize: 18 }}>
+              ✦
             </div>
             <div>
-              <h3 className="font-semibold mb-1">ใช้ Wallet จาก XMAN Studio ได้</h3>
-              <p className="text-sm text-muted">
-                หากคุณมี Wallet balance ที่{" "}
-                <a href="https://xman4289.com" className="text-primary-light underline" target="_blank" rel="noopener noreferrer">xman4289.com</a>{" "}
-                สามารถใช้จ่ายซื้อเครดิตได้โดยตรงผ่านหน้าชำระเงิน
-              </p>
+              <h2 style={{ fontSize: 22, fontWeight: 500, color: "#fff", margin: 0 }}>ตารางเครดิต</h2>
+              <p style={{ fontSize: 12, color: "#94a3b8", margin: "2px 0 0" }}>เครดิตที่ใช้ขึ้นอยู่กับโมเดลและคุณภาพ</p>
             </div>
           </div>
-        </Card>
-      </motion.div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+                  <th style={{ textAlign: "left", padding: "12px 16px", color: "#94a3b8", fontWeight: 500, fontSize: 12, letterSpacing: "0.06em", textTransform: "uppercase" }}>ประเภท</th>
+                  <th style={{ textAlign: "center", padding: "12px 16px", color: "#94a3b8", fontWeight: 500, fontSize: 12, letterSpacing: "0.06em", textTransform: "uppercase" }}>เครดิต/ครั้ง</th>
+                  <th style={{ textAlign: "left", padding: "12px 16px", color: "#94a3b8", fontWeight: 500, fontSize: 12, letterSpacing: "0.06em", textTransform: "uppercase" }}>ตัวอย่างโมเดล</th>
+                </tr>
+              </thead>
+              <tbody>
+                {creditCosts.map(row => (
+                  <tr key={row.type} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                    <td style={{ padding: "14px 16px", fontSize: 13, fontWeight: 500, color: "#f1f5f9" }}>{row.type}</td>
+                    <td style={{ padding: "14px 16px", textAlign: "center" }}>
+                      <span style={{ display: "inline-block", padding: "3px 10px", borderRadius: 999, background: `hsla(${220 + HUE},60%,50%,0.2)`, color: `hsl(${220 + HUE},80%,80%)`, fontSize: 12, fontWeight: 600 }}>
+                        {row.credits}
+                      </span>
+                    </td>
+                    <td style={{ padding: "14px 16px", fontSize: 12, color: "#94a3b8" }}>{row.examples}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Wallet hint */}
+      <div style={{
+        padding: 22, borderRadius: 18,
+        background: `linear-gradient(135deg, hsla(${160 + HUE},60%,20%,0.35), hsla(${280 + HUE},60%,18%,0.35))`,
+        border: `1px solid hsla(${220 + HUE},60%,55%,0.25)`,
+        backdropFilter: "blur(18px)",
+        display: "flex", gap: 16, alignItems: "flex-start",
+      }}>
+        <div style={{ width: 44, height: 44, borderRadius: 12, background: `linear-gradient(135deg, hsla(${160 + HUE},70%,50%,0.4), hsla(${280 + HUE},70%,55%,0.4))`, border: "1px solid rgba(255,255,255,0.1)", display: "grid", placeItems: "center", flexShrink: 0, color: "#fff", fontSize: 20 }}>
+          ✦
+        </div>
+        <div>
+          <h3 style={{ fontSize: 14, fontWeight: 600, color: "#fff", margin: "0 0 6px" }}>ใช้ Wallet จาก XMAN Studio ได้</h3>
+          <p style={{ fontSize: 13, color: "rgba(203,213,225,0.78)", margin: 0, lineHeight: 1.55 }}>
+            หากคุณมี Wallet balance ที่{" "}
+            <a href="https://xman4289.com" target="_blank" rel="noopener noreferrer" style={{ color: "#a5f3fc", textDecoration: "none" }}>xman4289.com</a>{" "}
+            สามารถใช้จ่ายซื้อเครดิตได้โดยตรงผ่านหน้าชำระเงิน
+          </p>
+        </div>
+      </div>
+
+      <style jsx>{`
+        @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.5; } }
+        @media (max-width: 1024px) {
+          .rp-grid-pkg { grid-template-columns: repeat(2, 1fr) !important; }
+        }
+        @media (max-width: 720px) {
+          .rp-grid-pkg { grid-template-columns: 1fr !important; }
+        }
+      `}</style>
     </div>
   );
 }

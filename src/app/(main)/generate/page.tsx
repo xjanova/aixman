@@ -1,46 +1,36 @@
 "use client";
 
+/**
+ * /generate — AI image/video/edit studio (X-DREAMER themed)
+ *
+ * Layout follows the X-DREAMER `StudioPage` reference (3-column workspace):
+ *   left  : prompt + controls (model, style, aspect, batch, ref-image, advanced)
+ *   center: generation canvas (4-frame batch grid + result)
+ *   right : reference / credits panel
+ *
+ * All feature logic from the previous neumorphism page is preserved:
+ *   tabs (image/video/edit), model picker, prompt + negative prompt,
+ *   style picker, aspect ratio, batch size, img2img + strength, file upload
+ *   for edit/video, advanced settings, polling, download, favorite, share,
+ *   upscale, credit balance.
+ */
+
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
-import { motion, AnimatePresence } from "framer-motion";
 import { useAppStore } from "@/lib/store/app-store";
 import { useToast } from "@/components/ui/toast-provider";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
-import { Slider } from "@/components/ui/slider";
-import {
-  Sparkles,
-  Image as ImageIcon,
-  Video,
-  Wand2,
-  Settings2,
-  ChevronDown,
-  ChevronUp,
-  Download,
-  Heart,
-  Share2,
-  RotateCcw,
-  X,
-  Upload,
-  Coins,
-  Clock,
-  Check,
-  AlertCircle,
-  ZoomIn,
-  Layers,
-} from "lucide-react";
+
+const HUE = 70;
 
 type TabType = "image" | "video" | "edit";
 
 const aspectRatios = [
-  { value: "1:1", label: "1:1", w: 1024, h: 1024 },
+  { value: "1:1",  label: "1:1",  w: 1024, h: 1024 },
   { value: "16:9", label: "16:9", w: 1344, h: 768 },
-  { value: "9:16", label: "9:16", w: 768, h: 1344 },
-  { value: "4:3", label: "4:3", w: 1152, h: 896 },
-  { value: "3:2", label: "3:2", w: 1216, h: 832 },
+  { value: "9:16", label: "9:16", w: 768,  h: 1344 },
+  { value: "4:3",  label: "4:3",  w: 1152, h: 896 },
+  { value: "3:2",  label: "3:2",  w: 1216, h: 832 },
 ];
 
 interface GenerationResult {
@@ -54,6 +44,37 @@ interface GenerationResult {
   error?: string;
 }
 
+// ─── X-DREAMER UI primitives (local helpers) ───────────────────────────
+function Pill({ active, children, onClick }: { active?: boolean; children: React.ReactNode; onClick?: () => void }) {
+  return (
+    <button onClick={onClick} style={{
+      padding: "8px 14px", borderRadius: 999, fontSize: 13, cursor: "pointer",
+      background: active ? `linear-gradient(135deg, hsla(${160 + HUE},70%,55%,0.25), hsla(${270 + HUE},70%,60%,0.25))` : "rgba(255,255,255,0.04)",
+      color: active ? "#fff" : "rgba(226,232,240,0.65)",
+      border: active ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
+      boxShadow: active ? "inset 0 0 0 1px rgba(255,255,255,0.05)" : "none",
+      transition: "all 200ms",
+    }}>{children}</button>
+  );
+}
+
+function Section({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div style={{ fontSize: 11, letterSpacing: "0.14em", color: "#a5f3fc", marginBottom: 10, textTransform: "uppercase" }}>{label}</div>
+      {children}
+    </div>
+  );
+}
+
+const xdrInputStyle: React.CSSProperties = {
+  width: "100%", padding: 12, borderRadius: 10,
+  background: "rgba(2,6,23,0.6)", color: "#f1f5f9",
+  border: "1px solid rgba(255,255,255,0.1)",
+  fontSize: 13, fontFamily: "inherit", outline: "none",
+};
+
+// ─── PAGE ───────────────────────────────────────────────────────────────
 export default function GeneratePage() {
   const { data: session } = useSession();
   const router = useRouter();
@@ -78,34 +99,22 @@ export default function GeneratePage() {
   const [isFavorited, setIsFavorited] = useState(false);
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
-
-  // Image-to-Image states
   const [showRefImage, setShowRefImage] = useState(false);
   const [refImage, setRefImage] = useState<string | null>(null);
   const [refImagePreview, setRefImagePreview] = useState<string | null>(null);
   const [strength, setStrength] = useState(0.75);
-
-  // Batch generation
   const [numOutputs, setNumOutputs] = useState(1);
-
-  // Upscale
   const [isUpscaling, setIsUpscaling] = useState(false);
 
-  useEffect(() => {
-    if (session === null) router.push("/login");
-  }, [session, router]);
-
-  useEffect(() => {
-    fetchModels();
-    fetchStyles();
-    fetchCredits();
-  }, [fetchModels, fetchStyles, fetchCredits]);
+  useEffect(() => { if (session === null) router.push("/login"); }, [session, router]);
+  useEffect(() => { fetchModels(); fetchStyles(); fetchCredits(); }, [fetchModels, fetchStyles, fetchCredits]);
 
   const filteredModels = models.filter((m) => m.category === tab);
 
   useEffect(() => {
     if (filteredModels.length > 0 && (!selectedModelId || !filteredModels.find((m) => m.id === selectedModelId))) {
       const featured = filteredModels.find((m) => m.isFeatured);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedModelId(featured?.id ?? filteredModels[0].id);
     }
   }, [tab, modelsLoaded, filteredModels, selectedModelId]);
@@ -114,9 +123,7 @@ export default function GeneratePage() {
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setShowModelDropdown(false);
-      }
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) setShowModelDropdown(false);
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
@@ -128,13 +135,8 @@ export default function GeneratePage() {
     const reader = new FileReader();
     reader.onload = () => {
       const base64 = reader.result as string;
-      if (isRef) {
-        setRefImage(base64);
-        setRefImagePreview(base64);
-      } else {
-        setInputImage(base64);
-        setInputImagePreview(base64);
-      }
+      if (isRef) { setRefImage(base64); setRefImagePreview(base64); }
+      else { setInputImage(base64); setInputImagePreview(base64); }
     };
     reader.readAsDataURL(file);
   };
@@ -149,23 +151,19 @@ export default function GeneratePage() {
         const data = await res.json();
         if (data.status === "completed") {
           setResult({
-            id: data.id,
-            status: "completed",
+            id: data.id, status: "completed",
             resultUrl: data.resultUrl,
             resultUrls: data.resultUrls ? (Array.isArray(data.resultUrls) ? data.resultUrls : [data.resultUrl]) : [data.resultUrl],
             thumbnailUrl: data.thumbnailUrl,
-            creditsUsed: data.creditsUsed,
-            processingMs: data.processingMs,
+            creditsUsed: data.creditsUsed, processingMs: data.processingMs,
           });
-          setIsGenerating(false);
-          fetchCredits();
+          setIsGenerating(false); fetchCredits();
           toast("success", "สร้างสำเร็จ!", `ใช้ ${data.creditsUsed} เครดิต`);
           return;
         }
         if (data.status === "failed") {
           setResult({ id: data.id, status: "failed", creditsUsed: 0, error: data.errorMessage });
-          setIsGenerating(false);
-          fetchCredits();
+          setIsGenerating(false); fetchCredits();
           toast("error", "สร้างไม่สำเร็จ", data.errorMessage || "เกิดข้อผิดพลาด");
           return;
         }
@@ -176,60 +174,40 @@ export default function GeneratePage() {
   }, [setIsGenerating, fetchCredits, toast]);
 
   const handleGenerate = async () => {
-    if (!prompt.trim() || !selectedModelId) return;
-    if (isGenerating) return;
-
-    setIsGenerating(true);
-    setResult(null);
-    setIsFavorited(false);
-
+    if (!prompt.trim() || !selectedModelId || isGenerating) return;
+    setIsGenerating(true); setResult(null); setIsFavorited(false);
     const ar = aspectRatios.find((a) => a.value === aspectRatio);
-
-    // Use refImage for img2img, inputImage for edit/video
     const imageToSend = tab === "image" ? refImage : inputImage;
-
     try {
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          modelId: selectedModelId,
-          type: tab,
+          modelId: selectedModelId, type: tab,
           prompt: prompt.trim(),
           negativePrompt: negativePrompt.trim() || undefined,
           styleId: selectedStyle || undefined,
           inputImage: imageToSend || undefined,
           params: {
-            width: ar?.w || 1024,
-            height: ar?.h || 1024,
-            aspectRatio,
+            width: ar?.w || 1024, height: ar?.h || 1024, aspectRatio,
             strength: refImage && tab === "image" ? strength : undefined,
             numOutputs: tab === "image" ? numOutputs : undefined,
           },
         }),
       });
-
       const data = await res.json();
-
       if (!res.ok) {
         setIsGenerating(false);
         toast("error", "เกิดข้อผิดพลาด", data.error || "ไม่สามารถสร้างได้");
         return;
       }
-
       if (data.status === "completed") {
-        setResult(data);
-        setIsGenerating(false);
-        fetchCredits();
+        setResult(data); setIsGenerating(false); fetchCredits();
         toast("success", "สร้างสำเร็จ!", `ใช้ ${data.creditsUsed} เครดิต`);
       } else if (data.status === "failed") {
-        setResult(data);
-        setIsGenerating(false);
-        fetchCredits();
+        setResult(data); setIsGenerating(false); fetchCredits();
         toast("error", "สร้างไม่สำเร็จ", data.error || "เกิดข้อผิดพลาด");
-      } else {
-        pollResult(data.id);
-      }
+      } else { pollResult(data.id); }
     } catch {
       setIsGenerating(false);
       toast("error", "เกิดข้อผิดพลาด", "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้");
@@ -245,15 +223,11 @@ export default function GeneratePage() {
       const blobUrl = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = blobUrl;
-      a.download = `xman-ai-${result?.id || "gen"}.${downloadUrl.includes(".mp4") ? "mp4" : "webp"}`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      a.download = `xdreamer-${result?.id || "gen"}.${downloadUrl.includes(".mp4") ? "mp4" : "webp"}`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
       URL.revokeObjectURL(blobUrl);
       toast("success", "ดาวน์โหลดสำเร็จ");
-    } catch {
-      toast("error", "ดาวน์โหลดไม่สำเร็จ");
-    }
+    } catch { toast("error", "ดาวน์โหลดไม่สำเร็จ"); }
   };
 
   const handleFavorite = async () => {
@@ -272,7 +246,7 @@ export default function GeneratePage() {
   const handleShare = async () => {
     if (!result?.resultUrl) return;
     if (navigator.share) {
-      try { await navigator.share({ title: "XMAN AI Generation", url: result.resultUrl }); } catch {}
+      try { await navigator.share({ title: "X-DREAMER Generation", url: result.resultUrl }); } catch {}
     } else {
       await navigator.clipboard.writeText(result.resultUrl);
       toast("info", "คัดลอกลิงก์แล้ว");
@@ -283,24 +257,13 @@ export default function GeneratePage() {
     if (!result?.id) return;
     setIsUpscaling(true);
     try {
-      const res = await fetch("/api/upscale", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ generationId: result.id }),
-      });
+      const res = await fetch("/api/upscale", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ generationId: result.id }) });
       const data = await res.json();
-      if (!res.ok) {
-        toast("error", "Upscale ไม่สำเร็จ", data.error || "เกิดข้อผิดพลาด");
-        setIsUpscaling(false);
-        return;
-      }
-      // If completed immediately
+      if (!res.ok) { toast("error", "Upscale ไม่สำเร็จ", data.error || "เกิดข้อผิดพลาด"); setIsUpscaling(false); return; }
       if (data.status === "completed" && data.resultUrl) {
         setResult(prev => prev ? { ...prev, resultUrl: data.resultUrl } : prev);
-        fetchCredits();
-        toast("success", "Upscale สำเร็จ!", `ใช้ ${data.creditsUsed} เครดิต`);
+        fetchCredits(); toast("success", "Upscale สำเร็จ!", `ใช้ ${data.creditsUsed} เครดิต`);
       } else {
-        // Poll for completion
         const maxAttempts = 60;
         for (let i = 0; i < maxAttempts; i++) {
           await new Promise((r) => setTimeout(r, 3000));
@@ -309,469 +272,424 @@ export default function GeneratePage() {
           const pollData = await pollRes.json();
           if (pollData.status === "completed") {
             setResult(prev => prev ? { ...prev, resultUrl: pollData.resultUrl } : prev);
-            fetchCredits();
-            toast("success", "Upscale สำเร็จ!", `ใช้ ${pollData.creditsUsed} เครดิต`);
+            fetchCredits(); toast("success", "Upscale สำเร็จ!", `ใช้ ${pollData.creditsUsed} เครดิต`);
             break;
           }
-          if (pollData.status === "failed") {
-            toast("error", "Upscale ไม่สำเร็จ", pollData.errorMessage);
-            break;
-          }
+          if (pollData.status === "failed") { toast("error", "Upscale ไม่สำเร็จ", pollData.errorMessage); break; }
         }
       }
-    } catch {
-      toast("error", "Upscale ไม่สำเร็จ");
-    }
+    } catch { toast("error", "Upscale ไม่สำเร็จ"); }
     setIsUpscaling(false);
   };
 
   const totalCredits = selectedModel ? selectedModel.creditsPerUnit * numOutputs : 0;
-
   if (!session) return null;
 
+  // ─── RENDER ─────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen">
-      <div className="max-w-7xl mx-auto px-4 py-6">
-        <div className="flex flex-col lg:flex-row gap-6">
+    <div className="rp-studio" style={{ minHeight: "calc(100vh - 80px)", display: "grid", gridTemplateColumns: "340px 1fr 320px", gap: 0, color: "#f1f5f9" }}>
+      {/* ═══ LEFT — controls ═══ */}
+      <aside className="rp-studio-left" style={{ borderRight: "1px solid rgba(255,255,255,0.06)", padding: 24, display: "flex", flexDirection: "column", gap: 20, background: "rgba(15,23,42,0.25)", height: "calc(100vh - 80px)", overflowY: "auto" }}>
 
-          {/* Left Panel — Controls */}
-          <div className="w-full lg:w-96 shrink-0 space-y-4">
+        {/* Tabs */}
+        <div style={{ display: "flex", gap: 4, padding: 4, background: "rgba(2,6,23,0.5)", borderRadius: 12, border: "1px solid rgba(255,255,255,0.05)" }}>
+          {([
+            { key: "image" as TabType, label: "สร้างภาพ", icon: "▧" },
+            { key: "video" as TabType, label: "สร้างวิดีโอ", icon: "▶" },
+            { key: "edit"  as TabType, label: "แก้ไขภาพ", icon: "✦" },
+          ]).map(t => (
+            <button key={t.key}
+              onClick={() => { setTab(t.key); setResult(null); setNumOutputs(1); }}
+              style={{
+                flex: 1, padding: "8px 6px", borderRadius: 8, border: "none", cursor: "pointer",
+                background: tab === t.key ? `linear-gradient(135deg, hsl(${160 + HUE},70%,50%), hsl(${270 + HUE},70%,55%))` : "transparent",
+                color: tab === t.key ? "#fff" : "rgba(226,232,240,0.6)",
+                fontSize: 12, fontWeight: 500, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+              }}>
+              <span style={{ fontSize: 12 }}>{t.icon}</span>{t.label}
+            </button>
+          ))}
+        </div>
 
-            {/* Tabs */}
-            <Card className="p-1.5">
-              <div className="flex gap-1 neu-inset-sm rounded-xl p-1">
-                {([
-                  { key: "image" as TabType, icon: ImageIcon, label: "สร้างภาพ" },
-                  { key: "video" as TabType, icon: Video, label: "สร้างวิดีโอ" },
-                  { key: "edit" as TabType, icon: Wand2, label: "แก้ไขภาพ" },
-                ] as const).map((t) => (
-                  <button
-                    key={t.key}
-                    onClick={() => { setTab(t.key); setResult(null); setNumOutputs(1); }}
-                    className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-sm font-medium transition-all cursor-pointer ${
-                      tab === t.key
-                        ? "bg-gradient-to-r from-primary to-secondary text-white neu-raised-sm shadow-[0_4px_12px_rgba(59,130,246,0.25)]"
-                        : "text-muted hover:text-foreground"
-                    }`}
-                  >
-                    <t.icon className="w-4 h-4" />
-                    {t.label}
+        {/* Model Selector */}
+        <Section label="โมเดล AI">
+          <div ref={dropdownRef} style={{ position: "relative" }}>
+            <button onClick={() => setShowModelDropdown(!showModelDropdown)}
+              style={{ ...xdrInputStyle, padding: "11px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", textAlign: "left" }}>
+              <div style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
+                <span style={{ fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {selectedModel ? selectedModel.name : "เลือกโมเดล..."}
+                </span>
+                {selectedModel && <span style={{ fontSize: 11, color: "#94a3b8" }}>· {selectedModel.provider.name}</span>}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {selectedModel && (
+                  <span style={{ padding: "2px 6px", borderRadius: 6, background: "hsla(48,90%,60%,0.15)", color: "#fbbf24", fontSize: 10, fontWeight: 600 }}>
+                    ✦ {selectedModel.creditsPerUnit}
+                  </span>
+                )}
+                <span style={{ fontSize: 9, opacity: 0.6, transform: showModelDropdown ? "rotate(180deg)" : "none", transition: "transform 200ms" }}>▼</span>
+              </div>
+            </button>
+            {showModelDropdown && (
+              <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, maxHeight: 280, overflowY: "auto", background: "rgba(15,23,42,0.95)", backdropFilter: "blur(20px)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, zIndex: 30, boxShadow: "0 20px 40px -10px rgba(0,0,0,0.5)" }}>
+                {filteredModels.length === 0 ? (
+                  <div style={{ padding: 16, textAlign: "center", fontSize: 13, color: "#94a3b8" }}>ไม่มีโมเดลสำหรับหมวดนี้</div>
+                ) : filteredModels.map(m => (
+                  <button key={m.id} onClick={() => { setSelectedModelId(m.id); setShowModelDropdown(false); }}
+                    style={{ width: "100%", padding: "10px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", border: "none", cursor: "pointer", textAlign: "left", background: selectedModelId === m.id ? `hsla(${220 + HUE},60%,50%,0.15)` : "transparent", color: "#e2e8f0", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontSize: 13, fontWeight: 500, display: "flex", alignItems: "center", gap: 6 }}>
+                        {m.name}
+                        {m.isFeatured && <span style={{ fontSize: 10, color: "#fbbf24" }}>✦</span>}
+                      </div>
+                      <div style={{ fontSize: 11, color: "#94a3b8" }}>{m.provider.name}{m.subcategory ? ` · ${m.subcategory}` : ""}</div>
+                    </div>
+                    <span style={{ padding: "2px 6px", borderRadius: 6, background: "hsla(48,90%,60%,0.15)", color: "#fbbf24", fontSize: 10, fontWeight: 600 }}>✦ {m.creditsPerUnit}</span>
                   </button>
                 ))}
               </div>
-            </Card>
-
-            {/* Model Selector */}
-            <Card className="p-4" ref={dropdownRef}>
-              <label className="text-xs text-muted mb-2 block">โมเดล AI</label>
-              <button
-                onClick={() => setShowModelDropdown(!showModelDropdown)}
-                className="w-full flex items-center justify-between p-3 rounded-xl bg-surface-light/80 neu-inset-sm hover:bg-surface-lighter/80 transition-all cursor-pointer"
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-sm font-medium truncate">
-                    {selectedModel ? selectedModel.name : "เลือกโมเดล..."}
-                  </span>
-                  {selectedModel && (
-                    <span className="text-xs text-muted shrink-0">{selectedModel.provider.name}</span>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  {selectedModel && (
-                    <Badge variant="warning" size="sm">
-                      <Coins className="w-3 h-3" /> {selectedModel.creditsPerUnit}
-                    </Badge>
-                  )}
-                  <ChevronDown className={`w-4 h-4 text-muted transition-transform ${showModelDropdown ? "rotate-180" : ""}`} />
-                </div>
-              </button>
-
-              <AnimatePresence>
-                {showModelDropdown && (
-                  <motion.div
-                    initial={{ opacity: 0, y: -5 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -5 }}
-                    className="mt-2 max-h-64 overflow-y-auto rounded-xl glass-neu border border-border/30"
-                  >
-                    {filteredModels.length === 0 ? (
-                      <div className="p-4 text-center text-sm text-muted">ไม่มีโมเดลสำหรับหมวดนี้</div>
-                    ) : (
-                      filteredModels.map((m) => (
-                        <button
-                          key={m.id}
-                          onClick={() => { setSelectedModelId(m.id); setShowModelDropdown(false); }}
-                          className={`w-full flex items-center justify-between p-3 hover:bg-surface-light/50 transition-all text-left cursor-pointer ${
-                            selectedModelId === m.id ? "bg-primary/10" : ""
-                          }`}
-                        >
-                          <div>
-                            <div className="text-sm font-medium flex items-center gap-2">
-                              {m.name}
-                              {m.isFeatured && <Sparkles className="w-3 h-3 text-warning" />}
-                            </div>
-                            <div className="text-xs text-muted">{m.provider.name}{m.subcategory ? ` · ${m.subcategory}` : ""}</div>
-                          </div>
-                          <Badge variant="warning" size="sm">
-                            <Coins className="w-3 h-3" /> {m.creditsPerUnit}
-                          </Badge>
-                        </button>
-                      ))
-                    )}
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </Card>
-
-            {/* Prompt */}
-            <Card className="p-4">
-              <label className="text-xs text-muted mb-2 block">Prompt</label>
-              <Textarea
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder={tab === "video" ? "อธิบายวิดีโอที่ต้องการ..." : "อธิบายภาพที่ต้องการ..."}
-                rows={4}
-              />
-            </Card>
-
-            {/* Style Selector */}
-            {stylesLoaded && styles.length > 0 && tab !== "edit" && (
-              <Card className="p-4">
-                <label className="text-xs text-muted mb-2 block">สไตล์</label>
-                <div className="grid grid-cols-3 gap-2">
-                  {styles.slice(0, 12).map((s) => (
-                    <button
-                      key={s.id}
-                      onClick={() => setSelectedStyle(selectedStyle === s.id ? null : s.id)}
-                      className={`p-2 rounded-lg text-xs text-center transition-all cursor-pointer ${
-                        selectedStyle === s.id
-                          ? "bg-primary/20 border border-primary/40 text-primary-light neu-raised-sm"
-                          : "bg-surface-light/80 neu-inset-sm hover:bg-surface-lighter/80 text-muted"
-                      }`}
-                    >
-                      {s.name}
-                    </button>
-                  ))}
-                </div>
-              </Card>
             )}
+          </div>
+        </Section>
 
-            {/* Aspect Ratio (image only) */}
-            {tab === "image" && (
-              <Card className="p-4">
-                <label className="text-xs text-muted mb-2 block">สัดส่วน</label>
-                <div className="flex gap-2">
-                  {aspectRatios.map((ar) => (
-                    <button
-                      key={ar.value}
-                      onClick={() => setAspectRatio(ar.value)}
-                      className={`flex-1 py-2 rounded-lg text-xs font-medium transition-all cursor-pointer ${
-                        aspectRatio === ar.value
-                          ? "bg-primary/20 border border-primary/40 text-primary-light neu-raised-sm"
-                          : "bg-surface-light/80 neu-inset-sm hover:bg-surface-lighter/80 text-muted"
-                      }`}
-                    >
-                      {ar.label}
-                    </button>
-                  ))}
-                </div>
-              </Card>
-            )}
+        {/* Prompt */}
+        <Section label="Prompt">
+          <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={5}
+            placeholder={tab === "video" ? "อธิบายวิดีโอที่ต้องการ..." : "อธิบายภาพที่ต้องการ..."}
+            style={{ ...xdrInputStyle, padding: 14, fontSize: 14, lineHeight: 1.5, resize: "vertical" }} />
+        </Section>
 
-            {/* Batch Generation (image only) */}
-            {tab === "image" && (
-              <Card className="p-4">
-                <label className="text-xs text-muted mb-2 block">
-                  <Layers className="w-3 h-3 inline mr-1" />
-                  จำนวนภาพ
-                </label>
-                <div className="flex gap-2">
-                  {[1, 2, 3, 4].map((n) => (
-                    <button
-                      key={n}
-                      onClick={() => setNumOutputs(n)}
-                      className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all cursor-pointer ${
-                        numOutputs === n
-                          ? "bg-primary/20 border border-primary/40 text-primary-light neu-raised-sm"
-                          : "bg-surface-light/80 neu-inset-sm hover:bg-surface-lighter/80 text-muted"
-                      }`}
-                    >
-                      {n}
-                    </button>
-                  ))}
-                </div>
-              </Card>
-            )}
+        {/* Style */}
+        {stylesLoaded && styles.length > 0 && tab !== "edit" && (
+          <Section label="สไตล์">
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6 }}>
+              {styles.slice(0, 12).map(s => (
+                <button key={s.id} onClick={() => setSelectedStyle(selectedStyle === s.id ? null : s.id)}
+                  style={{
+                    padding: "7px 6px", borderRadius: 8, fontSize: 11, cursor: "pointer",
+                    background: selectedStyle === s.id ? `hsla(${220 + HUE},60%,50%,0.25)` : "rgba(255,255,255,0.04)",
+                    color: selectedStyle === s.id ? "#fff" : "#94a3b8",
+                    border: selectedStyle === s.id ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
+                  }}>{s.name}</button>
+              ))}
+            </div>
+          </Section>
+        )}
 
-            {/* Image-to-Image Reference (image tab only) */}
-            {tab === "image" && (
-              <Card className="p-4">
-                <button
-                  onClick={() => setShowRefImage(!showRefImage)}
-                  className="flex items-center justify-between w-full text-xs text-muted hover:text-foreground transition-all cursor-pointer"
-                >
-                  <span className="flex items-center gap-1.5">
-                    <ImageIcon className="w-3.5 h-3.5" />
-                    Image-to-Image (ภาพอ้างอิง)
-                  </span>
-                  {showRefImage ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                </button>
+        {/* Aspect Ratio (image only) */}
+        {tab === "image" && (
+          <Section label="สัดส่วน">
+            <div style={{ display: "flex", gap: 6 }}>
+              {aspectRatios.map(ar => (
+                <button key={ar.value} onClick={() => setAspectRatio(ar.value)}
+                  style={{
+                    flex: 1, padding: "8px 0", borderRadius: 8, fontSize: 12, cursor: "pointer",
+                    background: aspectRatio === ar.value ? `hsla(${220 + HUE},60%,50%,0.25)` : "rgba(255,255,255,0.04)",
+                    color: aspectRatio === ar.value ? "#fff" : "#94a3b8",
+                    border: aspectRatio === ar.value ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
+                  }}>{ar.label}</button>
+              ))}
+            </div>
+          </Section>
+        )}
 
-                {showRefImage && (
-                  <div className="mt-3 space-y-3">
-                    {refImagePreview ? (
-                      <div className="relative">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={refImagePreview} alt="Reference" className="w-full rounded-xl max-h-48 object-cover" />
-                        <button
-                          onClick={() => { setRefImage(null); setRefImagePreview(null); }}
-                          className="absolute top-2 right-2 p-1.5 rounded-full bg-black/60 hover:bg-black/80 transition-colors cursor-pointer"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    ) : (
-                      <label className="flex flex-col items-center justify-center p-6 rounded-xl border-2 border-dashed border-border/50 neu-inset-sm hover:border-primary/30 cursor-pointer transition-all">
-                        <Upload className="w-6 h-6 text-muted mb-2" />
-                        <span className="text-xs text-muted">อัปโหลดภาพอ้างอิง</span>
-                        <input type="file" accept="image/*" className="hidden" onChange={(e) => handleImageUpload(e, true)} />
-                      </label>
-                    )}
+        {/* Batch (image only) */}
+        {tab === "image" && (
+          <Section label="จำนวนภาพ">
+            <div style={{ display: "flex", gap: 6 }}>
+              {[1, 2, 3, 4].map(n => (
+                <button key={n} onClick={() => setNumOutputs(n)}
+                  style={{
+                    flex: 1, padding: "8px 0", borderRadius: 8, fontSize: 13, cursor: "pointer",
+                    background: numOutputs === n ? `hsla(${220 + HUE},60%,50%,0.25)` : "rgba(255,255,255,0.04)",
+                    color: numOutputs === n ? "#fff" : "#94a3b8",
+                    border: numOutputs === n ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
+                    fontWeight: 600,
+                  }}>{n}</button>
+              ))}
+            </div>
+          </Section>
+        )}
 
-                    <div>
-                      <div className="flex items-center justify-between text-xs mb-2">
-                        <span className="text-muted">ความเข้มอ้างอิง</span>
-                        <span className="text-primary-light font-medium">{Math.round(strength * 100)}%</span>
-                      </div>
-                      <Slider
-                        value={[strength]}
-                        onValueChange={(v) => setStrength(v[0])}
-                        min={0}
-                        max={1}
-                        step={0.05}
-                      />
-                      <div className="flex justify-between text-[10px] text-muted mt-1">
-                        <span>ยึด prompt มาก</span>
-                        <span>ยึดภาพมาก</span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </Card>
-            )}
-
-            {/* Image Upload (edit & video) */}
-            {(tab === "edit" || tab === "video") && (
-              <Card className="p-4">
-                <label className="text-xs text-muted mb-2 block">
-                  {tab === "edit" ? "ภาพต้นฉบับ" : "ภาพเริ่มต้น (ไม่บังคับ)"}
-                </label>
-                {inputImagePreview ? (
-                  <div className="relative">
+        {/* Image-to-Image */}
+        {tab === "image" && (
+          <div>
+            <button onClick={() => setShowRefImage(!showRefImage)}
+              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: 0, background: "transparent", border: "none", color: "#94a3b8", fontSize: 11, letterSpacing: "0.04em", cursor: "pointer" }}>
+              <span>▧ Image-to-Image (อ้างอิง)</span>
+              <span style={{ fontSize: 9, transform: showRefImage ? "rotate(180deg)" : "none", transition: "transform 200ms" }}>▼</span>
+            </button>
+            {showRefImage && (
+              <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 12 }}>
+                {refImagePreview ? (
+                  <div style={{ position: "relative" }}>
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={inputImagePreview} alt="Input" className="w-full rounded-xl max-h-48 object-cover" />
-                    <button
-                      onClick={() => { setInputImage(null); setInputImagePreview(null); }}
-                      className="absolute top-2 right-2 p-1.5 rounded-full bg-black/60 hover:bg-black/80 cursor-pointer"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
+                    <img src={refImagePreview} alt="Reference" style={{ width: "100%", borderRadius: 10, maxHeight: 180, objectFit: "cover" }} />
+                    <button onClick={() => { setRefImage(null); setRefImagePreview(null); }}
+                      style={{ position: "absolute", top: 8, right: 8, width: 26, height: 26, borderRadius: "50%", background: "rgba(0,0,0,0.65)", color: "#fff", border: "none", cursor: "pointer", fontSize: 14 }}>×</button>
                   </div>
                 ) : (
-                  <label className="flex flex-col items-center justify-center p-6 rounded-xl border-2 border-dashed border-border/50 neu-inset-sm hover:border-primary/30 cursor-pointer transition-all">
-                    <Upload className="w-6 h-6 text-muted mb-2" />
-                    <span className="text-xs text-muted">อัปโหลดภาพ</span>
-                    <input type="file" accept="image/*" className="hidden" onChange={(e) => handleImageUpload(e)} />
+                  <label style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, borderRadius: 12, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#64748b", fontSize: 12, cursor: "pointer" }}>
+                    <div style={{ fontSize: 22, marginBottom: 4 }}>↑</div>
+                    อัปโหลดภาพอ้างอิง
+                    <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => handleImageUpload(e, true)} />
                   </label>
                 )}
-              </Card>
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", marginBottom: 6 }}>
+                    <span>ความเข้มอ้างอิง</span>
+                    <span style={{ color: `hsl(${220 + HUE},70%,75%)`, fontFamily: "ui-monospace,monospace" }}>{Math.round(strength * 100)}%</span>
+                  </div>
+                  <input type="range" min={0} max={1} step={0.05} value={strength} onChange={(e) => setStrength(+e.target.value)}
+                    style={{ width: "100%", accentColor: `hsl(${220 + HUE},70%,60%)` }} />
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#64748b", marginTop: 2 }}>
+                    <span>ยึด prompt</span><span>ยึดภาพ</span>
+                  </div>
+                </div>
+              </div>
             )}
-
-            {/* Advanced Settings */}
-            <button
-              onClick={() => setShowAdvanced(!showAdvanced)}
-              className="flex items-center gap-2 text-xs text-muted hover:text-foreground transition-all cursor-pointer"
-            >
-              <Settings2 className="w-3.5 h-3.5" />
-              ตั้งค่าขั้นสูง
-              <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showAdvanced ? "rotate-180" : ""}`} />
-            </button>
-
-            {showAdvanced && (
-              <Card className="p-4">
-                <label className="text-xs text-muted mb-2 block">Negative Prompt</label>
-                <Textarea
-                  value={negativePrompt}
-                  onChange={(e) => setNegativePrompt(e.target.value)}
-                  placeholder="สิ่งที่ไม่ต้องการในภาพ..."
-                  rows={2}
-                  className="min-h-[60px]"
-                />
-              </Card>
-            )}
-
-            {/* Generate Button */}
-            <Button
-              onClick={handleGenerate}
-              disabled={isGenerating || !prompt.trim() || !selectedModelId}
-              loading={isGenerating}
-              size="xl"
-              className="w-full"
-              leftIcon={!isGenerating ? <Sparkles className="w-5 h-5" /> : undefined}
-            >
-              {isGenerating ? "กำลังสร้าง..." : (
-                <>
-                  สร้าง
-                  {selectedModel && (
-                    <span className="flex items-center gap-1 text-sm opacity-80">
-                      ({totalCredits} <Coins className="w-3.5 h-3.5" />)
-                    </span>
-                  )}
-                </>
-              )}
-            </Button>
-
-            {/* Credit Balance */}
-            <div className="flex items-center justify-center gap-2 text-sm text-muted">
-              <Coins className="w-4 h-4 text-warning" />
-              เครดิตคงเหลือ: <span className="font-semibold text-foreground">{creditBalance.toLocaleString()}</span>
-            </div>
           </div>
+        )}
 
-          {/* Right Panel — Result */}
-          <div className="flex-1 min-w-0">
-            <Card variant="elevated" className="p-6 min-h-[500px] flex items-center justify-center">
-              <AnimatePresence mode="wait">
-                {isGenerating ? (
-                  <motion.div key="loading" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="text-center">
-                    <div className="relative w-24 h-24 mx-auto mb-6">
-                      <div className="absolute inset-0 rounded-full border-4 border-primary/20" />
-                      <div className="absolute inset-0 rounded-full border-4 border-primary border-t-transparent animate-spin" />
-                      <Sparkles className="absolute inset-0 m-auto w-8 h-8 text-primary-light animate-pulse" />
-                    </div>
-                    <h3 className="text-lg font-semibold mb-2">กำลังสร้าง...</h3>
-                    <p className="text-sm text-muted">
-                      {tab === "video" ? "วิดีโออาจใช้เวลา 30-120 วินาที" : "รอสักครู่..."}
-                    </p>
-                  </motion.div>
-                ) : result?.status === "completed" && result.resultUrl ? (
-                  <motion.div key="result" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} className="w-full">
-                    {/* Batch results grid */}
-                    {result.resultUrls && result.resultUrls.length > 1 ? (
-                      <div className="grid grid-cols-2 gap-3 mb-4">
-                        {result.resultUrls.map((url, idx) => (
-                          <div key={idx} className="relative rounded-xl overflow-hidden group">
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img src={url} alt={`Result ${idx + 1}`} className="w-full rounded-xl object-contain" />
-                            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-all flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
-                              <Button variant="icon" size="icon-sm" onClick={() => handleDownload(url)} className="bg-white/20 backdrop-blur-sm">
-                                <Download className="w-3.5 h-3.5" />
-                              </Button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="relative rounded-xl overflow-hidden mb-4">
-                        {/* Side-by-side comparison for img2img */}
-                        {refImagePreview && tab === "image" ? (
-                          <div className="grid grid-cols-2 gap-3">
-                            <div className="relative">
-                              <div className="absolute top-2 left-2 z-10">
-                                <Badge variant="glass" size="sm">ต้นฉบับ</Badge>
-                              </div>
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img src={refImagePreview} alt="Original" className="w-full rounded-xl object-contain opacity-70" />
-                            </div>
-                            <div className="relative">
-                              <div className="absolute top-2 left-2 z-10">
-                                <Badge variant="success" size="sm">ผลลัพธ์</Badge>
-                              </div>
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img src={result.resultUrl} alt={prompt} className="w-full rounded-xl object-contain" />
-                            </div>
-                          </div>
-                        ) : tab === "video" || result.resultUrl.endsWith(".mp4") ? (
-                          <video src={result.resultUrl} controls autoPlay loop className="w-full rounded-xl max-h-[600px] mx-auto" />
-                        ) : (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={result.resultUrl} alt={prompt} className="w-full rounded-xl max-h-[600px] object-contain mx-auto" />
-                        )}
-                      </div>
-                    )}
+        {/* Image upload (edit/video) */}
+        {(tab === "edit" || tab === "video") && (
+          <Section label={tab === "edit" ? "ภาพต้นฉบับ" : "ภาพเริ่มต้น (ไม่บังคับ)"}>
+            {inputImagePreview ? (
+              <div style={{ position: "relative" }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={inputImagePreview} alt="Input" style={{ width: "100%", borderRadius: 10, maxHeight: 180, objectFit: "cover" }} />
+                <button onClick={() => { setInputImage(null); setInputImagePreview(null); }}
+                  style={{ position: "absolute", top: 8, right: 8, width: 26, height: 26, borderRadius: "50%", background: "rgba(0,0,0,0.65)", color: "#fff", border: "none", cursor: "pointer", fontSize: 14 }}>×</button>
+              </div>
+            ) : (
+              <label style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, borderRadius: 12, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#64748b", fontSize: 12, cursor: "pointer" }}>
+                <div style={{ fontSize: 22, marginBottom: 4 }}>↑</div>
+                อัปโหลดภาพ
+                <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => handleImageUpload(e)} />
+              </label>
+            )}
+          </Section>
+        )}
 
-                    {/* Action Buttons */}
-                    <div className="flex items-center justify-between flex-wrap gap-2">
-                      <div className="flex items-center gap-2">
-                        <Button variant="secondary" size="sm" onClick={() => handleDownload()} leftIcon={<Download className="w-4 h-4" />}>
-                          ดาวน์โหลด
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={handleFavorite}
-                          className={isFavorited ? "text-error" : ""}
-                          leftIcon={<Heart className={`w-4 h-4 ${isFavorited ? "fill-current" : ""}`} />}
-                        >
-                          {isFavorited ? "บันทึกแล้ว" : "บันทึก"}
-                        </Button>
-                        <Button variant="secondary" size="sm" onClick={handleShare} leftIcon={<Share2 className="w-4 h-4" />}>
-                          แชร์
-                        </Button>
-                        {/* Upscale button */}
-                        {tab !== "video" && !result.resultUrl.endsWith(".mp4") && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={handleUpscale}
-                            loading={isUpscaling}
-                            leftIcon={<ZoomIn className="w-4 h-4" />}
-                          >
-                            Upscale
-                          </Button>
-                        )}
-                      </div>
-                      <Button variant="ghost" size="sm" onClick={() => setResult(null)} leftIcon={<RotateCcw className="w-4 h-4" />}>
-                        สร้างใหม่
-                      </Button>
-                    </div>
+        {/* Advanced */}
+        <button onClick={() => setShowAdvanced(!showAdvanced)}
+          style={{ display: "flex", alignItems: "center", gap: 8, background: "transparent", border: "none", color: "#94a3b8", fontSize: 11, letterSpacing: "0.06em", cursor: "pointer", padding: 0, textTransform: "uppercase" }}>
+          ⚙ ตั้งค่าขั้นสูง
+          <span style={{ fontSize: 9, transform: showAdvanced ? "rotate(180deg)" : "none", transition: "transform 200ms" }}>▼</span>
+        </button>
+        {showAdvanced && (
+          <Section label="Negative prompt">
+            <textarea value={negativePrompt} onChange={(e) => setNegativePrompt(e.target.value)} rows={2}
+              placeholder="สิ่งที่ไม่ต้องการในภาพ..."
+              style={{ ...xdrInputStyle, padding: 12, fontSize: 13, resize: "vertical" }} />
+          </Section>
+        )}
 
-                    {/* Generation Info */}
-                    <div className="flex items-center gap-4 mt-3 text-xs text-muted">
-                      {result.creditsUsed > 0 && (
-                        <span className="flex items-center gap-1"><Coins className="w-3 h-3" /> {result.creditsUsed} เครดิต</span>
-                      )}
-                      {result.processingMs && (
-                        <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {(result.processingMs / 1000).toFixed(1)}s</span>
-                      )}
-                      <span className="flex items-center gap-1"><Check className="w-3 h-3 text-success" /> สำเร็จ</span>
-                    </div>
-                  </motion.div>
-                ) : result?.status === "failed" ? (
-                  <motion.div key="error" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="text-center">
-                    <div className="w-20 h-20 rounded-2xl bg-error/10 flex items-center justify-center mx-auto mb-4 neu-raised-sm">
-                      <AlertCircle className="w-10 h-10 text-error" />
-                    </div>
-                    <h3 className="text-lg font-semibold mb-2">สร้างไม่สำเร็จ</h3>
-                    <p className="text-sm text-muted mb-4">{result.error || "เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ"}</p>
-                    <Button onClick={() => setResult(null)}>ลองอีกครั้ง</Button>
-                  </motion.div>
-                ) : (
-                  <motion.div key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center">
-                    <div className="w-24 h-24 rounded-2xl bg-gradient-to-br from-primary/10 to-secondary/10 flex items-center justify-center mx-auto mb-6 neu-raised-sm">
-                      {tab === "video" ? <Video className="w-10 h-10 text-primary-light" /> : tab === "edit" ? <Wand2 className="w-10 h-10 text-primary-light" /> : <ImageIcon className="w-10 h-10 text-primary-light" />}
-                    </div>
-                    <h3 className="text-lg font-semibold mb-2">
-                      {tab === "video" ? "สร้างวิดีโอ AI" : tab === "edit" ? "แก้ไขภาพ AI" : "สร้างภาพ AI"}
-                    </h3>
-                    <p className="text-sm text-muted">เลือกโมเดล พิมพ์ prompt แล้วกดสร้าง</p>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </Card>
+        {/* Generate Button */}
+        <button onClick={handleGenerate} disabled={isGenerating || !prompt.trim() || !selectedModelId}
+          style={{
+            marginTop: "auto", padding: 16, borderRadius: 12,
+            background: `linear-gradient(135deg, hsl(${160 + HUE},70%,45%), hsl(${280 + HUE},70%,55%))`,
+            color: "#fff", border: "none", fontSize: 15, fontWeight: 600,
+            cursor: (isGenerating || !prompt.trim() || !selectedModelId) ? "not-allowed" : "pointer",
+            opacity: (isGenerating || !prompt.trim() || !selectedModelId) ? 0.6 : 1,
+            boxShadow: `0 10px 24px -8px hsla(${270 + HUE},70%,50%,0.55)`,
+          }}>
+          {isGenerating ? "⟳ กำลังทอ..." : (
+            <>ทอ ✦ {tab === "image" && numOutputs > 1 ? `${numOutputs} ภาพ · ` : ""}{totalCredits || "—"} credits</>
+          )}
+        </button>
+
+        {/* Credit Balance */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 12, color: "#94a3b8" }}>
+          <span style={{ color: "#fbbf24" }}>✦</span>
+          เครดิตคงเหลือ: <span style={{ fontWeight: 600, color: "#f1f5f9" }}>{creditBalance.toLocaleString()}</span>
+        </div>
+      </aside>
+
+      {/* ═══ CENTER — canvas / result ═══ */}
+      <main className="rp-studio-center" style={{ padding: 24, overflowY: "auto", height: "calc(100vh - 80px)" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <Pill active>{tab === "image" ? "ภาพ" : tab === "video" ? "วิดีโอ" : "แก้ไขภาพ"}</Pill>
+            <Pill>Variations</Pill>
+            {tab === "image" && <Pill>Upscale</Pill>}
+            <Pill>History</Pill>
+          </div>
+          <div style={{ fontSize: 11, color: "#64748b", fontFamily: "ui-monospace,monospace" }}>
+            session · {session?.user?.name?.toLowerCase().replace(/\s+/g, "_") || "weaver"}
           </div>
         </div>
-      </div>
+
+        {/* Result canvas */}
+        <div style={{
+          minHeight: 480, borderRadius: 18, padding: 24,
+          background: "rgba(15,23,42,0.45)",
+          border: "1px solid rgba(255,255,255,0.06)",
+          backdropFilter: "blur(18px)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}>
+          {isGenerating ? (
+            <div style={{ textAlign: "center" }}>
+              <div style={{ position: "relative", width: 96, height: 96, margin: "0 auto 24px" }}>
+                <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: `3px solid hsla(${220 + HUE},70%,60%,0.2)` }} />
+                <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: `3px solid hsl(${220 + HUE},70%,60%)`, borderTopColor: "transparent", animation: "spin 1.2s linear infinite" }} />
+                <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", fontSize: 28, color: `hsl(${220 + HUE},70%,75%)` }}>✦</div>
+              </div>
+              <h3 style={{ fontSize: 22, fontWeight: 300, margin: "0 0 8px", color: "#fff", letterSpacing: "-0.01em" }}>กำลังทอ...</h3>
+              <p style={{ fontSize: 13, color: "rgba(203,213,225,0.7)", margin: 0 }}>
+                {tab === "video" ? "วิดีโออาจใช้เวลา 30-120 วินาที" : "รอสักครู่..."}
+              </p>
+            </div>
+          ) : result?.status === "completed" && result.resultUrl ? (
+            <div style={{ width: "100%" }}>
+              {result.resultUrls && result.resultUrls.length > 1 ? (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12, marginBottom: 16 }}>
+                  {result.resultUrls.map((url, i) => (
+                    <div key={i} style={{ position: "relative", borderRadius: 12, overflow: "hidden", border: "1px solid rgba(255,255,255,0.06)" }}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={url} alt={`Result ${i + 1}`} style={{ width: "100%", display: "block", objectFit: "contain" }} />
+                      <button onClick={() => handleDownload(url)}
+                        style={{ position: "absolute", top: 8, right: 8, width: 32, height: 32, borderRadius: 8, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", color: "#fff", border: "1px solid rgba(255,255,255,0.15)", cursor: "pointer", fontSize: 13 }}>↓</button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", marginBottom: 16, border: "1px solid rgba(255,255,255,0.06)" }}>
+                  {refImagePreview && tab === "image" ? (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12 }}>
+                      <div style={{ position: "relative" }}>
+                        <span style={{ position: "absolute", top: 8, left: 8, zIndex: 2, padding: "3px 8px", borderRadius: 999, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", fontSize: 10, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>ต้นฉบับ</span>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={refImagePreview} alt="Original" style={{ width: "100%", borderRadius: 12, opacity: 0.7, objectFit: "contain" }} />
+                      </div>
+                      <div style={{ position: "relative" }}>
+                        <span style={{ position: "absolute", top: 8, left: 8, zIndex: 2, padding: "3px 8px", borderRadius: 999, background: `hsla(${160 + HUE},70%,50%,0.3)`, backdropFilter: "blur(8px)", fontSize: 10, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>ผลลัพธ์</span>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={result.resultUrl} alt={prompt} style={{ width: "100%", borderRadius: 12, objectFit: "contain" }} />
+                      </div>
+                    </div>
+                  ) : tab === "video" || result.resultUrl.endsWith(".mp4") ? (
+                    <video src={result.resultUrl} controls autoPlay loop style={{ width: "100%", borderRadius: 12, maxHeight: 600, margin: "0 auto", display: "block" }} />
+                  ) : (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={result.resultUrl} alt={prompt} style={{ width: "100%", borderRadius: 12, maxHeight: 600, objectFit: "contain", margin: "0 auto", display: "block" }} />
+                  )}
+                </div>
+              )}
+
+              {/* Action toolbar */}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <Pill onClick={() => handleDownload()}>↓ ดาวน์โหลด</Pill>
+                  <Pill active={isFavorited} onClick={handleFavorite}>{isFavorited ? "♥ บันทึกแล้ว" : "♡ บันทึก"}</Pill>
+                  <Pill onClick={handleShare}>⎋ แชร์</Pill>
+                  {tab !== "video" && !result.resultUrl.endsWith(".mp4") && (
+                    <Pill onClick={handleUpscale}>{isUpscaling ? "⟳ Upscaling..." : "⤢ Upscale"}</Pill>
+                  )}
+                </div>
+                <Pill onClick={() => setResult(null)}>↻ สร้างใหม่</Pill>
+              </div>
+
+              {/* Generation info */}
+              <div style={{ display: "flex", alignItems: "center", gap: 16, marginTop: 14, fontSize: 11, color: "#64748b" }}>
+                {result.creditsUsed > 0 && <span>✦ {result.creditsUsed} เครดิต</span>}
+                {result.processingMs && <span>⌚ {(result.processingMs / 1000).toFixed(1)}s</span>}
+                <span style={{ color: "#34d399" }}>✓ สำเร็จ</span>
+              </div>
+            </div>
+          ) : result?.status === "failed" ? (
+            <div style={{ textAlign: "center" }}>
+              <div style={{ width: 80, height: 80, borderRadius: 20, background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)", display: "grid", placeItems: "center", margin: "0 auto 18px", fontSize: 36, color: "#fca5a5" }}>!</div>
+              <h3 style={{ fontSize: 22, fontWeight: 300, margin: "0 0 8px", color: "#fff" }}>สร้างไม่สำเร็จ</h3>
+              <p style={{ fontSize: 13, color: "rgba(203,213,225,0.7)", marginBottom: 18 }}>{result.error || "เกิดข้อผิดพลาด"}</p>
+              <button onClick={() => setResult(null)}
+                style={{ padding: "10px 22px", borderRadius: 10, background: `linear-gradient(135deg, hsl(${160 + HUE},70%,50%), hsl(${280 + HUE},70%,55%))`, color: "#fff", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 500 }}>
+                ลองอีกครั้ง
+              </button>
+            </div>
+          ) : (
+            <div style={{ textAlign: "center", padding: "60px 20px" }}>
+              <div style={{ width: 110, height: 110, borderRadius: 28, margin: "0 auto 28px", position: "relative", overflow: "hidden", background: `linear-gradient(135deg, hsla(${160 + HUE},60%,20%,0.4), hsla(${280 + HUE},60%,15%,0.4))`, border: "1px solid rgba(255,255,255,0.08)", display: "grid", placeItems: "center", fontSize: 44, color: `hsl(${220 + HUE},70%,75%)`, boxShadow: `0 20px 50px -15px hsla(${270 + HUE},70%,40%,0.4)` }}>
+                {tab === "video" ? "▶" : tab === "edit" ? "✦" : "▧"}
+              </div>
+              <h3 style={{ fontSize: "clamp(24px, 3vw, 32px)", fontWeight: 200, margin: "0 0 10px", color: "#fff", letterSpacing: "-0.01em" }}>
+                {tab === "video" ? "สร้างวิดีโอ" : tab === "edit" ? "แก้ไขภาพ" : "สร้างภาพ"}
+                <span className="xdr-italic-th" style={{ fontStyle: "italic", color: `hsl(${220 + HUE},70%,75%)`, marginLeft: 8 }}>ด้วย AI</span>
+              </h3>
+              <p style={{ fontSize: 13, color: "rgba(203,213,225,0.6)", margin: 0 }}>เลือกโมเดล พิมพ์ prompt แล้วกด <span style={{ color: "#a5f3fc" }}>ทอ</span></p>
+            </div>
+          )}
+        </div>
+      </main>
+
+      {/* ═══ RIGHT — credits & info ═══ */}
+      <aside className="rp-studio-right" style={{ borderLeft: "1px solid rgba(255,255,255,0.06)", padding: 24, background: "rgba(15,23,42,0.25)", height: "calc(100vh - 80px)", overflowY: "auto" }}>
+        <Section label="Credits">
+          <div style={{ padding: 16, borderRadius: 12, background: `linear-gradient(135deg, hsla(${220 + HUE},60%,25%,0.4), hsla(${280 + HUE},60%,20%,0.4))`, border: "1px solid rgba(255,255,255,0.08)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+              <div style={{ fontSize: 30, fontWeight: 300, color: "#fff" }}>{creditBalance.toLocaleString()}</div>
+              <div style={{ fontSize: 11, color: "#94a3b8" }}>คงเหลือ</div>
+            </div>
+            <div style={{ marginTop: 14 }}>
+              <a href="/pricing" style={{ display: "block", textAlign: "center", padding: "9px 0", borderRadius: 8, background: "rgba(255,255,255,0.08)", color: "#fff", fontSize: 12, textDecoration: "none", border: "1px solid rgba(255,255,255,0.1)" }}>
+                + เติม credits
+              </a>
+            </div>
+          </div>
+        </Section>
+
+        <div style={{ marginTop: 24 }}>
+          <Section label="คำแนะนำ">
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {[
+                "ระบุ subject และอารมณ์ให้ชัด เช่น 'หญิงสาวยืนกลางทุ่งดอกไม้ โทนสีพาสเทล'",
+                "เพิ่ม style keywords เช่น cinematic, hyperreal, jade tones, volumetric",
+                "ใช้ aspect 16:9 สำหรับ wallpaper, 9:16 สำหรับโซเชียล",
+                "img2img: ความเข้ม 0.5–0.7 = balance, > 0.8 = ตามภาพอ้างอิงมาก",
+              ].map((tip, i) => (
+                <div key={i} style={{ padding: 12, borderRadius: 10, background: "rgba(2,6,23,0.4)", border: "1px solid rgba(255,255,255,0.05)", display: "flex", gap: 10 }}>
+                  <span style={{ color: `hsl(${(160 + i * 30 + HUE) % 360},70%,70%)`, flexShrink: 0 }}>✦</span>
+                  <span style={{ fontSize: 12, color: "rgba(203,213,225,0.78)", lineHeight: 1.5 }}>{tip}</span>
+                </div>
+              ))}
+            </div>
+          </Section>
+        </div>
+
+        <div style={{ marginTop: 24 }}>
+          <Section label="Quick links">
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {[
+                { href: "/gallery", l: "Community Gallery", i: "▧" },
+                { href: "/profile", l: "Dashboard", i: "◈" },
+                { href: "/pricing", l: "แพ็กเกจ", i: "✦" },
+                { href: "/referral", l: "Referral", i: "♢" },
+              ].map(it => (
+                <a key={it.href} href={it.href} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderRadius: 8, background: "rgba(2,6,23,0.4)", border: "1px solid rgba(255,255,255,0.05)", color: "#e2e8f0", textDecoration: "none", fontSize: 13 }}>
+                  <span style={{ color: "#a5f3fc", width: 14, display: "inline-block" }}>{it.i}</span>
+                  {it.l}
+                </a>
+              ))}
+            </div>
+          </Section>
+        </div>
+
+      </aside>
+
+      <style jsx>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @media (max-width: 1100px) {
+          .rp-studio { grid-template-columns: 320px 1fr !important; }
+          .rp-studio-right { display: none !important; }
+        }
+        @media (max-width: 720px) {
+          .rp-studio { grid-template-columns: 1fr !important; }
+          .rp-studio-left { height: auto !important; border-right: none !important; border-bottom: 1px solid rgba(255,255,255,0.06) !important; }
+          .rp-studio-center { height: auto !important; }
+        }
+      `}</style>
     </div>
   );
 }
