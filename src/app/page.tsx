@@ -1,368 +1,79 @@
-"use client";
+/**
+ * X-DREAMER landing page
+ *
+ * Server component: fetches active credit packages from CreditService
+ * (DB), normalises into the Tier shape XdreamerLanding expects, and
+ * renders the X-DREAMER themed marketing page.
+ *
+ * Replaces the previous neumorphism landing — see page.tsx.bak in this
+ * directory for the old version.
+ */
 
-import { Suspense } from "react";
-import Link from "next/link";
-import Image from "next/image";
-import dynamic from "next/dynamic";
-import { motion } from "framer-motion";
-import { Navbar } from "@/components/layout/navbar";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import {
-  Sparkles,
-  Image as ImageIcon,
-  Video,
-  Wand2,
-  Zap,
-  Shield,
-  Layers,
-  ArrowRight,
-  Star,
-  Globe,
-} from "lucide-react";
+import XdreamerLanding from "@/components/xdreamer/landing";
+import { CreditService } from "@/lib/services/credits";
 
-const HeroScene = dynamic(
-  () => import("@/components/three/hero-scene").then((m) => m.HeroScene),
-  { ssr: false }
-);
-
-const fadeUp = {
-  initial: { opacity: 0, y: 30 },
-  animate: { opacity: 1, y: 0 },
+// Hue palette mapping by slug (keeps brand colours stable across packages)
+const HUE_BY_SLUG: Record<string, number> = {
+  trial: 140,
+  starter: 160,
+  weaver: 200,
+  creator: 220,
+  pro: 260,
+  studio: 280,
+  enterprise: 300,
 };
 
-const stagger = {
-  animate: { transition: { staggerChildren: 0.1 } },
+type Tier = {
+  slug: string;
+  name: string;
+  price: string;
+  note: string;
+  feats: string[];
+  hue: number;
+  pop: boolean;
 };
 
-const providerList = [
-  { name: "BytePlus", desc: "Seedream & Seedance", color: "from-blue-500 to-cyan-400" },
-  { name: "OpenAI", desc: "GPT Image & Sora", color: "from-green-500 to-emerald-400" },
-  { name: "Stability AI", desc: "Stable Diffusion 3.5", color: "from-purple-500 to-violet-400" },
-  { name: "Runway ML", desc: "Gen-4.5 & Veo 3", color: "from-pink-500 to-rose-400" },
-  { name: "Replicate", desc: "FLUX & 1000+ Models", color: "from-orange-500 to-amber-400" },
-  { name: "fal.ai", desc: "Fast Inference", color: "from-cyan-500 to-teal-400" },
-  { name: "Kling AI", desc: "Video Generation", color: "from-red-500 to-pink-400" },
-  { name: "Luma AI", desc: "Dream Machine", color: "from-indigo-500 to-purple-400" },
-  { name: "Leonardo.ai", desc: "Creative AI", color: "from-yellow-500 to-orange-400" },
+const FALLBACK_TIERS: Tier[] = [
+  { slug: "trial", name: "ผู้เริ่มฝัน", price: "ฟรี", note: "ตลอดชีพ", feats: ["50 งาน/เดือน", "ความละเอียด 1K", "ชุมชนสาธารณะ", "รุ่น loom-mini"], hue: 160, pop: false },
+  { slug: "creator", name: "นักทอ", price: "฿490", note: "/ เดือน", feats: ["ไม่จำกัดจำนวน", "8K resolution", "ปราสาทส่วนตัว 500 ชิ้น", "รุ่น loom-v4.2", "Video สูงสุด 30 วินาที"], hue: 220, pop: true },
+  { slug: "studio", name: "สตูดิโอ", price: "฿2,490", note: "/ เดือน", feats: ["ทุกอย่างใน นักทอ", "API + webhooks", "ทีมสูงสุด 10 คน", "รุ่น loom-pro", "Commercial license", "Priority queue"], hue: 280, pop: false },
 ];
 
-const features = [
-  {
-    icon: Layers,
-    title: "หลากหลาย Provider",
-    desc: "เลือกใช้ AI จากผู้ให้บริการชั้นนำกว่า 9 ราย รวมกว่า 50+ โมเดล",
-  },
-  {
-    icon: Zap,
-    title: "เร็วทันใจ",
-    desc: "ระบบ Account Pool กระจายโหลดอัตโนมัติ ไม่ต้องรอคิวนาน",
-  },
-  {
-    icon: Shield,
-    title: "ปลอดภัย & เสถียร",
-    desc: "Auto-failover เมื่อ provider ขัดข้อง สลับไปใช้ตัวสำรองทันที",
-  },
-  {
-    icon: Wand2,
-    title: "ใช้ง่ายมาก",
-    desc: "เลือกสไตล์ พิมพ์ prompt กด Generate เสร็จ! ไม่ต้องมีความรู้ AI",
-  },
-];
+async function loadTiers(): Promise<Tier[]> {
+  try {
+    const packages = await CreditService.getPackages();
+    if (!packages || packages.length === 0) return FALLBACK_TIERS;
 
-export default function HomePage() {
-  return (
-    <div className="relative min-h-screen">
-      <Navbar />
+    return packages.map((p) => {
+      const slug = String(p.slug ?? p.id);
+      const priceThb = Number(p.priceThb ?? 0);
+      const features = Array.isArray(p.features)
+        ? (p.features as string[])
+        : typeof p.features === "string"
+          ? (JSON.parse(p.features) as string[])
+          : [];
 
-      {/* Hero Section */}
-      <section className="relative min-h-[90vh] flex items-center justify-center overflow-hidden">
-        <Suspense fallback={null}>
-          <HeroScene />
-        </Suspense>
-        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-background/40 to-background pointer-events-none" />
+      const featList = features.length
+        ? features
+        : ([`${p.credits} credits`, p.bonusCredits ? `+${p.bonusCredits} bonus` : ""].filter(Boolean) as string[]);
 
-        <motion.div
-          className="relative z-10 text-center px-4 max-w-4xl mx-auto"
-          initial="initial"
-          animate="animate"
-          variants={stagger}
-        >
-          <motion.div variants={fadeUp} transition={{ duration: 0.6 }}>
-            <Badge variant="glass" size="lg" className="mb-6 px-4 py-2">
-              <Sparkles className="w-4 h-4 text-primary-light" />
-              AI Generation Platform
-            </Badge>
-          </motion.div>
+      return {
+        slug,
+        name: String(p.name ?? slug),
+        price: priceThb === 0 ? "ฟรี" : `฿${priceThb.toLocaleString("en-US")}`,
+        note: priceThb === 0 ? "ฟรีตลอดชีพ" : "ครั้งเดียว",
+        feats: featList,
+        hue: HUE_BY_SLUG[slug] ?? 220,
+        pop: Boolean(p.isFeatured),
+      };
+    });
+  } catch (e) {
+    console.error("[xdreamer/page] loadTiers failed, using fallback:", e);
+    return FALLBACK_TIERS;
+  }
+}
 
-          <motion.h1
-            className="text-5xl sm:text-6xl md:text-7xl font-bold mb-6 leading-tight"
-            variants={fadeUp}
-            transition={{ duration: 0.6, delay: 0.1 }}
-          >
-            สร้างสรรค์ผลงาน
-            <br />
-            <span className="gradient-text">ด้วยพลัง AI</span>
-          </motion.h1>
-
-          <motion.p
-            className="text-lg sm:text-xl text-muted max-w-2xl mx-auto mb-8"
-            variants={fadeUp}
-            transition={{ duration: 0.6, delay: 0.2 }}
-          >
-            สร้างภาพและวิดีโอคุณภาพสูงจาก AI ชั้นนำของโลก
-            ทุก Provider ในที่เดียว ราคาเป็นมิตร
-          </motion.p>
-
-          <motion.div
-            className="flex flex-col sm:flex-row gap-4 justify-center"
-            variants={fadeUp}
-            transition={{ duration: 0.6, delay: 0.3 }}
-          >
-            <Link href="/generate">
-              <Button size="xl" leftIcon={<Wand2 className="w-5 h-5" />} rightIcon={<ArrowRight className="w-4 h-4" />}>
-                เริ่มสร้างเลย
-              </Button>
-            </Link>
-            <Link href="/pricing">
-              <Button variant="secondary" size="xl" leftIcon={<Star className="w-5 h-5 text-warning" />}>
-                ดูราคา
-              </Button>
-            </Link>
-          </motion.div>
-
-          <motion.div
-            className="flex flex-wrap justify-center gap-8 mt-12 text-center"
-            variants={fadeUp}
-            transition={{ duration: 0.6, delay: 0.4 }}
-          >
-            {[
-              { value: "9+", label: "AI Providers" },
-              { value: "50+", label: "โมเดล" },
-              { value: "4K", label: "ความละเอียดสูงสุด" },
-              { value: "24/7", label: "พร้อมใช้งาน" },
-            ].map((stat) => (
-              <div key={stat.label}>
-                <div className="text-2xl font-bold gradient-text">{stat.value}</div>
-                <div className="text-sm text-muted">{stat.label}</div>
-              </div>
-            ))}
-          </motion.div>
-        </motion.div>
-      </section>
-
-      {/* Features */}
-      <section className="relative py-24 px-4">
-        <div className="max-w-6xl mx-auto">
-          <motion.div
-            className="text-center mb-16"
-            initial={{ opacity: 0, y: 20 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true, margin: "-50px" }}
-            transition={{ duration: 0.6 }}
-          >
-            <h2 className="text-3xl sm:text-4xl font-bold mb-4">
-              ทำไมต้อง <span className="gradient-text">XMAN AI</span>
-            </h2>
-            <p className="text-muted text-lg">
-              แพลตฟอร์มที่รวมพลัง AI ชั้นนำของโลกไว้ในที่เดียว
-            </p>
-          </motion.div>
-
-          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6">
-            {features.map((feature, i) => (
-              <motion.div
-                key={feature.title}
-                initial={{ opacity: 0, y: 30 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true, margin: "-30px" }}
-                transition={{ duration: 0.5, delay: i * 0.1 }}
-              >
-                <Card variant="interactive" className="p-6 h-full group">
-                  <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary/20 to-secondary/20 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform neu-raised-sm">
-                    <feature.icon className="w-6 h-6 text-primary-light" />
-                  </div>
-                  <h3 className="text-lg font-semibold mb-2">{feature.title}</h3>
-                  <p className="text-sm text-muted">{feature.desc}</p>
-                </Card>
-              </motion.div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* Generation Types */}
-      <section className="relative py-24 px-4">
-        <div className="absolute inset-0 bg-surface/30 backdrop-blur-sm" />
-        <div className="relative max-w-6xl mx-auto">
-          <motion.div
-            className="text-center mb-16"
-            initial={{ opacity: 0, y: 20 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true, margin: "-50px" }}
-            transition={{ duration: 0.6 }}
-          >
-            <h2 className="text-3xl sm:text-4xl font-bold mb-4">
-              สร้างได้ <span className="gradient-text">ทุกอย่าง</span>
-            </h2>
-          </motion.div>
-
-          <div className="grid md:grid-cols-3 gap-8">
-            {[
-              {
-                icon: ImageIcon,
-                title: "สร้างภาพ AI",
-                desc: "Text-to-Image คมชัดสูงสุด 4K จาก Seedream, FLUX, DALL-E, Stable Diffusion",
-                gradient: "from-primary to-secondary",
-                href: "/generate",
-              },
-              {
-                icon: Video,
-                title: "สร้างวิดีโอ AI",
-                desc: "Text-to-Video & Image-to-Video จาก Seedance, Sora, Runway Gen-4, Kling, Luma",
-                gradient: "from-secondary to-accent",
-                href: "/generate?type=video",
-              },
-              {
-                icon: Wand2,
-                title: "แก้ไขภาพ AI",
-                desc: "Inpainting, Outpainting, Upscale, Background Remove และอื่นๆ",
-                gradient: "from-accent to-primary",
-                href: "/generate?type=edit",
-              },
-            ].map((item, i) => (
-              <motion.div
-                key={item.title}
-                initial={{ opacity: 0, y: 30 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true, margin: "-30px" }}
-                transition={{ duration: 0.5, delay: i * 0.15 }}
-              >
-                <Link href={item.href} className="block h-full">
-                  <Card variant="interactive" className="p-8 h-full group">
-                    <div
-                      className={`w-16 h-16 rounded-2xl bg-gradient-to-br ${item.gradient} flex items-center justify-center mb-6 group-hover:scale-110 group-hover:shadow-xl transition-all neu-raised-sm`}
-                    >
-                      <item.icon className="w-8 h-8 text-white" />
-                    </div>
-                    <h3 className="text-xl font-bold mb-3">{item.title}</h3>
-                    <p className="text-muted">{item.desc}</p>
-                    <div className="mt-4 flex items-center gap-1 text-primary-light text-sm font-medium group-hover:gap-2 transition-all">
-                      เริ่มสร้าง <ArrowRight className="w-4 h-4" />
-                    </div>
-                  </Card>
-                </Link>
-              </motion.div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* Providers */}
-      <section className="relative py-24 px-4">
-        <div className="max-w-6xl mx-auto">
-          <motion.div
-            className="text-center mb-16"
-            initial={{ opacity: 0, y: 20 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true, margin: "-50px" }}
-            transition={{ duration: 0.6 }}
-          >
-            <h2 className="text-3xl sm:text-4xl font-bold mb-4">
-              <Globe className="inline w-8 h-8 text-primary-light mr-2 mb-1" />
-              รวม AI ชั้นนำ <span className="gradient-text">ของโลก</span>
-            </h2>
-            <p className="text-muted text-lg">
-              เลือกใช้ได้ตามต้องการ ราคาตรงไปตรงมา
-            </p>
-          </motion.div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-            {providerList.map((provider, i) => (
-              <motion.div
-                key={provider.name}
-                initial={{ opacity: 0, scale: 0.9 }}
-                whileInView={{ opacity: 1, scale: 1 }}
-                viewport={{ once: true, margin: "-20px" }}
-                transition={{ duration: 0.4, delay: i * 0.05 }}
-              >
-                <Card variant="interactive" className="p-4 text-center group cursor-default">
-                  <div
-                    className={`w-10 h-10 rounded-lg bg-gradient-to-br ${provider.color} mx-auto mb-3 flex items-center justify-center text-white font-bold text-sm group-hover:scale-110 transition-transform neu-raised-sm`}
-                  >
-                    {provider.name.charAt(0)}
-                  </div>
-                  <div className="font-semibold text-sm">{provider.name}</div>
-                  <div className="text-xs text-muted mt-1">{provider.desc}</div>
-                </Card>
-              </motion.div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* CTA */}
-      <section className="relative py-24 px-4">
-        <div className="max-w-3xl mx-auto text-center">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true, margin: "-50px" }}
-            transition={{ duration: 0.6 }}
-          >
-            <Card variant="elevated" className="p-12 relative overflow-hidden">
-              <div className="absolute inset-0 bg-gradient-to-br from-primary/10 via-secondary/5 to-accent/10" />
-              <div className="relative">
-                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary/20 to-accent/20 flex items-center justify-center mx-auto mb-6 neu-raised-sm">
-                  <Sparkles className="w-8 h-8 text-primary-light" />
-                </div>
-                <h2 className="text-3xl sm:text-4xl font-bold mb-4">
-                  พร้อมสร้างสรรค์แล้วหรือยัง?
-                </h2>
-                <p className="text-muted text-lg mb-8">
-                  สมัครฟรี รับเครดิตทดลองใช้ เริ่มสร้างภาพและวิดีโอ AI ได้ทันที
-                </p>
-                <Link href="/generate">
-                  <Button size="xl" leftIcon={<Wand2 className="w-5 h-5" />}>
-                    เริ่มต้นใช้งาน
-                  </Button>
-                </Link>
-              </div>
-            </Card>
-          </motion.div>
-        </div>
-      </section>
-
-      {/* Footer */}
-      <footer className="relative border-t border-border py-8 px-4">
-        <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-sm text-muted">
-          <div className="flex items-center gap-3">
-            <Image
-              src="/logo.webp"
-              alt="XMAN AI"
-              width={28}
-              height={28}
-              className="rounded"
-            />
-            <span>XMAN AI Studio</span>
-          </div>
-          <div className="flex items-center gap-6">
-            <Link href="/pricing" className="hover:text-foreground transition-colors">
-              ราคา
-            </Link>
-            <a
-              href="https://xman4289.com"
-              className="hover:text-foreground transition-colors"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              XMAN Studio
-            </a>
-          </div>
-          <div>&copy; 2026 XMAN Studio. All rights reserved.</div>
-        </div>
-      </footer>
-    </div>
-  );
+export default async function HomePage() {
+  const tiers = await loadTiers();
+  return <XdreamerLanding tiers={tiers} />;
 }
