@@ -1,35 +1,35 @@
 @import "tailwindcss";
 
 :root {
-  /* Logo-derived palette: Electric Blue, Purple/Violet, Cyan */
-  --background: #060A14;
-  --foreground: #e8edf5;
-  --primary: #3B82F6;
-  --primary-light: #60A5FA;
-  --primary-dark: #2563EB;
-  --secondary: #8B5CF6;
-  --secondary-light: #A78BFA;
-  --accent: #06B6D4;
-  --accent-light: #22D3EE;
-  --surface: #0C1425;
-  --surface-light: #162036;
-  --surface-lighter: #1E2D4A;
-  --border: #162036;
-  --border-light: #1E2D4A;
-  --muted: #8B9DC3;
-  --success: #22c55e;
-  --warning: #f59e0b;
-  --error: #ef4444;
-  --gradient-start: #3B82F6;
-  --gradient-mid: #8B5CF6;
-  --gradient-end: #06B6D4;
+  /* X-DREAMER palette — fiber-thread mint→cyan→violet, on near-black */
+  --background: #030612;
+  --foreground: #f1f5f9;
+  --primary: #06b6d4;        /* cyan — fabric primary */
+  --primary-light: #22d3ee;
+  --primary-dark: #0891b2;
+  --secondary: #8b5cf6;      /* violet — italic emphasis */
+  --secondary-light: #a78bfa;
+  --accent: #10b981;         /* emerald — accent / success-leaning */
+  --accent-light: #6ee7b7;
+  --surface: rgba(15, 23, 42, 0.55);
+  --surface-light: rgba(30, 41, 59, 0.5);
+  --surface-lighter: rgba(51, 65, 85, 0.4);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-light: rgba(255, 255, 255, 0.12);
+  --muted: #94a3b8;
+  --success: #34d399;
+  --warning: #fbbf24;
+  --error: #fca5a5;
+  --gradient-start: #10b981;
+  --gradient-mid: #06b6d4;
+  --gradient-end: #8b5cf6;
 
-  /* Neumorphism shadow tokens */
-  --neu-shadow-dark: rgba(0, 0, 0, 0.5);
-  --neu-shadow-light: rgba(30, 45, 74, 0.4);
-  --neu-shadow-glow: rgba(59, 130, 246, 0.08);
-  --neu-highlight: rgba(255, 255, 255, 0.04);
-  --neu-highlight-strong: rgba(255, 255, 255, 0.07);
+  /* Neumorphism shadow tokens — kept for legacy components, retuned for X-DREAMER */
+  --neu-shadow-dark: rgba(0, 0, 0, 0.6);
+  --neu-shadow-light: rgba(165, 243, 252, 0.04);
+  --neu-shadow-glow: rgba(139, 92, 246, 0.12);
+  --neu-highlight: rgba(255, 255, 255, 0.05);
+  --neu-highlight-strong: rgba(255, 255, 255, 0.08);
 }
 
 @theme inline {
