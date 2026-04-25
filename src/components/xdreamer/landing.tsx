@@ -1071,11 +1071,9 @@ export default function XdreamerLanding({ tiers }: { tiers: Tier[] }) {
         }
       `}</style>
 
-      <div style={{ position: "fixed", inset: 0, zIndex: 0, pointerEvents: "none" }}>
-        <FiberThreads density={70} speed={1} hueShift={HUE} opacity={0.55} />
-      </div>
-
-      <div style={{ position: "fixed", inset: 0, zIndex: 0, pointerEvents: "none", background: "radial-gradient(ellipse at 50% 30%, rgba(3,6,18,0.35) 0%, rgba(3,6,18,0.7) 55%, rgba(3,6,18,0.92) 100%)" }} />
+      {/* Background fiber-threads + frosted overlay are rendered by the
+          global AmbientBackground (root layout). It also handles the
+          scroll-fade behaviour on / so we don't double-render here. */}
 
       <div style={{ position: "relative", zIndex: 1 }}>
         <Nav />
