@@ -33,6 +33,11 @@ const aspectRatios = [
   { value: "3:2",  label: "3:2",  w: 1216, h: 832 },
 ];
 
+const PROMPT_TAG_CHIPS = [
+  "cinematic lighting", "8k", "volumetric", "aurora", "jade",
+  "hyperreal", "studio light", "bokeh", "golden hour",
+];
+
 interface GenerationResult {
   id: number;
   status: string;
@@ -42,6 +47,15 @@ interface GenerationResult {
   creditsUsed: number;
   processingMs?: number;
   error?: string;
+}
+
+interface HistoryItem {
+  id: number;
+  type: string;
+  prompt: string;
+  resultUrl?: string;
+  thumbnailUrl?: string;
+  createdAt: string;
 }
 
 // ─── X-DREAMER UI primitives (local helpers) ───────────────────────────
@@ -105,9 +119,37 @@ export default function GeneratePage() {
   const [strength, setStrength] = useState(0.75);
   const [numOutputs, setNumOutputs] = useState(1);
   const [isUpscaling, setIsUpscaling] = useState(false);
+  const [steps, setSteps] = useState(42);
+  const [guidance, setGuidance] = useState(7.5);
+  const [seed, setSeed] = useState<number | null>(null);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
 
   useEffect(() => { if (session === null) router.push("/login"); }, [session, router]);
   useEffect(() => { fetchModels(); fetchStyles(); fetchCredits(); }, [fetchModels, fetchStyles, fetchCredits]);
+
+  const fetchHistory = useCallback(async () => {
+    try {
+      const res = await fetch("/api/gallery?limit=16&page=1");
+      if (!res.ok) return;
+      const data = await res.json();
+      setHistory((data.data ?? []).filter((g: HistoryItem) => g.resultUrl || g.thumbnailUrl));
+    } catch {}
+  }, []);
+  useEffect(() => {
+    if (session) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      fetchHistory();
+    }
+  }, [session, fetchHistory]);
+
+  const addPromptTag = (tag: string) => {
+    setPrompt((p) => {
+      const trimmed = p.trim();
+      if (!trimmed) return tag;
+      if (trimmed.toLowerCase().includes(tag.toLowerCase())) return trimmed;
+      return trimmed.endsWith(",") ? `${trimmed} ${tag}` : `${trimmed}, ${tag}`;
+    });
+  };
 
   const filteredModels = models.filter((m) => m.category === tab);
 
@@ -157,7 +199,7 @@ export default function GeneratePage() {
             thumbnailUrl: data.thumbnailUrl,
             creditsUsed: data.creditsUsed, processingMs: data.processingMs,
           });
-          setIsGenerating(false); fetchCredits();
+          setIsGenerating(false); fetchCredits(); fetchHistory();
           toast("success", "สร้างสำเร็จ!", `ใช้ ${data.creditsUsed} เครดิต`);
           return;
         }
@@ -171,7 +213,7 @@ export default function GeneratePage() {
     }
     setIsGenerating(false);
     toast("error", "หมดเวลา", "การสร้างใช้เวลานานเกินไป กรุณาลองใหม่");
-  }, [setIsGenerating, fetchCredits, toast]);
+  }, [setIsGenerating, fetchCredits, fetchHistory, toast]);
 
   const handleGenerate = async () => {
     if (!prompt.trim() || !selectedModelId || isGenerating) return;
@@ -192,6 +234,9 @@ export default function GeneratePage() {
             width: ar?.w || 1024, height: ar?.h || 1024, aspectRatio,
             strength: refImage && tab === "image" ? strength : undefined,
             numOutputs: tab === "image" ? numOutputs : undefined,
+            steps,
+            cfgScale: guidance,
+            seed: seed ?? undefined,
           },
         }),
       });
@@ -202,7 +247,7 @@ export default function GeneratePage() {
         return;
       }
       if (data.status === "completed") {
-        setResult(data); setIsGenerating(false); fetchCredits();
+        setResult(data); setIsGenerating(false); fetchCredits(); fetchHistory();
         toast("success", "สร้างสำเร็จ!", `ใช้ ${data.creditsUsed} เครดิต`);
       } else if (data.status === "failed") {
         setResult(data); setIsGenerating(false); fetchCredits();
@@ -358,7 +403,30 @@ export default function GeneratePage() {
           <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={5}
             placeholder={tab === "video" ? "อธิบายวิดีโอที่ต้องการ..." : "อธิบายภาพที่ต้องการ..."}
             style={{ ...xdrInputStyle, padding: 14, fontSize: 14, lineHeight: 1.5, resize: "vertical" }} />
+          <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
+            {PROMPT_TAG_CHIPS.map((t) => {
+              const already = prompt.toLowerCase().includes(t.toLowerCase());
+              return (
+                <button key={t} type="button" onClick={() => addPromptTag(t)}
+                  style={{
+                    padding: "5px 10px", borderRadius: 999, fontSize: 11, cursor: "pointer",
+                    background: already ? `hsla(${220 + HUE},60%,50%,0.18)` : "rgba(255,255,255,0.05)",
+                    color: already ? "#a5f3fc" : "#94a3b8",
+                    border: already ? `1px solid hsla(${220 + HUE},70%,60%,0.4)` : "1px solid rgba(255,255,255,0.1)",
+                  }}>+ {t}</button>
+              );
+            })}
+          </div>
         </Section>
+
+        {/* Negative Prompt — always visible per template */}
+        {tab !== "edit" && (
+          <Section label="Negative prompt">
+            <input value={negativePrompt} onChange={(e) => setNegativePrompt(e.target.value)}
+              placeholder="blurry, low quality, text..."
+              style={{ ...xdrInputStyle }} />
+          </Section>
+        )}
 
         {/* Style */}
         {stylesLoaded && styles.length > 0 && tab !== "edit" && (
@@ -472,18 +540,44 @@ export default function GeneratePage() {
           </Section>
         )}
 
-        {/* Advanced */}
-        <button onClick={() => setShowAdvanced(!showAdvanced)}
-          style={{ display: "flex", alignItems: "center", gap: 8, background: "transparent", border: "none", color: "#94a3b8", fontSize: 11, letterSpacing: "0.06em", cursor: "pointer", padding: 0, textTransform: "uppercase" }}>
-          ⚙ ตั้งค่าขั้นสูง
-          <span style={{ fontSize: 9, transform: showAdvanced ? "rotate(180deg)" : "none", transition: "transform 200ms" }}>▼</span>
-        </button>
-        {showAdvanced && (
-          <Section label="Negative prompt">
-            <textarea value={negativePrompt} onChange={(e) => setNegativePrompt(e.target.value)} rows={2}
-              placeholder="สิ่งที่ไม่ต้องการในภาพ..."
-              style={{ ...xdrInputStyle, padding: 12, fontSize: 13, resize: "vertical" }} />
-          </Section>
+        {/* Advanced — Steps / Guidance / Seed */}
+        {tab !== "video" && (
+          <>
+            <button onClick={() => setShowAdvanced(!showAdvanced)}
+              style={{ display: "flex", alignItems: "center", gap: 8, background: "transparent", border: "none", color: "#94a3b8", fontSize: 11, letterSpacing: "0.06em", cursor: "pointer", padding: 0, textTransform: "uppercase" }}>
+              ⚙ ตั้งค่าขั้นสูง
+              <span style={{ fontSize: 9, transform: showAdvanced ? "rotate(180deg)" : "none", transition: "transform 200ms" }}>▼</span>
+            </button>
+            {showAdvanced && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", marginBottom: 6 }}>
+                    <span>Steps</span>
+                    <span style={{ fontFamily: "ui-monospace,monospace", color: "#e2e8f0" }}>{steps}</span>
+                  </div>
+                  <input type="range" min={10} max={80} step={1} value={steps} onChange={(e) => setSteps(+e.target.value)}
+                    style={{ width: "100%", accentColor: `hsl(${220 + HUE},70%,60%)` }} />
+                </div>
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", marginBottom: 6 }}>
+                    <span>Guidance</span>
+                    <span style={{ fontFamily: "ui-monospace,monospace", color: "#e2e8f0" }}>{guidance.toFixed(1)}</span>
+                  </div>
+                  <input type="range" min={1} max={20} step={0.5} value={guidance} onChange={(e) => setGuidance(+e.target.value)}
+                    style={{ width: "100%", accentColor: `hsl(${220 + HUE},70%,60%)` }} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 6 }}>Seed</div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <input type="number" value={seed ?? ""} onChange={(e) => setSeed(e.target.value ? +e.target.value : null)}
+                      placeholder="auto" style={{ ...xdrInputStyle, flex: 1, padding: 10, fontFamily: "ui-monospace,monospace" }} />
+                    <button type="button" onClick={() => setSeed(Math.floor(Math.random() * 99999))}
+                      style={{ padding: "0 12px", borderRadius: 10, background: "rgba(255,255,255,0.05)", color: "#94a3b8", border: "1px solid rgba(255,255,255,0.1)", cursor: "pointer" }}>↻</button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
         )}
 
         {/* Generate Button */}
@@ -622,6 +716,48 @@ export default function GeneratePage() {
             </div>
           )}
         </div>
+
+        {/* History strip — recent generations */}
+        {history.length > 0 && (
+          <div style={{ marginTop: 32 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em", textTransform: "uppercase" }}>· รุ่นก่อนหน้า (history)</div>
+              <a href="/gallery" style={{ fontSize: 11, color: "#a5f3fc", textDecoration: "none", letterSpacing: "0.05em" }}>ดูทั้งหมด →</a>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(8, 1fr)", gap: 8 }}>
+              {history.slice(0, 16).map((g) => {
+                const src = g.thumbnailUrl || g.resultUrl;
+                const isVideo = g.type === "video" || g.resultUrl?.endsWith(".mp4");
+                return (
+                  <button key={g.id} type="button" title={g.prompt}
+                    onClick={() => {
+                      setPrompt(g.prompt);
+                      setTab((g.type as TabType) ?? "image");
+                      document.querySelector(".rp-studio-center")?.scrollTo({ top: 0, behavior: "smooth" });
+                    }}
+                    style={{
+                      aspectRatio: "1",
+                      borderRadius: 8,
+                      padding: 0,
+                      overflow: "hidden",
+                      position: "relative",
+                      border: "1px solid rgba(255,255,255,0.05)",
+                      cursor: "pointer",
+                      background: `linear-gradient(135deg, hsl(${(g.id * 23 + HUE) % 360}, 50%, 15%), hsl(${(g.id * 23 + 60 + HUE) % 360}, 50%, 8%))`,
+                    }}>
+                    {src && (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={src} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                    )}
+                    {isVideo && (
+                      <span style={{ position: "absolute", bottom: 4, right: 4, fontSize: 9, color: "#fff", background: "rgba(0,0,0,0.6)", padding: "2px 5px", borderRadius: 4 }}>▶</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </main>
 
       {/* ═══ RIGHT — credits & info ═══ */}
