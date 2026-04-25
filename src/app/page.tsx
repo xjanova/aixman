@@ -12,6 +12,13 @@
 import XdreamerLanding from "@/components/xdreamer/landing";
 import { CreditService } from "@/lib/services/credits";
 
+// Skip Next.js prerender + ISR cache. The page is heavy (R3F HeroScene
+// + canvas patterns + dynamic imports) and prerendered HTML traps the
+// build-time canvas size at 300×150 because the wrapper element has no
+// measurable layout at SSR time. Render on-demand so first paint sees
+// the real viewport.
+export const dynamic = "force-dynamic";
+
 // Hue palette mapping by slug (keeps brand colours stable across packages)
 const HUE_BY_SLUG: Record<string, number> = {
   trial: 140,
