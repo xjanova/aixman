@@ -80,7 +80,10 @@ export function AmbientBackground() {
 
   return (
     <div
-      className="fixed inset-0 -z-10 overflow-hidden pointer-events-none"
+      // Fixed at z-0 so the ambient layer sits behind page content (which
+      // is wrapped in relative z-1 / z-10 stacking contexts). Using -z-10
+      // would place it under the html/body background — invisible.
+      className="fixed inset-0 z-0 overflow-hidden pointer-events-none"
       aria-hidden="true"
     >
       {/* Deep base + radial vignette — establishes the X-DREAMER palette */}

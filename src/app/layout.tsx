@@ -80,7 +80,8 @@ export default function RootLayout({
       lang="th"
       className={`${inter.variable} ${notoSansThai.variable} ${geistMono.variable} h-full antialiased dark`}
     >
-      <body className="min-h-full flex flex-col bg-background text-foreground">
+      {/* Body has no opaque bg — AmbientBackground (fixed, z-index 0) supplies the dark base + fiber threads. Adding `bg-background` here would cover them entirely. */}
+      <body className="min-h-full flex flex-col text-foreground">
         <AmbientBackground />
         <SessionProvider>
           <ToastProvider>
