@@ -282,8 +282,10 @@ export default function ProvidersPage() {
           <div style={{ fontSize: 12, letterSpacing: "0.16em", color: "#a5f3fc", textTransform: "uppercase", marginBottom: 12 }}>· admin · providers</div>
           {/* H1 spec: clamp(48px, 6vw, 80px), weight 300, ls -0.02em, lh 1.05 */}
           <h1 style={{ fontSize: "clamp(40px, 5vw, 64px)", fontWeight: 300, color: "#fff", letterSpacing: "-0.02em", lineHeight: 1.05, margin: 0 }}>
-            จัดการ<span className="xdr-italic-th" style={{ fontStyle: "italic", fontWeight: 200, color: "#c4b5fd", marginLeft: 8 }}>Providers</span>
-            <span style={{ display: "inline-block", marginLeft: 14, padding: "4px 12px", borderRadius: 999, background: "rgba(165,243,252,0.08)", border: "1px solid rgba(165,243,252,0.2)", fontSize: 13, fontWeight: 500, color: "#a5f3fc", letterSpacing: "0.04em", verticalAlign: "middle" }}>
+            จัดการ{" "}
+            <span className="xdr-italic-th" style={{ fontStyle: "italic", fontWeight: 200, color: "#c4b5fd" }}>Providers</span>
+            {" "}
+            <span style={{ display: "inline-block", padding: "4px 14px", borderRadius: 999, background: "rgba(165,243,252,0.08)", border: "1px solid rgba(165,243,252,0.25)", fontSize: 14, fontWeight: 500, color: "#a5f3fc", letterSpacing: "0.04em", verticalAlign: "middle", marginLeft: 8 }}>
               {providers.length} ตัว
             </span>
           </h1>
