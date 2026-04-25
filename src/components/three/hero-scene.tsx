@@ -475,11 +475,14 @@ function Scene() {
 
 export function HeroScene() {
   return (
-    <div className="absolute inset-0">
+    // Explicit width/height on the wrapper — Tailwind `inset-0` alone
+    // sometimes leaves the R3F Canvas at its 300×150 default if the
+    // parent stacking context didn't have computed size at first paint.
+    <div style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}>
       <Canvas
         camera={{ position: [0, 0, 8], fov: 60 }}
         gl={{ antialias: true, alpha: true, powerPreference: "high-performance" }}
-        style={{ background: "transparent" }}
+        style={{ width: "100%", height: "100%", background: "transparent" }}
         dpr={[1, 1.5]}
       >
         <Scene />
