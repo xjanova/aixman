@@ -3,6 +3,7 @@ import { Geist_Mono, Inter, Noto_Sans_Thai } from "next/font/google";
 import { SessionProvider } from "@/components/layout/session-provider";
 import { ToastProvider } from "@/components/ui/toast-provider";
 import { AmbientBackground } from "@/components/ambient/ambient-background";
+import { NetworkPulseBridge } from "@/components/ambient/network-pulse-bridge";
 import { ServiceWorkerRegister } from "@/components/pwa/sw-register";
 import "./globals.css";
 
@@ -83,6 +84,7 @@ export default function RootLayout({
       {/* Body has no opaque bg — AmbientBackground (fixed, z-index 0) supplies the dark base + fiber threads. Adding `bg-background` here would cover them entirely. */}
       <body className="min-h-full flex flex-col text-foreground">
         <AmbientBackground />
+        <NetworkPulseBridge />
         <SessionProvider>
           <ToastProvider>
             {children}

@@ -3,58 +3,51 @@
 /**
  * AmbientBackground — global ambient layer rendered behind every page.
  *
- * Replaced the previous orb-based blur layer with X-DREAMER fiber threads,
- * so the dark woven-light identity is consistent across landing, generate,
- * gallery, profile, pricing, and admin views.
+ * Two-mode strategy:
+ *   - On `/` (landing): GPU-accelerated 3D HeroScene (R3F + drei + bloom)
+ *     — floating distort-orbs whose opacity fades as the auto-orbiting
+ *     camera approaches each one, plus particle field, sparkles, stars.
+ *     2D canvas was bottlenecking on bezier+gradient stroke; GPU path is
+ *     smoother at higher visual density.
+ *   - Every other route: cheap 2D fiber-threads canvas (DPR 1.5, 30fps,
+ *     IntersectionObserver-paused). Subroutes are content-heavy and
+ *     don't need the hero spectacle.
  *
- * Scroll-fade behaviour (matches the template's `App` component):
- *   On the landing page (`/`), the fiber-threads layer is brighter at the
- *   top and fades into a frosted, blurred state as the user scrolls past
- *   ~600px. On every other route the layer is held at a soft static
- *   opacity (no fade — the background is just ambient context).
- *
- *   Per template spec:
- *     baseOpacity = 0.28     // always-on
- *     heroBoost   = 0…0.55   // extra brightness near hero (top of /)
- *     heroAmount  = max(0, 1 - scrollY / 600)  // 1 → 0 over 600px
- *     overlay alpha + backdrop-blur scale with (1 - heroAmount)
- *
- * Implementation: rather than driving these values through React state
- * (which doesn't re-render on every scroll frame, especially under
- * Next.js ISR + prerender), we mutate the DOM refs directly inside an
- * rAF-throttled scroll listener. The component still mounts once at root.
+ * Scroll-fade still applies on `/`: as the user scrolls past ~600px,
+ * the radial overlay darkens and a backdrop blur kicks in to push the
+ * scene back behind the foreground content.
  */
 
 import { FiberThreads } from "@/components/xdreamer/shared";
 import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
+import dynamic from "next/dynamic";
+
+// HeroScene is heavy (R3F + drei + postprocessing). Lazy-load + skip SSR
+// so it only ships when actually used (i.e. on /).
+const HeroScene = dynamic(
+  () => import("@/components/three/hero-scene").then((m) => m.HeroScene),
+  { ssr: false },
+);
 
 export function AmbientBackground() {
   const pathname = usePathname();
-  const fiberRef = useRef<HTMLDivElement | null>(null);
+  const isHome = pathname === "/";
   const overlayRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    const isHome = pathname === "/";
-
     const apply = (heroAmount: number) => {
-      const fiberOpacity = 0.28 + heroAmount * 0.55; // 0.28..0.83
       const overlayInner = 0.15 + (1 - heroAmount) * 0.35; // 0.15..0.5
-      const overlayMid = 0.55 + (1 - heroAmount) * 0.3; // 0.55..0.85
-      const blur = (1 - heroAmount) * 6; // 0..6px
-      if (fiberRef.current) {
-        fiberRef.current.style.opacity = String(fiberOpacity);
-      }
+      const overlayMid = 0.55 + (1 - heroAmount) * 0.3;    // 0.55..0.85
+      const blur = (1 - heroAmount) * 6;                   // 0..6px
       if (overlayRef.current) {
         overlayRef.current.style.background =
           `radial-gradient(ellipse at 50% 30%, rgba(3,6,18,${overlayInner}) 0%, rgba(3,6,18,${overlayMid}) 55%, rgba(3,6,18,0.85) 100%)`;
         overlayRef.current.style.backdropFilter = `blur(${blur}px)`;
-        // Safari prefix — TS DOM types don't expose webkitBackdropFilter
         overlayRef.current.style.setProperty("-webkit-backdrop-filter", `blur(${blur}px)`);
       }
     };
 
-    // Non-home routes sit at a calm baseline (heroAmount = 0)
     if (!isHome) {
       apply(0);
       return;
@@ -70,19 +63,17 @@ export function AmbientBackground() {
       });
     };
 
-    onScroll(); // initial paint based on current scroll position
+    onScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => {
       window.removeEventListener("scroll", onScroll);
       if (raf !== null) cancelAnimationFrame(raf);
     };
-  }, [pathname]);
+  }, [isHome]);
 
   return (
     <div
-      // Fixed at z-0 so the ambient layer sits behind page content (which
-      // is wrapped in relative z-1 / z-10 stacking contexts). Using -z-10
-      // would place it under the html/body background — invisible.
+      // Fixed at z-0 so the ambient layer sits behind page content.
       className="fixed inset-0 z-0 overflow-hidden pointer-events-none"
       aria-hidden="true"
     >
@@ -95,16 +86,13 @@ export function AmbientBackground() {
         }}
       />
 
-      {/* Animated fiber threads — opacity scales with hero proximity on / */}
-      <div
-        ref={fiberRef}
-        className="absolute inset-0"
-        style={{
-          opacity: 0.28,
-          transition: "opacity 120ms linear",
-        }}
-      >
-        <FiberThreads density={50} speed={0.7} hueShift={70} opacity={1} interactive={false} />
+      {/* Animated layer — 3D HeroScene on /, 2D fiber threads elsewhere */}
+      <div className="absolute inset-0">
+        {isHome ? (
+          <HeroScene />
+        ) : (
+          <FiberThreads density={50} speed={0.7} hueShift={70} opacity={0.45} interactive={false} />
+        )}
       </div>
 
       {/* Frosted vignette that intensifies as you scroll (template behaviour) */}
