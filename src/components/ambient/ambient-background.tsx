@@ -18,46 +18,65 @@
  *     heroBoost   = 0…0.55   // extra brightness near hero (top of /)
  *     heroAmount  = max(0, 1 - scrollY / 600)  // 1 → 0 over 600px
  *     overlay alpha + backdrop-blur scale with (1 - heroAmount)
+ *
+ * Implementation: rather than driving these values through React state
+ * (which doesn't re-render on every scroll frame, especially under
+ * Next.js ISR + prerender), we mutate the DOM refs directly inside an
+ * rAF-throttled scroll listener. The component still mounts once at root.
  */
 
 import { FiberThreads } from "@/components/xdreamer/shared";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 
 export function AmbientBackground() {
   const pathname = usePathname();
-  const isHome = pathname === "/";
-  const [scrollY, setScrollY] = useState(0);
-  const rafRef = useRef<number | null>(null);
+  const fiberRef = useRef<HTMLDivElement | null>(null);
+  const overlayRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
+    const isHome = pathname === "/";
+
+    const apply = (heroAmount: number) => {
+      const fiberOpacity = 0.28 + heroAmount * 0.55; // 0.28..0.83
+      const overlayInner = 0.15 + (1 - heroAmount) * 0.35; // 0.15..0.5
+      const overlayMid = 0.55 + (1 - heroAmount) * 0.3; // 0.55..0.85
+      const blur = (1 - heroAmount) * 6; // 0..6px
+      if (fiberRef.current) {
+        fiberRef.current.style.opacity = String(fiberOpacity);
+      }
+      if (overlayRef.current) {
+        overlayRef.current.style.background =
+          `radial-gradient(ellipse at 50% 30%, rgba(3,6,18,${overlayInner}) 0%, rgba(3,6,18,${overlayMid}) 55%, rgba(3,6,18,0.85) 100%)`;
+        overlayRef.current.style.backdropFilter = `blur(${blur}px)`;
+        // Safari prefix — TS DOM types don't expose webkitBackdropFilter
+        overlayRef.current.style.setProperty("-webkit-backdrop-filter", `blur(${blur}px)`);
+      }
+    };
+
+    // Non-home routes sit at a calm baseline (heroAmount = 0)
     if (!isHome) {
-      // Reset scroll-tied state on non-home routes so the background sits
-      // at its calm baseline; we still want to react if the user navigates
-      // back to /.
-      setScrollY(0);
+      apply(0);
       return;
     }
+
+    let raf: number | null = null;
     const onScroll = () => {
-      if (rafRef.current != null) return;
-      rafRef.current = requestAnimationFrame(() => {
-        setScrollY(window.scrollY);
-        rafRef.current = null;
+      if (raf !== null) return;
+      raf = requestAnimationFrame(() => {
+        const heroAmount = Math.max(0, 1 - window.scrollY / 600);
+        apply(heroAmount);
+        raf = null;
       });
     };
+
+    onScroll(); // initial paint based on current scroll position
     window.addEventListener("scroll", onScroll, { passive: true });
-    onScroll();
     return () => {
       window.removeEventListener("scroll", onScroll);
-      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+      if (raf !== null) cancelAnimationFrame(raf);
     };
-  }, [isHome]);
-
-  const heroAmount = isHome ? Math.max(0, 1 - scrollY / 600) : 0;
-  const fiberOpacity = 0.28 + heroAmount * 0.55; // 0.28..0.83
-  const overlayInner = 0.15 + (1 - heroAmount) * 0.35; // 0.15..0.5
-  const overlayMid = 0.55 + (1 - heroAmount) * 0.3; // 0.55..0.85
-  const blur = (1 - heroAmount) * 6; // 0..6px
+  }, [pathname]);
 
   return (
     <div
@@ -75,22 +94,25 @@ export function AmbientBackground() {
 
       {/* Animated fiber threads — opacity scales with hero proximity on / */}
       <div
+        ref={fiberRef}
         className="absolute inset-0"
         style={{
-          opacity: fiberOpacity,
+          opacity: 0.28,
           transition: "opacity 120ms linear",
         }}
       >
-        <FiberThreads density={50} speed={0.7} hueShift={70} opacity={1} interactive={isHome && heroAmount > 0.3} />
+        <FiberThreads density={50} speed={0.7} hueShift={70} opacity={1} interactive={false} />
       </div>
 
       {/* Frosted vignette that intensifies as you scroll (template behaviour) */}
       <div
+        ref={overlayRef}
         className="absolute inset-0"
         style={{
-          background: `radial-gradient(ellipse at 50% 30%, rgba(3,6,18,${overlayInner}) 0%, rgba(3,6,18,${overlayMid}) 55%, rgba(3,6,18,0.85) 100%)`,
-          backdropFilter: `blur(${blur}px)`,
-          WebkitBackdropFilter: `blur(${blur}px)`,
+          background:
+            "radial-gradient(ellipse at 50% 30%, rgba(3,6,18,0.5) 0%, rgba(3,6,18,0.85) 55%, rgba(3,6,18,0.85) 100%)",
+          backdropFilter: "blur(6px)",
+          WebkitBackdropFilter: "blur(6px)",
           transition: "backdrop-filter 150ms linear, -webkit-backdrop-filter 150ms linear",
         }}
       />
