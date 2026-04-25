@@ -81,6 +81,50 @@ function Section({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
+const ASPECT_RATIO_CSS: Record<string, string> = {
+  "1:1": "1/1", "16:9": "16/9", "9:16": "9/16", "4:3": "4/3", "3:2": "3/2",
+};
+
+function StudioFrame({ index, seed, aspect, generating }: { index: number; seed: number; aspect: string; generating: boolean }) {
+  const hue1 = (140 + index * 35 + HUE + Math.floor(seed * 360)) % 360;
+  const hue2 = (hue1 + 60) % 360;
+  return (
+    <div className="rp-studio-frame" style={{
+      aspectRatio: ASPECT_RATIO_CSS[aspect] || "1/1",
+      borderRadius: 14, position: "relative", overflow: "hidden",
+      background: `linear-gradient(135deg, hsl(${hue1},60%,14%), hsl(${hue2},60%,8%))`,
+      border: "1px solid rgba(255,255,255,0.08)", cursor: "pointer",
+    }}>
+      <svg width="100%" height="100%" style={{ position: "absolute", inset: 0 }} preserveAspectRatio="none" viewBox="0 0 100 100">
+        <defs>
+          <linearGradient id={`xdrSg${index}`} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor={`hsl(${hue1},85%,65%)`} stopOpacity="0.9" />
+            <stop offset="100%" stopColor={`hsl(${hue2},85%,70%)`} stopOpacity="0.9" />
+          </linearGradient>
+        </defs>
+        {Array.from({ length: 20 }).map((_, i) => (
+          <path key={i}
+            d={`M${-5 + i * 6} ${110 + Math.sin(i + seed * 10) * 8} Q${40 + Math.sin(i + seed * 5) * 35} ${50 + Math.cos(i) * 25} ${105 - i * 5} ${-5 + Math.cos(i) * 8}`}
+            stroke={`url(#xdrSg${index})`} strokeWidth={0.3 + (i % 4) * 0.25}
+            fill="none" opacity={0.45 + (i % 3) * 0.15}
+          />
+        ))}
+      </svg>
+      {generating && (
+        <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.4)", backdropFilter: "blur(4px)", display: "grid", placeItems: "center", color: "#fff", fontSize: 12, letterSpacing: "0.1em" }}>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 24, marginBottom: 8, animation: "spin 2s linear infinite" }}>⟳</div>
+            WEAVING...
+          </div>
+        </div>
+      )}
+      <div style={{ position: "absolute", left: 12, bottom: 10, fontSize: 10, color: "rgba(255,255,255,0.55)", letterSpacing: "0.08em", fontFamily: "ui-monospace,monospace" }}>
+        #{String(index + 1).padStart(2, "0")} · seed {Math.floor(seed * 99999)}
+      </div>
+    </div>
+  );
+}
+
 const xdrInputStyle: React.CSSProperties = {
   width: "100%", padding: 12, borderRadius: 10,
   background: "rgba(2,6,23,0.6)", color: "#f1f5f9",
@@ -113,7 +157,6 @@ export default function GeneratePage() {
   const [isFavorited, setIsFavorited] = useState(false);
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const [showRefImage, setShowRefImage] = useState(false);
   const [refImage, setRefImage] = useState<string | null>(null);
   const [refImagePreview, setRefImagePreview] = useState<string | null>(null);
   const [strength, setStrength] = useState(0.75);
@@ -480,45 +523,7 @@ export default function GeneratePage() {
           </Section>
         )}
 
-        {/* Image-to-Image */}
-        {tab === "image" && (
-          <div>
-            <button onClick={() => setShowRefImage(!showRefImage)}
-              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: 0, background: "transparent", border: "none", color: "#94a3b8", fontSize: 11, letterSpacing: "0.04em", cursor: "pointer" }}>
-              <span>▧ Image-to-Image (อ้างอิง)</span>
-              <span style={{ fontSize: 9, transform: showRefImage ? "rotate(180deg)" : "none", transition: "transform 200ms" }}>▼</span>
-            </button>
-            {showRefImage && (
-              <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 12 }}>
-                {refImagePreview ? (
-                  <div style={{ position: "relative" }}>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={refImagePreview} alt="Reference" style={{ width: "100%", borderRadius: 10, maxHeight: 180, objectFit: "cover" }} />
-                    <button onClick={() => { setRefImage(null); setRefImagePreview(null); }}
-                      style={{ position: "absolute", top: 8, right: 8, width: 26, height: 26, borderRadius: "50%", background: "rgba(0,0,0,0.65)", color: "#fff", border: "none", cursor: "pointer", fontSize: 14 }}>×</button>
-                  </div>
-                ) : (
-                  <label style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, borderRadius: 12, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#64748b", fontSize: 12, cursor: "pointer" }}>
-                    <div style={{ fontSize: 22, marginBottom: 4 }}>↑</div>
-                    อัปโหลดภาพอ้างอิง
-                    <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => handleImageUpload(e, true)} />
-                  </label>
-                )}
-                <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", marginBottom: 6 }}>
-                    <span>ความเข้มอ้างอิง</span>
-                    <span style={{ color: `hsl(${220 + HUE},70%,75%)`, fontFamily: "ui-monospace,monospace" }}>{Math.round(strength * 100)}%</span>
-                  </div>
-                  <input type="range" min={0} max={1} step={0.05} value={strength} onChange={(e) => setStrength(+e.target.value)}
-                    style={{ width: "100%", accentColor: `hsl(${220 + HUE},70%,60%)` }} />
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#64748b", marginTop: 2 }}>
-                    <span>ยึด prompt</span><span>ยึดภาพ</span>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+        {/* Image-to-Image moved to RIGHT panel "Reference images" */}
 
         {/* Image upload (edit/video) */}
         {(tab === "edit" || tab === "video") && (
@@ -605,11 +610,16 @@ export default function GeneratePage() {
       {/* ═══ CENTER — canvas / result ═══ */}
       <main className="rp-studio-center" style={{ padding: 24, overflowY: "auto", height: "calc(100vh - 80px)" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-          <div style={{ display: "flex", gap: 8 }}>
-            <Pill active>{tab === "image" ? "ภาพ" : tab === "video" ? "วิดีโอ" : "แก้ไขภาพ"}</Pill>
-            <Pill>Variations</Pill>
-            {tab === "image" && <Pill>Upscale</Pill>}
-            <Pill>History</Pill>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Pill active>
+              {tab === "image" ? `ภาพ ${numOutputs} ใบ` : tab === "video" ? "วิดีโอ" : "แก้ไขภาพ"}
+            </Pill>
+            <Pill onClick={() => { setSeed(Math.floor(Math.random() * 99999)); if (prompt.trim() && selectedModelId) handleGenerate(); }}>Variations</Pill>
+            {tab === "image" && (
+              <Pill onClick={() => result?.id && handleUpscale()}>{isUpscaling ? "⟳ Upscale" : "Upscale"}</Pill>
+            )}
+            {tab === "edit" && <Pill>Inpaint</Pill>}
+            <Pill onClick={() => { window.location.href = "/gallery"; }}>History</Pill>
           </div>
           <div style={{ fontSize: 11, color: "#64748b", fontFamily: "ui-monospace,monospace" }}>
             session · {session?.user?.name?.toLowerCase().replace(/\s+/g, "_") || "weaver"}
@@ -622,18 +632,25 @@ export default function GeneratePage() {
           background: "rgba(15,23,42,0.45)",
           border: "1px solid rgba(255,255,255,0.06)",
           backdropFilter: "blur(18px)",
-          display: "flex", alignItems: "center", justifyContent: "center",
         }}>
           {isGenerating ? (
-            <div style={{ textAlign: "center" }}>
-              <div style={{ position: "relative", width: 96, height: 96, margin: "0 auto 24px" }}>
-                <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: `3px solid hsla(${220 + HUE},70%,60%,0.2)` }} />
-                <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: `3px solid hsl(${220 + HUE},70%,60%)`, borderTopColor: "transparent", animation: "spin 1.2s linear infinite" }} />
-                <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", fontSize: 28, color: `hsl(${220 + HUE},70%,75%)` }}>✦</div>
-              </div>
-              <h3 style={{ fontSize: 22, fontWeight: 300, margin: "0 0 8px", color: "#fff", letterSpacing: "-0.01em" }}>กำลังทอ...</h3>
-              <p style={{ fontSize: 13, color: "rgba(203,213,225,0.7)", margin: 0 }}>
-                {tab === "video" ? "วิดีโออาจใช้เวลา 30-120 วินาที" : "รอสักครู่..."}
+            <div style={{ width: "100%" }}>
+              {tab === "image" ? (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 16 }}>
+                  {Array.from({ length: Math.max(numOutputs, 1) }).map((_, i) => (
+                    <StudioFrame key={i} index={i} seed={(i + 1) * 0.137} aspect={aspectRatio} generating={true} />
+                  ))}
+                  {numOutputs < 4 && Array.from({ length: 4 - numOutputs }).map((_, i) => (
+                    <StudioFrame key={`pad${i}`} index={numOutputs + i} seed={(numOutputs + i + 1) * 0.137} aspect={aspectRatio} generating={false} />
+                  ))}
+                </div>
+              ) : (
+                <div style={{ aspectRatio: tab === "video" ? "16/9" : ASPECT_RATIO_CSS[aspectRatio] || "1/1", maxHeight: 520, margin: "0 auto" }}>
+                  <StudioFrame index={0} seed={0.42} aspect={tab === "video" ? "16:9" : aspectRatio} generating={true} />
+                </div>
+              )}
+              <p style={{ fontSize: 13, color: "rgba(203,213,225,0.7)", marginTop: 20, textAlign: "center" }}>
+                {tab === "video" ? "วิดีโออาจใช้เวลา 30-120 วินาที..." : "กำลังทอ... รอสักครู่"}
               </p>
             </div>
           ) : result?.status === "completed" && result.resultUrl ? (
@@ -704,15 +721,21 @@ export default function GeneratePage() {
               </button>
             </div>
           ) : (
-            <div style={{ textAlign: "center", padding: "60px 20px" }}>
-              <div style={{ width: 110, height: 110, borderRadius: 28, margin: "0 auto 28px", position: "relative", overflow: "hidden", background: `linear-gradient(135deg, hsla(${160 + HUE},60%,20%,0.4), hsla(${280 + HUE},60%,15%,0.4))`, border: "1px solid rgba(255,255,255,0.08)", display: "grid", placeItems: "center", fontSize: 44, color: `hsl(${220 + HUE},70%,75%)`, boxShadow: `0 20px 50px -15px hsla(${270 + HUE},70%,40%,0.4)` }}>
-                {tab === "video" ? "▶" : tab === "edit" ? "✦" : "▧"}
-              </div>
-              <h3 style={{ fontSize: "clamp(24px, 3vw, 32px)", fontWeight: 200, margin: "0 0 10px", color: "#fff", letterSpacing: "-0.01em" }}>
-                {tab === "video" ? "สร้างวิดีโอ" : tab === "edit" ? "แก้ไขภาพ" : "สร้างภาพ"}
-                <span className="xdr-italic-th" style={{ fontStyle: "italic", color: `hsl(${220 + HUE},70%,75%)`, marginLeft: 8 }}>ด้วย AI</span>
-              </h3>
-              <p style={{ fontSize: 13, color: "rgba(203,213,225,0.6)", margin: 0 }}>เลือกโมเดล พิมพ์ prompt แล้วกด <span style={{ color: "#a5f3fc" }}>ทอ</span></p>
+            <div style={{ width: "100%" }}>
+              {tab === "image" ? (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 16 }}>
+                  {[0, 1, 2, 3].map((i) => (
+                    <StudioFrame key={i} index={i} seed={(i + 1) * 0.137} aspect={aspectRatio} generating={false} />
+                  ))}
+                </div>
+              ) : (
+                <div style={{ aspectRatio: tab === "video" ? "16/9" : ASPECT_RATIO_CSS[aspectRatio] || "1/1", maxHeight: 520, margin: "0 auto" }}>
+                  <StudioFrame index={0} seed={0.42} aspect={tab === "video" ? "16:9" : aspectRatio} generating={false} />
+                </div>
+              )}
+              <p style={{ fontSize: 13, color: "rgba(203,213,225,0.55)", marginTop: 20, textAlign: "center" }}>
+                เลือกโมเดล พิมพ์ prompt แล้วกด <span style={{ color: "#a5f3fc" }}>ทอ</span> เพื่อเริ่มสร้าง{tab === "video" ? "วิดีโอ" : tab === "edit" ? "การแก้ไข" : "ภาพ"}
+              </p>
             </div>
           )}
         </div>
@@ -760,21 +783,89 @@ export default function GeneratePage() {
         )}
       </main>
 
-      {/* ═══ RIGHT — credits & info ═══ */}
+      {/* ═══ RIGHT — reference / concepts / credits ═══ */}
       <aside className="rp-studio-right" style={{ borderLeft: "1px solid rgba(255,255,255,0.06)", padding: 24, background: "rgba(15,23,42,0.25)", height: "calc(100vh - 80px)", overflowY: "auto" }}>
-        <Section label="Credits">
-          <div style={{ padding: 16, borderRadius: 12, background: `linear-gradient(135deg, hsla(${220 + HUE},60%,25%,0.4), hsla(${280 + HUE},60%,20%,0.4))`, border: "1px solid rgba(255,255,255,0.08)" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-              <div style={{ fontSize: 30, fontWeight: 300, color: "#fff" }}>{creditBalance.toLocaleString()}</div>
-              <div style={{ fontSize: 11, color: "#94a3b8" }}>คงเหลือ</div>
+
+        {/* Reference images dropzone (template) */}
+        <Section label="Reference images">
+          {refImagePreview ? (
+            <div style={{ position: "relative" }}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={refImagePreview} alt="Reference" style={{ width: "100%", height: 140, objectFit: "cover", borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)" }} />
+              <button onClick={() => { setRefImage(null); setRefImagePreview(null); }}
+                style={{ position: "absolute", top: 8, right: 8, width: 26, height: 26, borderRadius: "50%", background: "rgba(0,0,0,0.65)", color: "#fff", border: "none", cursor: "pointer", fontSize: 14 }}>×</button>
             </div>
-            <div style={{ marginTop: 14 }}>
-              <a href="/pricing" style={{ display: "block", textAlign: "center", padding: "9px 0", borderRadius: 8, background: "rgba(255,255,255,0.08)", color: "#fff", fontSize: 12, textDecoration: "none", border: "1px solid rgba(255,255,255,0.1)" }}>
-                + เติม credits
-              </a>
+          ) : (
+            <label style={{ display: "grid", placeItems: "center", height: 140, borderRadius: 12, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#64748b", fontSize: 13, cursor: "pointer", textAlign: "center" }}>
+              <div>
+                <div style={{ fontSize: 22, marginBottom: 4 }}>↑</div>
+                ลาก &amp; วางภาพ ที่นี่
+              </div>
+              <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => handleImageUpload(e, true)} />
+            </label>
+          )}
+          {refImagePreview && tab === "image" && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", marginBottom: 6 }}>
+                <span>ความเข้มอ้างอิง</span>
+                <span style={{ color: `hsl(${220 + HUE},70%,75%)`, fontFamily: "ui-monospace,monospace" }}>{Math.round(strength * 100)}%</span>
+              </div>
+              <input type="range" min={0} max={1} step={0.05} value={strength} onChange={(e) => setStrength(+e.target.value)}
+                style={{ width: "100%", accentColor: `hsl(${220 + HUE},70%,60%)` }} />
             </div>
-          </div>
+          )}
         </Section>
+
+        {/* Concept threads — extracted/curated from prompt */}
+        <div style={{ marginTop: 24 }}>
+          <Section label="Concept threads">
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {(() => {
+                const promptLower = prompt.toLowerCase();
+                const baseConcepts = [
+                  { n: "cinematic · light",   w: 85, h: 270, kw: ["cinematic", "light", "lighting"] },
+                  { n: "aurora · 8k",         w: 72, h: 200, kw: ["aurora", "8k", "ultra"] },
+                  { n: "jade · palette",      w: 90, h: 155, kw: ["jade", "palette", "tone"] },
+                  { n: "volumetric · fog",    w: 64, h: 220, kw: ["volumetric", "fog", "mist"] },
+                  { n: "studio · bokeh",      w: 55, h: 240, kw: ["studio", "bokeh", "portrait"] },
+                ];
+                return baseConcepts.map((c, i) => {
+                  const active = c.kw.some(k => promptLower.includes(k));
+                  const w = active ? Math.min(c.w + 8, 100) : c.w;
+                  return (
+                    <div key={i} style={{ padding: 12, borderRadius: 10, background: "rgba(2,6,23,0.4)", border: `1px solid ${active ? `hsla(${c.h + HUE},70%,55%,0.35)` : "rgba(255,255,255,0.06)"}`, display: "flex", alignItems: "center", gap: 10 }}>
+                      <div style={{ width: 6, height: 28, borderRadius: 3, background: `hsl(${c.h + HUE},70%,60%)`, boxShadow: `0 0 8px hsl(${c.h + HUE},70%,50%)` }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, color: "#f1f5f9" }}>{c.n}</div>
+                        <div style={{ marginTop: 4, height: 2, borderRadius: 2, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
+                          <div style={{ width: `${w}%`, height: "100%", background: `hsl(${c.h + HUE},70%,60%)`, transition: "width 240ms" }} />
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 11, color: "#64748b", fontFamily: "ui-monospace,monospace" }}>{w}%</div>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+          </Section>
+        </div>
+
+        {/* Credits */}
+        <div style={{ marginTop: 24 }}>
+          <Section label="Credits">
+            <div style={{ padding: 16, borderRadius: 12, background: `linear-gradient(135deg, hsla(${220 + HUE},60%,25%,0.4), hsla(${280 + HUE},60%,20%,0.4))`, border: "1px solid rgba(255,255,255,0.08)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                <div style={{ fontSize: 30, fontWeight: 300, color: "#fff" }}>{creditBalance.toLocaleString()}</div>
+                <div style={{ fontSize: 11, color: "#94a3b8" }}>คงเหลือ</div>
+              </div>
+              <div style={{ marginTop: 14 }}>
+                <a href="/pricing" style={{ display: "block", textAlign: "center", padding: "9px 0", borderRadius: 8, background: "rgba(255,255,255,0.08)", color: "#fff", fontSize: 12, textDecoration: "none", border: "1px solid rgba(255,255,255,0.1)" }}>
+                  + เติม credits
+                </a>
+              </div>
+            </div>
+          </Section>
+        </div>
 
         <div style={{ marginTop: 24 }}>
           <Section label="คำแนะนำ">
