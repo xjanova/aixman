@@ -28,9 +28,12 @@ interface Generation {
   creditsUsed: number;
   processingMs: number | null;
   isFavorited: boolean;
+  favoritesCount: number;
   model: { name: string; provider: string; providerSlug: string };
   createdAt: string;
 }
+
+type ViewMode = "grid" | "list";
 
 export default function GalleryPage() {
   const { data: session } = useSession();
@@ -40,6 +43,7 @@ export default function GalleryPage() {
   const [sort, setSort] = useState<"trending" | "newest" | "top">("newest");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [view, setView] = useState<ViewMode>("grid");
   const [selectedItem, setSelectedItem] = useState<Generation | null>(null);
   const [generations, setGenerations] = useState<Generation[]>([]);
   const [loading, setLoading] = useState(true);
@@ -47,6 +51,17 @@ export default function GalleryPage() {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const searchTimeout = useRef<NodeJS.Timeout>(undefined);
+
+  useEffect(() => {
+    const stored = typeof window !== "undefined" ? localStorage.getItem("xdr-gallery-view") : null;
+    if (stored === "grid" || stored === "list") {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setView(stored);
+    }
+  }, []);
+  useEffect(() => {
+    if (typeof window !== "undefined") localStorage.setItem("xdr-gallery-view", view);
+  }, [view]);
 
   useEffect(() => { if (session === null) router.push("/login"); }, [session, router]);
 
@@ -62,6 +77,7 @@ export default function GalleryPage() {
     const params = new URLSearchParams();
     params.set("page", String(pageNum));
     params.set("limit", "20");
+    params.set("sort", sort);
     if (filter === "favorites") params.set("favorites", "true");
     else if (filter !== "all") params.set("type", filter);
     if (debouncedSearch) params.set("search", debouncedSearch);
@@ -74,7 +90,7 @@ export default function GalleryPage() {
       setPage(pageNum);
     } catch {}
     setLoading(false); setLoadingMore(false);
-  }, [session, filter, debouncedSearch]);
+  }, [session, filter, debouncedSearch, sort]);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { setPage(1); fetchData(1); }, [fetchData]);
@@ -158,8 +174,15 @@ export default function GalleryPage() {
           ))}
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ค้นหา prompt..."
-            style={{ width: 220, padding: "8px 14px", borderRadius: 10, background: "rgba(2,6,23,0.5)", color: "#f1f5f9", border: "1px solid rgba(255,255,255,0.1)", fontSize: 13, outline: "none", fontFamily: "inherit" }} />
+          <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+            <span style={{ position: "absolute", left: 12, fontSize: 13, color: "#64748b", pointerEvents: "none" }}>⌕</span>
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ค้นหา prompt..."
+              style={{ width: 220, padding: "8px 14px 8px 32px", borderRadius: 10, background: "rgba(2,6,23,0.5)", color: "#f1f5f9", border: "1px solid rgba(255,255,255,0.1)", fontSize: 13, outline: "none", fontFamily: "inherit" }} />
+            {search && (
+              <button onClick={() => setSearch("")} title="ล้าง"
+                style={{ position: "absolute", right: 6, width: 22, height: 22, borderRadius: 6, background: "rgba(255,255,255,0.06)", color: "#94a3b8", border: "none", cursor: "pointer", fontSize: 11 }}>×</button>
+            )}
+          </div>
           {sortOpts.map(s => (
             <button key={s.key} onClick={() => setSort(s.key)}
               style={{
@@ -169,6 +192,22 @@ export default function GalleryPage() {
                 border: `1px solid ${sort === s.key ? `hsla(${270 + HUE},60%,55%,0.4)` : "rgba(255,255,255,0.08)"}`,
               }}>{s.label}</button>
           ))}
+          <div style={{ display: "flex", gap: 0, padding: 3, background: "rgba(2,6,23,0.5)", borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)" }}>
+            <button onClick={() => setView("grid")} title="Grid view"
+              style={{
+                padding: "5px 10px", borderRadius: 7, fontSize: 13, cursor: "pointer",
+                background: view === "grid" ? "rgba(255,255,255,0.1)" : "transparent",
+                color: view === "grid" ? "#fff" : "#94a3b8",
+                border: "none", display: "flex", alignItems: "center", gap: 4,
+              }}>▦ <span style={{ fontSize: 11 }}>Grid</span></button>
+            <button onClick={() => setView("list")} title="List view"
+              style={{
+                padding: "5px 10px", borderRadius: 7, fontSize: 13, cursor: "pointer",
+                background: view === "list" ? "rgba(255,255,255,0.1)" : "transparent",
+                color: view === "list" ? "#fff" : "#94a3b8",
+                border: "none", display: "flex", alignItems: "center", gap: 4,
+              }}>☰ <span style={{ fontSize: 11 }}>List</span></button>
+          </div>
         </div>
       </div>
 
@@ -202,54 +241,138 @@ export default function GalleryPage() {
         </div>
       ) : (
         <>
-          <div className="rp-gallery-mason" style={{ columnCount: 4, columnGap: 14 }}>
-            {generations.map(gen => {
-              const hue = (gen.id * 37 + HUE) % 360;
-              const h2 = (hue + 50) % 360;
-              return (
-                <div key={gen.id} onClick={() => setSelectedItem(gen)}
-                  onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-4px)"; e.currentTarget.style.boxShadow = `0 25px 50px -15px hsla(${hue},80%,55%,0.4)`; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.transform = ""; e.currentTarget.style.boxShadow = "0 10px 30px -10px rgba(0,0,0,0.6)"; }}
-                  style={{
-                    breakInside: "avoid", marginBottom: 14, borderRadius: 14, overflow: "hidden", position: "relative",
-                    background: `linear-gradient(135deg, hsl(${hue},60%,14%), hsl(${h2},60%,8%))`,
-                    border: "1px solid rgba(255,255,255,0.06)", cursor: "pointer",
-                    transition: "transform 400ms cubic-bezier(0.4,0,0.2,1), box-shadow 400ms",
-                    boxShadow: "0 10px 30px -10px rgba(0,0,0,0.6)",
-                  }}>
-                  <div style={{ position: "relative" }}>
-                    {gen.type === "video" ? (
-                      <video src={gen.thumbnailUrl || gen.resultUrl} muted style={{ width: "100%", display: "block", objectFit: "cover" }} />
-                    ) : (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={gen.thumbnailUrl || gen.resultUrl} alt={gen.prompt} style={{ width: "100%", display: "block", objectFit: "cover" }} />
-                    )}
-                    {gen.type !== "image" && (
-                      <span style={{ position: "absolute", top: 10, right: 10, padding: "3px 8px", borderRadius: 999, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", fontSize: 9, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>
-                        {gen.type === "video" ? "▶ video" : "✦ edit"}
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ padding: "10px 14px 12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div style={{ minWidth: 0, flex: 1 }}>
-                      <div style={{ fontSize: 12, color: "#fff", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{gen.prompt}</div>
-                      <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 2 }}>@{gen.model?.provider}</div>
+          {view === "grid" ? (
+            <div className="rp-gallery-mason" style={{ columnCount: 4, columnGap: 14 }}>
+              {generations.map(gen => {
+                const hue = (gen.id * 37 + HUE) % 360;
+                const h2 = (hue + 50) % 360;
+                const showFavCount = (sort === "trending" || sort === "top") && gen.favoritesCount > 0;
+                return (
+                  <div key={gen.id} onClick={() => setSelectedItem(gen)}
+                    onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-4px)"; e.currentTarget.style.boxShadow = `0 25px 50px -15px hsla(${hue},80%,55%,0.4)`; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.transform = ""; e.currentTarget.style.boxShadow = "0 10px 30px -10px rgba(0,0,0,0.6)"; }}
+                    style={{
+                      breakInside: "avoid", marginBottom: 14, borderRadius: 14, overflow: "hidden", position: "relative",
+                      background: `linear-gradient(135deg, hsl(${hue},60%,14%), hsl(${h2},60%,8%))`,
+                      border: "1px solid rgba(255,255,255,0.06)", cursor: "pointer",
+                      transition: "transform 400ms cubic-bezier(0.4,0,0.2,1), box-shadow 400ms",
+                      boxShadow: "0 10px 30px -10px rgba(0,0,0,0.6)",
+                    }}>
+                    <div style={{ position: "relative" }}>
+                      {gen.type === "video" ? (
+                        <video src={gen.thumbnailUrl || gen.resultUrl} muted style={{ width: "100%", display: "block", objectFit: "cover" }} />
+                      ) : (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={gen.thumbnailUrl || gen.resultUrl} alt={gen.prompt} style={{ width: "100%", display: "block", objectFit: "cover" }} />
+                      )}
+                      {gen.type !== "image" && (
+                        <span style={{ position: "absolute", top: 10, right: 10, padding: "3px 8px", borderRadius: 999, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", fontSize: 9, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>
+                          {gen.type === "video" ? "▶ video" : "✦ edit"}
+                        </span>
+                      )}
+                      {showFavCount && (
+                        <span style={{ position: "absolute", top: 10, left: 10, padding: "3px 8px", borderRadius: 999, background: "rgba(252,165,165,0.18)", backdropFilter: "blur(8px)", fontSize: 11, color: "#fca5a5", border: "1px solid rgba(252,165,165,0.3)" }}>
+                          ♥ {gen.favoritesCount}
+                        </span>
+                      )}
                     </div>
-                    <div style={{ display: "flex", gap: 4, marginLeft: 8 }}>
+                    <div style={{ padding: "10px 14px 12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ fontSize: 12, color: "#fff", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{gen.prompt}</div>
+                        <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 2 }}>@{gen.model?.provider}</div>
+                      </div>
+                      <div style={{ display: "flex", gap: 4, marginLeft: 8 }}>
+                        <button onClick={(e) => toggleFavorite(gen, e)}
+                          style={{ width: 26, height: 26, borderRadius: 7, background: "rgba(0,0,0,0.4)", border: "1px solid rgba(255,255,255,0.08)", color: gen.isFavorited ? "#fca5a5" : "rgba(255,255,255,0.55)", cursor: "pointer", fontSize: 12 }}>
+                          {gen.isFavorited ? "♥" : "♡"}
+                        </button>
+                        <button onClick={(e) => handleDownload(gen, e)}
+                          style={{ width: 26, height: 26, borderRadius: 7, background: "rgba(0,0,0,0.4)", border: "1px solid rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.55)", cursor: "pointer", fontSize: 12 }}>
+                          ↓
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="rp-gallery-list" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {generations.map(gen => {
+                const hue = (gen.id * 37 + HUE) % 360;
+                const h2 = (hue + 50) % 360;
+                return (
+                  <div key={gen.id} onClick={() => setSelectedItem(gen)}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(15,23,42,0.6)"; e.currentTarget.style.borderColor = `hsla(${hue},60%,55%,0.3)`; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(15,23,42,0.35)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.06)"; }}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "120px 1fr auto auto auto",
+                      alignItems: "center",
+                      gap: 16,
+                      padding: 12,
+                      borderRadius: 12,
+                      background: "rgba(15,23,42,0.35)",
+                      border: "1px solid rgba(255,255,255,0.06)",
+                      cursor: "pointer",
+                      transition: "background 200ms, border-color 200ms",
+                    }}>
+                    <div style={{
+                      width: 120, height: 90, borderRadius: 8, overflow: "hidden", position: "relative",
+                      background: `linear-gradient(135deg, hsl(${hue},60%,14%), hsl(${h2},60%,8%))`,
+                      border: "1px solid rgba(255,255,255,0.05)",
+                    }}>
+                      {gen.type === "video" ? (
+                        <video src={gen.thumbnailUrl || gen.resultUrl} muted style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                      ) : (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={gen.thumbnailUrl || gen.resultUrl} alt={gen.prompt} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                      )}
+                      {gen.type !== "image" && (
+                        <span style={{ position: "absolute", top: 4, right: 4, padding: "2px 6px", borderRadius: 999, background: "rgba(0,0,0,0.6)", fontSize: 8, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>
+                          {gen.type === "video" ? "▶" : "✦"}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 14, color: "#fff", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 4 }}>
+                        {gen.prompt || "(ไม่มี prompt)"}
+                      </div>
+                      <div style={{ display: "flex", gap: 12, fontSize: 11, color: "#94a3b8", flexWrap: "wrap" }}>
+                        <span>@{gen.model?.provider}</span>
+                        <span>·</span>
+                        <span>{gen.model?.name}</span>
+                        <span>·</span>
+                        <span>{new Date(gen.createdAt).toLocaleDateString("th-TH", { year: "numeric", month: "short", day: "numeric" })}</span>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, fontSize: 11, color: "#64748b" }}>
+                      <span>✦ {gen.creditsUsed}</span>
+                      {gen.favoritesCount > 0 && <span style={{ color: "#fca5a5" }}>♥ {gen.favoritesCount}</span>}
+                    </div>
+                    <span style={{
+                      padding: "4px 10px", borderRadius: 999, fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase",
+                      background: gen.status === "completed" ? "hsla(150,60%,40%,0.18)" : "hsla(0,60%,50%,0.18)",
+                      color: gen.status === "completed" ? "#86efac" : "#fca5a5",
+                      border: `1px solid ${gen.status === "completed" ? "hsla(150,60%,50%,0.25)" : "hsla(0,60%,55%,0.25)"}`,
+                    }}>
+                      {gen.status === "completed" ? "สำเร็จ" : "ล้มเหลว"}
+                    </span>
+                    <div style={{ display: "flex", gap: 6 }}>
                       <button onClick={(e) => toggleFavorite(gen, e)}
-                        style={{ width: 26, height: 26, borderRadius: 7, background: "rgba(0,0,0,0.4)", border: "1px solid rgba(255,255,255,0.08)", color: gen.isFavorited ? "#fca5a5" : "rgba(255,255,255,0.55)", cursor: "pointer", fontSize: 12 }}>
+                        style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(2,6,23,0.5)", border: "1px solid rgba(255,255,255,0.08)", color: gen.isFavorited ? "#fca5a5" : "rgba(255,255,255,0.55)", cursor: "pointer", fontSize: 13 }}>
                         {gen.isFavorited ? "♥" : "♡"}
                       </button>
                       <button onClick={(e) => handleDownload(gen, e)}
-                        style={{ width: 26, height: 26, borderRadius: 7, background: "rgba(0,0,0,0.4)", border: "1px solid rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.55)", cursor: "pointer", fontSize: 12 }}>
+                        style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(2,6,23,0.5)", border: "1px solid rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.55)", cursor: "pointer", fontSize: 13 }}>
                         ↓
                       </button>
                     </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
 
           {page < totalPages && (
             <div style={{ textAlign: "center", marginTop: 40 }}>
@@ -314,6 +437,31 @@ export default function GalleryPage() {
           </div>
         </div>
       )}
+
+      <style jsx>{`
+        @keyframes pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 0.7; } }
+        @media (max-width: 1280px) {
+          .rp-gallery-mason { column-count: 3 !important; }
+        }
+        @media (max-width: 900px) {
+          .rp-gallery-mason { column-count: 2 !important; }
+          .rp-gallery-list > div {
+            grid-template-columns: 90px 1fr auto !important;
+            grid-template-areas: "thumb meta actions" "thumb stats actions" !important;
+          }
+          .rp-gallery-list > div > :nth-child(1) { grid-area: thumb; width: 90px !important; height: 70px !important; }
+          .rp-gallery-list > div > :nth-child(2) { grid-area: meta; }
+          .rp-gallery-list > div > :nth-child(3) { grid-area: stats; flex-direction: row !important; }
+          .rp-gallery-list > div > :nth-child(4) { display: none !important; }
+          .rp-gallery-list > div > :nth-child(5) { grid-area: actions; }
+        }
+        @media (max-width: 560px) {
+          .rp-gallery-mason { column-count: 1 !important; }
+          .rp-filter-row { flex-direction: column !important; align-items: stretch !important; }
+          .rp-filter-row > div { width: 100%; }
+          .rp-filter-row input { width: 100% !important; }
+        }
+      `}</style>
     </div>
   );
 }
