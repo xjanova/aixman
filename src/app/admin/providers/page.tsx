@@ -149,24 +149,53 @@ function Modal({ title, children, onClose, onSave }: { title: string; children: 
     }}>
       <div onClick={(e) => e.stopPropagation()} style={{
         width: "100%", maxWidth: 520, maxHeight: "90vh", overflowY: "auto",
-        padding: 28, borderRadius: 22,
+        padding: 32, borderRadius: 24,
         background: "rgba(15,23,42,0.95)",
         border: "1px solid rgba(255,255,255,0.08)",
-        boxShadow: "0 50px 100px -20px rgba(0,0,0,0.6)",
+        backdropFilter: "blur(20px)",
+        boxShadow: "0 50px 100px -20px rgba(0,0,0,0.7)",
       }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-          <h3 style={{ fontSize: 18, fontWeight: 500, color: "#fff", margin: 0 }}>{title}</h3>
-          <button onClick={onClose} style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", color: "#94a3b8", cursor: "pointer", fontSize: 14 }}>×</button>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
+          {/* Modal title — matches DashboardPage h2 spec (lighter weight + tracking) */}
+          <h3 style={{ fontSize: 22, fontWeight: 300, color: "#fff", margin: 0, letterSpacing: "-0.01em", lineHeight: 1.2 }}>{title}</h3>
+          <button onClick={onClose}
+            style={{
+              width: 32, height: 32, borderRadius: 10,
+              background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)",
+              color: "#94a3b8", cursor: "pointer", fontSize: 16,
+              flexShrink: 0,
+              transition: "all 250ms cubic-bezier(0.4,0,0.2,1)",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.color = "#fff"; e.currentTarget.style.background = "rgba(255,255,255,0.1)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = "#94a3b8"; e.currentTarget.style.background = "rgba(255,255,255,0.06)"; }}>×</button>
         </div>
         {children}
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 24 }}>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, marginTop: 28 }}>
+          {/* Cancel — ghost button (matches Nav cta-ghost spec) */}
           <button onClick={onClose}
-            style={{ padding: "10px 18px", borderRadius: 10, background: "rgba(255,255,255,0.05)", color: "#94a3b8", border: "1px solid rgba(255,255,255,0.1)", fontSize: 13, cursor: "pointer" }}>
+            style={{
+              padding: "11px 20px", borderRadius: 12,
+              background: "rgba(255,255,255,0.06)", color: "#e2e8f0",
+              border: "1px solid rgba(255,255,255,0.15)",
+              fontSize: 13, fontWeight: 500, cursor: "pointer",
+              transition: "all 250ms cubic-bezier(0.4,0,0.2,1)",
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.background = "rgba(255,255,255,0.1)"}
+            onMouseLeave={(e) => e.currentTarget.style.background = "rgba(255,255,255,0.06)"}>
             ยกเลิก
           </button>
+          {/* Save — primary CTA spec (3-stop gradient + lift on hover) */}
           <button onClick={onSave}
-            style={{ padding: "10px 22px", borderRadius: 10, background: `linear-gradient(135deg, hsl(${160 + HUE},70%,50%), hsl(${280 + HUE},70%,55%))`, color: "#fff", border: "none", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-            บันทึก
+            style={{
+              padding: "12px 22px", borderRadius: 12,
+              background: "linear-gradient(135deg, #10b981 0%, #06b6d4 50%, #8b5cf6 100%)",
+              color: "#fff", border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer",
+              boxShadow: `0 12px 30px -10px hsla(${270 + HUE},80%,50%,0.6)`,
+              transition: "all 250ms cubic-bezier(0.4,0,0.2,1)",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-1px)"; e.currentTarget.style.filter = "brightness(1.1)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.transform = ""; e.currentTarget.style.filter = ""; }}>
+            บันทึก →
           </button>
         </div>
       </div>
@@ -244,25 +273,46 @@ export default function ProvidersPage() {
 
   return (
     <div style={{ color: "#f1f5f9" }}>
-      {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 24, flexWrap: "wrap", gap: 16 }}>
-        <div>
-          <div style={{ fontSize: 12, letterSpacing: "0.16em", color: "#a5f3fc", textTransform: "uppercase", marginBottom: 6 }}>· admin · providers</div>
-          <h1 style={{ fontSize: "clamp(28px, 3.5vw, 40px)", fontWeight: 300, color: "#fff", letterSpacing: "-0.02em", margin: 0 }}>
-            Providers <span style={{ fontSize: 13, color: "#64748b", fontWeight: 400, marginLeft: 8 }}>{providers.length} ตัว</span>
+      {/* Header — matches X-DREAMER section/page heading spec */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 28, flexWrap: "wrap", gap: 16 }}>
+        <div style={{ flex: 1, minWidth: 280 }}>
+          <div style={{ fontSize: 12, letterSpacing: "0.16em", color: "#a5f3fc", textTransform: "uppercase", marginBottom: 12 }}>· admin · providers</div>
+          {/* H1 spec: clamp(48px, 6vw, 80px), weight 300, ls -0.02em, lh 1.05 */}
+          <h1 style={{ fontSize: "clamp(40px, 5vw, 64px)", fontWeight: 300, color: "#fff", letterSpacing: "-0.02em", lineHeight: 1.05, margin: 0 }}>
+            จัดการ<span className="xdr-italic-th" style={{ fontStyle: "italic", fontWeight: 200, color: "#c4b5fd", marginLeft: 8 }}>Providers</span>
+            <span style={{ display: "inline-block", marginLeft: 14, padding: "4px 12px", borderRadius: 999, background: "rgba(165,243,252,0.08)", border: "1px solid rgba(165,243,252,0.2)", fontSize: 13, fontWeight: 500, color: "#a5f3fc", letterSpacing: "0.04em", verticalAlign: "middle" }}>
+              {providers.length} ตัว
+            </span>
           </h1>
-          <p style={{ fontSize: 13, color: "rgba(203,213,225,0.65)", margin: "6px 0 0" }}>จัดการ AI providers ทั้งหมด — เพิ่ม / แก้ไข / สลับเปิดปิด</p>
+          <p style={{ marginTop: 14, fontSize: 16, color: "rgba(203,213,225,0.7)", fontWeight: 300, lineHeight: 1.55 }}>
+            จัดการ AI providers ทั้งหมด · เพิ่ม / แก้ไข / สลับเปิดปิด
+          </p>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          {/* Refresh — secondary ghost button (matches nav cta-ghost spec) */}
           <button onClick={fetchProviders} title="Refresh"
-            style={{ padding: 10, borderRadius: 10, background: "rgba(255,255,255,0.05)", color: "#94a3b8", border: "1px solid rgba(255,255,255,0.1)", cursor: "pointer", fontSize: 14 }}>↻</button>
+            style={{
+              padding: "11px 14px", borderRadius: 12,
+              background: "rgba(255,255,255,0.06)", color: "#e2e8f0",
+              border: "1px solid rgba(255,255,255,0.15)",
+              fontSize: 14, fontWeight: 500, cursor: "pointer",
+              transition: "all 250ms cubic-bezier(0.4,0,0.2,1)",
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.background = "rgba(255,255,255,0.1)"}
+            onMouseLeave={(e) => e.currentTarget.style.background = "rgba(255,255,255,0.06)"}>↻</button>
+          {/* Primary CTA — matches Nav cta-primary 3-stop gradient + Studio button spec */}
           <button onClick={() => setShowAddModal(true)}
             style={{
-              display: "flex", alignItems: "center", gap: 8, padding: "10px 18px", borderRadius: 10,
-              background: `linear-gradient(135deg, hsl(${160 + HUE},70%,50%), hsl(${280 + HUE},70%,55%))`,
-              color: "#fff", border: "none", fontSize: 13, fontWeight: 600, cursor: "pointer",
-              boxShadow: `0 12px 30px -10px hsla(${270 + HUE},80%,50%,0.5)`,
-            }}>+ เพิ่ม Provider</button>
+              display: "flex", alignItems: "center", gap: 8, padding: "12px 22px", borderRadius: 12,
+              background: "linear-gradient(135deg, #10b981 0%, #06b6d4 50%, #8b5cf6 100%)",
+              color: "#fff", border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer",
+              boxShadow: `0 12px 30px -10px hsla(${270 + HUE},80%,50%,0.6)`,
+              transition: "all 250ms cubic-bezier(0.4,0,0.2,1)",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-1px)"; e.currentTarget.style.filter = "brightness(1.1)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.transform = ""; e.currentTarget.style.filter = ""; }}>
+            + เพิ่ม Provider <span style={{ fontSize: 16 }}>→</span>
+          </button>
         </div>
       </div>
 
@@ -337,21 +387,37 @@ export default function ProvidersPage() {
                   </td>
                   <td style={{ ...td("center"), fontFamily: "ui-monospace,monospace", color: "#94a3b8" }}>{p.sortOrder}</td>
                   <td style={td("right")}>
-                    <div style={{ display: "inline-flex", gap: 4 }}>
+                    {/* Action toolbar — matches Studio frame toolbar spec (rgba+blur+border) */}
+                    <div style={{ display: "inline-flex", gap: 6 }}>
                       <button onClick={() => toggleActive(p.id, p.isActive)} title={p.isActive ? "ปิดใช้งาน" : "เปิดใช้งาน"}
                         style={{
-                          width: 30, height: 30, borderRadius: 8,
-                          background: p.isActive ? "hsla(160,70%,40%,0.18)" : "rgba(255,255,255,0.04)",
-                          border: `1px solid ${p.isActive ? "hsla(160,70%,55%,0.35)" : "rgba(255,255,255,0.08)"}`,
+                          width: 32, height: 32, borderRadius: 10,
+                          background: p.isActive
+                            ? "linear-gradient(135deg, hsla(160,70%,40%,0.25), hsla(180,70%,40%,0.25))"
+                            : "rgba(0,0,0,0.4)",
+                          backdropFilter: "blur(8px)",
+                          border: `1px solid ${p.isActive ? "hsla(160,70%,55%,0.4)" : "rgba(255,255,255,0.12)"}`,
                           color: p.isActive ? "#34d399" : "#94a3b8",
-                          cursor: "pointer", fontSize: 12,
-                        }}>{p.isActive ? "●" : "○"}</button>
+                          cursor: "pointer", fontSize: 13,
+                          transition: "all 250ms cubic-bezier(0.4,0,0.2,1)",
+                          boxShadow: p.isActive ? "0 0 12px hsla(160,70%,50%,0.3)" : "none",
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.transform = "translateY(-1px)"}
+                        onMouseLeave={(e) => e.currentTarget.style.transform = ""}>
+                        {p.isActive ? "●" : "○"}
+                      </button>
                       <button onClick={() => setEditingProvider({ ...p })} title="แก้ไข"
                         style={{
-                          width: 30, height: 30, borderRadius: 8,
-                          background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
-                          color: "#a5f3fc", cursor: "pointer", fontSize: 12,
-                        }}>✎</button>
+                          width: 32, height: 32, borderRadius: 10,
+                          background: "rgba(0,0,0,0.4)", backdropFilter: "blur(8px)",
+                          border: "1px solid rgba(255,255,255,0.12)",
+                          color: "#a5f3fc", cursor: "pointer", fontSize: 13,
+                          transition: "all 250ms cubic-bezier(0.4,0,0.2,1)",
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-1px)"; e.currentTarget.style.background = `hsla(${220 + HUE},60%,40%,0.25)`; e.currentTarget.style.borderColor = `hsla(${220 + HUE},70%,55%,0.4)`; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.transform = ""; e.currentTarget.style.background = "rgba(0,0,0,0.4)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.12)"; }}>
+                        ✎
+                      </button>
                     </div>
                   </td>
                 </tr>
