@@ -51,7 +51,8 @@
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-error: var(--error);
-  --font-sans: var(--font-geist-sans);
+  /* X-DREAMER font stack — Noto Sans Thai for Thai glyphs, Inter for Latin */
+  --font-sans: var(--font-noto-sans-thai), var(--font-inter);
   --font-mono: var(--font-geist-mono);
 }
 
@@ -63,7 +64,7 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
+  font-family: var(--font-sans), system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   overflow-x: hidden;
 }
 

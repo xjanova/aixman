@@ -513,7 +513,7 @@ function BannerSlider() {
                 {slide.badge}
               </div>
               <div style={{ fontSize: 12, letterSpacing: "0.14em", color: "#a5f3fc", textTransform: "uppercase", marginBottom: 8 }}>{slide.subtitle}</div>
-              <h2 style={{ fontSize: "clamp(36px, 4.8vw, 64px)", fontWeight: 200, color: "#fff", letterSpacing: "-0.02em", lineHeight: 1.05, margin: 0, fontFamily: "Inter, sans-serif" }}>
+              <h2 style={{ fontSize: "clamp(36px, 4.8vw, 64px)", fontWeight: 200, color: "#fff", letterSpacing: "-0.02em", lineHeight: 1.05, margin: 0, fontFamily: "var(--font-inter), sans-serif" }}>
                 <span className="xdr-italic-th" style={{ background: `linear-gradient(120deg, hsl(${h1},80%,75%) 0%, hsl(${h2},85%,72%) 50%, hsl(${h3},80%,78%) 100%)`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", paddingBottom: "0.1em", display: "inline-block" }}>{slide.title}</span>
               </h2>
               <p style={{ marginTop: 18, fontSize: 16, color: "rgba(203,213,225,0.8)", fontWeight: 300, lineHeight: 1.55, maxWidth: 520 }}>{slide.desc}</p>
@@ -737,7 +737,7 @@ function Nav() {
     <nav className="rp-nav" style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 50, padding: "20px 48px", display: "flex", alignItems: "center", justifyContent: "space-between", backdropFilter: "blur(18px) saturate(1.3)", background: "linear-gradient(180deg, rgba(3,6,18,0.65), rgba(3,6,18,0.25))", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
       <Link href="/" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none", cursor: "pointer" }}>
         <Image src="/xdreamer-logo.png" alt="X-DREAMER" width={38} height={38} style={{ borderRadius: 10, objectFit: "cover", boxShadow: "0 0 20px rgba(139,92,246,0.45)" }} />
-        <div className="rp-nav-brand" style={{ fontFamily: "Inter, sans-serif", fontWeight: 900, letterSpacing: "0.22em", fontSize: 14, color: "#fff" }}>X-DREAMER</div>
+        <div className="rp-nav-brand" style={{ fontFamily: "var(--font-inter), sans-serif", fontWeight: 900, letterSpacing: "0.22em", fontSize: 14, color: "#fff" }}>X-DREAMER</div>
         <div className="rp-nav-badge" style={{ fontSize: 10, letterSpacing: "0.2em", color: "#94a3b8", padding: "3px 8px", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 999, marginLeft: 6 }}>v4 · LIVE</div>
       </Link>
       <div className="rp-nav-links" style={{ display: "flex", gap: 28, fontSize: 14, color: "rgba(255,255,255,0.75)", fontWeight: 500 }}>

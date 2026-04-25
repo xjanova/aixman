@@ -164,7 +164,14 @@ export function XdrThemeStyles() {
   // Inject once globally — keyframes, font cascade, responsive helpers, italic fix
   return (
     <style jsx global>{`
-      html, body { background: #030612; color: #f1f5f9; font-family: 'Noto Sans Thai', 'Inter', system-ui, sans-serif; }
+      html, body {
+        background: #030612;
+        color: #f1f5f9;
+        /* Use the next/font CSS variables loaded in root layout — string
+           literals would skip the actually-loaded webfont and fall back
+           to system Thai (heavier glyphs). */
+        font-family: var(--font-noto-sans-thai), var(--font-inter), system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      }
       body { overflow-x: hidden; }
       @keyframes pulse { 0%,100% {opacity:1;} 50% {opacity:0.5;} }
       @keyframes blink { 0%,50% {opacity:1;} 50.01%,100% {opacity:0;} }
