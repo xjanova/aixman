@@ -95,15 +95,18 @@ export function AmbientBackground() {
         )}
       </div>
 
-      {/* Frosted vignette that intensifies as you scroll (template behaviour) */}
+      {/* Frosted vignette — initial state matches heroAmount=1 (calm at top
+          of /) so the 3D scene isn't masked by a heavy overlay before the
+          useEffect runs. Non-home routes immediately get apply(0) which
+          dims this back to the dark baseline. */}
       <div
         ref={overlayRef}
         className="absolute inset-0"
         style={{
           background:
-            "radial-gradient(ellipse at 50% 30%, rgba(3,6,18,0.5) 0%, rgba(3,6,18,0.85) 55%, rgba(3,6,18,0.85) 100%)",
-          backdropFilter: "blur(6px)",
-          WebkitBackdropFilter: "blur(6px)",
+            "radial-gradient(ellipse at 50% 30%, rgba(3,6,18,0.15) 0%, rgba(3,6,18,0.55) 55%, rgba(3,6,18,0.85) 100%)",
+          backdropFilter: "blur(0px)",
+          WebkitBackdropFilter: "blur(0px)",
           transition: "backdrop-filter 150ms linear, -webkit-backdrop-filter 150ms linear",
         }}
       />

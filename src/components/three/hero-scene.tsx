@@ -19,12 +19,13 @@ import * as THREE from "three";
 
 const CA_OFFSET = new THREE.Vector2(0.0005, 0.0005);
 
-// Fade thresholds — orb is fully solid past `farDist`, fully sheer (almost
-// invisible) past `nearDist`. Linear ramp between the two.
-const ORB_NEAR_DIST = 1.6; // camera within this distance → orb fades to nearOpacity
-const ORB_FAR_DIST = 5.5;  // camera beyond this → orb at full opacity
-const ORB_NEAR_OPACITY = 0.08;
-const ORB_FAR_OPACITY = 0.92;
+// Fade thresholds — orb is fully solid past `farDist`, sheer past `nearDist`.
+// Tuned so the orb stays visibly bright most of the time and only thins out
+// when the camera is genuinely on top of it (within ~1 unit).
+const ORB_NEAR_DIST = 1.0;
+const ORB_FAR_DIST = 5.0;
+const ORB_NEAR_OPACITY = 0.35;
+const ORB_FAR_OPACITY = 0.95;
 
 function FloatingOrb({
   position,
