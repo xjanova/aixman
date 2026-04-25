@@ -482,7 +482,15 @@ export function HeroScene() {
     <div style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}>
       <Canvas
         camera={{ position: [0, 0, 8], fov: 60 }}
-        gl={{ antialias: true, alpha: true, powerPreference: "high-performance" }}
+        gl={{
+          antialias: true,
+          alpha: true,
+          powerPreference: "high-performance",
+          // Required for screenshot tools / readPixels to capture rendered
+          // content (browsers clear the framebuffer after composite when
+          // false, which made the 3D scene look invisible to MCP capture).
+          preserveDrawingBuffer: true,
+        }}
         style={{ width: "100%", height: "100%", background: "transparent" }}
         dpr={[1, 1.5]}
       >
