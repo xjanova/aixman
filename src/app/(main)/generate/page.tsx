@@ -375,9 +375,9 @@ export default function GeneratePage() {
 
   // ─── RENDER ─────────────────────────────────────────────────────────
   return (
-    <div className="rp-studio" style={{ minHeight: "calc(100vh - 80px)", display: "grid", gridTemplateColumns: "340px 1fr 320px", gap: 0, color: "#f1f5f9" }}>
+    <div className="rp-studio" style={{ display: "grid", gridTemplateColumns: "340px 1fr 320px", gap: 0, color: "#f1f5f9", alignItems: "start" }}>
       {/* ═══ LEFT — controls ═══ */}
-      <aside className="rp-studio-left" style={{ borderRight: "1px solid rgba(255,255,255,0.06)", padding: 24, display: "flex", flexDirection: "column", gap: 20, background: "rgba(15,23,42,0.25)", height: "calc(100vh - 80px)", overflowY: "auto" }}>
+      <aside className="rp-studio-left rp-scroll" style={{ borderRight: "1px solid rgba(255,255,255,0.06)", padding: 24, display: "flex", flexDirection: "column", gap: 20, background: "rgba(15,23,42,0.25)", position: "sticky", top: 80, height: "calc(100vh - 80px)", overflowY: "auto" }}>
 
         {/* Tabs */}
         <div style={{ display: "flex", gap: 4, padding: 4, background: "rgba(2,6,23,0.5)", borderRadius: 12, border: "1px solid rgba(255,255,255,0.05)" }}>
@@ -608,7 +608,7 @@ export default function GeneratePage() {
       </aside>
 
       {/* ═══ CENTER — canvas / result ═══ */}
-      <main className="rp-studio-center" style={{ padding: 24, overflowY: "auto", height: "calc(100vh - 80px)" }}>
+      <main className="rp-studio-center" style={{ padding: 24 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Pill active>
@@ -784,7 +784,7 @@ export default function GeneratePage() {
       </main>
 
       {/* ═══ RIGHT — reference / concepts / credits ═══ */}
-      <aside className="rp-studio-right" style={{ borderLeft: "1px solid rgba(255,255,255,0.06)", padding: 24, background: "rgba(15,23,42,0.25)", height: "calc(100vh - 80px)", overflowY: "auto" }}>
+      <aside className="rp-studio-right rp-scroll" style={{ borderLeft: "1px solid rgba(255,255,255,0.06)", padding: 24, background: "rgba(15,23,42,0.25)", position: "sticky", top: 80, height: "calc(100vh - 80px)", overflowY: "auto" }}>
 
         {/* Reference images dropzone (template) */}
         <Section label="Reference images">
@@ -907,14 +907,47 @@ export default function GeneratePage() {
 
       <style jsx>{`
         @keyframes spin { to { transform: rotate(360deg); } }
+        /* Visible scrollbar so users know LEFT/RIGHT panels can scroll */
+        .rp-scroll {
+          scrollbar-width: thin;
+          scrollbar-color: rgba(165,243,252,0.25) transparent;
+          scrollbar-gutter: stable;
+        }
+        .rp-scroll::-webkit-scrollbar { width: 8px; }
+        .rp-scroll::-webkit-scrollbar-track { background: rgba(2,6,23,0.4); }
+        .rp-scroll::-webkit-scrollbar-thumb {
+          background: rgba(165,243,252,0.18);
+          border-radius: 4px;
+          border: 1px solid rgba(255,255,255,0.05);
+        }
+        .rp-scroll::-webkit-scrollbar-thumb:hover { background: rgba(165,243,252,0.35); }
+        /* Fade-out gradient at the bottom of LEFT/RIGHT to hint there's more below */
+        .rp-studio-left::after, .rp-studio-right::after {
+          content: "";
+          position: sticky; bottom: 0; left: 0; right: 0;
+          height: 32px;
+          background: linear-gradient(to bottom, transparent, rgba(15,23,42,0.85));
+          pointer-events: none;
+          margin-top: -32px;
+        }
+        @media (max-width: 1280px) {
+          .rp-studio { grid-template-columns: 300px 1fr 300px !important; }
+        }
         @media (max-width: 1100px) {
-          .rp-studio { grid-template-columns: 320px 1fr !important; }
+          .rp-studio { grid-template-columns: 300px 1fr !important; }
           .rp-studio-right { display: none !important; }
         }
         @media (max-width: 720px) {
           .rp-studio { grid-template-columns: 1fr !important; }
-          .rp-studio-left { height: auto !important; border-right: none !important; border-bottom: 1px solid rgba(255,255,255,0.06) !important; }
+          .rp-studio-left {
+            position: static !important;
+            height: auto !important;
+            max-height: none !important;
+            border-right: none !important;
+            border-bottom: 1px solid rgba(255,255,255,0.06) !important;
+          }
           .rp-studio-center { height: auto !important; }
+          .rp-studio-left::after { display: none; }
         }
       `}</style>
     </div>
