@@ -19,21 +19,18 @@
  */
 
 import { FiberThreads } from "@/components/xdreamer/shared";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
-import dynamic from "next/dynamic";
-
-// HeroScene is heavy (R3F + drei + postprocessing). Lazy-load + skip SSR
-// so it only ships when actually used (i.e. on /).
-const HeroScene = dynamic(
-  () => import("@/components/three/hero-scene").then((m) => m.HeroScene),
-  { ssr: false },
-);
+import { HeroScene } from "@/components/three/hero-scene";
 
 export function AmbientBackground() {
   const pathname = usePathname();
   const isHome = pathname === "/";
   const overlayRef = useRef<HTMLDivElement | null>(null);
+  // Defer mounting HeroScene until after hydration so SSR + initial paint
+  // don't choke trying to spin up R3F + WebGL on a 0×0 container.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
 
   useEffect(() => {
     const apply = (heroAmount: number) => {
@@ -86,13 +83,15 @@ export function AmbientBackground() {
         }}
       />
 
-      {/* Animated layer — 3D HeroScene on /, 2D fiber threads elsewhere */}
+      {/* Animated layer — 3D HeroScene on /, 2D fiber threads elsewhere.
+          Only render after first client paint (mounted) so the R3F Canvas
+          measures a real container size. */}
       <div className="absolute inset-0">
-        {isHome ? (
+        {mounted && isHome ? (
           <HeroScene />
-        ) : (
+        ) : mounted ? (
           <FiberThreads density={50} speed={0.7} hueShift={70} opacity={0.45} interactive={false} />
-        )}
+        ) : null}
       </div>
 
       {/* Frosted vignette — initial state matches heroAmount=1 (calm at top
