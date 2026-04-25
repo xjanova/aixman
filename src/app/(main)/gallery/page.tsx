@@ -35,6 +35,39 @@ interface Generation {
 
 type ViewMode = "grid" | "list";
 
+const DEMO_PROMPTS = [
+  { prompt: "ปราสาทลอยฟ้าที่ทอด้วยเส้นใยแสง โทนหยกและออโรร่า", seed: "castle-aurora", w: 800, h: 1000, model: "FLUX 1.1 Pro", provider: "Replicate", credits: 4, favs: 142 },
+  { prompt: "หญิงสาวกับเครื่องประดับเงิน แสง cinematic บนทุ่งสีพาสเทล", seed: "silver-dream", w: 800, h: 1200, model: "Imagen 3", provider: "Google", credits: 6, favs: 87 },
+  { prompt: "Cyberpunk Bangkok at golden hour, volumetric fog, 8k hyperreal", seed: "cyber-bkk", w: 1200, h: 800, model: "Flux Dev", provider: "fal", credits: 3, favs: 215 },
+  { prompt: "เทพเจ้าหิมะกับมังกรเงิน รายละเอียดละเอียดมาก fantasy concept art", seed: "snow-deity", w: 800, h: 1000, model: "MidJourney v6", provider: "MidJourney", credits: 8, favs: 312 },
+  { prompt: "Macro shot of dewdrops on a spider web at sunrise", seed: "dewdrops", w: 1000, h: 800, model: "Stable Diffusion XL", provider: "Stability AI", credits: 2, favs: 45 },
+  { prompt: "เด็กชายในชุดอวกาศกำลังจ้องดวงดาว แสง bokeh พื้นหลัง", seed: "astro-boy", w: 800, h: 1000, model: "FLUX 1.1 Pro", provider: "Replicate", credits: 4, favs: 178 },
+  { prompt: "Underwater jellyfish bioluminescence, deep ocean, cinematic light", seed: "jellyfish", w: 800, h: 1000, model: "Imagen 3", provider: "Google", credits: 6, favs: 96 },
+  { prompt: "วัดไทยโบราณในป่าฝน หมอกบาง ๆ แสงทะลุใบไม้", seed: "thai-temple", w: 1200, h: 800, model: "FLUX 1.1 Pro", provider: "Replicate", credits: 4, favs: 234 },
+  { prompt: "Crystal palace floating above clouds, art nouveau details, jade tones", seed: "crystal-palace", w: 800, h: 1200, model: "MidJourney v6", provider: "MidJourney", credits: 8, favs: 411 },
+  { prompt: "Portrait of a fox spirit with nine tails, painterly, soft glow", seed: "kitsune", w: 800, h: 1000, model: "Flux Dev", provider: "fal", credits: 3, favs: 167 },
+  { prompt: "Neon-lit Tokyo alleyway at midnight, rain-soaked street, retro 80s", seed: "neon-tokyo", w: 1000, h: 800, model: "Stable Diffusion XL", provider: "Stability AI", credits: 2, favs: 128 },
+  { prompt: "Aurora over a snowy mountain range, vast scale, clear stars", seed: "aurora-mtn", w: 1200, h: 800, model: "FLUX 1.1 Pro", provider: "Replicate", credits: 4, favs: 289 },
+];
+
+function buildDemoData(): Generation[] {
+  const baseDate = new Date();
+  return DEMO_PROMPTS.map((d, i) => ({
+    id: 90001 + i,
+    type: "image",
+    status: "completed",
+    prompt: d.prompt,
+    resultUrl: `https://picsum.photos/seed/${d.seed}/${d.w}/${d.h}`,
+    thumbnailUrl: `https://picsum.photos/seed/${d.seed}/${Math.floor(d.w / 2)}/${Math.floor(d.h / 2)}`,
+    creditsUsed: d.credits,
+    processingMs: 8000 + i * 500,
+    isFavorited: false,
+    favoritesCount: d.favs,
+    model: { name: d.model, provider: d.provider, providerSlug: d.provider.toLowerCase().replace(/\s+/g, "-") },
+    createdAt: new Date(baseDate.getTime() - (i + 1) * 3 * 60 * 60 * 1000).toISOString(),
+  }));
+}
+
 export default function GalleryPage() {
   const { data: session } = useSession();
   const router = useRouter();
@@ -95,8 +128,14 @@ export default function GalleryPage() {
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { setPage(1); fetchData(1); }, [fetchData]);
 
+  const isDemoItem = (gen: Generation) => gen.id >= 90000;
+
   const toggleFavorite = async (gen: Generation, e?: React.MouseEvent) => {
     e?.stopPropagation();
+    if (isDemoItem(gen)) {
+      toast("info", "ตัวอย่าง — สร้างผลงานก่อน", "บันทึกได้เฉพาะผลงานที่คุณสร้างเอง");
+      return;
+    }
     try {
       if (gen.isFavorited) {
         await fetch("/api/favorites", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ generationId: gen.id }) });
@@ -110,6 +149,10 @@ export default function GalleryPage() {
 
   const handleDownload = async (gen: Generation, e?: React.MouseEvent) => {
     e?.stopPropagation();
+    if (isDemoItem(gen)) {
+      toast("info", "ตัวอย่าง — สร้างผลงานก่อน", "ดาวน์โหลดได้เฉพาะผลงานที่คุณสร้างเอง");
+      return;
+    }
     if (!gen.resultUrl) return;
     try {
       const res = await fetch(gen.resultUrl);
@@ -125,6 +168,10 @@ export default function GalleryPage() {
   };
 
   const handleUpscale = async (gen: Generation) => {
+    if (isDemoItem(gen)) {
+      toast("info", "ตัวอย่าง — สร้างผลงานก่อน", "Upscale ได้เฉพาะผลงานที่คุณสร้างเอง");
+      return;
+    }
     try {
       const res = await fetch("/api/upscale", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ generationId: gen.id }) });
       const data = await res.json();
@@ -134,6 +181,9 @@ export default function GalleryPage() {
   };
 
   if (!session) return null;
+
+  const isDemo = generations.length === 0 && filter === "all" && !debouncedSearch;
+  const displayGenerations: Generation[] = isDemo ? buildDemoData() : generations;
 
   const filterOpts = [
     { key: "all" as const, label: "ทั้งหมด" },
@@ -223,16 +273,16 @@ export default function GalleryPage() {
             }} />
           ))}
         </div>
-      ) : generations.length === 0 ? (
+      ) : generations.length === 0 && (filter !== "all" || debouncedSearch) ? (
         <div style={{ textAlign: "center", padding: "80px 20px" }}>
           <div style={{ width: 110, height: 110, borderRadius: 28, margin: "0 auto 28px", background: `linear-gradient(135deg, hsla(${160 + HUE},60%,20%,0.4), hsla(${280 + HUE},60%,15%,0.4))`, border: "1px solid rgba(255,255,255,0.08)", display: "grid", placeItems: "center", fontSize: 44, color: `hsl(${220 + HUE},70%,75%)` }}>
             ▧
           </div>
           <h3 style={{ fontSize: 24, fontWeight: 300, color: "#fff", marginBottom: 8 }}>
-            {filter === "favorites" ? "ยังไม่มีรายการโปรด" : "ยังไม่มีผลงาน"}
+            {filter === "favorites" ? "ยังไม่มีรายการโปรด" : debouncedSearch ? "ไม่พบผลลัพธ์" : "ยังไม่มีผลงาน"}
           </h3>
           <p style={{ fontSize: 13, color: "rgba(203,213,225,0.6)", marginBottom: 24 }}>
-            {filter === "favorites" ? "กดหัวใจในผลงานเพื่อบันทึก" : "เริ่มทอความฝันแรกของคุณ"}
+            {filter === "favorites" ? "กดหัวใจในผลงานเพื่อบันทึก" : debouncedSearch ? `ลองค้นหาด้วยคำอื่น` : "เริ่มทอความฝันแรกของคุณ"}
           </p>
           <button onClick={() => router.push("/generate")}
             style={{ padding: "14px 28px", borderRadius: 12, background: `linear-gradient(135deg, hsl(${160 + HUE},70%,50%), hsl(${280 + HUE},70%,55%))`, color: "#fff", border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", boxShadow: `0 12px 30px -10px hsla(${270 + HUE},80%,50%,0.6)` }}>
@@ -241,9 +291,29 @@ export default function GalleryPage() {
         </div>
       ) : (
         <>
+          {isDemo && (
+            <div style={{
+              marginBottom: 24, padding: "16px 20px", borderRadius: 14,
+              background: `linear-gradient(135deg, hsla(${220 + HUE},60%,25%,0.25), hsla(${280 + HUE},60%,20%,0.25))`,
+              border: `1px solid hsla(${220 + HUE},60%,55%,0.3)`,
+              display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap",
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 14, minWidth: 0, flex: 1 }}>
+                <div style={{ width: 44, height: 44, flexShrink: 0, borderRadius: 12, background: `linear-gradient(135deg, hsl(${160 + HUE},70%,55%), hsl(${280 + HUE},70%,60%))`, display: "grid", placeItems: "center", fontSize: 22, color: "#fff" }}>✦</div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 500, color: "#fff", marginBottom: 2 }}>นี่คือตัวอย่างผลงานในชุมชน</div>
+                  <div style={{ fontSize: 12, color: "rgba(203,213,225,0.7)" }}>คุณยังไม่มีผลงาน — เริ่มทอความฝันแรกของคุณเพื่อเห็นผลงานจริงในแกลเลอรี</div>
+                </div>
+              </div>
+              <button onClick={() => router.push("/generate")}
+                style={{ padding: "10px 22px", borderRadius: 10, background: `linear-gradient(135deg, hsl(${160 + HUE},70%,50%), hsl(${280 + HUE},70%,55%))`, color: "#fff", border: "none", fontSize: 13, fontWeight: 600, cursor: "pointer", flexShrink: 0 }}>
+                ✦ เริ่มสร้าง
+              </button>
+            </div>
+          )}
           {view === "grid" ? (
             <div className="rp-gallery-mason" style={{ columnCount: 4, columnGap: 14 }}>
-              {generations.map(gen => {
+              {displayGenerations.map(gen => {
                 const hue = (gen.id * 37 + HUE) % 360;
                 const h2 = (hue + 50) % 360;
                 const showFavCount = (sort === "trending" || sort === "top") && gen.favoritesCount > 0;
@@ -298,7 +368,7 @@ export default function GalleryPage() {
             </div>
           ) : (
             <div className="rp-gallery-list" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {generations.map(gen => {
+              {displayGenerations.map(gen => {
                 const hue = (gen.id * 37 + HUE) % 360;
                 const h2 = (hue + 50) % 360;
                 return (
