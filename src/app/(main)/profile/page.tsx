@@ -33,6 +33,7 @@ export default function ProfilePage() {
   const router = useRouter();
   const [credits, setCredits] = useState<CreditInfo | null>(null);
   const [generations, setGenerations] = useState<Generation[]>([]);
+  const [totalGens, setTotalGens] = useState(0);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loadingCredits, setLoadingCredits] = useState(true);
   const [loadingGens, setLoadingGens] = useState(true);
@@ -43,7 +44,7 @@ export default function ProfilePage() {
   useEffect(() => {
     if (status !== "authenticated") return;
     fetch("/api/credits").then(r => r.json()).then(data => { setCredits(data); setLoadingCredits(false); }).catch(() => setLoadingCredits(false));
-    fetch("/api/gallery?limit=8").then(r => r.json()).then(data => { setGenerations(data.data || []); setLoadingGens(false); }).catch(() => setLoadingGens(false));
+    fetch("/api/gallery?limit=8").then(r => r.json()).then(data => { setGenerations(data.data || []); setTotalGens(data.total || 0); setLoadingGens(false); }).catch(() => setLoadingGens(false));
     fetch("/api/credits/history").then(r => r.json()).then(data => { setTransactions(data.data || []); setLoadingTxns(false); }).catch(() => setLoadingTxns(false));
   }, [status]);
 
@@ -63,7 +64,7 @@ export default function ProfilePage() {
   // Build 4 X-DREAMER stat cards
   const statCards = [
     { l: "เครดิตคงเหลือ", v: credits ? credits.balance.toLocaleString() : "—", d: credits ? `จาก ${credits.totalBought.toLocaleString()} ซื้อมา` : "", hue: 200 },
-    { l: "ผลงานทั้งหมด", v: generations.length > 0 ? `${generations.length}+` : "—", d: "ทอด้วยจินตนาการ", hue: 160 },
+    { l: "ผลงานทั้งหมด", v: totalGens > 0 ? totalGens.toLocaleString() : "—", d: "ทอด้วยจินตนาการ", hue: 160 },
     { l: "เครดิตที่ใช้", v: credits ? credits.totalUsed.toLocaleString() : "—", d: credits ? `${usedPct.toFixed(0)}% ของที่ซื้อ` : "", hue: 290 },
     { l: "โบนัส", v: credits ? credits.totalBonus.toLocaleString() : "—", d: "จาก referral / promo", hue: 260 },
   ];
