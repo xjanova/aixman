@@ -18,29 +18,45 @@ export async function GET() {
   });
 }
 
+function parseGenerationId(raw: unknown): number | null {
+  const id = typeof raw === 'number' ? raw : parseInt(String(raw), 10);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
 export async function POST(request: NextRequest) {
   const userId = await getCurrentUserId();
   if (!userId) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { generationId } = await request.json();
+  const body = await request.json().catch(() => ({}));
+  const generationId = parseGenerationId(body.generationId);
   if (!generationId) {
-    return NextResponse.json(
-      { error: 'generationId required' },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: 'Valid generationId required' }, { status: 400 });
+  }
+
+  // Ownership check — a user may only favorite their own generation.
+  const generation = await prisma.aiGeneration.findFirst({
+    where: { id: generationId, userId },
+    select: { id: true },
+  });
+  if (!generation) {
+    return NextResponse.json({ error: 'Generation not found' }, { status: 404 });
   }
 
   try {
     await prisma.aiFavorite.create({
       data: { userId, generationId },
     });
-    return NextResponse.json({ success: true });
-  } catch {
-    // Already favorited (unique constraint violation)
-    return NextResponse.json({ success: true });
+  } catch (error) {
+    // P2002 = unique constraint (already favorited) — treat as success (idempotent).
+    if ((error as { code?: string }).code !== 'P2002') {
+      console.error('Favorite create error:', error);
+      return NextResponse.json({ error: 'Failed to add favorite' }, { status: 500 });
+    }
   }
+
+  return NextResponse.json({ success: true });
 }
 
 export async function DELETE(request: NextRequest) {
@@ -49,12 +65,10 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { generationId } = await request.json();
+  const body = await request.json().catch(() => ({}));
+  const generationId = parseGenerationId(body.generationId);
   if (!generationId) {
-    return NextResponse.json(
-      { error: 'generationId required' },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: 'Valid generationId required' }, { status: 400 });
   }
 
   await prisma.aiFavorite.deleteMany({

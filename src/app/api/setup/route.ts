@@ -60,19 +60,28 @@ export async function POST(request: NextRequest) {
       update: { isActive: true },
     });
 
-    // Create account pool if API key provided
+    // Create account pool if API key provided.
+    // Guarded against re-runs of the wizard so we don't pile up duplicate pools.
     if (providerData.apiKey) {
-      await prisma.aiAccountPool.create({
-        data: {
-          providerId: provider.id,
-          label: `${config.name} Account #1`,
-          apiKey: encrypt(providerData.apiKey),
-          apiSecret: providerData.apiSecret ? encrypt(providerData.apiSecret) : null,
-          priority: 50,
-          dailyQuota: 1000,
-          rotationMode: 'round_robin',
-        },
+      const label = `${config.name} Account #1`;
+      const existingPool = await prisma.aiAccountPool.findFirst({
+        where: { providerId: provider.id, label },
       });
+      const poolData = {
+        apiKey: encrypt(providerData.apiKey),
+        apiSecret: providerData.apiSecret ? encrypt(providerData.apiSecret) : null,
+        priority: 50,
+        dailyQuota: 1000,
+        rotationMode: 'round_robin',
+        isActive: true,
+      };
+      if (existingPool) {
+        await prisma.aiAccountPool.update({ where: { id: existingPool.id }, data: poolData });
+      } else {
+        await prisma.aiAccountPool.create({
+          data: { providerId: provider.id, label, ...poolData },
+        });
+      }
     }
   }
 
@@ -93,6 +102,9 @@ export async function POST(request: NextRequest) {
     { providerSlug: 'runway', modelId: 'gen4_turbo', name: 'Gen-4 Turbo', category: 'video', costPerUnit: 0.25, creditsPerUnit: 12, maxDuration: 10 },
     { providerSlug: 'kling', modelId: 'kling-v2.5', name: 'Kling 2.5', category: 'video', costPerUnit: 0.35, creditsPerUnit: 14, maxDuration: 10 },
     { providerSlug: 'luma', modelId: 'ray-2', name: 'Dream Machine Ray-2', category: 'video', costPerUnit: 0.20, creditsPerUnit: 15, maxDuration: 10 },
+    // Upscale / enhance models (drive the Upscale button)
+    { providerSlug: 'stability', modelId: 'stable-image-upscale-fast', name: 'Upscale Fast (4x)', category: 'image', subcategory: 'upscale', costPerUnit: 0.01, creditsPerUnit: 2, maxWidth: 4096, maxHeight: 4096 },
+    { providerSlug: 'replicate', modelId: 'nightmareai/real-esrgan', name: 'Real-ESRGAN Upscale', category: 'image', subcategory: 'upscale', costPerUnit: 0.01, creditsPerUnit: 2, maxWidth: 4096, maxHeight: 4096 },
   ];
 
   for (const m of defaultModels) {
@@ -106,6 +118,7 @@ export async function POST(request: NextRequest) {
         modelId: m.modelId,
         name: m.name,
         category: m.category,
+        subcategory: (m as { subcategory?: string }).subcategory ?? null,
         costPerUnit: m.costPerUnit,
         creditsPerUnit: m.creditsPerUnit,
         maxWidth: m.maxWidth || null,

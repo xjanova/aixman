@@ -41,76 +41,61 @@ type Slide = {
 
 const BANNER_SLIDES: Slide[] = [
   {
-    id: "seedance",
-    badge: "NEW MODEL",
-    title: "Seedance 2.0",
-    subtitle: "โมเดลวิดีโอรุ่นใหม่",
-    desc: "สร้างวิดีโอ 10 วินาที 1080p จากข้อความ พร้อม motion ที่สมจริงและควบคุมกล้องได้",
-    cta: "ลองใช้เลย",
+    id: "image",
+    badge: "TEXT → IMAGE",
+    title: "สร้างภาพจากข้อความ",
+    subtitle: "Seedream · FLUX · GPT Image · Stable Diffusion",
+    desc: "พิมพ์สิ่งที่จินตนาการ แล้วได้ภาพความละเอียดสูงในไม่กี่วินาที เลือกได้หลายโมเดลจากผู้ให้บริการชั้นนำ",
+    cta: "เริ่มสร้างภาพ",
     stats: [
-      { k: "1080p", l: "ความละเอียด" },
-      { k: "10s", l: "ความยาวสูงสุด" },
-      { k: "60fps", l: "ลื่นไหล" },
+      { k: "4K+", l: "ความละเอียด" },
+      { k: "6+", l: "โมเดลภาพ" },
+      { k: "~10s", l: "ต่อภาพ" },
     ],
     hues: [200, 260, 300],
     pattern: "waves",
   },
   {
-    id: "voxel",
-    badge: "3D STUDIO",
-    title: "Voxel Forge",
-    subtitle: "ปั้นโลก 3D จากคำบรรยาย",
-    desc: "ปราสาท ดินแดน หรือตัวละคร — สร้างโมเดล 3D พร้อม texture ในไม่กี่นาที",
-    cta: "เข้าสู่ Voxel Forge",
+    id: "video",
+    badge: "TEXT / IMAGE → VIDEO",
+    title: "ภาพเคลื่อนไหวจากไอเดีย",
+    subtitle: "Seedance · Sora · Kling · Runway · Luma",
+    desc: "เปลี่ยนข้อความหรือภาพนิ่งให้เป็นวิดีโอ พร้อมการเคลื่อนไหวที่ลื่นไหล จากโมเดลวิดีโอชั้นนำหลายค่าย",
+    cta: "สร้างวิดีโอ",
     stats: [
-      { k: ".GLB", l: "ส่งออกมาตรฐาน" },
-      { k: "PBR", l: "Material" },
-      { k: "4K", l: "Texture" },
-    ],
-    hues: [160, 180, 220],
-    pattern: "voxel",
-  },
-  {
-    id: "loom-live",
-    badge: "LIVE COLLAB",
-    title: "Loom Live",
-    subtitle: "ทอความฝันร่วมกัน · real-time",
-    desc: "เชิญเพื่อนมาทอ prompt พร้อมกัน เห็น cursor, เห็น thread, แก้พร้อมกัน",
-    cta: "เปิดห้องใหม่",
-    stats: [
-      { k: "8", l: "ผู้ร่วมงาน" },
-      { k: "0ms", l: "sync latency" },
-      { k: "∞", l: "ประวัติ versioning" },
+      { k: "1080p", l: "ความละเอียด" },
+      { k: "10s", l: "ความยาว" },
+      { k: "5", l: "โมเดลวิดีโอ" },
     ],
     hues: [280, 320, 200],
     pattern: "threads",
   },
   {
-    id: "audio-muse",
-    badge: "AUDIO · BETA",
-    title: "Muse Audio v3",
-    subtitle: "เสียงประกอบ · เพลง · บรรยากาศ",
-    desc: "จากข้อความสู่ score ภาพยนตร์ · ambient · foley — มี stem แยกสำหรับตัดต่อ",
-    cta: "ฟังตัวอย่าง",
+    id: "edit",
+    badge: "EDIT & UPSCALE",
+    title: "แก้ไขและขยายภาพ",
+    subtitle: "image-to-image · upscale",
+    desc: "ปรับแก้ภาพด้วย prompt หรือขยายความละเอียดให้คมชัดขึ้นหลายเท่า ด้วยโมเดล edit และ upscale ที่ใช้งานได้จริง",
+    cta: "ลองแก้ไขภาพ",
     stats: [
-      { k: "48kHz", l: "คุณภาพสตูดิโอ" },
-      { k: "4 stems", l: "แยก track" },
-      { k: "3 min", l: "ความยาว" },
+      { k: "2–4x", l: "ขยายภาพ" },
+      { k: "img2img", l: "แก้ด้วย prompt" },
+      { k: "PNG", l: "ผลลัพธ์คมชัด" },
     ],
-    hues: [30, 340, 280],
-    pattern: "audio",
+    hues: [160, 180, 220],
+    pattern: "voxel",
   },
   {
-    id: "workflow",
-    badge: "AUTOMATION",
-    title: "Workflow Nodes",
-    subtitle: "ร้อยโมเดลเป็น pipeline ของคุณ",
-    desc: "Prompt → Image → Upscale → Video → Audio — ลาก connect ต่อเป็น workflow แบบ node-based",
-    cta: "ดู workflows",
+    id: "platform",
+    badge: "ONE PLATFORM",
+    title: "ทุกโมเดล ในที่เดียว",
+    subtitle: "9 ผู้ให้บริการ · ระบบเครดิตเดียว",
+    desc: "สลับใช้โมเดลจาก 9 ผู้ให้บริการได้อิสระ ระบบหมุน API key อัตโนมัติเพื่อความเสถียร จ่ายด้วยเครดิตเดียว",
+    cta: "เริ่มใช้งาน",
     stats: [
-      { k: "40+", l: "Nodes พร้อมใช้" },
-      { k: "JSON", l: "Export / Import" },
-      { k: "API", l: "Trigger" },
+      { k: "9", l: "ผู้ให้บริการ" },
+      { k: "17+", l: "โมเดล" },
+      { k: "1", l: "ระบบเครดิต" },
     ],
     hues: [220, 180, 260],
     pattern: "nodes",
@@ -119,24 +104,24 @@ const BANNER_SLIDES: Slide[] = [
 
 const FEATURES = [
   { eyebrow: "01 · FABRIC", title: "เส้นใยเจตจำนง", desc: "ควบคุม prompt ผ่านเส้นใยที่ลากต่อเนื่อง — ปรับแสง, อารมณ์, และเรื่องราวได้แบบ real-time โดยไม่ต้องเริ่มใหม่", hue: 160 },
-  { eyebrow: "02 · LOOM", title: "ทอแบบข้ามสื่อ", desc: "เริ่มจากภาพแล้วเปลี่ยนเป็นวิดีโอ, เริ่มจากเสียงแล้วแปลงเป็นฉาก 3D โมเดลของเราไหลข้ามสื่อได้เป็นธรรมชาติ", hue: 200 },
+  { eyebrow: "02 · LOOM", title: "ทอแบบข้ามสื่อ", desc: "เริ่มจากข้อความเป็นภาพ แล้วต่อยอดภาพนั้นเป็นวิดีโอ หรือแก้ไข/ขยายให้คมชัด — ไหลข้ามโมเดลได้เป็นธรรมชาติ", hue: 200 },
   { eyebrow: "03 · DREAM CITADEL", title: "ปราสาทแห่งแนวคิด", desc: "เก็บจินตนาการของคุณเป็นห้องสมุดที่มีชีวิต — แต่ละแนวคิดทอติดกันด้วยเส้นใยความสัมพันธ์ที่ AI มองเห็น", hue: 270 },
 ];
 
 const GALLERY_ITEMS = [
-  { title: "ปราสาทในหมอกจันทรา", author: "นภาลัย", hue: 270, ratio: "3/4", mode: "image" },
-  { title: "Dream Loop · 12s", author: "kairos", hue: 200, ratio: "1/1", mode: "video" },
-  { title: "ผืนป่าความคิด", author: "จิตรา", hue: 160, ratio: "3/4", mode: "image" },
-  { title: "Whisper of the Loom", author: "Theo", hue: 290, ratio: "4/5", mode: "audio" },
-  { title: "เส้นใยดวงดาว", author: "พิรุณ", hue: 230, ratio: "3/4", mode: "image" },
-  { title: "Citadel · 3D scan", author: "arc_ot", hue: 180, ratio: "1/1", mode: "3d" },
-  { title: "มโนทัศน์สีมรกต", author: "สิริกาญจน์", hue: 150, ratio: "4/5", mode: "image" },
-  { title: "Violet Thread Study", author: "nine", hue: 280, ratio: "3/4", mode: "image" },
+  { title: "ปราสาทในหมอกจันทรา", style: "fantasy", hue: 270, ratio: "3/4", mode: "image" },
+  { title: "Dream Loop", style: "motion", hue: 200, ratio: "1/1", mode: "video" },
+  { title: "ผืนป่าความคิด", style: "surreal", hue: 160, ratio: "3/4", mode: "image" },
+  { title: "Portrait of Light", style: "portrait", hue: 290, ratio: "4/5", mode: "image" },
+  { title: "เส้นใยดวงดาว", style: "cosmic", hue: 230, ratio: "3/4", mode: "image" },
+  { title: "Citadel · cinematic", style: "cinematic", hue: 180, ratio: "1/1", mode: "video" },
+  { title: "มโนทัศน์สีมรกต", style: "abstract", hue: 150, ratio: "4/5", mode: "image" },
+  { title: "Violet Thread Study", style: "concept", hue: 280, ratio: "3/4", mode: "image" },
 ];
 
 const STEPS = [
   { n: "01", t: "ทอเส้นใยแรก", d: "เขียน prompt หรือ sketch — ระบบทอเป็นโครงแนวคิด", hue: 160 },
-  { n: "02", t: "เลือกผืนผ้า", d: "เลือกจาก 4 รูปแบบ — ภาพ, วิดีโอ, เสียง, หรือฉาก 3D", hue: 200 },
+  { n: "02", t: "เลือกผืนผ้า", d: "เลือกโหมด — ภาพ, วิดีโอ, หรือแก้ไข/ขยายภาพ", hue: 200 },
   { n: "03", t: "ปรับผืนผ้า", d: "ลากเส้นใยเพื่อปรับอารมณ์ สี องค์ประกอบ ได้แบบ live", hue: 240 },
   { n: "04", t: "ส่งต่อความฝัน", d: "Export 8K, แชร์ในชุมชน, หรือเก็บในปราสาทส่วนตัว", hue: 280 },
 ];
@@ -367,7 +352,7 @@ function drawNodes(ctx: CanvasRenderingContext2D, w: number, h: number, t: numbe
     const nodes = [
       { x: 120, y: 130, label: "Prompt" }, { x: 280, y: 90, label: "Image" },
       { x: 280, y: 200, label: "Style" }, { x: 440, y: 130, label: "Video" },
-      { x: 440, y: 270, label: "Audio" },
+      { x: 440, y: 270, label: "Upscale" },
     ];
     const edges = [[0, 1], [0, 2], [1, 3], [2, 3], [2, 4]] as [number, number][];
     edges.forEach((e, i) => {
@@ -521,7 +506,7 @@ function BannerSlider() {
                 <Link href="/generate" style={{ background: `linear-gradient(135deg, hsl(${h1},75%,55%) 0%, hsl(${h2},75%,55%) 50%, hsl(${h3},75%,55%) 100%)`, color: "#fff", border: "none", padding: "12px 22px", borderRadius: 12, fontSize: 14, fontWeight: 600, cursor: "pointer", boxShadow: `0 12px 30px -10px hsla(${h2},80%,50%,0.7)`, textDecoration: "none" }}>
                   {slide.cta} →
                 </Link>
-                <button style={{ background: "rgba(255,255,255,0.06)", color: "#e2e8f0", border: "1px solid rgba(255,255,255,0.15)", padding: "11px 20px", borderRadius: 12, fontSize: 14, fontWeight: 500, cursor: "pointer" }}>เรียนรู้เพิ่มเติม</button>
+                <Link href="/pricing" style={{ background: "rgba(255,255,255,0.06)", color: "#e2e8f0", border: "1px solid rgba(255,255,255,0.15)", padding: "11px 20px", borderRadius: 12, fontSize: 14, fontWeight: 500, cursor: "pointer", textDecoration: "none" }}>ดูแพ็กเกจ</Link>
               </div>
             </div>
             <div className="rp-banner-stats" style={{ display: "flex", flexDirection: "column", gap: 14, padding: 24, borderRadius: 18, background: "rgba(3,6,18,0.45)", backdropFilter: "blur(14px)", border: "1px solid rgba(255,255,255,0.08)" }}>
@@ -561,7 +546,7 @@ function Hero() {
   const [promptIdx, setPromptIdx] = useState(0);
   const [typed, setTyped] = useState("");
   const [generating, setGenerating] = useState(false);
-  const [mode, setMode] = useState<"image" | "video" | "audio" | "3d">("image");
+  const [mode, setMode] = useState<"image" | "video" | "edit">("image");
 
   useEffect(() => {
     const target = PROMPT_SAMPLES[promptIdx];
@@ -590,8 +575,7 @@ function Hero() {
   const modes: { id: typeof mode; label: string; icon: string }[] = [
     { id: "image", label: "Image", icon: "▧" },
     { id: "video", label: "Video", icon: "▶" },
-    { id: "audio", label: "Audio", icon: "◎" },
-    { id: "3d", label: "3D Scene", icon: "◈" },
+    { id: "edit", label: "Edit", icon: "✎" },
   ];
 
   return (
@@ -617,8 +601,8 @@ function Hero() {
           <span style={{ fontWeight: 200, opacity: 0.6 }}>แห่งความคิด</span>
         </h1>
         <p style={{ marginTop: 28, maxWidth: 640, fontSize: 19, lineHeight: 1.55, color: "rgba(226,232,240,0.78)", fontWeight: 300 }}>
-          แพลตฟอร์ม AI generate สำหรับศิลปินและนักฝัน — สร้างภาพ วิดีโอ เสียง และฉาก 3 มิติจากประโยคเดียว
-          ด้วยโมเดลที่เรียนรู้จากผืนผ้าความหมายของจักรวาลทั้งมวล
+          แพลตฟอร์ม AI generate สำหรับศิลปินและนักฝัน — สร้างภาพ วิดีโอ และแก้ไข/ขยายภาพ จากประโยคเดียว
+          เลือกได้จากโมเดลชั้นนำของ 9 ผู้ให้บริการ ในระบบเครดิตเดียว
         </p>
         <div style={{ marginTop: 48, maxWidth: 820, background: "rgba(15,23,42,0.45)", backdropFilter: "blur(20px) saturate(1.4)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 24, padding: 6, boxShadow: "0 40px 80px -20px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.08)" }}>
           <div className="rp-mode-tabs" style={{ display: "flex", padding: "10px 14px 4px", gap: 4 }}>
@@ -631,7 +615,7 @@ function Hero() {
                 boxShadow: mode === m.id ? "inset 0 0 0 1px rgba(255,255,255,0.1)" : "none",
               }}><span style={{ fontSize: 13 }}>{m.icon}</span>{m.label}</button>
             ))}
-            <div style={{ marginLeft: "auto", fontSize: 11, color: "#64748b", padding: "10px 8px", letterSpacing: "0.08em" }}>MODEL · loom-v4.2</div>
+            <div style={{ marginLeft: "auto", fontSize: 11, color: "#64748b", padding: "10px 8px", letterSpacing: "0.08em" }}>MODEL · auto-select</div>
           </div>
           <div className="rp-prompt-row" style={{ display: "flex", alignItems: "center", gap: 14, padding: "18px 20px 18px 22px", background: "rgba(2,6,23,0.5)", borderRadius: 20, margin: 4, border: "1px solid rgba(255,255,255,0.05)" }}>
             <div style={{ width: 10, height: 10, borderRadius: 999, background: generating ? "#fbbf24" : "#34d399", boxShadow: generating ? "0 0 12px #fbbf24" : "0 0 8px #34d399", flexShrink: 0, animation: generating ? "pulse 0.8s infinite" : "pulse 2s infinite" }} />
@@ -651,10 +635,10 @@ function Hero() {
         </div>
         <div style={{ display: "flex", gap: 48, marginTop: 56, flexWrap: "wrap" }}>
           {[
-            { v: "2.4M+", l: "ความฝันถูกทอทุกวัน" },
-            { v: "48", l: "โมเดลเฉพาะทาง" },
-            { v: "<2s", l: "เวลาสร้างเฉลี่ย" },
-            { v: "99.2%", l: "uptime ปีที่ผ่านมา" },
+            { v: "9", l: "ผู้ให้บริการ AI" },
+            { v: "17+", l: "โมเดลให้เลือก" },
+            { v: "3", l: "โหมด: ภาพ/วิดีโอ/แก้ไข" },
+            { v: "20", l: "เครดิตฟรีเมื่อเริ่ม" },
           ].map((s, i) => (
             <div key={i}>
               <div style={{ fontSize: 36, fontWeight: 300, color: "#fff", background: `linear-gradient(180deg, #fff 0%, hsl(${180 + HUE + i * 30},70%,75%) 100%)`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>{s.v}</div>
@@ -727,6 +711,7 @@ function GenFrame({ index, generating, mode }: { index: number; generating: bool
 // ─── NAV ────────────────────────────────────────────────────────────────
 function Nav() {
   const { data: session } = useSession();
+  const [mobileOpen, setMobileOpen] = useState(false);
   const links = [
     { id: "studio", label: "สตูดิโอ", href: "/generate" },
     { id: "gallery", label: "Gallery", href: "/gallery" },
@@ -754,7 +739,24 @@ function Nav() {
             <Link href="/login?signup=1" className="rp-nav-cta-primary" style={{ background: "linear-gradient(135deg, #10b981 0%, #06b6d4 50%, #8b5cf6 100%)", color: "#fff", border: "none", padding: "9px 18px", borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: "pointer", textDecoration: "none", boxShadow: "0 8px 24px -8px rgba(139,92,246,0.6)" }}>เริ่มสร้างฟรี</Link>
           </>
         )}
+        <button className="rp-nav-burger" aria-label="เมนู" onClick={() => setMobileOpen(o => !o)}
+          style={{ width: 40, height: 40, borderRadius: 10, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", color: "#fff", cursor: "pointer", fontSize: 18 }}>
+          {mobileOpen ? "✕" : "☰"}
+        </button>
       </div>
+      {mobileOpen && (
+        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "rgba(8,12,28,0.97)", backdropFilter: "blur(20px)", borderBottom: "1px solid rgba(255,255,255,0.08)", padding: "12px 18px 18px", display: "flex", flexDirection: "column", gap: 4 }}>
+          {links.map(l => (
+            <Link key={l.id} href={l.href} onClick={() => setMobileOpen(false)} style={{ padding: "12px 14px", borderRadius: 10, color: "#e2e8f0", textDecoration: "none", fontSize: 15, background: "rgba(255,255,255,0.03)" }}>{l.label}</Link>
+          ))}
+          {!session && (
+            <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
+              <Link href="/login" onClick={() => setMobileOpen(false)} style={{ flex: 1, textAlign: "center", padding: "12px 14px", borderRadius: 10, color: "#e2e8f0", textDecoration: "none", fontSize: 14, border: "1px solid rgba(255,255,255,0.15)" }}>เข้าสู่ระบบ</Link>
+              <Link href="/login?signup=1" onClick={() => setMobileOpen(false)} style={{ flex: 1, textAlign: "center", padding: "12px 14px", borderRadius: 10, color: "#fff", textDecoration: "none", fontSize: 14, background: "linear-gradient(135deg, #10b981, #06b6d4, #8b5cf6)" }}>เริ่มฟรี</Link>
+            </div>
+          )}
+        </div>
+      )}
     </nav>
   );
 }
@@ -842,17 +844,15 @@ function Gallery() {
     <section className="rp-section" style={{ position: "relative", padding: "140px 48px", maxWidth: 1400, margin: "0 auto" }}>
       <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: 56, flexWrap: "wrap", gap: 24 }}>
         <div>
-          <div style={{ fontSize: 12, letterSpacing: "0.16em", color: "#a5f3fc", textTransform: "uppercase", marginBottom: 14 }}>· ผืนผ้าที่ถูกทอในวันนี้</div>
+          <div style={{ fontSize: 12, letterSpacing: "0.16em", color: "#a5f3fc", textTransform: "uppercase", marginBottom: 14 }}>· แรงบันดาลใจ</div>
           <h2 className="rp-h2" style={{ fontSize: "clamp(40px, 5vw, 64px)", fontWeight: 300, color: "#fff", letterSpacing: "-0.02em", lineHeight: 1.05, maxWidth: 720 }}>
-            ความฝันที่ <span className="xdr-italic-th" style={{ fontStyle: "italic", fontWeight: 200, color: "#c4b5fd" }}>ชุมชนของเรา</span><br />
-            ทอขึ้นในช่วง 24 ชั่วโมง
+            สไตล์ที่ <span className="xdr-italic-th" style={{ fontStyle: "italic", fontWeight: 200, color: "#c4b5fd" }}>คุณสร้างได้</span><br />
+            ด้วยโมเดลที่หลากหลาย
           </h2>
         </div>
-        <div className="rp-filter-row" style={{ display: "flex", gap: 10 }}>
-          {["ทั้งหมด", "Image", "Video", "Audio", "3D"].map((t, i) => (
-            <button key={t} style={{ padding: "8px 16px", borderRadius: 999, background: i === 0 ? "rgba(255,255,255,0.1)" : "transparent", color: i === 0 ? "#fff" : "rgba(226,232,240,0.55)", border: "1px solid rgba(255,255,255,0.1)", fontSize: 13, cursor: "pointer" }}>{t}</button>
-          ))}
-        </div>
+        <Link href="/gallery" className="rp-filter-row" style={{ padding: "10px 20px", borderRadius: 999, background: "rgba(255,255,255,0.08)", color: "#e2e8f0", border: "1px solid rgba(255,255,255,0.12)", fontSize: 13, textDecoration: "none", fontWeight: 500 }}>
+          ดูแกลเลอรีของคุณ →
+        </Link>
       </div>
       <div className="rp-grid-4" style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16 }}>
         {GALLERY_ITEMS.map((item, i) => {
@@ -885,7 +885,7 @@ function Gallery() {
               </div>
               <div style={{ position: "absolute", left: 16, right: 16, bottom: 14, color: "#fff" }}>
                 <div style={{ fontSize: 15, fontWeight: 500, lineHeight: 1.2 }}>{item.title}</div>
-                <div style={{ fontSize: 11, color: "rgba(255,255,255,0.65)", marginTop: 4 }}>@{item.author}</div>
+                <div style={{ fontSize: 11, color: "rgba(255,255,255,0.65)", marginTop: 4 }}>{item.style}</div>
               </div>
             </div>
           );
@@ -999,7 +999,7 @@ function FooterCTA() {
           <span className="xdr-italic-th" style={{ fontStyle: "italic", background: `linear-gradient(120deg, hsl(${160 + HUE},80%,70%), hsl(${280 + HUE},80%,75%))`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>ของคุณวันนี้</span>
         </h2>
         <p style={{ marginTop: 28, fontSize: 18, color: "rgba(203,213,225,0.75)", fontWeight: 300 }}>
-          ฟรี 50 งานทุกเดือน · ไม่ต้องใช้บัตรเครดิต · เริ่มได้ภายใน 30 วินาที
+          เครดิตฟรีต้อนรับเมื่อสมัคร · ไม่ต้องใช้บัตรเครดิต · เริ่มได้ภายใน 30 วินาที
         </p>
         <div style={{ marginTop: 40, display: "flex", gap: 14, justifyContent: "center", flexWrap: "wrap" }}>
           <Link href="/login?signup=1" style={{ padding: "16px 32px", borderRadius: 14, background: `linear-gradient(135deg, hsl(${160 + HUE},70%,50%) 0%, hsl(${220 + HUE},70%,55%) 50%, hsl(${280 + HUE},70%,60%) 100%)`, color: "#fff", border: "none", fontSize: 15, fontWeight: 600, cursor: "pointer", textDecoration: "none", boxShadow: `0 20px 40px -10px hsla(${220 + HUE},70%,50%,0.6)` }}>สร้างบัญชีฟรี →</Link>
@@ -1008,10 +1008,13 @@ function FooterCTA() {
       </div>
       <div style={{ marginTop: 120, paddingTop: 40, borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", justifyContent: "space-between", color: "#64748b", fontSize: 13, maxWidth: 1300, marginLeft: "auto", marginRight: "auto", flexWrap: "wrap", gap: 20 }}>
         <div>© {new Date().getFullYear()} X-DREAMER · ทอด้วย ♥ ในเชียงใหม่ · powered by <a href="https://xman4289.com" style={{ color: "inherit" }}>XMAN STUDIO</a></div>
-        <div style={{ display: "flex", gap: 24 }}>
+        <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
           <Link href="/pricing" style={{ color: "inherit", textDecoration: "none" }}>Pricing</Link>
           <Link href="/gallery" style={{ color: "inherit", textDecoration: "none" }}>Gallery</Link>
-          <Link href="/profile" style={{ color: "inherit", textDecoration: "none" }}>Dashboard</Link>
+          <Link href="/about" style={{ color: "inherit", textDecoration: "none" }}>เกี่ยวกับ</Link>
+          <Link href="/contact" style={{ color: "inherit", textDecoration: "none" }}>ติดต่อ</Link>
+          <Link href="/terms" style={{ color: "inherit", textDecoration: "none" }}>ข้อกำหนด</Link>
+          <Link href="/privacy" style={{ color: "inherit", textDecoration: "none" }}>ความเป็นส่วนตัว</Link>
         </div>
       </div>
     </section>
@@ -1039,6 +1042,7 @@ export default function XdreamerLanding({ tiers }: { tiers: Tier[] }) {
         h1 span[style*="italic"], h2 span[style*="italic"], .xdr-italic-th { padding-bottom:0.15em;padding-right:0.08em;display:inline-block; }
         .xdr-menu-item { display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:8px;font-size:13px;color:#e2e8f0;text-decoration:none;background:transparent;border:none;cursor:pointer;transition:background 150ms; }
         .xdr-menu-item:hover { background:rgba(255,255,255,0.05);color:#fff; }
+        .rp-nav-burger { display:none; align-items:center; justify-content:center; }
         @media (max-width:1024px) {
           .rp-nav { padding:14px 20px !important; }
           .rp-nav-links { gap:16px !important;font-size:12px !important; }
@@ -1054,6 +1058,8 @@ export default function XdreamerLanding({ tiers }: { tiers: Tier[] }) {
         @media (max-width:720px) {
           .rp-nav { padding:14px 18px !important; }
           .rp-nav-links { display:none !important; }
+          .rp-nav-burger { display:inline-flex !important; }
+          .rp-nav-cta-ghost, .rp-nav-cta-primary { display:none !important; }
           .rp-hero-logo-wrap { position:static !important;margin:0 auto 24px !important; }
           .rp-hero-logo { width:100px !important;height:100px !important; }
           .rp-container { padding:0 18px !important; }

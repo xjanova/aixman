@@ -618,7 +618,6 @@ export default function GeneratePage() {
             {tab === "image" && (
               <Pill onClick={() => result?.id && handleUpscale()}>{isUpscaling ? "⟳ Upscale" : "Upscale"}</Pill>
             )}
-            {tab === "edit" && <Pill>Inpaint</Pill>}
             <Pill onClick={() => { window.location.href = "/gallery"; }}>History</Pill>
           </div>
           <div style={{ fontSize: 11, color: "#64748b", fontFamily: "ui-monospace,monospace" }}>
@@ -816,37 +815,32 @@ export default function GeneratePage() {
           )}
         </Section>
 
-        {/* Concept threads — extracted/curated from prompt */}
+        {/* Prompt info — real, derived from current input */}
         <div style={{ marginTop: 24 }}>
-          <Section label="Concept threads">
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {(() => {
-                const promptLower = prompt.toLowerCase();
-                const baseConcepts = [
-                  { n: "cinematic · light",   w: 85, h: 270, kw: ["cinematic", "light", "lighting"] },
-                  { n: "aurora · 8k",         w: 72, h: 200, kw: ["aurora", "8k", "ultra"] },
-                  { n: "jade · palette",      w: 90, h: 155, kw: ["jade", "palette", "tone"] },
-                  { n: "volumetric · fog",    w: 64, h: 220, kw: ["volumetric", "fog", "mist"] },
-                  { n: "studio · bokeh",      w: 55, h: 240, kw: ["studio", "bokeh", "portrait"] },
-                ];
-                return baseConcepts.map((c, i) => {
-                  const active = c.kw.some(k => promptLower.includes(k));
-                  const w = active ? Math.min(c.w + 8, 100) : c.w;
-                  return (
-                    <div key={i} style={{ padding: 12, borderRadius: 10, background: "rgba(2,6,23,0.4)", border: `1px solid ${active ? `hsla(${c.h + HUE},70%,55%,0.35)` : "rgba(255,255,255,0.06)"}`, display: "flex", alignItems: "center", gap: 10 }}>
-                      <div style={{ width: 6, height: 28, borderRadius: 3, background: `hsl(${c.h + HUE},70%,60%)`, boxShadow: `0 0 8px hsl(${c.h + HUE},70%,50%)` }} />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, color: "#f1f5f9" }}>{c.n}</div>
-                        <div style={{ marginTop: 4, height: 2, borderRadius: 2, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
-                          <div style={{ width: `${w}%`, height: "100%", background: `hsl(${c.h + HUE},70%,60%)`, transition: "width 240ms" }} />
-                        </div>
-                      </div>
-                      <div style={{ fontSize: 11, color: "#64748b", fontFamily: "ui-monospace,monospace" }}>{w}%</div>
+          <Section label="รายละเอียด prompt">
+            {(() => {
+              const trimmed = prompt.trim();
+              const words = trimmed ? trimmed.split(/\s+/).length : 0;
+              const chars = prompt.length;
+              const rows = [
+                { l: "จำนวนคำ", v: words.toLocaleString() },
+                { l: "ตัวอักษร", v: `${chars.toLocaleString()} / 10,000` },
+                { l: "negative prompt", v: negativePrompt.trim() ? "มี" : "—" },
+              ];
+              return (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {rows.map((r, i) => (
+                    <div key={i} style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(2,6,23,0.4)", border: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <span style={{ fontSize: 12, color: "#94a3b8" }}>{r.l}</span>
+                      <span style={{ fontSize: 13, color: "#f1f5f9", fontFamily: "ui-monospace,monospace" }}>{r.v}</span>
                     </div>
-                  );
-                });
-              })()}
-            </div>
+                  ))}
+                  {!trimmed && (
+                    <div style={{ fontSize: 11, color: "#64748b", padding: "2px 2px 0" }}>พิมพ์ prompt เพื่อดูรายละเอียด</div>
+                  )}
+                </div>
+              );
+            })()}
           </Section>
         </div>
 

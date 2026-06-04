@@ -5,6 +5,7 @@ import type { GenerationRequest } from '@/types';
 
 const MAX_PROMPT_LENGTH = 10000;
 const MAX_NUM_OUTPUTS = 4;
+const VALID_TYPES = ['image', 'video', 'edit'];
 
 export async function POST(request: NextRequest) {
   const userId = await getCurrentUserId();
@@ -35,6 +36,10 @@ export async function POST(request: NextRequest) {
 
     if (!genRequest.modelId) {
       return NextResponse.json({ error: 'Model ID is required' }, { status: 400 });
+    }
+
+    if (!VALID_TYPES.includes(genRequest.type)) {
+      return NextResponse.json({ error: 'Invalid generation type' }, { status: 400 });
     }
 
     // Cap numOutputs

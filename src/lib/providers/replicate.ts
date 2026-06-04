@@ -16,6 +16,15 @@ export class ReplicateProvider extends BaseProvider {
     return this.runPrediction(params);
   }
 
+  // Image edit / upscale (e.g. real-esrgan, flux image-to-image). Replicate models
+  // read the source from the `image` input, which runPrediction forwards.
+  async editImage(params: ProviderGenerateParams): Promise<ProviderResponse> {
+    if (!params.inputImage) {
+      return { success: false, error: 'No input image provided for edit' };
+    }
+    return this.runPrediction(params);
+  }
+
   private async runPrediction(params: ProviderGenerateParams): Promise<ProviderResponse> {
     const startTime = Date.now();
     const baseUrl = params.apiEndpoint || 'https://api.replicate.com/v1';

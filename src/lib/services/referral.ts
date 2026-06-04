@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 const DEFAULT_COMMISSION_RATE = 10; // 10% of purchased credits
 const REFERRER_BONUS = 50; // bonus credits for referrer when someone signs up
 const REFERRED_BONUS = 20; // bonus credits for new referred user
+const REFERRAL_ELIGIBLE_DAYS = 30; // only accounts newer than this may redeem a code
 
 export class ReferralService {
   /**
@@ -41,6 +42,20 @@ export class ReferralService {
     if (!referral) return { success: false, error: "รหัสชวนเพื่อนไม่ถูกต้อง" };
     if (referral.referrerId === userId) return { success: false, error: "ไม่สามารถใช้รหัสของตัวเองได้" };
 
+    // Anti-abuse: only genuinely new accounts may redeem a code.
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { createdAt: true } });
+    if (!user) return { success: false, error: "ไม่พบบัญชีผู้ใช้" };
+    const accountAgeMs = Date.now() - new Date(user.createdAt).getTime();
+    if (accountAgeMs > REFERRAL_ELIGIBLE_DAYS * 24 * 60 * 60 * 1000) {
+      return { success: false, error: `เฉพาะสมาชิกใหม่ (ภายใน ${REFERRAL_ELIGIBLE_DAYS} วัน) เท่านั้นที่ใช้รหัสชวนเพื่อนได้` };
+    }
+
+    // Must not have purchased before (prevents established users farming bonuses)
+    const hasPurchase = await prisma.aiCreditTransaction.findFirst({
+      where: { userId, type: "purchase" },
+    });
+    if (hasPurchase) return { success: false, error: "บัญชีนี้มีประวัติการซื้อแล้ว ไม่สามารถใช้รหัสชวนเพื่อนได้" };
+
     // Check if user already has a referral
     const alreadyReferred = await prisma.aiReferral.findFirst({
       where: { referredId: userId },
@@ -74,6 +89,12 @@ export class ReferralService {
     });
 
     if (!transaction || transaction.type !== "purchase" || transaction.amount <= 0) return;
+
+    // Idempotency — never pay commission twice for the same purchase transaction
+    const existingCommission = await prisma.aiReferralCommission.findFirst({
+      where: { transactionId: transaction.id },
+    });
+    if (existingCommission) return;
 
     // Find if this user was referred
     const referral = await prisma.aiReferral.findFirst({
@@ -148,25 +169,27 @@ export class ReferralService {
   }
 
   private async addBonusCredits(userId: number, amount: number, description: string) {
-    await prisma.$executeRaw`
-      INSERT INTO ai_user_credits (user_id, balance, total_bonus, created_at, updated_at)
-      VALUES (${userId}, ${amount}, ${amount}, NOW(), NOW())
-      ON DUPLICATE KEY UPDATE
-        balance = balance + ${amount},
-        total_bonus = total_bonus + ${amount},
-        updated_at = NOW()
-    `;
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`
+        INSERT INTO ai_user_credits (user_id, balance, total_bonus, created_at, updated_at)
+        VALUES (${userId}, ${amount}, ${amount}, NOW(), NOW())
+        ON DUPLICATE KEY UPDATE
+          balance = balance + ${amount},
+          total_bonus = total_bonus + ${amount},
+          updated_at = NOW()
+      `;
 
-    const credit = await prisma.aiUserCredit.findUnique({ where: { userId } });
+      const credit = await tx.aiUserCredit.findUnique({ where: { userId } });
 
-    await prisma.aiCreditTransaction.create({
-      data: {
-        userId,
-        type: "bonus",
-        amount,
-        balanceAfter: credit?.balance || amount,
-        description,
-      },
+      await tx.aiCreditTransaction.create({
+        data: {
+          userId,
+          type: "bonus",
+          amount,
+          balanceAfter: credit?.balance ?? amount,
+          description,
+        },
+      });
     });
   }
 

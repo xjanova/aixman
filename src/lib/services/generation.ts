@@ -133,7 +133,6 @@ export class GenerationService {
 
       // 7. Record result
       const costUsd = Number(model.costPerUnit);
-      await AccountPoolManager.recordSuccess(account.id, costUsd);
 
       await prisma.aiUsageLog.create({
         data: {
@@ -141,13 +140,14 @@ export class GenerationService {
           modelId: model.modelId,
           action: request.type,
           status: result.success ? 'success' : 'error',
-          costUsd,
+          costUsd: result.success ? costUsd : 0,
           responseMs: result.processingMs,
           errorMessage: result.error,
         },
       });
 
       if (result.success) {
+        await AccountPoolManager.recordSuccess(account.id, costUsd);
         await prisma.aiGeneration.update({
           where: { id: generation.id },
           data: {
@@ -172,7 +172,14 @@ export class GenerationService {
           creditsUsed: requiredCredits,
         };
       } else {
-        // Refund credits on failure
+        // Provider returned a failure — record it against the account (with
+        // rate-limit-aware cooldown) so the pool can rotate/auto-disable, then
+        // refund the user.
+        await AccountPoolManager.recordError(
+          account.id,
+          result.error || 'Generation failed',
+          this.isRateLimitError(result.error)
+        );
         await this.refundCredits(userId, requiredCredits, generation.id);
 
         await prisma.aiGeneration.update({
@@ -193,7 +200,8 @@ export class GenerationService {
       }
     } catch (error) {
       // Record error and refund
-      await AccountPoolManager.recordError(account.id, (error as Error).message);
+      const message = (error as Error).message;
+      await AccountPoolManager.recordError(account.id, message, this.isRateLimitError(message));
       await this.refundCredits(userId, requiredCredits, generation.id);
 
       await prisma.aiGeneration.update({
@@ -215,11 +223,27 @@ export class GenerationService {
   }
 
   /**
+   * Detect whether a provider error message indicates rate limiting / quota,
+   * so the account pool can apply the longer cooldown.
+   */
+  private static isRateLimitError(msg?: string): boolean {
+    if (!msg) return false;
+    return /rate.?limit|429|too many requests|quota/i.test(msg);
+  }
+
+  /**
    * Refund credits to user after failed generation
    */
   private static async refundCredits(userId: number, amount: number, generationId: number) {
     const userCredit = await prisma.aiUserCredit.findUnique({ where: { userId } });
     if (!userCredit) return;
+
+    // Idempotency — never refund the same generation twice (the failure and
+    // exception paths can otherwise both fire).
+    const existingRefund = await prisma.aiCreditTransaction.findFirst({
+      where: { generationId, type: 'refund' },
+    });
+    if (existingRefund) return;
 
     await prisma.$transaction([
       prisma.aiUserCredit.update({

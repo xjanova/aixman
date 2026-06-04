@@ -48,6 +48,55 @@ export class BytePlusProvider extends BaseProvider {
     }
   }
 
+  /**
+   * Image edit / image-to-image. Seedream accepts a source image alongside the
+   * prompt via the same /images/generations endpoint.
+   */
+  async editImage(params: ProviderGenerateParams): Promise<ProviderResponse> {
+    const startTime = Date.now();
+    const baseUrl = params.apiEndpoint || 'https://ark.ap-southeast.bytepluses.com/api/v3';
+
+    try {
+      if (!params.inputImage) {
+        return { success: false, error: 'No input image provided for edit' };
+      }
+
+      const response = await this.request(`${baseUrl}/images/generations`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${params.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: params.modelId,
+          prompt: params.prompt,
+          image: params.inputImage,
+          size: `${params.width || 1024}x${params.height || 1024}`,
+          n: params.numOutputs || 1,
+          ...(params.extraParams || {}),
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        return { success: false, error: `BytePlus edit error ${response.status}: ${error}` };
+      }
+
+      const data = await response.json();
+      const urls = data.data?.map((item: { url: string }) => item.url) || [];
+
+      return {
+        success: urls.length > 0,
+        resultUrl: urls[0],
+        resultUrls: urls,
+        error: urls.length === 0 ? 'BytePlus edit returned no image' : undefined,
+        processingMs: Date.now() - startTime,
+      };
+    } catch (error) {
+      return { success: false, error: `BytePlus edit failed: ${(error as Error).message}` };
+    }
+  }
+
   async generateVideo(params: ProviderGenerateParams): Promise<ProviderResponse> {
     const startTime = Date.now();
     const baseUrl = params.apiEndpoint || 'https://ark.ap-southeast.bytepluses.com/api/v3';
