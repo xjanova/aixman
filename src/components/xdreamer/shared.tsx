@@ -180,6 +180,7 @@ export function XdrThemeStyles() {
       h1 span[style*="italic"], h2 span[style*="italic"], .xdr-italic-th { padding-bottom:0.15em;padding-right:0.08em;display:inline-block; }
       .xdr-menu-item { display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:8px;font-size:13px;color:#e2e8f0;text-decoration:none;background:transparent;border:none;cursor:pointer;transition:background 150ms; }
       .xdr-menu-item:hover { background:rgba(255,255,255,0.05);color:#fff; }
+      .rp-nav-burger { display:none; align-items:center; justify-content:center; }
       @media (max-width:1024px) {
         .rp-nav { padding:14px 20px !important; }
         .rp-nav-links { gap:16px !important;font-size:12px !important; }
@@ -195,6 +196,8 @@ export function XdrThemeStyles() {
       @media (max-width:720px) {
         .rp-nav { padding:14px 18px !important; }
         .rp-nav-links { display:none !important; }
+        .rp-nav-burger { display:inline-flex !important; }
+        .rp-nav-cta-ghost, .rp-nav-cta-primary { display:none !important; }
         .rp-hero-logo-wrap { position:static !important;margin:0 auto 24px !important; }
         .rp-hero-logo { width:100px !important;height:100px !important; }
         .rp-container { padding:0 18px !important; }
@@ -217,12 +220,29 @@ export function XdrThemeStyles() {
 // ─── NAV ────────────────────────────────────────────────────────────────
 export function XdrNav({ creditsLabel }: { creditsLabel?: string }) {
   const { data: session } = useSession();
+  const [credits, setCredits] = useState<number | null>(null);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const links = [
     { id: "studio", label: "สตูดิโอ", href: "/generate" },
     { id: "gallery", label: "Gallery", href: "/gallery" },
     { id: "pricing", label: "Pricing", href: "/pricing" },
     { id: "profile", label: "Dashboard", href: "/profile" },
   ];
+
+  // Fetch the real credit balance for logged-in users (powers the nav pill).
+  useEffect(() => {
+    if (!session) return;
+    let active = true;
+    fetch("/api/credits")
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (active && d && typeof d.balance === "number") setCredits(d.balance); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [session]);
+
+  // Only surface the pill for logged-in users (avoids showing a stale balance after logout).
+  const creditPill = session ? (creditsLabel ?? (credits !== null ? `${credits.toLocaleString()} เครดิต` : null)) : null;
+
   return (
     <nav className="rp-nav" style={{
       position: "fixed", top: 0, left: 0, right: 0, zIndex: 50,
@@ -242,9 +262,9 @@ export function XdrNav({ creditsLabel }: { creditsLabel?: string }) {
         ))}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        {creditsLabel && (
+        {creditPill && (
           <Link href="/pricing" style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", borderRadius: 999, background: "rgba(165,243,252,0.08)", border: "1px solid rgba(165,243,252,0.2)", color: "#a5f3fc", fontSize: 12, textDecoration: "none" }}>
-            <span style={{ fontSize: 11 }}>✦</span>{creditsLabel}
+            <span style={{ fontSize: 11 }}>✦</span>{creditPill}
           </Link>
         )}
         {session ? (
@@ -255,7 +275,44 @@ export function XdrNav({ creditsLabel }: { creditsLabel?: string }) {
             <Link href="/login?signup=1" className="rp-nav-cta-primary" style={{ background: "linear-gradient(135deg, #10b981 0%, #06b6d4 50%, #8b5cf6 100%)", color: "#fff", border: "none", padding: "9px 18px", borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: "pointer", textDecoration: "none", boxShadow: "0 8px 24px -8px rgba(139,92,246,0.6)" }}>เริ่มสร้างฟรี</Link>
           </>
         )}
+        {/* Hamburger — only visible < 720px (see XdrThemeStyles) */}
+        <button
+          className="rp-nav-burger"
+          aria-label="เมนู"
+          onClick={() => setMobileOpen(o => !o)}
+          style={{ width: 40, height: 40, borderRadius: 10, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", color: "#fff", cursor: "pointer", fontSize: 18 }}
+        >
+          {mobileOpen ? "✕" : "☰"}
+        </button>
       </div>
+
+      {/* Mobile dropdown menu */}
+      {mobileOpen && (
+        <div className="rp-nav-mobile" style={{
+          position: "absolute", top: "100%", left: 0, right: 0,
+          background: "rgba(8,12,28,0.97)", backdropFilter: "blur(20px)",
+          borderBottom: "1px solid rgba(255,255,255,0.08)",
+          padding: "12px 18px 18px", display: "flex", flexDirection: "column", gap: 4,
+        }}>
+          {links.map(l => (
+            <Link key={l.id} href={l.href} onClick={() => setMobileOpen(false)}
+              style={{ padding: "12px 14px", borderRadius: 10, color: "#e2e8f0", textDecoration: "none", fontSize: 15, background: "rgba(255,255,255,0.03)" }}>
+              {l.label}
+            </Link>
+          ))}
+          {session ? (
+            <>
+              <Link href="/referral" onClick={() => setMobileOpen(false)} style={{ padding: "12px 14px", borderRadius: 10, color: "#e2e8f0", textDecoration: "none", fontSize: 15, background: "rgba(255,255,255,0.03)" }}>Referral</Link>
+              <button onClick={() => signOut({ callbackUrl: "/" })} style={{ padding: "12px 14px", borderRadius: 10, color: "#fca5a5", textAlign: "left", fontSize: 15, background: "transparent", border: "1px solid rgba(255,255,255,0.08)", cursor: "pointer", fontFamily: "inherit", marginTop: 4 }}>ออกจากระบบ</button>
+            </>
+          ) : (
+            <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
+              <Link href="/login" onClick={() => setMobileOpen(false)} style={{ flex: 1, textAlign: "center", padding: "12px 14px", borderRadius: 10, color: "#e2e8f0", textDecoration: "none", fontSize: 14, border: "1px solid rgba(255,255,255,0.15)" }}>เข้าสู่ระบบ</Link>
+              <Link href="/login?signup=1" onClick={() => setMobileOpen(false)} style={{ flex: 1, textAlign: "center", padding: "12px 14px", borderRadius: 10, color: "#fff", textDecoration: "none", fontSize: 14, background: "linear-gradient(135deg, #10b981, #06b6d4, #8b5cf6)" }}>เริ่มฟรี</Link>
+            </div>
+          )}
+        </div>
+      )}
     </nav>
   );
 }
