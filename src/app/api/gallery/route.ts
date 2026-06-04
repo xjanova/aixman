@@ -10,9 +10,9 @@ export async function GET(request: NextRequest) {
   }
 
   const searchParams = request.nextUrl.searchParams;
-  const page = parseInt(searchParams.get('page') || '1', 10);
+  const page = Math.max(1, parseInt(searchParams.get('page') || '1', 10) || 1);
   const limit = Math.min(
-    parseInt(searchParams.get('limit') || '20', 10),
+    Math.max(1, parseInt(searchParams.get('limit') || '20', 10) || 20),
     50
   );
   const type = searchParams.get('type');

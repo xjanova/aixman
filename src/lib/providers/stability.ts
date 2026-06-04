@@ -56,6 +56,67 @@ export class StabilityProvider extends BaseProvider {
     return { success: false, error: 'Stability AI video generation has been deprecated' };
   }
 
+  /**
+   * Image edit / upscale.
+   * - Upscale models (modelId/extraParams contain "upscale") use the fast upscale
+   *   endpoint, which returns the enlarged image synchronously.
+   * - Otherwise runs image-to-image on SD3.5 using the source image + prompt.
+   */
+  async editImage(params: ProviderGenerateParams): Promise<ProviderResponse> {
+    const startTime = Date.now();
+    const baseUrl = params.apiEndpoint || 'https://api.stability.ai';
+
+    try {
+      if (!params.inputImage) {
+        return { success: false, error: 'No input image provided for edit' };
+      }
+
+      const isUpscale = /upscale/i.test(params.modelId) || params.extraParams?.mode === 'upscale';
+      const imageBlob = await this.toBlob(params.inputImage);
+
+      const formData = new FormData();
+      formData.append('image', imageBlob, 'image.png');
+      formData.append('output_format', 'png');
+
+      let endpoint: string;
+      if (isUpscale) {
+        // Fast 4x upscaler — synchronous, returns the image binary
+        endpoint = '/v2beta/stable-image/upscale/fast';
+      } else {
+        // Image-to-image edit on SD3.5
+        endpoint = '/v2beta/stable-image/generate/sd3';
+        formData.append('prompt', params.prompt || '');
+        formData.append('mode', 'image-to-image');
+        formData.append('strength', String(params.extraParams?.strength ?? 0.5));
+        if (params.negativePrompt) formData.append('negative_prompt', params.negativePrompt);
+      }
+
+      const response = await this.request(`${baseUrl}${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${params.apiKey}`,
+          'Accept': 'image/*',
+        },
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        return { success: false, error: `Stability edit error ${response.status}: ${error}` };
+      }
+
+      const blob = await response.blob();
+      const buffer = Buffer.from(await blob.arrayBuffer());
+      return {
+        success: true,
+        resultUrl: `data:image/png;base64,${buffer.toString('base64')}`,
+        processingMs: Date.now() - startTime,
+      };
+    } catch (error) {
+      return { success: false, error: `Stability edit failed: ${(error as Error).message}` };
+    }
+  }
+
   private getEndpoint(modelId: string): string {
     const endpoints: Record<string, string> = {
       'stable-image-ultra': '/v2beta/stable-image/generate/ultra',

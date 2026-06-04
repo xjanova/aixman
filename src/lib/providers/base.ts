@@ -36,6 +36,19 @@ export abstract class BaseProvider implements AIProviderAdapter {
   }
 
   /**
+   * Helper: Fetch a remote URL or data: URI into a Blob.
+   * Used by editImage/upscale paths that need to upload the source image
+   * as multipart form-data. Node's fetch supports both http(s) and data: URIs.
+   */
+  protected async toBlob(input: string): Promise<Blob> {
+    const res = await fetch(input);
+    if (!res.ok) {
+      throw new Error(`Failed to load input image (HTTP ${res.status})`);
+    }
+    return res.blob();
+  }
+
+  /**
    * Helper: Poll for async job completion
    */
   protected async pollForResult(

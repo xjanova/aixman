@@ -114,6 +114,53 @@ export class OpenAIProvider extends BaseProvider {
     }
   }
 
+  /**
+   * Image edit — gpt-image-1 / dall-e-2 support the multipart /images/edits endpoint.
+   * Takes the source image (URL or data URI) plus an instruction prompt.
+   */
+  async editImage(params: ProviderGenerateParams): Promise<ProviderResponse> {
+    const startTime = Date.now();
+    const baseUrl = params.apiEndpoint || 'https://api.openai.com/v1';
+
+    try {
+      if (!params.inputImage) {
+        return { success: false, error: 'No input image provided for edit' };
+      }
+
+      const imageBlob = await this.toBlob(params.inputImage);
+      const form = new FormData();
+      form.append('model', params.modelId || 'gpt-image-1');
+      form.append('prompt', params.prompt);
+      form.append('n', String(params.numOutputs || 1));
+      form.append('size', this.mapSize(params.width, params.height));
+      form.append('image', imageBlob, 'image.png');
+
+      const response = await this.request(`${baseUrl}/images/edits`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${params.apiKey}` },
+        body: form,
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: { message: response.statusText } }));
+        return { success: false, error: `OpenAI edit error: ${error.error?.message || response.statusText}` };
+      }
+
+      const data = await response.json();
+      const urls = data.data?.map((item: { url?: string; b64_json?: string }) => item.url || `data:image/png;base64,${item.b64_json}`) || [];
+
+      return {
+        success: urls.length > 0,
+        resultUrl: urls[0],
+        resultUrls: urls,
+        error: urls.length === 0 ? 'OpenAI edit returned no image' : undefined,
+        processingMs: Date.now() - startTime,
+      };
+    } catch (error) {
+      return { success: false, error: `OpenAI edit failed: ${(error as Error).message}` };
+    }
+  }
+
   private mapSize(width?: number, height?: number): string {
     if (!width || !height) return '1024x1024';
     // Map to supported sizes

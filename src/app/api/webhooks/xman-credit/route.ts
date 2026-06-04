@@ -22,7 +22,8 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { userId, packageId, orderId, credits, bonusCredits } = body;
 
-    if (!userId || !credits || typeof userId !== 'number' || typeof credits !== 'number') {
+    if (!userId || typeof userId !== 'number' || userId <= 0 ||
+        typeof credits !== 'number' || !Number.isFinite(credits) || credits <= 0) {
       return NextResponse.json({ error: 'Missing or invalid required fields' }, { status: 400 });
     }
 

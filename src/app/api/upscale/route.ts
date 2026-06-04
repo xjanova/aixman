@@ -10,14 +10,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "กรุณาเข้าสู่ระบบ" }, { status: 401 });
     }
 
-    const body = await req.json();
-    const { generationId, modelId } = body;
+    const body = await req.json().catch(() => ({}));
+    const generationId =
+      typeof body.generationId === "number" ? body.generationId : parseInt(String(body.generationId), 10);
+    const modelId =
+      body.modelId == null ? null : typeof body.modelId === "number" ? body.modelId : parseInt(String(body.modelId), 10);
 
-    if (!generationId) {
-      return NextResponse.json({ error: "กรุณาระบุ generationId" }, { status: 400 });
+    if (!Number.isInteger(generationId) || generationId <= 0) {
+      return NextResponse.json({ error: "กรุณาระบุ generationId ที่ถูกต้อง" }, { status: 400 });
     }
 
-    // Fetch the original generation
+    // Fetch the original generation (scoped to the requesting user)
     const original = await prisma.aiGeneration.findFirst({
       where: { id: generationId, userId },
       include: { model: { include: { provider: true } } },
@@ -29,19 +32,23 @@ export async function POST(req: NextRequest) {
 
     // Find an upscale model - use specified or auto-select
     let upscaleModel;
-    if (modelId) {
+    if (modelId && Number.isInteger(modelId)) {
       upscaleModel = await prisma.aiModel.findFirst({
         where: { id: modelId, isActive: true },
         include: { provider: true },
       });
     } else {
-      // Auto-select: find upscale models
+      // Auto-select: prefer models explicitly tagged as upscale/enhance.
       upscaleModel = await prisma.aiModel.findFirst({
         where: {
           isActive: true,
+          provider: { isActive: true },
           OR: [
             { subcategory: "upscale" },
             { name: { contains: "upscale" } },
+            { name: { contains: "Upscale" } },
+            { modelId: { contains: "upscale" } },
+            { modelId: { contains: "esrgan" } },
           ],
         },
         orderBy: { creditsPerUnit: "asc" },
@@ -50,19 +57,27 @@ export async function POST(req: NextRequest) {
     }
 
     if (!upscaleModel) {
-      return NextResponse.json({ error: "ไม่พบโมเดล Upscale ที่ใช้ได้" }, { status: 404 });
+      return NextResponse.json(
+        { error: "ยังไม่มีโมเดล Upscale ที่ใช้งานได้ กรุณาให้แอดมินเพิ่มโมเดล Upscale ก่อน" },
+        { status: 404 }
+      );
     }
 
-    // Use the generation service to upscale
+    // Preserve aspect ratio: scale 2x, capped to the model's max dimensions.
+    const orig = (original.params as Record<string, number> | null) || {};
+    const params: Record<string, unknown> = { mode: "upscale", scale: 2 };
+    if (orig.width && orig.height) {
+      params.width = Math.min(orig.width * 2, upscaleModel.maxWidth || 4096);
+      params.height = Math.min(orig.height * 2, upscaleModel.maxHeight || 4096);
+    }
+
+    // Use the generation service to upscale (edit path with the source image)
     const result = await GenerationService.generate(userId, {
       modelId: upscaleModel.id,
       type: "edit",
-      prompt: original.prompt || "upscale image",
+      prompt: original.prompt || "enhance details and upscale, high resolution",
       inputImage: original.resultUrl,
-      params: {
-        width: (original.params as Record<string, number>)?.width ? (original.params as Record<string, number>).width * 2 : 2048,
-        height: (original.params as Record<string, number>)?.height ? (original.params as Record<string, number>).height * 2 : 2048,
-      },
+      params,
     });
 
     return NextResponse.json(result);

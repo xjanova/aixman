@@ -84,23 +84,25 @@ export class AccountPoolManager {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private static selectRoundRobin(accounts: any[]) {
-    return accounts.reduce((oldest: any, current: any) => {
-      if (!oldest.lastUsedAt) return oldest;
-      if (!current.lastUsedAt) return current;
-      return current.lastUsedAt < oldest.lastUsedAt ? current : oldest;
+    // Least-recently-used. A never-used account (lastUsedAt = null) counts as
+    // the oldest possible, so fresh accounts are picked up first.
+    return accounts.reduce((oldest, current) => {
+      const oldestTime = oldest.lastUsedAt ? new Date(oldest.lastUsedAt).getTime() : 0;
+      const currentTime = current.lastUsedAt ? new Date(current.lastUsedAt).getTime() : 0;
+      return currentTime < oldestTime ? current : oldest;
     });
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private static selectBalanced(accounts: any[]) {
-    return accounts.reduce((least: any, current: any) =>
+    return accounts.reduce((least, current) =>
       current.usageToday < least.usageToday ? current : least
     );
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private static selectQuotaFirst(accounts: any[]) {
-    return accounts.reduce((best: any, current: any) => {
+    return accounts.reduce((best, current) => {
       const bestRemaining = best.dailyQuota > 0
         ? best.dailyQuota - best.usageToday
         : best.monthlyQuota > 0 ? best.monthlyQuota - best.usageThisMonth : Infinity;
@@ -151,9 +153,13 @@ export class AccountPoolManager {
    * Reset daily usage counters (should be called via cron at midnight)
    */
   static async resetDailyCounters() {
+    // Also clear consecutiveErrors so accounts auto-disabled by a bad day can
+    // recover on the next cycle (otherwise they'd stay excluded until a manual
+    // admin reset, since nothing else clears the counter).
     await prisma.aiAccountPool.updateMany({
       data: {
         usageToday: 0,
+        consecutiveErrors: 0,
       },
     });
   }

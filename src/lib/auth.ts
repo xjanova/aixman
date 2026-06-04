@@ -67,19 +67,37 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
 });
 
 /**
- * Get current session user ID (for API routes)
+ * Get current session user ID (for API routes).
+ * Re-validates against the DB so a long-lived (30-day) JWT cannot outlive a
+ * deactivated account — xmanstudio owns the users table and may disable users.
  */
 export async function getCurrentUserId(): Promise<number | null> {
   const session = await auth();
   if (!session?.user?.id) return null;
-  return parseInt(session.user.id, 10);
+  const userId = parseInt(session.user.id, 10);
+  if (!Number.isInteger(userId)) return null;
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { isActive: true },
+  });
+  if (!user || !user.isActive) return null;
+  return userId;
 }
 
 /**
- * Check if current user is admin
+ * Check if current user is admin — reads the live role from the DB rather than
+ * trusting the role baked into the JWT at login time.
  */
 export async function isAdmin(): Promise<boolean> {
   const session = await auth();
-  const role = (session?.user as { role?: string })?.role;
-  return role === 'admin' || role === 'super_admin';
+  if (!session?.user?.id) return false;
+  const userId = parseInt(session.user.id, 10);
+  if (!Number.isInteger(userId)) return false;
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { role: true, isActive: true },
+  });
+  return !!user && user.isActive && (user.role === 'admin' || user.role === 'super_admin');
 }

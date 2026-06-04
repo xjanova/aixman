@@ -16,6 +16,15 @@ export class FalProvider extends BaseProvider {
     return this.runModel(params);
   }
 
+  // Image-to-image / edit / upscale — fal models read the source from `image_url`,
+  // which runModel already forwards from params.inputImage.
+  async editImage(params: ProviderGenerateParams): Promise<ProviderResponse> {
+    if (!params.inputImage) {
+      return { success: false, error: 'No input image provided for edit' };
+    }
+    return this.runModel(params);
+  }
+
   private async runModel(params: ProviderGenerateParams): Promise<ProviderResponse> {
     const startTime = Date.now();
 
@@ -54,11 +63,12 @@ export class FalProvider extends BaseProvider {
 
       if (!requestId) {
         // Direct response (sync mode)
-        const images = queueData.images || queueData.video ? [queueData.video] : [];
+        const images: { url: string }[] = Array.isArray(queueData.images) ? queueData.images : [];
+        const videoUrl = queueData.video?.url;
         return {
           success: true,
-          resultUrl: images[0]?.url || queueData.video?.url,
-          resultUrls: images.map((i: { url: string }) => i.url),
+          resultUrl: videoUrl || images[0]?.url,
+          resultUrls: videoUrl ? [videoUrl] : images.map((i) => i.url).filter(Boolean),
           processingMs: Date.now() - startTime,
         };
       }
