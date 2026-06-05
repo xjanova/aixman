@@ -20,11 +20,14 @@ const HUE = 70;
 
 const adminNav = [
   { href: "/admin", label: "แดชบอร์ด", icon: "◈", exact: true },
+  { href: "/admin/users", label: "ผู้ใช้ & เครดิต", icon: "♟" },
+  { href: "/admin/generations", label: "ผลงาน", icon: "▧" },
   { href: "/admin/providers", label: "Providers", icon: "⚙" },
   { href: "/admin/pools", label: "Account Pools", icon: "▣" },
   { href: "/admin/models", label: "โมเดล AI", icon: "✦" },
+  { href: "/admin/styles", label: "สไตล์", icon: "✤" },
   { href: "/admin/packages", label: "แพ็กเกจเครดิต", icon: "✧" },
-  { href: "/admin/analytics", label: "สถิติ", icon: "▧" },
+  { href: "/admin/analytics", label: "สถิติ", icon: "◷" },
   { href: "/admin/settings", label: "ตั้งค่า", icon: "⚛" },
 ];
 
