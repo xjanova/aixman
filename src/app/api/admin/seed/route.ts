@@ -163,8 +163,8 @@ export async function POST() {
     for (const pkg of packages) {
       await prisma.aiCreditPackage.upsert({
         where: { slug: pkg.slug },
-        create: { ...pkg, features: JSON.stringify(pkg.features) },
-        update: { name: pkg.name, credits: pkg.credits, priceThb: pkg.priceThb, priceUsd: pkg.priceUsd, bonusCredits: pkg.bonusCredits, badge: pkg.badge, isFeatured: pkg.isFeatured, sortOrder: pkg.sortOrder, features: JSON.stringify(pkg.features) },
+        create: { ...pkg, features: pkg.features },
+        update: { name: pkg.name, credits: pkg.credits, priceThb: pkg.priceThb, priceUsd: pkg.priceUsd, bonusCredits: pkg.bonusCredits, badge: pkg.badge, isFeatured: pkg.isFeatured, sortOrder: pkg.sortOrder, features: pkg.features },
       });
       results.packages++;
     }

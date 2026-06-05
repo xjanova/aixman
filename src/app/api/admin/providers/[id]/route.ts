@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdmin } from '@/lib/auth';
+import { parseId, pick, prismaErrorResponse } from '@/lib/utils/admin';
 import prisma from '@/lib/db';
+
+const EDITABLE = ['name', 'slug', 'description', 'baseUrl', 'logo', 'authType', 'supportsImage', 'supportsVideo', 'supportsEdit', 'isActive', 'sortOrder'];
 
 export async function PATCH(
   request: NextRequest,
@@ -12,20 +15,23 @@ export async function PATCH(
     }
 
     const { id } = await params;
-    const body = await request.json();
+    const providerId = parseId(id);
+    if (!providerId) {
+      return NextResponse.json({ error: 'id ไม่ถูกต้อง' }, { status: 400 });
+    }
 
+    const body = await request.json().catch(() => ({}));
     const provider = await prisma.aiProvider.update({
-      where: { id: parseInt(id, 10) },
-      data: body,
+      where: { id: providerId },
+      data: pick(body, EDITABLE),
     });
 
     return NextResponse.json({ provider });
   } catch (error) {
+    const mapped = prismaErrorResponse(error);
+    if (mapped) return mapped;
     console.error('Failed to update provider:', error);
-    return NextResponse.json(
-      { error: 'Failed to update provider' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Failed to update provider' }, { status: 500 });
   }
 }
 
@@ -39,17 +45,17 @@ export async function DELETE(
     }
 
     const { id } = await params;
+    const providerId = parseId(id);
+    if (!providerId) {
+      return NextResponse.json({ error: 'id ไม่ถูกต้อง' }, { status: 400 });
+    }
 
-    await prisma.aiProvider.delete({
-      where: { id: parseInt(id, 10) },
-    });
-
+    await prisma.aiProvider.delete({ where: { id: providerId } });
     return NextResponse.json({ success: true });
   } catch (error) {
+    const mapped = prismaErrorResponse(error);
+    if (mapped) return mapped;
     console.error('Failed to delete provider:', error);
-    return NextResponse.json(
-      { error: 'Failed to delete provider' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Failed to delete provider' }, { status: 500 });
   }
 }
