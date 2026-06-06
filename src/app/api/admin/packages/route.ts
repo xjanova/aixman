@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdmin } from '@/lib/auth';
+import { prismaErrorResponse, normalizeFeatures } from '@/lib/utils/admin';
 import prisma from '@/lib/db';
 
 export async function GET() {
@@ -28,24 +29,37 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
-    const body = await request.json();
+    const body = await request.json().catch(() => ({}));
+
+    const credits = parseInt(body.credits, 10);
+    if (!body.name || !body.slug) {
+      return NextResponse.json({ error: 'ต้องระบุชื่อและ slug' }, { status: 400 });
+    }
+    if (!Number.isInteger(credits) || credits < 0) {
+      return NextResponse.json({ error: 'credits ไม่ถูกต้อง' }, { status: 400 });
+    }
+    if (body.priceThb == null || isNaN(Number(body.priceThb)) || body.priceUsd == null || isNaN(Number(body.priceUsd))) {
+      return NextResponse.json({ error: 'ราคาไม่ถูกต้อง' }, { status: 400 });
+    }
 
     const pkg = await prisma.aiCreditPackage.create({
       data: {
         name: body.name,
         slug: body.slug,
-        credits: parseInt(body.credits, 10),
+        credits,
         priceThb: body.priceThb,
         priceUsd: body.priceUsd,
         bonusCredits: body.bonusCredits ? parseInt(body.bonusCredits, 10) : 0,
         badge: body.badge ?? null,
-        features: body.features ?? null,
+        features: normalizeFeatures(body.features) ?? [],
         sortOrder: body.sortOrder ? parseInt(body.sortOrder, 10) : 0,
       },
     });
 
     return NextResponse.json({ package: pkg }, { status: 201 });
   } catch (error) {
+    const mapped = prismaErrorResponse(error);
+    if (mapped) return mapped;
     console.error('Failed to create package:', error);
     return NextResponse.json(
       { error: 'Failed to create package' },

@@ -137,10 +137,10 @@ export async function POST(request: NextRequest) {
 
   // Create default credit packages
   const defaultPackages = [
-    { name: 'Starter', slug: 'starter', credits: 100, priceThb: 99, priceUsd: 2.99, bonusCredits: 0, sortOrder: 1, features: JSON.stringify(['100 เครดิต', 'ภาพ ~25-33 ภาพ', 'วิดีโอ ~5-8 คลิป', 'ไม่มีวันหมดอายุ']) },
-    { name: 'Creator', slug: 'creator', credits: 500, priceThb: 399, priceUsd: 11.99, bonusCredits: 50, badge: 'ยอดนิยม', isFeatured: true, sortOrder: 2, features: JSON.stringify(['500 + 50 โบนัส เครดิต', 'ภาพ ~137 ภาพ', 'วิดีโอ ~36 คลิป', 'ประหยัด 20%', 'ไม่มีวันหมดอายุ']) },
-    { name: 'Pro', slug: 'pro', credits: 1500, priceThb: 999, priceUsd: 29.99, bonusCredits: 250, badge: 'คุ้มที่สุด', sortOrder: 3, features: JSON.stringify(['1,500 + 250 โบนัส เครดิต', 'ภาพ ~437 ภาพ', 'วิดีโอ ~116 คลิป', 'ประหยัด 33%', 'ไม่มีวันหมดอายุ']) },
-    { name: 'Enterprise', slug: 'enterprise', credits: 5000, priceThb: 2499, priceUsd: 74.99, bonusCredits: 1500, badge: 'สำหรับทีม', sortOrder: 4, features: JSON.stringify(['5,000 + 1,500 โบนัส เครดิต', 'ภาพ ~1,625 ภาพ', 'วิดีโอ ~433 คลิป', 'ประหยัด 50%', 'ซัพพอร์ตพิเศษ']) },
+    { name: 'Starter', slug: 'starter', credits: 100, priceThb: 99, priceUsd: 2.99, bonusCredits: 0, sortOrder: 1, features: ['100 เครดิต', 'ภาพ ~25-33 ภาพ', 'วิดีโอ ~5-8 คลิป', 'ไม่มีวันหมดอายุ'] },
+    { name: 'Creator', slug: 'creator', credits: 500, priceThb: 399, priceUsd: 11.99, bonusCredits: 50, badge: 'ยอดนิยม', isFeatured: true, sortOrder: 2, features: ['500 + 50 โบนัส เครดิต', 'ภาพ ~137 ภาพ', 'วิดีโอ ~36 คลิป', 'ประหยัด 20%', 'ไม่มีวันหมดอายุ'] },
+    { name: 'Pro', slug: 'pro', credits: 1500, priceThb: 999, priceUsd: 29.99, bonusCredits: 250, badge: 'คุ้มที่สุด', sortOrder: 3, features: ['1,500 + 250 โบนัส เครดิต', 'ภาพ ~437 ภาพ', 'วิดีโอ ~116 คลิป', 'ประหยัด 33%', 'ไม่มีวันหมดอายุ'] },
+    { name: 'Enterprise', slug: 'enterprise', credits: 5000, priceThb: 2499, priceUsd: 74.99, bonusCredits: 1500, badge: 'สำหรับทีม', sortOrder: 4, features: ['5,000 + 1,500 โบนัส เครดิต', 'ภาพ ~1,625 ภาพ', 'วิดีโอ ~433 คลิป', 'ประหยัด 50%', 'ซัพพอร์ตพิเศษ'] },
   ];
 
   for (const pkg of defaultPackages) {

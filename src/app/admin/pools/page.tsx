@@ -50,6 +50,7 @@ export default function PoolsPage() {
       .catch(() => setLoading(false));
   };
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { fetchPools(); }, []);
 
   const toggleAccount = async (id: number, active: boolean) => {

@@ -22,6 +22,17 @@ interface AIStyle {
   promptSuffix: string | null;
 }
 
+interface AITemplate {
+  id: number;
+  name: string;
+  description: string | null;
+  category: string;
+  prompt: string;
+  negativePrompt: string | null;
+  thumbnail: string | null;
+  isFeatured: boolean;
+}
+
 interface AppState {
   // Generation state
   isGenerating: boolean;
@@ -41,6 +52,11 @@ interface AppState {
   styles: AIStyle[];
   stylesLoaded: boolean;
   fetchStyles: () => Promise<void>;
+
+  // Templates (prompt presets)
+  templates: AITemplate[];
+  templatesLoaded: boolean;
+  fetchTemplates: () => Promise<void>;
 
   // Selected model
   selectedModelId: number | null;
@@ -85,6 +101,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (res.ok) {
         const data = await res.json();
         set({ styles: data.styles || [], stylesLoaded: true });
+      }
+    } catch {}
+  },
+
+  templates: [],
+  templatesLoaded: false,
+  fetchTemplates: async () => {
+    if (get().templatesLoaded) return;
+    try {
+      const res = await fetch('/api/templates');
+      if (res.ok) {
+        const data = await res.json();
+        set({ templates: data.templates || [], templatesLoaded: true });
       }
     } catch {}
   },
