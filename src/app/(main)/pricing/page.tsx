@@ -46,6 +46,9 @@ export default function PricingPage() {
   const [packages, setPackages] = useState<Package[]>([]);
   const [models, setModels] = useState<Model[]>([]);
   const [loading, setLoading] = useState(true);
+  const [walletInfo, setWalletInfo] = useState<{ balance: number; isActive: boolean; credits: number } | null>(null);
+  const [buying, setBuying] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
   const xmanCheckoutUrl = process.env.NEXT_PUBLIC_XMAN_URL || "https://xman4289.com";
 
   useEffect(() => {
@@ -58,6 +61,43 @@ export default function PricingPage() {
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
+
+  const loadWallet = () => {
+    fetch("/api/credits/wallet")
+      .then(r => r.json())
+      .then(d => setWalletInfo(d.loggedIn ? { balance: d.wallet?.balance ?? 0, isActive: d.wallet?.isActive ?? false, credits: d.credits ?? 0 } : null))
+      .catch(() => {});
+  };
+  useEffect(loadWallet, []);
+
+  const buyWithWallet = async (pkg: Package) => {
+    if (buying) return;
+    if (!walletInfo) { window.location.href = "/login"; return; }
+    const price = Number(pkg.priceThb);
+    if (!window.confirm(`ยืนยันซื้อ "${pkg.name}" ราคา ฿${price.toLocaleString()} จาก Wallet?\nจะได้รับ ${pkg.credits.toLocaleString()}${pkg.bonusCredits > 0 ? ` + ${pkg.bonusCredits.toLocaleString()} โบนัส` : ""} เครดิต`)) return;
+    setBuying(pkg.slug);
+    setNotice(null);
+    try {
+      const res = await fetch("/api/credits/purchase", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ packageSlug: pkg.slug, idempotencyKey: crypto.randomUUID() }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setNotice({ ok: false, text: data.error || "ซื้อไม่สำเร็จ" });
+      } else if (data.duplicate) {
+        setNotice({ ok: true, text: "รายการนี้ถูกดำเนินการไปแล้ว" });
+      } else {
+        setNotice({ ok: true, text: `สำเร็จ! ยอดเครดิตคงเหลือ ${Number(data.credits).toLocaleString()} เครดิต` });
+        setWalletInfo(w => (w ? { ...w, balance: data.walletBalance, credits: data.credits } : w));
+      }
+    } catch {
+      setNotice({ ok: false, text: "เกิดข้อผิดพลาด กรุณาลองใหม่" });
+    } finally {
+      setBuying(null);
+    }
+  };
 
   const creditCosts = useMemo(() => {
     const categories: Record<string, { min: number; max: number; examples: string[] }> = {};
@@ -105,6 +145,17 @@ export default function PricingPage() {
           ))}
         </div>
       </div>
+
+      {/* Purchase result notice */}
+      {notice && (
+        <div role="status" style={{
+          maxWidth: 560, margin: "0 auto 32px", padding: "14px 20px", borderRadius: 14,
+          textAlign: "center", fontSize: 14, fontWeight: 500,
+          background: notice.ok ? "hsla(150,60%,30%,0.25)" : "hsla(0,60%,40%,0.2)",
+          border: `1px solid ${notice.ok ? "hsla(150,70%,55%,0.4)" : "hsla(0,70%,60%,0.4)"}`,
+          color: notice.ok ? "#a7f3d0" : "#fca5a5",
+        }}>{notice.text}</div>
+      )}
 
       {/* Packages */}
       {loading ? (
@@ -161,14 +212,28 @@ export default function PricingPage() {
                     เริ่มใช้ฟรี →
                   </Link>
                 ) : (
-                  <a href={href} style={{
-                    display: "block", textAlign: "center", width: "100%", padding: 14, borderRadius: 12,
-                    background: pop
-                      ? `linear-gradient(135deg, hsl(${h},70%,50%), hsl(${h + 40},70%,60%))`
-                      : "rgba(255,255,255,0.06)",
-                    color: "#fff", border: pop ? "none" : "1px solid rgba(255,255,255,0.15)",
-                    textDecoration: "none", fontSize: 14, fontWeight: 600,
-                  }}>{pop ? "เริ่มทอเลย →" : "เลือกแผนนี้ →"}</a>
+                  <>
+                    <a href={href} style={{
+                      display: "block", textAlign: "center", width: "100%", padding: 14, borderRadius: 12,
+                      background: pop
+                        ? `linear-gradient(135deg, hsl(${h},70%,50%), hsl(${h + 40},70%,60%))`
+                        : "rgba(255,255,255,0.06)",
+                      color: "#fff", border: pop ? "none" : "1px solid rgba(255,255,255,0.15)",
+                      textDecoration: "none", fontSize: 14, fontWeight: 600,
+                    }}>{pop ? "เริ่มทอเลย →" : "เลือกแผนนี้ →"}</a>
+                    {walletInfo && (
+                      <button onClick={() => buyWithWallet(pkg)} disabled={buying === pkg.slug}
+                        style={{
+                          marginTop: 8, width: "100%", padding: 12, borderRadius: 12,
+                          cursor: buying === pkg.slug ? "default" : "pointer",
+                          background: "rgba(255,255,255,0.03)", color: `hsl(${h},80%,78%)`,
+                          border: `1px solid hsla(${h},70%,55%,0.35)`, fontSize: 13, fontWeight: 600,
+                          opacity: buying && buying !== pkg.slug ? 0.5 : 1,
+                        }}>
+                        {buying === pkg.slug ? "กำลังซื้อ…" : `ซื้อด้วย Wallet ฿${Number(pkg.priceThb).toLocaleString()}`}
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             );
@@ -232,11 +297,19 @@ export default function PricingPage() {
         </div>
         <div>
           <h3 style={{ fontSize: 14, fontWeight: 600, color: "#fff", margin: "0 0 6px" }}>ใช้ Wallet จาก XMAN Studio ได้</h3>
-          <p style={{ fontSize: 13, color: "rgba(203,213,225,0.78)", margin: 0, lineHeight: 1.55 }}>
-            หากคุณมี Wallet balance ที่{" "}
-            <a href="https://xman4289.com" target="_blank" rel="noopener noreferrer" style={{ color: "#a5f3fc", textDecoration: "none" }}>xman4289.com</a>{" "}
-            สามารถใช้จ่ายซื้อเครดิตได้โดยตรงผ่านหน้าชำระเงิน
-          </p>
+          {walletInfo ? (
+            <p style={{ fontSize: 13, color: "rgba(203,213,225,0.78)", margin: 0, lineHeight: 1.55 }}>
+              ยอด Wallet คงเหลือ <b style={{ color: "#fff" }}>฿{walletInfo.balance.toLocaleString()}</b> · เครดิต AI <b style={{ color: "#fff" }}>{walletInfo.credits.toLocaleString()}</b>
+              {!walletInfo.isActive && <span style={{ color: "#fca5a5" }}> · กระเป๋าถูกระงับ</span>}
+              <br />กดปุ่ม “ซื้อด้วย Wallet” ที่แพ็กเกจด้านบน เพื่อหักเงินและรับเครดิตทันที
+            </p>
+          ) : (
+            <p style={{ fontSize: 13, color: "rgba(203,213,225,0.78)", margin: 0, lineHeight: 1.55 }}>
+              เติมเงินเข้า Wallet ที่{" "}
+              <a href="https://xman4289.com" target="_blank" rel="noopener noreferrer" style={{ color: "#a5f3fc", textDecoration: "none" }}>xman4289.com</a>{" "}
+              แล้ว <Link href="/login" style={{ color: "#a5f3fc", textDecoration: "none" }}>เข้าสู่ระบบ</Link> เพื่อจ่ายซื้อเครดิตได้ทันทีบนหน้านี้
+            </p>
+          )}
         </div>
       </div>
 

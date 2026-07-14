@@ -50,10 +50,40 @@ model Wallet {
   totalDeposited Decimal  @default(0) @map("total_deposited") @db.Decimal(12, 2)
   totalSpent     Decimal  @default(0) @map("total_spent") @db.Decimal(12, 2)
   totalRefunded  Decimal  @default(0) @map("total_refunded") @db.Decimal(12, 2)
+  isActive       Boolean  @default(true) @map("is_active")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
   @@map("wallets")
+}
+
+// wallet_transactions is owned by xmanstudio (Laravel). AIXMAN writes 'payment'
+// rows here when a user spends wallet balance to buy AI credits, so xmanstudio's
+// wallet history stays consistent. Columns MUST match the Laravel migration exactly.
+// DO NOT run prisma migrate/db push on this table.
+model WalletTransaction {
+  id               Int      @id @default(autoincrement())
+  walletId         Int      @map("wallet_id")
+  userId           Int      @map("user_id")
+  transactionId    String   @unique @map("transaction_id") @db.VarChar(50)
+  type             String   @db.VarChar(20)
+  amount           Decimal  @db.Decimal(12, 2)
+  balanceBefore    Decimal  @map("balance_before") @db.Decimal(12, 2)
+  balanceAfter     Decimal  @map("balance_after") @db.Decimal(12, 2)
+  referenceType    String?  @map("reference_type")
+  referenceId      BigInt?  @map("reference_id")
+  paymentMethod    String?  @map("payment_method")
+  paymentReference String?  @map("payment_reference")
+  description      String?  @db.Text
+  adminNote        String?  @map("admin_note") @db.Text
+  createdBy        Int?     @map("created_by")
+  status           String   @default("pending") @db.VarChar(20)
+  metadata         Json?
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@index([userId, createdAt])
+  @@map("wallet_transactions")
 }
 
 // ============================================================
@@ -217,7 +247,7 @@ model AiCreditTransaction {
   description  String?  @db.VarChar(500)
   packageId    Int?     @map("package_id")
   generationId Int?     @map("generation_id")
-  xmanOrderId  Int?     @map("xman_order_id")
+  xmanOrderId  Int?     @unique @map("xman_order_id")
   metadata     Json?
   createdAt    DateTime @default(now()) @map("created_at")
 
@@ -241,10 +271,10 @@ model AiGeneration {
   prompt         String?   @db.Text
   negativePrompt String?   @map("negative_prompt") @db.Text
   params         Json?
-  inputImage     String?   @map("input_image") @db.VarChar(500)
-  resultUrl      String?   @map("result_url") @db.VarChar(1000)
+  inputImage     String?   @map("input_image") @db.MediumText
+  resultUrl      String?   @map("result_url") @db.MediumText
   resultUrls     Json?     @map("result_urls")
-  thumbnailUrl   String?   @map("thumbnail_url") @db.VarChar(1000)
+  thumbnailUrl   String?   @map("thumbnail_url") @db.MediumText
   providerJobId  String?   @map("provider_job_id") @db.VarChar(500)
   creditsUsed    Int       @default(0) @map("credits_used")
   costUsd        Decimal   @default(0) @map("cost_usd") @db.Decimal(10, 6)

@@ -1,9 +1,23 @@
 import prisma from '@/lib/db';
+import { Prisma } from '@/generated/prisma/client';
+
+type TxClient = Prisma.TransactionClient;
+
+export interface GrantOptions {
+  /** 'purchase' (increments totalBought) or other credit-adding types */
+  type?: string;
+  bonus?: number;
+  packageId?: number;
+  xmanOrderId?: number;
+  description?: string;
+  bonusDescription?: string;
+}
 
 /**
  * Credit Service
- * Manages user AI credits — separate from xmanstudio wallet
- * Users can top-up credits using their xmanstudio wallet
+ * Manages user AI credits — separate from xmanstudio wallet.
+ * Users top-up credits either via the xmanstudio purchase webhook or by spending
+ * their shared wallet balance on this site (see WalletService).
  */
 export class CreditService {
   /**
@@ -42,6 +56,60 @@ export class CreditService {
       }
       throw error;
     }
+  }
+
+  /**
+   * Grant credits (+ optional bonus) inside a caller-provided transaction.
+   * balanceAfter is read from the post-increment row so it is always accurate,
+   * even under concurrent grants. Used by WalletService so the wallet deduction
+   * and the credit grant share a single atomic transaction.
+   */
+  static async grantWithinTx(tx: TxClient, userId: number, amount: number, opts: GrantOptions = {}) {
+    const bonus = opts.bonus && opts.bonus > 0 ? opts.bonus : 0;
+    const type = opts.type ?? 'purchase';
+    const isPurchase = type === 'purchase';
+
+    const updated = await tx.aiUserCredit.upsert({
+      where: { userId },
+      create: {
+        userId,
+        balance: amount + bonus,
+        totalBought: isPurchase ? amount : 0,
+        totalBonus: bonus,
+      },
+      update: {
+        balance: { increment: amount + bonus },
+        ...(isPurchase ? { totalBought: { increment: amount } } : {}),
+        ...(bonus > 0 ? { totalBonus: { increment: bonus } } : {}),
+      },
+    });
+
+    const purchaseTxn = await tx.aiCreditTransaction.create({
+      data: {
+        userId,
+        type,
+        amount,
+        // balance attributable right after the main grant (before the bonus row)
+        balanceAfter: updated.balance - bonus,
+        description: opts.description || `Added ${amount} credits`,
+        packageId: opts.packageId,
+        xmanOrderId: opts.xmanOrderId,
+      },
+    });
+
+    if (bonus > 0) {
+      await tx.aiCreditTransaction.create({
+        data: {
+          userId,
+          type: 'bonus',
+          amount: bonus,
+          balanceAfter: updated.balance,
+          description: opts.bonusDescription || `โบนัส ${bonus} เครดิต`,
+        },
+      });
+    }
+
+    return { balance: updated.balance, transactionId: purchaseTxn.id };
   }
 
   /**

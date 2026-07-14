@@ -2,6 +2,7 @@ import prisma from '@/lib/db';
 import { Prisma } from '@/generated/prisma/client';
 import { getProvider } from '@/lib/providers';
 import { AccountPoolManager } from './account-pool';
+import { persistAssetSafe, isStorageConfigured } from '@/lib/storage/r2';
 import type { GenerationRequest, GenerationResult, ProviderSlug } from '@/types';
 
 /**
@@ -148,13 +149,29 @@ export class GenerationService {
 
       if (result.success) {
         await AccountPoolManager.recordSuccess(account.id, costUsd);
+
+        // Persist provider output to durable R2 storage. Provider URLs expire and
+        // base64 results shouldn't live in the DB long-term. persistAssetSafe is a
+        // no-op (returns the source unchanged) when R2 isn't configured.
+        let finalUrl = result.resultUrl;
+        let finalUrls = result.resultUrls;
+        if (isStorageConfigured()) {
+          const prefix = `generations/${userId}/${generation.id}`;
+          if (finalUrls && finalUrls.length > 0) {
+            finalUrls = await Promise.all(finalUrls.map((u) => persistAssetSafe(u, prefix)));
+            finalUrl = finalUrls[0];
+          } else if (finalUrl) {
+            finalUrl = await persistAssetSafe(finalUrl, prefix);
+          }
+        }
+
         await prisma.aiGeneration.update({
           where: { id: generation.id },
           data: {
             status: 'completed',
-            resultUrl: result.resultUrl,
-            resultUrls: (result.resultUrls ?? Prisma.JsonNull) as Prisma.InputJsonValue,
-            thumbnailUrl: result.resultUrl, // Use first result as thumbnail
+            resultUrl: finalUrl,
+            resultUrls: (finalUrls ?? Prisma.JsonNull) as Prisma.InputJsonValue,
+            thumbnailUrl: finalUrl, // Use first result as thumbnail
             providerJobId: result.jobId,
             costUsd,
             processingMs: result.processingMs,
@@ -165,9 +182,9 @@ export class GenerationService {
         return {
           id: generation.id,
           status: 'completed',
-          resultUrl: result.resultUrl,
-          resultUrls: result.resultUrls,
-          thumbnailUrl: result.resultUrl,
+          resultUrl: finalUrl,
+          resultUrls: finalUrls,
+          thumbnailUrl: finalUrl,
           processingMs: result.processingMs,
           creditsUsed: requiredCredits,
         };

@@ -121,9 +121,24 @@ jobs:
             echo "Generating Prisma client..."
             npx prisma generate
 
-            # Push database schema (safe - no data loss)
-            echo "Syncing database schema..."
-            npx prisma db push --skip-generate 2>&1 || echo "Schema push warning (non-fatal)"
+            # Apply manual SQL migrations for ai_ tables (idempotent).
+            # NEVER run `prisma db push` here: schema.prisma maps shared Laravel-owned
+            # tables (wallets, wallet_transactions) and db push would try to ALTER them.
+            echo "Applying manual DB migrations (ai_ tables only)..."
+            MIG_URL=$(grep -E '^DATABASE_URL=' .env | head -1 | sed -E 's/^DATABASE_URL=//; s/^"//; s/"$//')
+            if [ -n "$MIG_URL" ] && command -v mysql >/dev/null 2>&1; then
+              MU=$(echo "$MIG_URL" | sed -E 's#mysql://([^:]+):.*#\1#')
+              MP=$(echo "$MIG_URL" | sed -E 's#mysql://[^:]+:([^@]+)@.*#\1#')
+              MH=$(echo "$MIG_URL" | sed -E 's#.*@([^:/]+).*#\1#')
+              MD=$(echo "$MIG_URL" | sed -E 's#.*/([^?]+).*#\1#')
+              for f in $(ls db/migrations/*.sql 2>/dev/null | sort); do
+                echo "  applying $f"
+                MYSQL_PWD="$MP" mysql -u"$MU" -h"$MH" "$MD" < "$f" 2>&1 | grep -v "Using a password" \
+                  || echo "  ($f: warning, non-fatal — migrations are idempotent)"
+              done
+            else
+              echo "  mysql/DATABASE_URL unavailable — apply db/migrations/*.sql manually"
+            fi
 
             # Build production
             echo "Building production..."
