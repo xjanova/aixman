@@ -132,8 +132,14 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         </div>
       </aside>
 
-      {/* Main content */}
-      <main style={{ flex: 1, marginLeft: 256, padding: 32, minHeight: "100vh" }}>
+      {/* Main content.
+          `position: relative` + a z-index is load-bearing, not cosmetic:
+          AmbientBackground (root layout) is `fixed inset-0 z-0` and paints an
+          OPAQUE dark base. CSS paints positioned elements after non-positioned
+          ones, so a static <main> ends up underneath it and every admin page
+          renders invisible — present in the DOM, correctly sized, but covered.
+          The sidebar only escaped this because it already carries z-index 40. */}
+      <main style={{ flex: 1, marginLeft: 256, padding: 32, minHeight: "100vh", position: "relative", zIndex: 1 }}>
         {children}
       </main>
 
