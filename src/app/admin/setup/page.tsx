@@ -17,6 +17,7 @@ import {
 type Step = 1 | 2 | 3 | 4;
 
 const providerDefaults = [
+  { slug: "pollinations", name: "Pollinations (ฟรี)", apiKeyLabel: "Token (ไม่บังคับ)", hasSecret: false, keyless: true, baseUrl: "https://image.pollinations.ai" },
   { slug: "byteplus", name: "BytePlus", apiKeyLabel: "API Key", hasSecret: false, baseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3" },
   { slug: "openai", name: "OpenAI", apiKeyLabel: "API Key", hasSecret: false, baseUrl: "https://api.openai.com/v1" },
   { slug: "replicate", name: "Replicate", apiKeyLabel: "API Token", hasSecret: false, baseUrl: "https://api.replicate.com/v1" },
@@ -34,7 +35,7 @@ export default function SetupWizard() {
   const [saving, setSaving] = useState(false);
   const [siteName, setSiteName] = useState("XMAN AI Studio");
   const [siteDesc, setSiteDesc] = useState("AI Image & Video Generation Platform");
-  const [selectedProviders, setSelectedProviders] = useState<string[]>(["byteplus", "openai", "replicate"]);
+  const [selectedProviders, setSelectedProviders] = useState<string[]>(["pollinations", "byteplus", "openai", "replicate"]);
   const [apiKeys, setApiKeys] = useState<Record<string, { key: string; secret?: string }>>({});
   const [encryptionKey, setEncryptionKey] = useState("");
 
@@ -161,6 +162,11 @@ export default function SetupWizard() {
                   return (
                     <div key={slug} className="p-4 rounded-xl bg-surface-light">
                       <label className="text-sm font-medium mb-2 block">{p.name}</label>
+                      {p.keyless && (
+                        <p className="text-xs text-success mb-2">
+                          ไม่ต้องใส่ key — ใช้งานฟรีได้ทันที (ใส่ token เพื่ออัปเกรดโมเดล)
+                        </p>
+                      )}
                       <input
                         type="password"
                         placeholder={p.apiKeyLabel}
@@ -194,7 +200,15 @@ export default function SetupWizard() {
                 <h3 className="font-semibold text-sm mb-2">สิ่งที่จะถูกสร้าง:</h3>
                 <ul className="text-sm text-muted space-y-1">
                   <li>&#x2022; {selectedProviders.length} Providers</li>
-                  <li>&#x2022; {selectedProviders.filter((s) => apiKeys[s]?.key).length} Account Pools (จาก API keys ที่ใส่)</li>
+                  <li>
+                    &#x2022;{" "}
+                    {
+                      selectedProviders.filter(
+                        (s) => apiKeys[s]?.key || providerDefaults.find((d) => d.slug === s)?.keyless
+                      ).length
+                    }{" "}
+                    Account Pools (จาก API keys ที่ใส่ + provider ที่ใช้ฟรี)
+                  </li>
                   <li>&#x2022; โมเดล AI เริ่มต้นสำหรับแต่ละ Provider</li>
                   <li>&#x2022; แพ็กเกจเครดิตเริ่มต้น 4 แพ็กเกจ</li>
                   <li>&#x2022; สไตล์ Preset เริ่มต้น</li>

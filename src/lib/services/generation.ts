@@ -1,6 +1,8 @@
+import { after } from 'next/server';
 import prisma from '@/lib/db';
 import { Prisma } from '@/generated/prisma/client';
 import { getProvider } from '@/lib/providers';
+import { getGpuProvider } from '@/lib/gpu';
 import { AccountPoolManager } from './account-pool';
 import { persistAssetSafe, isStorageConfigured } from '@/lib/storage/r2';
 import type { GenerationRequest, GenerationResult, ProviderSlug } from '@/types';
@@ -80,6 +82,52 @@ export class GenerationService {
 
       return { generation: gen };
     });
+
+    // 5b. GPU-backed providers have no inference API to call — they rent a
+    // machine and run the model on it. Queue the job and return immediately;
+    // GpuQueue rents, dispatches, and settles the generation asynchronously.
+    if (getGpuProvider(model.provider.slug)) {
+      const styleSuffix = request.styleId ? await this.getStyleSuffix(request.styleId) : '';
+      // Imported lazily: GpuQueue imports this class back for refunds, and a
+      // static cycle would leave one of the two undefined at module init.
+      const { GpuQueue } = await import('./gpu-queue');
+
+      await GpuQueue.enqueue({
+        generationId: generation.id,
+        modelKey: model.modelId,
+        payload: {
+          prompt: request.prompt + styleSuffix,
+          negativePrompt: request.negativePrompt,
+          width: request.params?.width || model.maxWidth || 768,
+          height: request.params?.height || model.maxHeight || 768,
+          duration: request.params?.duration || model.maxDuration || 5,
+          fps: request.params?.fps || 24,
+          seed: request.params?.seed ?? Math.floor(Math.random() * 2_147_483_647),
+          inputImage: request.inputImage,
+          extra: (request.params ?? {}) as Record<string, unknown>,
+        },
+      });
+
+      // Kick the queue right away so the GPU starts warming while the response
+      // is still in flight. Cron remains the reliable driver — this is a
+      // latency optimisation, so its failure must not fail the request.
+      try {
+        after(async () => {
+          const { withTickLock } = await import('./gpu-lock');
+          await withTickLock(() => GpuQueue.tick()).catch((err) =>
+            console.error('[gpu] post-enqueue tick failed:', err)
+          );
+        });
+      } catch {
+        // Not in a request scope (script/worker context) — cron will pick it up.
+      }
+
+      return {
+        id: generation.id,
+        status: 'pending',
+        creditsUsed: requiredCredits,
+      };
+    }
 
     // 6. Execute generation via provider
     try {
@@ -249,9 +297,11 @@ export class GenerationService {
   }
 
   /**
-   * Refund credits to user after failed generation
+   * Refund credits to user after failed generation.
+   * Public because GPU-backed generations settle asynchronously in GpuQueue,
+   * long after this class has returned to the caller.
    */
-  private static async refundCredits(userId: number, amount: number, generationId: number) {
+  static async refundCredits(userId: number, amount: number, generationId: number) {
     const userCredit = await prisma.aiUserCredit.findUnique({ where: { userId } });
     if (!userCredit) return;
 

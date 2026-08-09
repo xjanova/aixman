@@ -33,6 +33,9 @@ const aspectRatios = [
   { value: "3:2",  label: "3:2",  w: 1216, h: 832 },
 ];
 
+/** Used to warn when a Thai prompt is sent to an English-only model. */
+const THAI_CHARS = /\p{Script=Thai}/u;
+
 const PROMPT_TAG_CHIPS = [
   "cinematic lighting", "8k", "volumetric", "aurora", "jade",
   "hyperreal", "studio light", "bokeh", "golden hour",
@@ -163,6 +166,9 @@ export default function GeneratePage() {
   const [strength, setStrength] = useState(0.75);
   const [numOutputs, setNumOutputs] = useState(1);
   const [isUpscaling, setIsUpscaling] = useState(false);
+  // Progress line for GPU-backed models, which rent a machine on demand and can
+  // legitimately take many minutes before the first frame is rendered.
+  const [progressNote, setProgressNote] = useState<string | null>(null);
   const [steps, setSteps] = useState(42);
   const [guidance, setGuidance] = useState(7.5);
   const [seed, setSeed] = useState<number | null>(null);
@@ -228,13 +234,45 @@ export default function GeneratePage() {
   };
 
   const pollResult = useCallback(async (generationId: number) => {
-    const maxAttempts = 120;
-    for (let i = 0; i < maxAttempts; i++) {
-      await new Promise((r) => setTimeout(r, 2000));
+    // API-backed providers answer within a few minutes. GPU-backed ones rent a
+    // machine first, and on a cold host that means installing ComfyUI and
+    // pulling ~42 GB of weights. The server allows warmup + render (60 + 30
+    // min by default), so the client has to outlast that or it would declare a
+    // timeout on a job that is still perfectly healthy.
+    const API_DEADLINE_MS = 4 * 60_000;
+    const GPU_DEADLINE_MS = 95 * 60_000;
+
+    const startedAt = Date.now();
+    let deadlineMs = API_DEADLINE_MS;
+    let sawGpu = false;
+    // A transient network blip shouldn't abandon a job the user already paid
+    // for; only give up after several consecutive failures.
+    let consecutiveErrors = 0;
+
+    while (Date.now() - startedAt < deadlineMs) {
+      // Poll gently once the job is known to be a long-running GPU render.
+      await new Promise((r) => setTimeout(r, sawGpu ? 5000 : 2000));
       try {
         const res = await fetch(`/api/generate/${generationId}`);
-        if (!res.ok) break;
+        if (!res.ok) {
+          if (res.status === 404 || res.status === 401) break;
+          if (++consecutiveErrors >= 5) break;
+          continue;
+        }
+        consecutiveErrors = 0;
         const data = await res.json();
+
+        if (data.gpu) {
+          sawGpu = true;
+          deadlineMs = GPU_DEADLINE_MS;
+          const queued = data.gpu.queuePosition && data.gpu.queuePosition > 1
+            ? ` • คิวที่ ${data.gpu.queuePosition}`
+            : "";
+          setProgressNote(`${data.gpu.label}${queued}`);
+        } else if (sawGpu) {
+          setProgressNote(null);
+        }
+
         if (data.status === "completed") {
           setResult({
             id: data.id, status: "completed",
@@ -243,20 +281,30 @@ export default function GeneratePage() {
             thumbnailUrl: data.thumbnailUrl,
             creditsUsed: data.creditsUsed, processingMs: data.processingMs,
           });
-          setIsGenerating(false); fetchCredits(); fetchHistory();
+          setIsGenerating(false); setProgressNote(null); fetchCredits(); fetchHistory();
           toast("success", "สร้างสำเร็จ!", `ใช้ ${data.creditsUsed} เครดิต`);
           return;
         }
         if (data.status === "failed") {
           setResult({ id: data.id, status: "failed", creditsUsed: 0, error: data.errorMessage });
-          setIsGenerating(false); fetchCredits();
+          setIsGenerating(false); setProgressNote(null); fetchCredits();
           toast("error", "สร้างไม่สำเร็จ", data.errorMessage || "เกิดข้อผิดพลาด");
           return;
         }
-      } catch { break; }
+      } catch {
+        if (++consecutiveErrors >= 5) break;
+      }
     }
-    setIsGenerating(false);
-    toast("error", "หมดเวลา", "การสร้างใช้เวลานานเกินไป กรุณาลองใหม่");
+
+    setIsGenerating(false); setProgressNote(null);
+    // The job is still running server-side and the credits are already spent —
+    // telling the user to "try again" here would charge them twice for one clip.
+    toast(
+      "info",
+      "ยังสร้างไม่เสร็จ",
+      "งานยังทำงานอยู่เบื้องหลัง ผลลัพธ์จะขึ้นในแกลเลอรีเมื่อเสร็จ ไม่ต้องสั่งสร้างใหม่",
+    );
+    fetchHistory();
   }, [setIsGenerating, fetchCredits, fetchHistory, toast]);
 
   const handleGenerate = async () => {
@@ -466,6 +514,17 @@ export default function GeneratePage() {
           <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={5}
             placeholder={tab === "video" ? "อธิบายวิดีโอที่ต้องการ..." : "อธิบายภาพที่ต้องการ..."}
             style={{ ...xdrInputStyle, padding: 14, fontSize: 14, lineHeight: 1.5, resize: "vertical" }} />
+          {/* The free Pollinations model does not understand Thai — it renders an
+              unrelated image instead of failing, so warn before credits are spent. */}
+          {selectedModel?.provider.slug === "pollinations" && THAI_CHARS.test(prompt) && (
+            <div style={{
+              marginTop: 8, padding: "8px 12px", borderRadius: 10, fontSize: 12, lineHeight: 1.5,
+              background: "hsla(38,90%,55%,0.12)", color: "#fbbf24",
+              border: "1px solid hsla(38,90%,55%,0.3)",
+            }}>
+              โมเดลฟรีอ่านภาษาไทยไม่ออก — จะได้ภาพที่ไม่ตรงกับที่พิมพ์ กรุณาพิมพ์ prompt เป็นภาษาอังกฤษ หรือเลือกโมเดลแบบเสียเครดิต
+            </div>
+          )}
           <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
             {PROMPT_TAG_CHIPS.map((t) => {
               const already = prompt.toLowerCase().includes(t.toLowerCase());
@@ -669,8 +728,16 @@ export default function GeneratePage() {
                 </div>
               )}
               <p style={{ fontSize: 13, color: "rgba(203,213,225,0.7)", marginTop: 20, textAlign: "center" }}>
-                {tab === "video" ? "วิดีโออาจใช้เวลา 30-120 วินาที..." : "กำลังทอ... รอสักครู่"}
+                {progressNote
+                  ? progressNote
+                  : tab === "video" ? "วิดีโออาจใช้เวลา 30-120 วินาที..." : "กำลังทอ... รอสักครู่"}
               </p>
+              {progressNote && (
+                <p style={{ fontSize: 11, color: "rgba(203,213,225,0.45)", marginTop: 6, textAlign: "center" }}>
+                  โมเดลนี้รันบน GPU ที่เช่ามาเอง • คลิปแรกอาจรอ 20-40 นาที (ต้องบูตเครื่องและโหลดโมเดล)
+                  ปิดหน้านี้ได้ ผลลัพธ์จะขึ้นในแกลเลอรี
+                </p>
+              )}
             </div>
           ) : result?.status === "completed" && result.resultUrl ? (
             <div style={{ width: "100%" }}>

@@ -27,6 +27,7 @@ const adminNav = [
   { href: "/admin/providers", label: "Providers", icon: "⚙" },
   { href: "/admin/pools", label: "Account Pools", icon: "▣" },
   { href: "/admin/models", label: "โมเดล AI", icon: "✦" },
+  { href: "/admin/gpu", label: "GPU ที่เช่า", icon: "▮" },
   { href: "/admin/styles", label: "สไตล์", icon: "✤" },
   { href: "/admin/templates", label: "เทมเพลต", icon: "❖" },
   { href: "/admin/packages", label: "แพ็กเกจเครดิต", icon: "✧" },

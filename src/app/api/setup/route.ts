@@ -30,7 +30,8 @@ export async function POST(request: NextRequest) {
   }
 
   // Create providers and account pools
-  const providerConfigs: Record<string, { name: string; baseUrl: string; supportsImage: boolean; supportsVideo: boolean; supportsEdit: boolean }> = {
+  const providerConfigs: Record<string, { name: string; baseUrl: string; supportsImage: boolean; supportsVideo: boolean; supportsEdit: boolean; keyless?: boolean }> = {
+    pollinations: { name: 'Pollinations (ฟรี)', baseUrl: 'https://image.pollinations.ai', supportsImage: true, supportsVideo: false, supportsEdit: false, keyless: true },
     byteplus: { name: 'BytePlus', baseUrl: 'https://ark.ap-southeast.bytepluses.com/api/v3', supportsImage: true, supportsVideo: true, supportsEdit: true },
     openai: { name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', supportsImage: true, supportsVideo: true, supportsEdit: false },
     replicate: { name: 'Replicate', baseUrl: 'https://api.replicate.com/v1', supportsImage: true, supportsVideo: true, supportsEdit: true },
@@ -60,18 +61,20 @@ export async function POST(request: NextRequest) {
       update: { isActive: true },
     });
 
-    // Create account pool if API key provided.
+    // Create account pool if an API key was provided — or unconditionally for
+    // keyless providers, which need a pool row to be selectable but no secret.
     // Guarded against re-runs of the wizard so we don't pile up duplicate pools.
-    if (providerData.apiKey) {
+    if (providerData.apiKey || config.keyless) {
       const label = `${config.name} Account #1`;
       const existingPool = await prisma.aiAccountPool.findFirst({
         where: { providerId: provider.id, label },
       });
       const poolData = {
-        apiKey: encrypt(providerData.apiKey),
+        apiKey: encrypt(providerData.apiKey || ''),
         apiSecret: providerData.apiSecret ? encrypt(providerData.apiSecret) : null,
-        priority: 50,
-        dailyQuota: 1000,
+        // Keyless pools get a tighter daily cap — the endpoint is shared and unfunded.
+        priority: config.keyless && !providerData.apiKey ? 10 : 50,
+        dailyQuota: config.keyless && !providerData.apiKey ? 300 : 1000,
         rotationMode: 'round_robin',
         isActive: true,
       };
@@ -87,6 +90,7 @@ export async function POST(request: NextRequest) {
 
   // Create default models
   const defaultModels = [
+    { providerSlug: 'pollinations', modelId: 'flux', name: 'Pollinations Free', category: 'image', costPerUnit: 0, creditsPerUnit: 1, maxWidth: 1280, maxHeight: 1280 },
     { providerSlug: 'byteplus', modelId: 'seedream-3.0', name: 'Seedream 3.0', category: 'image', costPerUnit: 0.03, creditsPerUnit: 3, maxWidth: 2048, maxHeight: 2048 },
     { providerSlug: 'byteplus', modelId: 'seedream-5.0-lite', name: 'Seedream 5.0 Lite', category: 'image', costPerUnit: 0.03, creditsPerUnit: 3, maxWidth: 4096, maxHeight: 4096 },
     { providerSlug: 'byteplus', modelId: 'seedance-1.0-lite', name: 'Seedance 1.0 Lite', category: 'video', costPerUnit: 0.05, creditsPerUnit: 12, maxDuration: 10 },

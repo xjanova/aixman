@@ -70,11 +70,19 @@ src/
   lib/
     auth.ts                       # NextAuth config
     db.ts                         # Prisma client
-    providers/                    # 9 AI provider adapters
+    providers/                    # 9 AI provider adapters (inference APIs)
+    gpu/                          # GPU *rental* adapters (not inference APIs)
+      types.ts                    # GpuRentalProvider interface
+      simplepod.ts                # SimplePod.ai marketplace
+      config.ts                   # Budget caps + worker profiles (ai_settings)
+      worker-client.ts            # HTTP client for the container (ComfyUI)
     services/
       account-pool.ts             # Pool rotation (3 modes)
       generation.ts               # Orchestrator
       credits.ts                  # Credit management
+      gpu-worker.ts               # Rent / health / reap rented machines
+      gpu-queue.ts                # FIFO job queue, 1 render per GPU
+      gpu-lock.ts                 # Cross-process tick lease
     store/app-store.ts            # Zustand
     utils/                        # cn, encryption
   types/index.ts                  # TypeScript types
@@ -96,6 +104,64 @@ npx prisma db push   # Push schema (ai_ tables only!)
 3. **Quota First** — ใช้ตัวที่เหลือ quota เยอะสุดก่อน
 
 Auto-cooldown on rate limit (5 min), auto-disable after 5 consecutive errors.
+
+## Self-Hosted GPU (SimplePod → MiniMax H3)
+
+**SimplePod is a GPU rental marketplace, NOT an inference API.** There is no
+`/generate` endpoint and no model list — it rents a Docker container on a GPU
+host and publishes its ports over a Cloudflare tunnel. We run the model
+ourselves and call the server inside the container.
+
+Flow: `/api/generate` → credits deducted → `ai_gpu_jobs` row → cron tick rents a
+GPU → container warms up → render → copied to R2 → generation completed.
+
+**Billing is per second of uptime, not per request.** A worker burns money from
+the moment it is rented until it is terminated, whether or not anyone is
+generating. Consequences that must never be regressed:
+
+- `/api/cron/gpu-tick` **must run every minute** — it is what reaps machines.
+  If it stops, rented GPUs bill forever. Schedule alongside `reset-counters`.
+- Budget caps live in `ai_settings` group `gpu` and are read fresh every tick:
+  `gpu_daily_budget_usd`, `gpu_max_concurrent_workers`, `gpu_idle_timeout_minutes`,
+  `gpu_max_worker_lifetime_minutes` (absolute kill switch).
+- The orphan sweep only terminates instances named `aixman-*`. Never name an
+  unrelated SimplePod instance with that prefix.
+- Results **must** go to R2 before the worker is reaped — the tunnel URL dies
+  with the machine, so `persistAssetSafe` is wrong here (it would return a URL
+  that breaks minutes later).
+- The container port is publicly reachable and ComfyUI has no auth of its own.
+  Each worker gets `AIXMAN_WORKER_TOKEN`; the image is expected to enforce it.
+
+**Setup is API-key-only.** Admin → GPU ที่เช่า → paste the SimplePod key. That
+verifies it, creates the provider + encrypted credential, writes the budget
+caps, and activates the model. Nothing else is required because:
+
+- **No custom Docker image.** A stock `pytorch/pytorch` CUDA 12.8 image is
+  booted and `src/lib/gpu/provision.ts` installs ComfyUI, pulls the weights, and
+  starts a token-gated proxy. CUDA 12.8 is deliberate: first release with
+  Blackwell (5090) support that still runs on common host drivers.
+- **No workflow to paste.** `src/lib/gpu/workflows/minimax-h3.ts` is the official
+  Comfy-Org `video_minimax_h3_t2v` template flattened out of its subgraph into
+  API format. `comfy-validate.ts` checks it against the worker's live
+  `/object_info` before each submit, which also catches half-downloaded weights.
+- **No crontab.** `src/instrumentation.ts` starts an in-process scheduler.
+
+Gotchas that will bite if changed carelessly:
+- Frame count must satisfy `length % 17 === 5` (latent temporal compression) —
+  `frameLengthFor()` handles it. The official template does this with
+  `ComfyMathExpression`, a custom node we deliberately do not depend on.
+- Weights are ~42.5 GB, so warmup is 20–40 min on a fresh host. The client
+  poller must outlast `warmupTimeout + jobTimeout` or it tells users a healthy
+  job failed and they pay twice.
+- 2K output is not offered — it needs 4× H100 (123.6 GB VRAM), which this
+  marketplace does not carry. 1344×768 matches the official template.
+
+Adding another vendor (RunPod, Vast.ai): implement `GpuRentalProvider` and
+register it in `src/lib/gpu/index.ts`. Nothing else changes.
+
+`/admin/gpu` is the control room: balance, live burn rate, budget caps,
+utilisation, and profit. Profit uses *worker uptime* cost, not per-job cost —
+warmup and idle are real spend that no single job carries.
 
 ## Credit System
 

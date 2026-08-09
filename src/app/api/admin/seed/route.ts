@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { isAdmin } from '@/lib/auth';
+import { encrypt } from '@/lib/utils/encryption';
 import prisma from '@/lib/db';
 
 /**
@@ -15,6 +16,7 @@ export async function POST() {
 
     const results = {
       providers: 0,
+      pools: 0,
       models: 0,
       packages: 0,
       styles: 0,
@@ -26,6 +28,7 @@ export async function POST() {
     // 1. AI PROVIDERS
     // ══════════════════════════════════════════
     const providers = [
+      { slug: 'pollinations', name: 'Pollinations (ฟรี)', description: 'สร้างภาพฟรี ไม่ต้องใช้ API key — ใช้ทดสอบระบบและเป็นตัวเลือกฟรีให้ผู้ใช้', baseUrl: 'https://image.pollinations.ai', authType: 'none', supportsImage: true, supportsVideo: false, supportsEdit: false, sortOrder: 0 },
       { slug: 'byteplus', name: 'BytePlus', description: 'ByteDance AI platform — Seedream (image) & Seedance (video)', baseUrl: 'https://ark.ap-southeast.bytepluses.com/api/v3', authType: 'bearer', supportsImage: true, supportsVideo: true, supportsEdit: true, sortOrder: 1 },
       { slug: 'openai', name: 'OpenAI', description: 'GPT Image, DALL-E 3, Sora — industry-leading AI generation', baseUrl: 'https://api.openai.com/v1', authType: 'bearer', supportsImage: true, supportsVideo: true, supportsEdit: false, sortOrder: 2 },
       { slug: 'stability', name: 'Stability AI', description: 'Stable Diffusion, SDXL, Stable Image Ultra', baseUrl: 'https://api.stability.ai', authType: 'bearer', supportsImage: true, supportsVideo: false, supportsEdit: true, sortOrder: 3 },
@@ -35,6 +38,10 @@ export async function POST() {
       { slug: 'kling', name: 'Kling AI', description: 'Kling 2.5 video generation by Kuaishou', baseUrl: 'https://api.klingai.com', authType: 'api_key_secret', supportsImage: true, supportsVideo: true, supportsEdit: false, sortOrder: 7 },
       { slug: 'luma', name: 'Luma AI', description: 'Dream Machine — photorealistic video from text/image', baseUrl: 'https://api.lumalabs.ai/dream-machine/v1', authType: 'bearer', supportsImage: true, supportsVideo: true, supportsEdit: false, sortOrder: 8 },
       { slug: 'leonardo', name: 'Leonardo.ai', description: 'Creative AI — Phoenix, Kino XL models', baseUrl: 'https://cloud.leonardo.ai/api/rest/v1', authType: 'bearer', supportsImage: true, supportsVideo: false, supportsEdit: false, sortOrder: 9 },
+      // GPU rental — not an inference API. We rent a machine and run the model
+      // on it ourselves; see src/lib/gpu. The API key below is the marketplace
+      // key, not a model key.
+      { slug: 'simplepod', name: 'SimplePod (เช่า GPU)', description: 'เช่า GPU มารันโมเดลเอง (MiniMax H3) — คิดเงินตามเวลาที่เครื่องเปิด ไม่ใช่ตามจำนวนงาน', baseUrl: 'https://api.simplepod.ai', authType: 'api_key', supportsImage: false, supportsVideo: true, supportsEdit: false, sortOrder: 10 },
     ];
 
     for (const p of providers) {
@@ -47,9 +54,49 @@ export async function POST() {
     }
 
     // ══════════════════════════════════════════
+    // 1b. KEYLESS ACCOUNT POOL (Pollinations)
+    // ══════════════════════════════════════════
+    // Every other provider needs an admin to paste a real key at /admin/pools,
+    // and until one exists selectAccount() returns null and generation 503s.
+    // Pollinations needs no credentials, so seed its pool entry here — that is
+    // what makes image generation work straight after seeding. The stored key
+    // is an empty string (still encrypted, so decrypt() round-trips normally);
+    // the adapter simply omits the Authorization header when it is blank.
+    const freeProvider = await prisma.aiProvider.findUnique({ where: { slug: 'pollinations' } });
+    if (freeProvider) {
+      const label = 'Pollinations Free (no key)';
+      const existing = await prisma.aiAccountPool.findFirst({
+        where: { providerId: freeProvider.id, label },
+      });
+      // Never overwrite — an admin may have pasted a real Pollinations token here.
+      if (!existing) {
+        await prisma.aiAccountPool.create({
+          data: {
+            providerId: freeProvider.id,
+            label,
+            apiKey: encrypt(''),
+            // Priority only ranks accounts within this provider, so it is just a
+            // marker here — which provider runs is decided by the model the user picks.
+            priority: 10,
+            rotationMode: 'round_robin',
+            rateLimitPerMinute: 10,
+            dailyQuota: 300, // the free endpoint is shared and unfunded — cap abuse
+            isActive: true,
+          },
+        });
+        results.pools++;
+      }
+    }
+
+    // ══════════════════════════════════════════
     // 2. AI MODELS
     // ══════════════════════════════════════════
     const models = [
+      // Pollinations — Image (free, no key). One model only: the anonymous tier
+      // ignores the `model` param and serves whatever it picks, so listing
+      // flux/turbo variants here would be fiction.
+      { providerSlug: 'pollinations', modelId: 'flux', name: 'Pollinations Free', category: 'image', subcategory: 'fast', costPerUnit: 0, creditsPerUnit: 1, maxWidth: 1280, maxHeight: 1280, isFeatured: true, description: 'ฟรี ไม่ต้องใช้ API key • คิว/ความละเอียดจำกัด • ใส่ token ที่ Account Pool เพื่ออัปเกรดโมเดล' },
+
       // BytePlus — Image
       { providerSlug: 'byteplus', modelId: 'seedream-3.0', name: 'Seedream 3.0', category: 'image', subcategory: 'general', costPerUnit: 0.03, creditsPerUnit: 3, maxWidth: 2048, maxHeight: 2048, isFeatured: true },
       { providerSlug: 'byteplus', modelId: 'seedream-5.0-lite', name: 'Seedream 5.0 Lite', category: 'image', subcategory: 'general', costPerUnit: 0.03, creditsPerUnit: 3, maxWidth: 4096, maxHeight: 4096, isFeatured: false },
@@ -112,6 +159,16 @@ export async function POST() {
       { providerSlug: 'leonardo', modelId: 'phoenix-1.0', name: 'Phoenix 1.0', category: 'image', subcategory: 'general', costPerUnit: 0.02, creditsPerUnit: 2, maxWidth: 1472, maxHeight: 1472, isFeatured: true },
       { providerSlug: 'leonardo', modelId: 'kino-xl', name: 'Kino XL', category: 'image', subcategory: 'cinematic', costPerUnit: 0.03, creditsPerUnit: 3, maxWidth: 1024, maxHeight: 1024 },
       { providerSlug: 'leonardo', modelId: 'leonardo-diffusion-xl', name: 'Leonardo Diffusion XL', category: 'image', subcategory: 'general', costPerUnit: 0.02, creditsPerUnit: 2, maxWidth: 1024, maxHeight: 1024 },
+
+      // SimplePod — self-hosted on a rented GPU.
+      // `modelId` doubles as the worker-profile key in gpu_worker_profiles.
+      // Seeded inactive: it is switched on by Admin → GPU ที่เช่า once a
+      // SimplePod API key is supplied, so nobody can spend credits on a queue
+      // that has no account to rent with.
+      // 2K output is deliberately not offered — it needs 4× H100 (123.6 GB
+      // VRAM), which this marketplace does not carry; 768P quantised fits a
+      // single 24 GB card. 1344×768 matches the official ComfyUI template.
+      { providerSlug: 'simplepod', modelId: 'minimax-h3', name: 'MiniMax H3 (Hailuo 3.0)', category: 'video', subcategory: 'self-hosted', costPerUnit: 0.05, creditsPerUnit: 12, maxDuration: 15, maxWidth: 1344, maxHeight: 768, isActive: false, description: 'รันบน GPU ที่เช่ามาเอง มีเสียงในตัว • คลิปแรกรอนานเพราะต้องบูตเครื่องและโหลดโมเดล (~20-40 นาที) • คลิปถัดไปเร็วขึ้นมาก' },
     ];
 
     for (const m of models) {
@@ -124,6 +181,7 @@ export async function POST() {
           providerId: provider.id,
           modelId: m.modelId,
           name: m.name,
+          description: m.description || null,
           category: m.category,
           subcategory: m.subcategory || null,
           costPerUnit: m.costPerUnit,
@@ -131,7 +189,9 @@ export async function POST() {
           maxWidth: m.maxWidth || null,
           maxHeight: m.maxHeight || null,
           maxDuration: m.maxDuration || null,
-          isActive: true,
+          // Models needing operator setup before they can run (GPU-rental ones)
+          // seed disabled so nobody spends credits on a queue that can't drain.
+          isActive: m.isActive ?? true,
           isFeatured: m.isFeatured || false,
         },
         update: {
@@ -243,6 +303,25 @@ export async function POST() {
       { key: 'xman_webhook_enabled', value: 'true', type: 'boolean', group: 'integration' },
       { key: 'google_drive_enabled', value: 'false', type: 'boolean', group: 'integration' },
       { key: 'google_analytics_id', value: '', type: 'string', group: 'integration' },
+
+      // GPU rental (SimplePod) — these caps are the only thing standing between
+      // a queue hiccup and a machine that bills all weekend. Ship them tight.
+      { key: 'gpu_enabled', value: 'false', type: 'boolean', group: 'gpu' },
+      { key: 'gpu_provider', value: 'simplepod', type: 'string', group: 'gpu' },
+      { key: 'gpu_max_concurrent_workers', value: '1', type: 'number', group: 'gpu' },
+      { key: 'gpu_max_price_per_hour_usd', value: '0.60', type: 'number', group: 'gpu' },
+      { key: 'gpu_daily_budget_usd', value: '10', type: 'number', group: 'gpu' },
+      { key: 'gpu_idle_timeout_minutes', value: '10', type: 'number', group: 'gpu' },
+      { key: 'gpu_max_worker_lifetime_minutes', value: '240', type: 'number', group: 'gpu' },
+      { key: 'gpu_warmup_timeout_minutes', value: '25', type: 'number', group: 'gpu' },
+      { key: 'gpu_job_timeout_minutes', value: '30', type: 'number', group: 'gpu' },
+      { key: 'gpu_region', value: '', type: 'string', group: 'gpu' },
+      // Per-model container overrides, merged over the built-in defaults in
+      // src/lib/gpu/config.ts. Seeded empty on purpose: the defaults already
+      // boot a stock PyTorch image, install ComfyUI, pull the MiniMax H3
+      // weights and use the built-in workflow — so nothing needs configuring.
+      // Only add keys here to deviate (custom image, hand-exported workflow).
+      { key: 'gpu_worker_profiles', value: '{}', type: 'json', group: 'gpu' },
 
       // System
       { key: 'setup_completed', value: 'true', type: 'boolean', group: 'system' },

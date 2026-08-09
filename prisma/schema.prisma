@@ -290,11 +290,90 @@ model AiGeneration {
   user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   model     AiModel      @relation(fields: [modelId], references: [id])
   favorites AiFavorite[]
+  gpuJob    AiGpuJob?
 
   @@index([userId, status])
   @@index([status, createdAt])
   @@index([providerJobId])
   @@map("ai_generations")
+}
+
+// --- Self-hosted GPU rental (SimplePod &c.) ---
+
+// A machine we rented from a GPU marketplace and booted a model container on.
+// Billing is per second of uptime, so every row here is money burning until
+// terminatedAt is set — the reaper in GpuWorkerManager is what stops it.
+model AiGpuWorker {
+  id              Int       @id @default(autoincrement())
+  providerSlug    String    @map("provider_slug") @db.VarChar(50)
+  externalId      String    @map("external_id") @db.VarChar(100)
+  supportId       String?   @map("support_id") @db.VarChar(100)
+  // provisioning | warming | ready | busy | draining | terminated | error
+  status          String    @default("provisioning") @db.VarChar(50)
+  // Which worker profile / model this machine serves, e.g. 'minimax-h3'
+  modelKey        String    @map("model_key") @db.VarChar(100)
+  endpoint        String?   @db.VarChar(500)
+  // Per-worker bearer token, encrypted at rest. The container's port is
+  // published on a public tunnel, so this is what stops a stranger who finds
+  // the URL from driving our GPU. Encrypted because ai_ tables must never hold
+  // a plaintext secret.
+  authToken       String?   @map("auth_token") @db.Text
+  gpuModel        String?   @map("gpu_model") @db.VarChar(100)
+  gpuCount        Int       @default(1) @map("gpu_count")
+  gpuMemoryMb     Int?      @map("gpu_memory_mb")
+  pricePerHourUsd Decimal   @default(0) @map("price_per_hour_usd") @db.Decimal(10, 6)
+  jobsCompleted   Int       @default(0) @map("jobs_completed")
+  jobsFailed      Int       @default(0) @map("jobs_failed")
+  // Uptime cost accrued so far, refreshed on every tick.
+  totalCostUsd    Decimal   @default(0) @map("total_cost_usd") @db.Decimal(12, 6)
+  lastError       String?   @map("last_error") @db.Text
+  rentedAt        DateTime  @default(now()) @map("rented_at")
+  readyAt         DateTime? @map("ready_at")
+  lastJobAt       DateTime? @map("last_job_at")
+  terminatedAt    DateTime? @map("terminated_at")
+  metadata        Json?
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  jobs AiGpuJob[]
+
+  @@unique([providerSlug, externalId])
+  @@index([status, modelKey])
+  @@index([terminatedAt])
+  @@map("ai_gpu_workers")
+}
+
+// FIFO queue for GPU-backed generations. A single GPU renders one video at a
+// time, so this is a real queue with an atomic claim — not a pool.
+model AiGpuJob {
+  id            Int       @id @default(autoincrement())
+  generationId  Int       @unique @map("generation_id")
+  workerId      Int?      @map("worker_id")
+  modelKey      String    @map("model_key") @db.VarChar(100)
+  // queued | assigned | running | completed | failed | cancelled
+  status        String    @default("queued") @db.VarChar(50)
+  priority      Int       @default(50)
+  attempts      Int       @default(0)
+  maxAttempts   Int       @default(2) @map("max_attempts")
+  payload       Json
+  // Job id inside the container (e.g. ComfyUI prompt_id)
+  externalJobId String?   @map("external_job_id") @db.VarChar(255)
+  resultUrl     String?   @map("result_url") @db.MediumText
+  errorMessage  String?   @map("error_message") @db.Text
+  // Wall-clock GPU seconds this job occupied, for honest per-job costing.
+  gpuSeconds    Int       @default(0) @map("gpu_seconds")
+  costUsd       Decimal   @default(0) @map("cost_usd") @db.Decimal(10, 6)
+  queuedAt      DateTime  @default(now()) @map("queued_at")
+  startedAt     DateTime? @map("started_at")
+  completedAt   DateTime? @map("completed_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  generation AiGeneration @relation(fields: [generationId], references: [id], onDelete: Cascade)
+  worker     AiGpuWorker? @relation(fields: [workerId], references: [id], onDelete: SetNull)
+
+  @@index([status, priority, queuedAt])
+  @@index([workerId, status])
+  @@map("ai_gpu_jobs")
 }
 
 // --- Templates & Styles ---

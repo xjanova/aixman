@@ -6,7 +6,14 @@ export type GenerationType = 'image' | 'video' | 'edit';
 export type GenerationStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
 export type CreditTransactionType = 'purchase' | 'usage' | 'refund' | 'bonus' | 'admin_adjust';
 export type PoolRotationMode = 'round_robin' | 'balanced' | 'quota_first';
-export type ProviderSlug = 'byteplus' | 'openai' | 'replicate' | 'fal' | 'stability' | 'runway' | 'kling' | 'luma' | 'leonardo';
+export type ProviderSlug = 'pollinations' | 'byteplus' | 'openai' | 'replicate' | 'fal' | 'stability' | 'runway' | 'kling' | 'luma' | 'leonardo' | 'simplepod';
+
+/**
+ * GPU-rental providers have no inference API — we rent a machine and run the
+ * model ourselves. They have no entry in the provider-adapter registry; the
+ * generation service routes them to GpuQueue instead. See `src/lib/gpu`.
+ */
+export type GpuBackedProviderSlug = 'simplepod';
 
 export interface GenerationRequest {
   modelId: number;

@@ -3,6 +3,7 @@
  * Central registry for all AI provider adapters
  */
 import type { AIProviderAdapter, ProviderSlug } from '@/types';
+import { PollinationsProvider } from './pollinations';
 import { BytePlusProvider } from './byteplus';
 import { OpenAIProvider } from './openai';
 import { ReplicateProvider } from './replicate';
@@ -14,6 +15,7 @@ import { LumaProvider } from './luma';
 import { LeonardoProvider } from './leonardo';
 
 const providers: Record<string, AIProviderAdapter> = {
+  pollinations: new PollinationsProvider(),
   byteplus: new BytePlusProvider(),
   openai: new OpenAIProvider(),
   replicate: new ReplicateProvider(),
@@ -37,4 +39,4 @@ export function getProviderSlugs(): ProviderSlug[] {
   return Object.keys(providers) as ProviderSlug[];
 }
 
-export { BytePlusProvider, OpenAIProvider, ReplicateProvider, FalProvider, StabilityProvider, RunwayProvider, KlingProvider, LumaProvider, LeonardoProvider };
+export { PollinationsProvider, BytePlusProvider, OpenAIProvider, ReplicateProvider, FalProvider, StabilityProvider, RunwayProvider, KlingProvider, LumaProvider, LeonardoProvider };
