@@ -302,19 +302,30 @@ export default function GpuAdminPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [message, setMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [form, setForm] = useState<GpuConfig | null>(null);
 
   const load = useCallback(async () => {
     try {
       const res = await fetch("/api/admin/gpu/analytics");
-      if (!res.ok) throw new Error();
+      if (!res.ok) {
+        throw new Error(
+          res.status === 403
+            ? "ต้องเข้าสู่ระบบด้วยบัญชีผู้ดูแลระบบก่อน"
+            : `เซิร์ฟเวอร์ตอบกลับ HTTP ${res.status}`
+        );
+      }
       const d: Analytics = await res.json();
       setData(d);
+      setLoadError(null);
       // Only seed the form once, so a background refresh can't discard edits
       // the admin is in the middle of typing.
       setForm((prev) => prev ?? d.config);
-    } catch {
-      setMessage({ kind: "err", text: "โหลดข้อมูลไม่สำเร็จ" });
+    } catch (e) {
+      // Recorded separately from `message` so the page can render an explicit
+      // failure state. Without it a failed load leaves every section hidden and
+      // the panel just looks blank, with nothing telling the admin why.
+      setLoadError((e as Error).message || "เชื่อมต่อเซิร์ฟเวอร์ไม่ได้");
     } finally {
       setLoading(false);
     }
@@ -372,10 +383,38 @@ export default function GpuAdminPage() {
     }
   };
 
+  // This page renders entirely on the client, so the server sends an empty
+  // shell. A bare spinner here is indistinguishable from a broken page — label
+  // it, so a slow load never looks like the panel failed to render.
   if (loading) {
     return (
-      <div className="flex items-center justify-center p-16">
+      <div className="flex flex-col items-center justify-center gap-3 p-16">
         <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+        <p className="text-sm text-muted">กำลังโหลดข้อมูล GPU...</p>
+      </div>
+    );
+  }
+
+  // Likewise, a failed load used to leave every section hidden (no data, no
+  // form, no setup card) — a blank right-hand pane with no explanation.
+  if (!data) {
+    return (
+      <div className="glass rounded-xl p-8 text-center">
+        <AlertTriangle className="w-8 h-8 text-warning mx-auto mb-3" />
+        <h2 className="font-bold mb-1">โหลดข้อมูล GPU ไม่สำเร็จ</h2>
+        <p className="text-sm text-muted mb-1">{loadError}</p>
+        <p className="text-xs text-muted mb-4">
+          ตาราง GPU อาจยังไม่ถูกสร้าง หรือเซิร์ฟเวอร์กำลังรีสตาร์ทอยู่ ลองใหม่อีกครั้งได้เลย
+        </p>
+        <button
+          onClick={() => {
+            setLoading(true);
+            void load();
+          }}
+          className="px-4 py-2 rounded-lg bg-primary/20 text-primary-light hover:bg-primary/30 text-sm font-medium"
+        >
+          ลองใหม่
+        </button>
       </div>
     );
   }
