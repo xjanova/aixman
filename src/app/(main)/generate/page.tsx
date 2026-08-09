@@ -49,6 +49,9 @@ interface GenerationResult {
   thumbnailUrl?: string;
   creditsUsed: number;
   processingMs?: number;
+  /** Retention window, so the result view can tell the user to download it. */
+  expiresAt?: string;
+  daysLeft?: number | null;
   error?: string;
 }
 
@@ -268,7 +271,12 @@ export default function GeneratePage() {
           const queued = data.gpu.queuePosition && data.gpu.queuePosition > 1
             ? ` • คิวที่ ${data.gpu.queuePosition}`
             : "";
-          setProgressNote(`${data.gpu.label}${queued}`);
+          // With no history the estimate is a rough baseline, so it is worded
+          // as such rather than quoted like a firm figure.
+          const eta = data.gpu.etaLabel
+            ? ` • ${data.gpu.etaBasis === "baseline" ? "คาดว่า" : "เหลืออีก"} ${data.gpu.etaLabel}`
+            : "";
+          setProgressNote(`${data.gpu.label}${queued}${eta}`);
         } else if (sawGpu) {
           setProgressNote(null);
         }
@@ -280,6 +288,7 @@ export default function GeneratePage() {
             resultUrls: data.resultUrls ? (Array.isArray(data.resultUrls) ? data.resultUrls : [data.resultUrl]) : [data.resultUrl],
             thumbnailUrl: data.thumbnailUrl,
             creditsUsed: data.creditsUsed, processingMs: data.processingMs,
+            expiresAt: data.expiresAt, daysLeft: data.daysLeft,
           });
           setIsGenerating(false); setProgressNote(null); fetchCredits(); fetchHistory();
           toast("success", "สร้างสำเร็จ!", `ใช้ ${data.creditsUsed} เครดิต`);
@@ -788,6 +797,29 @@ export default function GeneratePage() {
                 </div>
                 <Pill onClick={() => setResult(null)}>↻ สร้างใหม่</Pill>
               </div>
+
+              {/* Retention notice — stated at the moment of delivery, because a
+                  customer who is never told the window will lose work they
+                  assumed was permanent. */}
+              {result.daysLeft != null && (
+                <div style={{
+                  marginTop: 12, padding: "8px 12px", borderRadius: 10, fontSize: 12,
+                  background: result.daysLeft <= 3 ? "rgba(248,113,113,0.12)" : "rgba(148,163,184,0.10)",
+                  color: result.daysLeft <= 3 ? "#fca5a5" : "rgba(203,213,225,0.85)",
+                  display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+                }}>
+                  <span>
+                    {result.daysLeft <= 0
+                      ? "ไฟล์นี้หมดอายุแล้ว"
+                      : `เก็บไฟล์ไว้อีก ${result.daysLeft} วัน — กรุณาดาวน์โหลดเก็บไว้`}
+                  </span>
+                  {result.expiresAt && (
+                    <span style={{ opacity: 0.7 }}>
+                      (ถึง {new Date(result.expiresAt).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" })})
+                    </span>
+                  )}
+                </div>
+              )}
 
               {/* Generation info */}
               <div style={{ display: "flex", alignItems: "center", gap: 16, marginTop: 14, fontSize: 11, color: "#64748b" }}>

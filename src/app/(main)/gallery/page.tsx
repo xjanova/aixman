@@ -26,11 +26,17 @@ interface Generation {
   resultUrl: string;
   thumbnailUrl: string;
   creditsUsed: number;
+  /** Credits handed back on a failed generation. */
+  creditsRefunded: number;
   processingMs: number | null;
   isFavorited: boolean;
   favoritesCount: number;
   model: { name: string; provider: string; providerSlug: string };
   createdAt: string;
+  /** Retention — how long the file is still available, and whether it is gone. */
+  expiresAt: string | null;
+  daysLeft: number | null;
+  mediaDeleted: boolean;
 }
 
 type ViewMode = "grid" | "list";
@@ -349,8 +355,20 @@ export default function GalleryPage() {
                       </div>
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, fontSize: 11, color: "#64748b" }}>
-                      <span>✦ {gen.creditsUsed}</span>
+                      {/* A failed item must say the credits came back — otherwise
+                          the only signal is a red badge and the customer is left
+                          to guess whether they paid for nothing. */}
+                      {gen.creditsRefunded > 0
+                        ? <span style={{ color: "#86efac" }}>↩ คืน {gen.creditsRefunded} เครดิต</span>
+                        : <span>✦ {gen.creditsUsed}</span>}
                       {gen.favoritesCount > 0 && <span style={{ color: "#fca5a5" }}>♥ {gen.favoritesCount}</span>}
+                      {gen.mediaDeleted ? (
+                        <span style={{ color: "#94a3b8" }}>ไฟล์หมดอายุแล้ว</span>
+                      ) : gen.daysLeft != null && gen.daysLeft <= 7 ? (
+                        <span style={{ color: gen.daysLeft <= 3 ? "#fca5a5" : "#fbbf24" }}>
+                          เหลือ {Math.max(0, gen.daysLeft)} วัน
+                        </span>
+                      ) : null}
                     </div>
                     <span style={{
                       padding: "4px 10px", borderRadius: 999, fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase",

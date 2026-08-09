@@ -355,9 +355,16 @@ export class GpuWorkerManager {
 
     const liveCount = await prisma.aiGpuWorker.count({ where: { status: { in: LIVE_STATUSES } } });
     if (liveCount >= cfg.maxConcurrentWorkers) {
+      // Every model needs its own weights, so a worker serving model A cannot
+      // take a job for model B. With one concurrent worker allowed, a customer
+      // switching models would otherwise wait out the whole idle timeout for a
+      // machine that is doing nothing. Release it now instead.
+      const freed = await this.releaseIdleWorkerForOtherModel(modelKey);
       return {
         worker: null,
-        reason: `At worker capacity (${liveCount}/${cfg.maxConcurrentWorkers})`,
+        reason: freed
+          ? 'กำลังปิดเครื่องที่ว่างเพื่อเปลี่ยนไปโมเดลที่คุณเลือก'
+          : `At worker capacity (${liveCount}/${cfg.maxConcurrentWorkers})`,
       };
     }
 
@@ -409,6 +416,41 @@ export class GpuWorkerManager {
     }
 
     return { worker: await this.rentWorker(offers[0], modelKey, profile, provider, apiKey, cfg) };
+  }
+
+  /**
+   * Drain a worker that is idle on a *different* model, freeing its slot.
+   *
+   * Only genuinely idle workers qualify: a machine mid-render keeps its slot,
+   * because killing it would throw away work the customer already paid for and
+   * the job would come back round as a retry.
+   *
+   * Returns true when something was released.
+   */
+  private static async releaseIdleWorkerForOtherModel(wantedModelKey: string): Promise<boolean> {
+    const candidates = await prisma.aiGpuWorker.findMany({
+      where: { status: 'ready', modelKey: { not: wantedModelKey } },
+      orderBy: { lastJobAt: 'asc' }, // least recently useful first
+    });
+
+    for (const worker of candidates) {
+      const active = await prisma.aiGpuJob.count({
+        where: { workerId: worker.id, status: { in: ['assigned', 'running'] } },
+      });
+      if (active > 0) continue;
+
+      // Anything still queued for *this* worker's model would have to re-warm
+      // later; only release when nothing is waiting on it.
+      const queuedForIt = await prisma.aiGpuJob.count({
+        where: { status: 'queued', modelKey: worker.modelKey },
+      });
+      if (queuedForIt > 0) continue;
+
+      await this.terminate(worker.id, `Released to make room for ${wantedModelKey}`);
+      return true;
+    }
+
+    return false;
   }
 
   private static async rentWorker(

@@ -1,5 +1,5 @@
 import { randomBytes } from 'crypto';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectsCommand } from '@aws-sdk/client-s3';
 
 /**
  * Cloudflare R2 storage (S3-compatible).
@@ -90,6 +90,53 @@ export async function uploadBuffer(buffer: Buffer, key: string, contentType: str
   );
   const base = process.env.R2_PUBLIC_URL!.replace(/\/+$/, '');
   return `${base}/${key}`;
+}
+
+/**
+ * Recover the object key from a public URL we handed out.
+ *
+ * Returns null for anything not served from our bucket — a provider URL that
+ * was stored before R2 was configured, say. The retention sweep relies on that
+ * to avoid trying to delete objects it does not own.
+ */
+export function keyFromPublicUrl(url: string): string | null {
+  const base = process.env.R2_PUBLIC_URL?.replace(/\/+$/, '');
+  if (!base || !url?.startsWith(`${base}/`)) return null;
+  const key = url.slice(base.length + 1).split('?')[0];
+  return key.length > 0 ? key : null;
+}
+
+/**
+ * Delete objects from R2, in batches of 1000 (the API's limit).
+ *
+ * Reports counts rather than throwing on partial failure: a retention sweep
+ * that aborts halfway would keep re-deleting the same first few keys on every
+ * run and never reach the rest.
+ */
+export async function deleteObjects(keys: string[]): Promise<{ deleted: number; failed: number }> {
+  if (!isStorageConfigured() || keys.length === 0) return { deleted: 0, failed: 0 };
+
+  let deleted = 0;
+  let failed = 0;
+
+  for (let i = 0; i < keys.length; i += 1000) {
+    const batch = keys.slice(i, i + 1000);
+    try {
+      const res = await getClient().send(
+        new DeleteObjectsCommand({
+          Bucket: process.env.R2_BUCKET!,
+          Delete: { Objects: batch.map((Key) => ({ Key })), Quiet: true },
+        })
+      );
+      failed += res.Errors?.length ?? 0;
+      deleted += batch.length - (res.Errors?.length ?? 0);
+    } catch (error) {
+      console.error('[retention] R2 batch delete failed:', (error as Error).message);
+      failed += batch.length;
+    }
+  }
+
+  return { deleted, failed };
 }
 
 /**

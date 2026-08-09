@@ -282,6 +282,14 @@ model AiGeneration {
   errorMessage   String?   @map("error_message") @db.Text
   isPublic       Boolean   @default(false) @map("is_public")
   accountPoolId  Int?      @map("account_pool_id")
+  // Credits handed back when a generation failed. Stored explicitly so the
+  // gallery can say "คืนเครดิตแล้ว" without re-deriving it from the
+  // transaction log on every read.
+  creditsRefunded Int      @default(0) @map("credits_refunded")
+  // When the stored media is scheduled for deletion, and when it actually went.
+  // Users are told this up front so they download what they want to keep.
+  expiresAt      DateTime? @map("expires_at")
+  mediaDeletedAt DateTime? @map("media_deleted_at")
   startedAt      DateTime? @map("started_at")
   completedAt    DateTime? @map("completed_at")
   createdAt      DateTime  @default(now()) @map("created_at")
@@ -295,6 +303,9 @@ model AiGeneration {
   @@index([userId, status])
   @@index([status, createdAt])
   @@index([providerJobId])
+  // Drives the retention sweep: find media that is due for deletion and has
+  // not been deleted yet.
+  @@index([expiresAt, mediaDeletedAt])
   @@map("ai_generations")
 }
 

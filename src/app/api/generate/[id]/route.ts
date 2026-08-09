@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth';
 import prisma from '@/lib/db';
 import { GpuQueue } from '@/lib/services/gpu-queue';
+import { RetentionService, daysUntil } from '@/lib/services/retention';
+import { GpuEta, formatEta } from '@/lib/services/gpu-eta';
 
 /** Thai progress copy for GPU-backed jobs, keyed by worker state. */
 const GPU_STAGE_LABELS: Record<string, string> = {
@@ -41,6 +43,8 @@ export async function GET(
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
 
+  const retentionDays = await RetentionService.getRetentionDays();
+
   // GPU-backed jobs rent a machine on demand, so a first render can legitimately
   // take 10-25 minutes. Reporting progress lets the client wait it out instead
   // of declaring a timeout and pushing the user to pay for a second attempt.
@@ -49,6 +53,9 @@ export async function GET(
     label: string;
     queuePosition: number | null;
     gpuModel: string | null;
+    etaSeconds: number | null;
+    etaLabel: string | null;
+    etaBasis: string;
   } | null = null;
 
   if (generation.gpuJob && ['pending', 'processing'].includes(generation.status)) {
@@ -64,16 +71,28 @@ export async function GET(
               ? 'provisioning'
               : 'queued';
 
+    const eta = await GpuEta.estimate(generation.id);
     gpu = {
       stage,
       label: GPU_STAGE_LABELS[stage] ?? GPU_STAGE_LABELS.queued,
       queuePosition: await GpuQueue.getQueuePosition(generation.id),
       gpuModel: job.worker?.gpuModel ?? null,
+      etaSeconds: eta.seconds,
+      etaLabel: formatEta(eta.seconds),
+      // 'baseline' means no history yet — the UI softens the wording so a first
+      // run's rough guess isn't presented as a firm promise.
+      etaBasis: eta.basis,
     };
   }
 
   return NextResponse.json({
     gpu,
+    // Retention, stated on every read so the customer is never surprised.
+    expiresAt: generation.expiresAt,
+    daysLeft: daysUntil(generation.expiresAt),
+    mediaDeleted: Boolean(generation.mediaDeletedAt),
+    creditsRefunded: generation.creditsRefunded,
+    retentionDays,
     id: generation.id,
     status: generation.status,
     type: generation.type,

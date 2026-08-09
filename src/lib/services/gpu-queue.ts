@@ -432,6 +432,10 @@ export class GpuQueue {
         },
       }),
     ]);
+
+    // Fix the retention window at delivery time, same as the synchronous path.
+    const { RetentionService } = await import('./retention');
+    await RetentionService.stampExpiry(job.generationId, now);
   }
 
   /**

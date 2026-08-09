@@ -1,16 +1,17 @@
-import { MINIMAX_H3_MODELS } from './workflows/minimax-h3';
-
 /**
  * Container provisioning for a rented GPU.
  *
- * There is no official MiniMax H3 serving image, and building one would put a
- * Docker registry between the operator and a working system. Instead a stock
- * PyTorch image is booted and everything is installed by the start script:
- * ComfyUI, its dependencies, the quantised weights, and a token-gated proxy.
+ * No model in the catalogue ships a ready-made serving image, and building one
+ * per model would put a Docker registry between the operator and a working
+ * system. Instead a stock PyTorch image is booted and everything is installed
+ * by the start script: ComfyUI, its dependencies, the weights the chosen model
+ * needs, and a token-gated proxy.
  *
- * The trade-off is cold start: ~42.5 GB of weights means the first render on a
- * fresh machine takes tens of minutes. That is why workers are kept warm and
- * why `gpu_warmup_timeout_minutes` is generous.
+ * The trade-off is cold start. Weights range from ~10 GB (ACE-Step) to ~42 GB
+ * (MiniMax H3), so a first render on a fresh machine takes tens of minutes.
+ * That is why workers are kept warm and why `gpu_warmup_timeout_minutes` is
+ * generous — and why the cheap audio model is worth offering: it is the one
+ * that boots fast.
  */
 
 /**
@@ -24,9 +25,6 @@ export const DEFAULT_BASE_TAG = '2.11.0-cuda12.8-cudnn9-runtime';
 /** Minimum host CUDA version the image above can run on. */
 export const DEFAULT_MIN_CUDA = '12.8';
 
-/** Weights repo the official ComfyUI template points at. */
-const WEIGHTS_REPO = 'Comfy-Org/MiniMax-H3';
-
 /** Where ComfyUI is installed inside the container. */
 const ROOT = '/workspace/aixman';
 
@@ -39,6 +37,10 @@ export interface ProvisionOptions {
   hfToken?: string;
   /** Environment for the container, exported at the top of the script. */
   env?: Record<string, string>;
+  /** Weight files this model needs, from the catalogue entry. */
+  downloads?: { repo: string; file: string; dest: string; as?: string }[];
+  /** Community node packs the model's template depends on. */
+  customNodes?: { repo: string; ref?: string }[];
 }
 
 /**
@@ -161,12 +163,18 @@ Server(("0.0.0.0", PORT), Handler).serve_forever()
  * then reports precisely if a model file is still missing when a job arrives.
  */
 export function buildComfyUiStartScript(opts: ProvisionOptions): string {
-  const files = [
-    `diffusion_models/${MINIMAX_H3_MODELS.unet}`,
-    `text_encoders/${MINIMAX_H3_MODELS.clip}`,
-    `vae/${MINIMAX_H3_MODELS.videoVae}`,
-    `vae/${MINIMAX_H3_MODELS.audioVae}`,
-  ];
+  // Repo layouts differ — Comfy-Org/MiniMax-H3 stores files at the same paths
+  // ComfyUI expects, while ace_step and Qwen-Image nest everything under
+  // `split_files/`. `hf download` preserves the repo path, so each file is
+  // fetched then moved to the directory ComfyUI actually loads from.
+  const downloads = (opts.downloads ?? []).map(
+    (d) =>
+      `fetch_model ${shellQuote(d.repo)} ${shellQuote(d.file)} ${shellQuote(d.dest)} ${shellQuote(d.as ?? '')}`
+  );
+
+  const customNodes = (opts.customNodes ?? []).map(
+    (n) => `install_custom_node ${shellQuote(n.repo)} ${shellQuote(n.ref ?? '')}`
+  );
 
   return `#!/usr/bin/env bash
 # Provisioned by AIXMAN. Logs: ${ROOT}/boot.log
@@ -194,9 +202,26 @@ fi
 pip install --no-cache-dir -q -r ${ROOT}/ComfyUI/requirements.txt
 pip install --no-cache-dir -q "huggingface_hub[hf_transfer,cli]"
 
-mkdir -p ${ROOT}/ComfyUI/models/diffusion_models \\
-         ${ROOT}/ComfyUI/models/text_encoders \\
-         ${ROOT}/ComfyUI/models/vae
+# Community node packs some official templates depend on. Pinned by ref where
+# the catalogue supplies one, because an unpinned pack can change its node
+# names and break a workflow that worked yesterday.
+install_custom_node() {
+  local repo="$1" ref="$2" name dir
+  name="$(basename "$repo" .git)"
+  dir="${ROOT}/ComfyUI/custom_nodes/$name"
+  if [ ! -d "$dir" ]; then
+    git clone --depth 1 "$repo" "$dir" || { echo "[aixman] failed to clone $repo"; return 1; }
+  fi
+  if [ -n "$ref" ]; then
+    (cd "$dir" && git fetch --depth 1 origin "$ref" && git checkout -q FETCH_HEAD) || true
+  fi
+  [ -f "$dir/requirements.txt" ] && pip install --no-cache-dir -q -r "$dir/requirements.txt"
+  echo "[aixman] custom node ready: $name"
+}
+${customNodes.join('\n')}
+
+mkdir -p ${ROOT}/ComfyUI/models/{diffusion_models,text_encoders,vae,loras,checkpoints,audio_encoders,clip_vision} \\
+         ${ROOT}/dl
 
 cat > ${ROOT}/proxy.py <<'AIXMAN_PROXY_EOF'
 ${proxySource()}
@@ -212,16 +237,33 @@ nohup python3 ${ROOT}/proxy.py > ${ROOT}/proxy.log 2>&1 &
 
 # Downloads run last and in the foreground. hf resumes partial files, so a
 # retry after a network drop does not restart 42 GB from zero.
-download() {
-  local path="$1"
+fetch_model() {
+  local repo="$1" path="$2" dest="$3" rename="$4"
+  local base target
+  base="$(basename "$path")"
+  # A template may hardcode a filename the upstream repo doesn't use.
+  [ -n "$rename" ] && base="$rename"
+  target="${ROOT}/ComfyUI/models/$dest/$base"
+
+  if [ -s "$target" ]; then
+    echo "[aixman] already have $base"
+    return 0
+  fi
+
   for attempt in 1 2 3; do
-    echo "[aixman] downloading $path (attempt $attempt)"
-    if hf download ${WEIGHTS_REPO} "$path" --local-dir ${ROOT}/ComfyUI/models; then
-      return 0
-    fi
-    # Older installs still ship the pre-rename CLI.
-    if huggingface-cli download ${WEIGHTS_REPO} "$path" --local-dir ${ROOT}/ComfyUI/models; then
-      return 0
+    echo "[aixman] downloading $repo :: $path (attempt $attempt)"
+    # hf resumes partial files, so a retry after a network drop does not
+    # restart tens of gigabytes from zero.
+    if hf download "$repo" "$path" --local-dir "${ROOT}/dl" \\
+       || huggingface-cli download "$repo" "$path" --local-dir "${ROOT}/dl"; then
+      # The repo path is preserved by the downloader; ComfyUI only looks in the
+      # flat models/<dest>/ directories, so move it into place.
+      if [ -s "${ROOT}/dl/$path" ]; then
+        mv -f "${ROOT}/dl/$path" "$target"
+        echo "[aixman] placed $base -> $dest"
+        return 0
+      fi
+      echo "[aixman] downloader reported success but ${ROOT}/dl/$path is missing"
     fi
     sleep 10
   done
@@ -229,7 +271,7 @@ download() {
   return 1
 }
 
-${files.map((f) => `download "${f}"`).join('\n')}
+${downloads.join('\n')}
 
 echo "[aixman] model download stage complete"
 touch ${ROOT}/models.ready

@@ -227,6 +227,16 @@ export class GenerationService {
           },
         });
 
+        // Fix the retention window at the moment the customer received the
+        // file, so a later settings change cannot shorten what they were
+        // already promised.
+        const { RetentionService, daysUntil } = await import('./retention');
+        await RetentionService.stampExpiry(generation.id);
+        const stamped = await prisma.aiGeneration.findUnique({
+          where: { id: generation.id },
+          select: { expiresAt: true },
+        });
+
         return {
           id: generation.id,
           status: 'completed',
@@ -235,6 +245,8 @@ export class GenerationService {
           thumbnailUrl: finalUrl,
           processingMs: result.processingMs,
           creditsUsed: requiredCredits,
+          expiresAt: stamped?.expiresAt?.toISOString(),
+          daysLeft: daysUntil(stamped?.expiresAt),
         };
       } else {
         // Provider returned a failure — record it against the account (with
@@ -329,6 +341,12 @@ export class GenerationService {
           description: 'Auto-refund: generation failed',
           generationId,
         },
+      }),
+      // Recorded on the generation too, so the gallery can say "คืนเครดิตแล้ว"
+      // without joining the transaction log on every read.
+      prisma.aiGeneration.update({
+        where: { id: generationId },
+        data: { creditsRefunded: amount },
       }),
     ]);
   }

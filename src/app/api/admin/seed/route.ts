@@ -292,6 +292,10 @@ export async function POST() {
       { key: 'image_output_format', value: 'webp', type: 'string', group: 'storage' },
       { key: 'image_quality', value: '90', type: 'number', group: 'storage' },
       { key: 'thumbnail_width', value: '512', type: 'number', group: 'storage' },
+      // How long generated media is kept before the retention sweep removes it.
+      // Shown to the customer on every result and gallery item so nobody
+      // discovers the policy by losing a file. 0 = keep indefinitely.
+      { key: 'media_retention_days', value: '30', type: 'number', group: 'storage' },
 
       // Rate Limiting
       { key: 'rate_limit_per_minute', value: '10', type: 'number', group: 'rate_limit' },

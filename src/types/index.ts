@@ -47,6 +47,9 @@ export interface GenerationResult {
   processingMs?: number;
   creditsUsed: number;
   error?: string;
+  /** When the stored media will be removed, so the UI can prompt a download. */
+  expiresAt?: string;
+  daysLeft?: number | null;
 }
 
 export interface ProviderAccount {

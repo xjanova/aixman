@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth';
 import prisma from '@/lib/db';
+import { daysUntil } from '@/lib/services/retention';
 import type { Prisma } from '@/generated/prisma/client';
 
 export async function GET(request: NextRequest) {
@@ -88,7 +89,17 @@ export async function GET(request: NextRequest) {
       resultUrls: g.resultUrls,
       thumbnailUrl: g.thumbnailUrl,
       creditsUsed: g.creditsUsed,
+      // Stated plainly so a failed item reads as "credits returned" rather than
+      // leaving the customer to work out whether they were charged.
+      creditsRefunded: g.creditsRefunded,
       processingMs: g.processingMs,
+      errorMessage: g.errorMessage,
+      // Retention: how long this file will still be here, and whether it has
+      // already gone. Surfaced on every item so nobody discovers the policy by
+      // losing something.
+      expiresAt: g.expiresAt,
+      daysLeft: daysUntil(g.expiresAt),
+      mediaDeleted: Boolean(g.mediaDeletedAt),
       isPublic: g.isPublic,
       isFavorited: g.favorites.length > 0,
       favoritesCount: g._count.favorites,

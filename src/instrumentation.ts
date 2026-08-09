@@ -1,9 +1,11 @@
 /**
  * Next.js startup hook — runs once per server process.
  *
- * Used to start the GPU queue scheduler. Without it, rented GPUs would only be
- * reaped when an external cron happened to fire, and a forgotten crontab means
- * a machine billing indefinitely.
+ * Starts the background schedulers. Both exist so the app does not depend on an
+ * operator remembering a crontab: without the GPU tick a rented machine bills
+ * indefinitely, and without the retention sweep stored media grows without
+ * bound. The matching /api/cron/* routes remain available for external
+ * scheduling.
  */
 export async function register() {
   // The edge runtime has no timers that survive a request, and this must not
@@ -17,5 +19,12 @@ export async function register() {
   } catch (error) {
     // A scheduler that fails to start must not prevent the app from serving.
     console.error('[gpu] could not start scheduler:', (error as Error).message);
+  }
+
+  try {
+    const { startRetentionScheduler } = await import('@/lib/services/retention');
+    startRetentionScheduler();
+  } catch (error) {
+    console.error('[retention] could not start scheduler:', (error as Error).message);
   }
 }
