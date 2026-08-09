@@ -93,9 +93,20 @@ export class GpuQueue {
     try {
       const sweep = await GpuWorkerManager.sweepOrphans(cfg);
       report.orphansTerminated = sweep.terminated.length;
-      await this.markSwept();
     } catch (error) {
-      console.error('[gpu] orphan sweep failed:', (error as Error).message);
+      const message = (error as Error).message;
+      // Before setup there is no key and never will be a machine to find, so
+      // this is expected rather than an error — saying so once every 30 min
+      // beats a stack trace every minute for as long as the key is missing.
+      if (message.includes('No active API key')) {
+        console.log('[gpu] skipping orphan sweep — no provider API key configured yet');
+      } else {
+        console.error('[gpu] orphan sweep failed:', message);
+      }
+    } finally {
+      // Stamp regardless of outcome: a sweep that keeps failing must back off to
+      // its normal interval, not retry every tick.
+      await this.markSwept();
     }
 
     try {
