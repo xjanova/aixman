@@ -79,10 +79,10 @@ function Pill({ active, children, onClick }: { active?: boolean; children: React
   );
 }
 
-function Section({ label, children }: { label: string; children: React.ReactNode }) {
+function Section({ label, children, grow = false }: { label: string; children: React.ReactNode; grow?: boolean }) {
   return (
-    <div>
-      <div style={{ fontSize: 11, letterSpacing: "0.14em", color: "#a5f3fc", marginBottom: 10, textTransform: "uppercase" }}>{label}</div>
+    <div style={grow ? { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" } : undefined}>
+      <div style={{ fontSize: 11, letterSpacing: "0.14em", color: "#a5f3fc", marginBottom: 8, textTransform: "uppercase" }}>{label}</div>
       {children}
     </div>
   );
@@ -91,6 +91,74 @@ function Section({ label, children }: { label: string; children: React.ReactNode
 const ASPECT_RATIO_CSS: Record<string, string> = {
   "1:1": "1/1", "16:9": "16/9", "9:16": "9/16", "4:3": "4/3", "3:2": "3/2",
 };
+
+/**
+ * Compact control that opens its contents in a floating panel.
+ *
+ * The studio has to fit one screen without scrolling, and the expensive items
+ * were the ones rendered inline as grids — 12 style buttons, 10 template
+ * chips, 9 prompt tags. Collapsing those to a single trigger row is what buys
+ * the height back. Nothing is removed; it moves one click away.
+ */
+function Popover({
+  id, open, onToggle, label, value, children, align = "left", width = 300,
+}: {
+  id: string;
+  open: string | null;
+  onToggle: (id: string | null) => void;
+  label: string;
+  value?: string;
+  children: React.ReactNode;
+  align?: "left" | "right";
+  width?: number;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const isOpen = open === id;
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onToggle(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [isOpen, onToggle]);
+
+  return (
+    <div ref={ref} style={{ position: "relative", flex: 1, minWidth: 0 }}>
+      <button
+        type="button"
+        onClick={() => onToggle(isOpen ? null : id)}
+        style={{
+          width: "100%", padding: "9px 12px", borderRadius: 10, cursor: "pointer",
+          background: isOpen ? `hsla(${220 + HUE},60%,50%,0.2)` : "rgba(2,6,23,0.5)",
+          border: `1px solid ${isOpen ? `hsla(${220 + HUE},70%,60%,0.45)` : "rgba(255,255,255,0.1)"}`,
+          color: "#e2e8f0", fontSize: 12, fontFamily: "inherit",
+          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+        }}
+      >
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {label}
+          {value && <span style={{ color: `hsl(${220 + HUE},70%,78%)`, marginLeft: 6 }}>{value}</span>}
+        </span>
+        <span style={{ fontSize: 8, opacity: 0.6, flexShrink: 0, transform: isOpen ? "rotate(180deg)" : "none", transition: "transform 200ms" }}>▼</span>
+      </button>
+      {isOpen && (
+        <div
+          style={{
+            position: "absolute", bottom: "calc(100% + 6px)",
+            [align]: 0, width, maxHeight: 320, overflowY: "auto",
+            background: "rgba(15,23,42,0.97)", backdropFilter: "blur(20px)",
+            border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12,
+            padding: 12, zIndex: 40, boxShadow: "0 24px 48px -12px rgba(0,0,0,0.7)",
+          } as React.CSSProperties}
+        >
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * Empty-state tile showing a real frame made on this platform.
@@ -197,7 +265,8 @@ export default function GeneratePage() {
   const [negativePrompt, setNegativePrompt] = useState("");
   const [selectedStyle, setSelectedStyle] = useState<number | null>(null);
   const [aspectRatio, setAspectRatio] = useState("1:1");
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  /** Which compact control panel is open — only ever one at a time. */
+  const [openPanel, setOpenPanel] = useState<string | null>(null);
   const [inputImage, setInputImage] = useState<string | null>(null);
   const [inputImagePreview, setInputImagePreview] = useState<string | null>(null);
   const [result, setResult] = useState<GenerationResult | null>(null);
@@ -479,9 +548,9 @@ export default function GeneratePage() {
 
   // ─── RENDER ─────────────────────────────────────────────────────────
   return (
-    <div className="rp-studio" style={{ display: "grid", gridTemplateColumns: "340px 1fr 320px", gap: 0, color: "#f1f5f9", alignItems: "start" }}>
+    <div className="rp-studio" style={{ color: "#f1f5f9" }}>
       {/* ═══ LEFT — controls ═══ */}
-      <aside className="rp-studio-left rp-scroll" style={{ borderRight: "1px solid rgba(255,255,255,0.06)", padding: 24, display: "flex", flexDirection: "column", gap: 20, background: "rgba(15,23,42,0.25)", position: "sticky", top: 80, height: "calc(100vh - 80px)", overflowY: "auto" }}>
+      <aside className="rp-studio-left rp-scroll" style={{ borderRight: "1px solid rgba(255,255,255,0.06)", padding: 18, display: "flex", flexDirection: "column", gap: 12, background: "rgba(15,23,42,0.25)" }}>
 
         {/* Tabs */}
         <div style={{ display: "flex", gap: 4, padding: 4, background: "rgba(2,6,23,0.5)", borderRadius: 12, border: "1px solid rgba(255,255,255,0.05)" }}>
@@ -561,30 +630,12 @@ export default function GeneratePage() {
           </div>
         </Section>
 
-        {/* Templates — one-click prompt presets */}
-        {templates.length > 0 && tab !== "edit" && (
-          <Section label="เทมเพลต">
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {templates.slice(0, 10).map(t => (
-                <button key={t.id} type="button" title={t.description || t.prompt}
-                  onClick={() => { setPrompt(t.prompt); setNegativePrompt(t.negativePrompt || ""); }}
-                  style={{
-                    padding: "6px 11px", borderRadius: 999, fontSize: 11, cursor: "pointer",
-                    background: "rgba(255,255,255,0.05)", color: "#cbd5e1",
-                    border: "1px solid rgba(255,255,255,0.1)",
-                  }}>
-                  {t.isFeatured ? "★ " : ""}{t.name}
-                </button>
-              ))}
-            </div>
-          </Section>
-        )}
-
-        {/* Prompt */}
-        <Section label="Prompt">
-          <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={5}
+        {/* Prompt — the only element allowed to grow, so it absorbs whatever
+            height the viewport has spare and the rail still fits one screen. */}
+        <Section label="Prompt" grow>
+          <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)}
             placeholder={tab === "video" ? "อธิบายวิดีโอที่ต้องการ..." : "อธิบายภาพที่ต้องการ..."}
-            style={{ ...xdrInputStyle, padding: 14, fontSize: 14, lineHeight: 1.5, resize: "vertical" }} />
+            style={{ ...xdrInputStyle, padding: 14, fontSize: 14, lineHeight: 1.5, resize: "none", flex: 1, minHeight: 96 }} />
           {/* The free Pollinations model does not understand Thai — it renders an
               unrelated image instead of failing, so warn before credits are spent. */}
           {selectedModel?.provider.slug === "pollinations" && THAI_CHARS.test(prompt) && (
@@ -596,84 +647,147 @@ export default function GeneratePage() {
               โมเดลฟรีอ่านภาษาไทยไม่ออก — จะได้ภาพที่ไม่ตรงกับที่พิมพ์ กรุณาพิมพ์ prompt เป็นภาษาอังกฤษ หรือเลือกโมเดลแบบเสียเครดิต
             </div>
           )}
-          <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
-            {PROMPT_TAG_CHIPS.map((t) => {
-              const already = prompt.toLowerCase().includes(t.toLowerCase());
-              return (
-                <button key={t} type="button" onClick={() => addPromptTag(t)}
-                  style={{
-                    padding: "5px 10px", borderRadius: 999, fontSize: 11, cursor: "pointer",
-                    background: already ? `hsla(${220 + HUE},60%,50%,0.18)` : "rgba(255,255,255,0.05)",
-                    color: already ? "#a5f3fc" : "#94a3b8",
-                    border: already ? `1px solid hsla(${220 + HUE},70%,60%,0.4)` : "1px solid rgba(255,255,255,0.1)",
-                  }}>+ {t}</button>
-              );
-            })}
+          {/* Live prompt stats — replaces the right rail's "รายละเอียด prompt"
+              card in one line instead of three stacked rows. */}
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 10.5, color: "#64748b", fontFamily: "ui-monospace,monospace" }}>
+            <span>{prompt.trim() ? `${prompt.trim().split(/\s+/).length} คำ` : "ยังไม่มี prompt"}</span>
+            <span>{prompt.length.toLocaleString()} / 10,000</span>
           </div>
         </Section>
 
-        {/* Negative Prompt — always visible per template */}
+        {/* ── Compact control deck ─────────────────────────────────────
+            Everything below is one-line triggers. Each opens upward so a
+            panel near the bottom of the rail never pushes the layout. */}
+        <div style={{ display: "flex", gap: 6 }}>
+          <Popover id="tags" open={openPanel} onToggle={setOpenPanel} label="+ แท็ก" width={286}>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {PROMPT_TAG_CHIPS.map((t) => {
+                const already = prompt.toLowerCase().includes(t.toLowerCase());
+                return (
+                  <button key={t} type="button" onClick={() => addPromptTag(t)}
+                    style={{
+                      padding: "5px 10px", borderRadius: 999, fontSize: 11, cursor: "pointer",
+                      background: already ? `hsla(${220 + HUE},60%,50%,0.18)` : "rgba(255,255,255,0.05)",
+                      color: already ? "#a5f3fc" : "#94a3b8",
+                      border: already ? `1px solid hsla(${220 + HUE},70%,60%,0.4)` : "1px solid rgba(255,255,255,0.1)",
+                    }}>+ {t}</button>
+                );
+              })}
+            </div>
+          </Popover>
+
+          {templates.length > 0 && tab !== "edit" && (
+            <Popover id="templates" open={openPanel} onToggle={setOpenPanel} label="เทมเพลต" width={286}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {templates.slice(0, 10).map(t => (
+                  <button key={t.id} type="button" title={t.description || t.prompt}
+                    onClick={() => { setPrompt(t.prompt); setNegativePrompt(t.negativePrompt || ""); setOpenPanel(null); }}
+                    style={{
+                      padding: "6px 11px", borderRadius: 999, fontSize: 11, cursor: "pointer",
+                      background: "rgba(255,255,255,0.05)", color: "#cbd5e1",
+                      border: "1px solid rgba(255,255,255,0.1)",
+                    }}>
+                    {t.isFeatured ? "★ " : ""}{t.name}
+                  </button>
+                ))}
+              </div>
+            </Popover>
+          )}
+        </div>
+
+        {/* Negative Prompt */}
         {tab !== "edit" && (
-          <Section label="Negative prompt">
-            <input value={negativePrompt} onChange={(e) => setNegativePrompt(e.target.value)}
-              placeholder="blurry, low quality, text..."
-              style={{ ...xdrInputStyle }} />
-          </Section>
+          <input value={negativePrompt} onChange={(e) => setNegativePrompt(e.target.value)}
+            placeholder="Negative prompt — blurry, low quality, text..."
+            style={{ ...xdrInputStyle, fontSize: 12, padding: "9px 12px" }} />
         )}
 
-        {/* Style */}
-        {stylesLoaded && styles.length > 0 && tab !== "edit" && (
-          <Section label="สไตล์">
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6 }}>
-              {styles.slice(0, 12).map(s => (
-                <button key={s.id} onClick={() => setSelectedStyle(selectedStyle === s.id ? null : s.id)}
-                  style={{
-                    padding: "7px 6px", borderRadius: 8, fontSize: 11, cursor: "pointer",
-                    background: selectedStyle === s.id ? `hsla(${220 + HUE},60%,50%,0.25)` : "rgba(255,255,255,0.04)",
-                    color: selectedStyle === s.id ? "#fff" : "#94a3b8",
-                    border: selectedStyle === s.id ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
-                  }}>{s.name}</button>
-              ))}
-            </div>
-          </Section>
-        )}
+        {/* Style + aspect on one row */}
+        <div style={{ display: "flex", gap: 6 }}>
+          {stylesLoaded && styles.length > 0 && tab !== "edit" && (
+            <Popover id="style" open={openPanel} onToggle={setOpenPanel} label="สไตล์"
+              value={selectedStyle ? (styles.find(s => s.id === selectedStyle)?.name ?? "") : "—"} width={286}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6 }}>
+                {styles.slice(0, 12).map(s => (
+                  <button key={s.id} onClick={() => setSelectedStyle(selectedStyle === s.id ? null : s.id)}
+                    style={{
+                      padding: "7px 6px", borderRadius: 8, fontSize: 11, cursor: "pointer",
+                      background: selectedStyle === s.id ? `hsla(${220 + HUE},60%,50%,0.25)` : "rgba(255,255,255,0.04)",
+                      color: selectedStyle === s.id ? "#fff" : "#94a3b8",
+                      border: selectedStyle === s.id ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
+                    }}>{s.name}</button>
+                ))}
+              </div>
+            </Popover>
+          )}
 
-        {/* Aspect Ratio (image only) */}
-        {tab === "image" && (
-          <Section label="สัดส่วน">
-            <div style={{ display: "flex", gap: 6 }}>
-              {aspectRatios.map(ar => (
-                <button key={ar.value} onClick={() => setAspectRatio(ar.value)}
-                  style={{
-                    flex: 1, padding: "8px 0", borderRadius: 8, fontSize: 12, cursor: "pointer",
-                    background: aspectRatio === ar.value ? `hsla(${220 + HUE},60%,50%,0.25)` : "rgba(255,255,255,0.04)",
-                    color: aspectRatio === ar.value ? "#fff" : "#94a3b8",
-                    border: aspectRatio === ar.value ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
-                  }}>{ar.label}</button>
-              ))}
-            </div>
-          </Section>
-        )}
+          {tab === "image" && (
+            <Popover id="aspect" open={openPanel} onToggle={setOpenPanel} label="สัดส่วน" value={aspectRatio} width={220} align="right">
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6 }}>
+                {aspectRatios.map(ar => (
+                  <button key={ar.value} onClick={() => { setAspectRatio(ar.value); setOpenPanel(null); }}
+                    style={{
+                      padding: "8px 0", borderRadius: 8, fontSize: 12, cursor: "pointer",
+                      background: aspectRatio === ar.value ? `hsla(${220 + HUE},60%,50%,0.25)` : "rgba(255,255,255,0.04)",
+                      color: aspectRatio === ar.value ? "#fff" : "#94a3b8",
+                      border: aspectRatio === ar.value ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
+                    }}>{ar.label}</button>
+                ))}
+              </div>
+            </Popover>
+          )}
+        </div>
 
-        {/* Batch (image only) */}
-        {tab === "image" && (
-          <Section label="จำนวนภาพ">
-            <div style={{ display: "flex", gap: 6 }}>
-              {[1, 2, 3, 4].map(n => (
-                <button key={n} onClick={() => setNumOutputs(n)}
-                  style={{
-                    flex: 1, padding: "8px 0", borderRadius: 8, fontSize: 13, cursor: "pointer",
-                    background: numOutputs === n ? `hsla(${220 + HUE},60%,50%,0.25)` : "rgba(255,255,255,0.04)",
-                    color: numOutputs === n ? "#fff" : "#94a3b8",
-                    border: numOutputs === n ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
-                    fontWeight: 600,
-                  }}>{n}</button>
-              ))}
-            </div>
-          </Section>
-        )}
+        {/* Count + advanced + reference on one row */}
+        <div style={{ display: "flex", gap: 6 }}>
+          {tab === "image" && (
+            <Popover id="count" open={openPanel} onToggle={setOpenPanel} label="จำนวน" value={String(numOutputs)} width={200}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 6 }}>
+                {[1, 2, 3, 4].map(n => (
+                  <button key={n} onClick={() => { setNumOutputs(n); setOpenPanel(null); }}
+                    style={{
+                      padding: "8px 0", borderRadius: 8, fontSize: 13, cursor: "pointer", fontWeight: 600,
+                      background: numOutputs === n ? `hsla(${220 + HUE},60%,50%,0.25)` : "rgba(255,255,255,0.04)",
+                      color: numOutputs === n ? "#fff" : "#94a3b8",
+                      border: numOutputs === n ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
+                    }}>{n}</button>
+                ))}
+              </div>
+            </Popover>
+          )}
 
-        {/* Image-to-Image moved to RIGHT panel "Reference images" */}
+          {/* Reference image — functional, so it stays a first-class control
+              rather than moving behind a panel. */}
+          <Popover id="ref" open={openPanel} onToggle={setOpenPanel} label="ภาพอ้างอิง"
+            value={refImagePreview ? "1" : "—"} width={286} align="right">
+            {refImagePreview ? (
+              <div style={{ position: "relative" }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={refImagePreview} alt="Reference" style={{ width: "100%", height: 130, objectFit: "cover", borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)" }} />
+                <button onClick={() => { setRefImage(null); setRefImagePreview(null); }}
+                  style={{ position: "absolute", top: 6, right: 6, width: 24, height: 24, borderRadius: "50%", background: "rgba(0,0,0,0.7)", color: "#fff", border: "none", cursor: "pointer", fontSize: 13 }}>×</button>
+                {tab === "image" && (
+                  <div style={{ marginTop: 10 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", marginBottom: 6 }}>
+                      <span>ความเข้มอ้างอิง</span>
+                      <span style={{ color: `hsl(${220 + HUE},70%,75%)`, fontFamily: "ui-monospace,monospace" }}>{Math.round(strength * 100)}%</span>
+                    </div>
+                    <input type="range" min={0} max={1} step={0.05} value={strength} onChange={(e) => setStrength(+e.target.value)}
+                      style={{ width: "100%", accentColor: `hsl(${220 + HUE},70%,60%)` }} />
+                  </div>
+                )}
+              </div>
+            ) : (
+              <label style={{ display: "grid", placeItems: "center", height: 120, borderRadius: 10, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#64748b", fontSize: 12, cursor: "pointer", textAlign: "center" }}>
+                <div>
+                  <div style={{ fontSize: 20, marginBottom: 4 }}>↑</div>
+                  ลาก &amp; วางภาพ ที่นี่
+                </div>
+                <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => handleImageUpload(e, true)} />
+              </label>
+            )}
+          </Popover>
+        </div>
 
         {/* Image upload (edit/video) */}
         {(tab === "edit" || tab === "video") && (
@@ -695,15 +809,11 @@ export default function GeneratePage() {
           </Section>
         )}
 
-        {/* Advanced — Steps / Guidance / Seed */}
-        {tab !== "video" && (
-          <>
-            <button onClick={() => setShowAdvanced(!showAdvanced)}
-              style={{ display: "flex", alignItems: "center", gap: 8, background: "transparent", border: "none", color: "#94a3b8", fontSize: 11, letterSpacing: "0.06em", cursor: "pointer", padding: 0, textTransform: "uppercase" }}>
-              ⚙ ตั้งค่าขั้นสูง
-              <span style={{ fontSize: 9, transform: showAdvanced ? "rotate(180deg)" : "none", transition: "transform 200ms" }}>▼</span>
-            </button>
-            {showAdvanced && (
+        {/* Advanced + tips on one row. The tips used to be four stacked cards
+            in the right rail; they are reference material, not controls. */}
+        <div style={{ display: "flex", gap: 6 }}>
+          {tab !== "video" && (
+            <Popover id="advanced" open={openPanel} onToggle={setOpenPanel} label="⚙ ขั้นสูง" width={286}>
               <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
                 <div>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", marginBottom: 6 }}>
@@ -731,9 +841,25 @@ export default function GeneratePage() {
                   </div>
                 </div>
               </div>
-            )}
-          </>
-        )}
+            </Popover>
+          )}
+
+          <Popover id="tips" open={openPanel} onToggle={setOpenPanel} label="? คำแนะนำ" width={300} align="right">
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {[
+                "ระบุ subject และอารมณ์ให้ชัด เช่น 'หญิงสาวยืนกลางทุ่งดอกไม้ โทนสีพาสเทล'",
+                "เพิ่ม style keywords เช่น cinematic, hyperreal, jade tones, volumetric",
+                "ใช้ aspect 16:9 สำหรับ wallpaper, 9:16 สำหรับโซเชียล",
+                "img2img: ความเข้ม 0.5–0.7 = balance, > 0.8 = ตามภาพอ้างอิงมาก",
+              ].map((tip, i) => (
+                <div key={i} style={{ display: "flex", gap: 8 }}>
+                  <span style={{ color: `hsl(${(160 + i * 30 + HUE) % 360},70%,70%)`, flexShrink: 0 }}>✦</span>
+                  <span style={{ fontSize: 12, color: "rgba(203,213,225,0.78)", lineHeight: 1.5 }}>{tip}</span>
+                </div>
+              ))}
+            </div>
+          </Popover>
+        </div>
 
         {/* Every model in this tab may still be unproven, in which case
             auto-select lands on one anyway. Say why the button is dead rather
@@ -764,15 +890,17 @@ export default function GeneratePage() {
           )}
         </button>
 
-        {/* Credit Balance */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 12, color: "#94a3b8" }}>
+        {/* Credit balance — absorbs the right rail's credits card, including
+            its top-up link, into a single line. */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, fontSize: 12, color: "#94a3b8" }}>
           <span style={{ color: "#fbbf24" }}>✦</span>
-          เครดิตคงเหลือ: <span style={{ fontWeight: 600, color: "#f1f5f9" }}>{creditBalance.toLocaleString()}</span>
+          เครดิต <span style={{ fontWeight: 600, color: "#f1f5f9" }}>{creditBalance.toLocaleString()}</span>
+          <a href="/pricing" style={{ color: "#a5f3fc", textDecoration: "none", borderBottom: "1px dotted rgba(165,243,252,0.4)" }}>+ เติม</a>
         </div>
       </aside>
 
       {/* ═══ CENTER — canvas / result ═══ */}
-      <main className="rp-studio-center" style={{ padding: 24 }}>
+      <main className="rp-studio-center rp-scroll" style={{ padding: 20 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Pill active>
@@ -789,9 +917,10 @@ export default function GeneratePage() {
           </div>
         </div>
 
-        {/* Result canvas */}
-        <div style={{
-          minHeight: 480, borderRadius: 18, padding: 24,
+        {/* Result canvas — the only element that flexes, so the workspace
+            fills the viewport exactly instead of overflowing it. */}
+        <div className="rp-studio-canvas rp-scroll" style={{
+          borderRadius: 18, padding: 20,
           background: "rgba(15,23,42,0.45)",
           border: "1px solid rgba(255,255,255,0.06)",
           backdropFilter: "blur(18px)",
@@ -979,126 +1108,9 @@ export default function GeneratePage() {
         )}
       </main>
 
-      {/* ═══ RIGHT — reference / concepts / credits ═══ */}
-      <aside className="rp-studio-right rp-scroll" style={{ borderLeft: "1px solid rgba(255,255,255,0.06)", padding: 24, background: "rgba(15,23,42,0.25)", position: "sticky", top: 80, height: "calc(100vh - 80px)", overflowY: "auto" }}>
-
-        {/* Reference images dropzone (template) */}
-        <Section label="Reference images">
-          {refImagePreview ? (
-            <div style={{ position: "relative" }}>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={refImagePreview} alt="Reference" style={{ width: "100%", height: 140, objectFit: "cover", borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)" }} />
-              <button onClick={() => { setRefImage(null); setRefImagePreview(null); }}
-                style={{ position: "absolute", top: 8, right: 8, width: 26, height: 26, borderRadius: "50%", background: "rgba(0,0,0,0.65)", color: "#fff", border: "none", cursor: "pointer", fontSize: 14 }}>×</button>
-            </div>
-          ) : (
-            <label style={{ display: "grid", placeItems: "center", height: 140, borderRadius: 12, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#64748b", fontSize: 13, cursor: "pointer", textAlign: "center" }}>
-              <div>
-                <div style={{ fontSize: 22, marginBottom: 4 }}>↑</div>
-                ลาก &amp; วางภาพ ที่นี่
-              </div>
-              <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => handleImageUpload(e, true)} />
-            </label>
-          )}
-          {refImagePreview && tab === "image" && (
-            <div style={{ marginTop: 12 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", marginBottom: 6 }}>
-                <span>ความเข้มอ้างอิง</span>
-                <span style={{ color: `hsl(${220 + HUE},70%,75%)`, fontFamily: "ui-monospace,monospace" }}>{Math.round(strength * 100)}%</span>
-              </div>
-              <input type="range" min={0} max={1} step={0.05} value={strength} onChange={(e) => setStrength(+e.target.value)}
-                style={{ width: "100%", accentColor: `hsl(${220 + HUE},70%,60%)` }} />
-            </div>
-          )}
-        </Section>
-
-        {/* Prompt info — real, derived from current input */}
-        <div style={{ marginTop: 24 }}>
-          <Section label="รายละเอียด prompt">
-            {(() => {
-              const trimmed = prompt.trim();
-              const words = trimmed ? trimmed.split(/\s+/).length : 0;
-              const chars = prompt.length;
-              const rows = [
-                { l: "จำนวนคำ", v: words.toLocaleString() },
-                { l: "ตัวอักษร", v: `${chars.toLocaleString()} / 10,000` },
-                { l: "negative prompt", v: negativePrompt.trim() ? "มี" : "—" },
-              ];
-              return (
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {rows.map((r, i) => (
-                    <div key={i} style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(2,6,23,0.4)", border: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                      <span style={{ fontSize: 12, color: "#94a3b8" }}>{r.l}</span>
-                      <span style={{ fontSize: 13, color: "#f1f5f9", fontFamily: "ui-monospace,monospace" }}>{r.v}</span>
-                    </div>
-                  ))}
-                  {!trimmed && (
-                    <div style={{ fontSize: 11, color: "#64748b", padding: "2px 2px 0" }}>พิมพ์ prompt เพื่อดูรายละเอียด</div>
-                  )}
-                </div>
-              );
-            })()}
-          </Section>
-        </div>
-
-        {/* Credits */}
-        <div style={{ marginTop: 24 }}>
-          <Section label="Credits">
-            <div style={{ padding: 16, borderRadius: 12, background: `linear-gradient(135deg, hsla(${220 + HUE},60%,25%,0.4), hsla(${280 + HUE},60%,20%,0.4))`, border: "1px solid rgba(255,255,255,0.08)" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                <div style={{ fontSize: 30, fontWeight: 300, color: "#fff" }}>{creditBalance.toLocaleString()}</div>
-                <div style={{ fontSize: 11, color: "#94a3b8" }}>คงเหลือ</div>
-              </div>
-              <div style={{ marginTop: 14 }}>
-                <a href="/pricing" style={{ display: "block", textAlign: "center", padding: "9px 0", borderRadius: 8, background: "rgba(255,255,255,0.08)", color: "#fff", fontSize: 12, textDecoration: "none", border: "1px solid rgba(255,255,255,0.1)" }}>
-                  + เติม credits
-                </a>
-              </div>
-            </div>
-          </Section>
-        </div>
-
-        <div style={{ marginTop: 24 }}>
-          <Section label="คำแนะนำ">
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {[
-                "ระบุ subject และอารมณ์ให้ชัด เช่น 'หญิงสาวยืนกลางทุ่งดอกไม้ โทนสีพาสเทล'",
-                "เพิ่ม style keywords เช่น cinematic, hyperreal, jade tones, volumetric",
-                "ใช้ aspect 16:9 สำหรับ wallpaper, 9:16 สำหรับโซเชียล",
-                "img2img: ความเข้ม 0.5–0.7 = balance, > 0.8 = ตามภาพอ้างอิงมาก",
-              ].map((tip, i) => (
-                <div key={i} style={{ padding: 12, borderRadius: 10, background: "rgba(2,6,23,0.4)", border: "1px solid rgba(255,255,255,0.05)", display: "flex", gap: 10 }}>
-                  <span style={{ color: `hsl(${(160 + i * 30 + HUE) % 360},70%,70%)`, flexShrink: 0 }}>✦</span>
-                  <span style={{ fontSize: 12, color: "rgba(203,213,225,0.78)", lineHeight: 1.5 }}>{tip}</span>
-                </div>
-              ))}
-            </div>
-          </Section>
-        </div>
-
-        <div style={{ marginTop: 24 }}>
-          <Section label="Quick links">
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {[
-                { href: "/gallery", l: "Community Gallery", i: "▧" },
-                { href: "/profile", l: "Dashboard", i: "◈" },
-                { href: "/pricing", l: "แพ็กเกจ", i: "✦" },
-                { href: "/referral", l: "Referral", i: "♢" },
-              ].map(it => (
-                <a key={it.href} href={it.href} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderRadius: 8, background: "rgba(2,6,23,0.4)", border: "1px solid rgba(255,255,255,0.05)", color: "#e2e8f0", textDecoration: "none", fontSize: 13 }}>
-                  <span style={{ color: "#a5f3fc", width: 14, display: "inline-block" }}>{it.i}</span>
-                  {it.l}
-                </a>
-              ))}
-            </div>
-          </Section>
-        </div>
-
-      </aside>
-
       <style jsx>{`
         @keyframes spin { to { transform: rotate(360deg); } }
-        /* Visible scrollbar so users know LEFT/RIGHT panels can scroll */
+        /* Visible scrollbar for any pane that does overflow */
         .rp-scroll {
           scrollbar-width: thin;
           scrollbar-color: rgba(165,243,252,0.25) transparent;
@@ -1112,33 +1124,66 @@ export default function GeneratePage() {
           border: 1px solid rgba(255,255,255,0.05);
         }
         .rp-scroll::-webkit-scrollbar-thumb:hover { background: rgba(165,243,252,0.35); }
-        /* Fade-out gradient at the bottom of LEFT/RIGHT to hint there's more below */
-        .rp-studio-left::after, .rp-studio-right::after {
-          content: "";
-          position: sticky; bottom: 0; left: 0; right: 0;
-          height: 32px;
-          background: linear-gradient(to bottom, transparent, rgba(15,23,42,0.85));
-          pointer-events: none;
-          margin-top: -32px;
+        /* ── Viewport-locked studio ──────────────────────────────────
+           The whole workspace is exactly one screen: nothing scrolls the
+           document, and the canvas takes whatever height is left over.
+
+           overflow:auto on the rails rather than hidden is deliberate.
+           On a short window (a 768px-tall laptop) the controls genuinely
+           cannot all fit, and clipping them would make them unreachable —
+           the same "everything disappeared" failure this layout was
+           rebuilt to avoid. Instead they fall back to a visible custom
+           scrollbar, which normal-height screens never see. */
+        .rp-studio {
+          display: grid;
+          grid-template-columns: 336px 1fr;
+          height: calc(100dvh - 80px);
+          overflow: hidden;
         }
-        @media (max-width: 1280px) {
-          .rp-studio { grid-template-columns: 300px 1fr 300px !important; }
+        .rp-studio-left {
+          min-height: 0;
+          overflow-y: auto;
         }
-        @media (max-width: 1100px) {
-          .rp-studio { grid-template-columns: 300px 1fr !important; }
-          .rp-studio-right { display: none !important; }
+        /* Flex items shrink by default, so on a short window every control
+           squashed below its own height — a 20px-tall Generate button rather
+           than a scrollbar. Pin them, and let the prompt (which carries an
+           inline flex:1, and inline wins over this rule) be the only thing
+           that gives. Past its min-height the rail scrolls instead. */
+        .rp-studio-left > * { flex-shrink: 0; }
+        .rp-studio-center {
+          min-height: 0;
+          overflow-y: auto;
+          display: flex;
+          flex-direction: column;
         }
-        @media (max-width: 720px) {
-          .rp-studio { grid-template-columns: 1fr !important; }
+        /* The canvas block is the flexible one; header + history keep their
+           natural height so they are always on screen. */
+        .rp-studio-canvas {
+          flex: 1;
+          min-height: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          overflow: hidden;
+        }
+        @media (max-width: 1180px) {
+          .rp-studio { grid-template-columns: 300px 1fr; }
+        }
+        @media (max-width: 860px) {
+          /* Below this the two-pane workspace stops being usable — let the
+             page breathe and scroll normally instead of squeezing both. */
+          .rp-studio {
+            grid-template-columns: 1fr;
+            height: auto;
+            overflow: visible;
+          }
           .rp-studio-left {
-            position: static !important;
-            height: auto !important;
-            max-height: none !important;
+            overflow: visible;
             border-right: none !important;
             border-bottom: 1px solid rgba(255,255,255,0.06) !important;
           }
-          .rp-studio-center { height: auto !important; }
-          .rp-studio-left::after { display: none; }
+          .rp-studio-center { overflow: visible; }
+          .rp-studio-canvas { overflow: visible; min-height: 320px; }
         }
       `}</style>
     </div>
