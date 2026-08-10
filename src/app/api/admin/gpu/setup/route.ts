@@ -4,6 +4,7 @@ import prisma from '@/lib/db';
 import { encrypt } from '@/lib/utils/encryption';
 import { getGpuProvider } from '@/lib/gpu';
 import { GPU_DEFAULTS } from '@/lib/gpu/config';
+import { MODEL_CATALOG } from '@/lib/gpu/catalog';
 
 /**
  * One-step GPU setup: supply a marketplace API key and everything else is
@@ -130,10 +131,47 @@ export async function POST(request: NextRequest) {
       create: { key: 'gpu_enabled', value: enable ? 'true' : 'false', type: 'boolean', group: 'gpu' },
     });
 
-    // Activate the models only alongside enabling — an active model with rental
-    // switched off would queue jobs that can never drain. Every catalogue model
-    // for this provider is switched together; each still has to prove itself
-    // before customers can order it (see ModelReadiness).
+    // Create the catalogue's models if they are not here yet. Doing it at setup
+    // rather than in the seeder is what makes "paste the key" actually
+    // sufficient — the seeder is a separate admin action that is easy to forget,
+    // and without it the models exist in code but never reach the database.
+    for (const entry of MODEL_CATALOG) {
+      await prisma.aiModel.upsert({
+        where: { providerId_modelId: { providerId: providerRow.id, modelId: entry.key } },
+        create: {
+          providerId: providerRow.id,
+          modelId: entry.key,
+          name: entry.name,
+          description: entry.description,
+          category: entry.outputKind,
+          subcategory: 'self-hosted',
+          costPerUnit: entry.pricing.costPerUnit,
+          creditsPerUnit: entry.pricing.creditsPerUnit,
+          maxWidth: entry.limits?.maxWidth ?? null,
+          maxHeight: entry.limits?.maxHeight ?? null,
+          maxDuration: entry.limits?.maxDuration ?? null,
+          isActive: enable,
+          // Unproven until it renders here — listed, marked, not orderable.
+          readiness: 'tuning',
+          readinessNote: 'ยังไม่เคยสร้างงานสำเร็จบนระบบนี้ — รอทดสอบ',
+        },
+        update: {
+          name: entry.name,
+          description: entry.description,
+          category: entry.outputKind,
+          costPerUnit: entry.pricing.costPerUnit,
+          creditsPerUnit: entry.pricing.creditsPerUnit,
+          maxWidth: entry.limits?.maxWidth ?? null,
+          maxHeight: entry.limits?.maxHeight ?? null,
+          maxDuration: entry.limits?.maxDuration ?? null,
+          isActive: enable,
+          // readiness is deliberately not reset — a model that has already
+          // proven itself here stays proven across re-runs of setup.
+        },
+      });
+    }
+
+    // Anything else already attached to this provider follows the switch too.
     const activated = await prisma.aiModel.updateMany({
       where: { providerId: providerRow.id },
       data: { isActive: enable },

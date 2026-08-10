@@ -160,20 +160,11 @@ export async function POST() {
       { providerSlug: 'leonardo', modelId: 'kino-xl', name: 'Kino XL', category: 'image', subcategory: 'cinematic', costPerUnit: 0.03, creditsPerUnit: 3, maxWidth: 1024, maxHeight: 1024 },
       { providerSlug: 'leonardo', modelId: 'leonardo-diffusion-xl', name: 'Leonardo Diffusion XL', category: 'image', subcategory: 'general', costPerUnit: 0.02, creditsPerUnit: 2, maxWidth: 1024, maxHeight: 1024 },
 
-      // SimplePod — self-hosted on a rented GPU.
-      // `modelId` doubles as the worker-profile key in gpu_worker_profiles.
-      // Seeded inactive: it is switched on by Admin → GPU ที่เช่า once a
-      // SimplePod API key is supplied, so nobody can spend credits on a queue
-      // that has no account to rent with.
-      // 2K output is deliberately not offered — it needs 4× H100 (123.6 GB
-      // VRAM), which this marketplace does not carry; 768P quantised fits a
-      // single 24 GB card. 1344×768 matches the official ComfyUI template.
-      { providerSlug: 'simplepod', modelId: 'minimax-h3', name: 'MiniMax H3 (Hailuo 3.0)', category: 'video', subcategory: 'self-hosted', costPerUnit: 0.05, creditsPerUnit: 12, maxDuration: 15, maxWidth: 1344, maxHeight: 768, isActive: false, description: 'รันบน GPU ที่เช่ามาเอง มีเสียงในตัว • คลิปแรกรอนานเพราะต้องบูตเครื่องและโหลดโมเดล (~20-40 นาที) • คลิปถัดไปเร็วขึ้นมาก' },
-      // ACE-Step is the cheapest thing in the catalogue to run — ~10 GB of
-      // weights on a 12 GB card — which makes it the sensible model to prove
-      // the whole rented-GPU pipeline with before spending on the big ones.
-      { providerSlug: 'simplepod', modelId: 'ace-step-1.5', name: 'ACE-Step 1.5 (เพลง/เสียง)', category: 'audio', subcategory: 'self-hosted', costPerUnit: 0.01, creditsPerUnit: 4, maxDuration: 240, isActive: false, description: 'สร้างเพลงและเสียงจากคำอธิบาย • เบาและถูกที่สุดในระบบ บูตเครื่องเร็วกว่าตัวอื่นมาก' },
-      { providerSlug: 'simplepod', modelId: 'qwen-image', name: 'Qwen-Image', category: 'image', subcategory: 'self-hosted', costPerUnit: 0.02, creditsPerUnit: 3, maxWidth: 1328, maxHeight: 1328, isActive: false, description: 'สร้างภาพนิ่งคุณภาพสูง เก่งเรื่องตัวอักษรทั้งไทยและอังกฤษ • ใช้ LoRA 8 สเต็ป' },
+      // SimplePod's self-hosted models are deliberately NOT listed here. They
+      // are created from MODEL_CATALOG by Admin → GPU ที่เช่า when the API key
+      // is supplied, so the catalogue stays the single source of truth for what
+      // each model costs, needs and can do. Duplicating them here would let the
+      // two drift, and the copy that wins would depend on which ran last.
     ];
 
     for (const m of models) {
@@ -194,16 +185,12 @@ export async function POST() {
           maxWidth: m.maxWidth || null,
           maxHeight: m.maxHeight || null,
           maxDuration: m.maxDuration || null,
-          // Models needing operator setup before they can run (GPU-rental ones)
-          // seed disabled so nobody spends credits on a queue that can't drain.
-          isActive: m.isActive ?? true,
+          // Everything seeded here is API-backed and was working before the
+          // readiness column existed, so it starts ready. Self-hosted models
+          // come from MODEL_CATALOG via the GPU setup route and start 'tuning'.
+          isActive: true,
           isFeatured: m.isFeatured || false,
-          // Self-hosted models are unproven until they render something here, so
-          // they start in 'tuning': listed and clearly marked, but not
-          // orderable. First success promotes them automatically.
-          readiness: m.providerSlug === 'simplepod' ? 'tuning' : 'ready',
-          readinessNote:
-            m.providerSlug === 'simplepod' ? 'ยังไม่เคยสร้างงานสำเร็จบนระบบนี้ — รอทดสอบ' : null,
+          readiness: 'ready',
         },
         update: {
           name: m.name,

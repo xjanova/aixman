@@ -92,6 +92,13 @@ export interface CatalogEntry {
   needs?: { image?: boolean; audio?: boolean };
   /** Rough seconds of render per output second, for the first ETA before history exists. */
   baselineSecondsPerUnit: number;
+  /**
+   * What the customer pays and what it costs us. Kept here so the catalogue is
+   * the single source of truth: the setup route creates the `ai_models` rows
+   * from this, rather than a second hand-maintained list that can drift.
+   */
+  pricing: { creditsPerUnit: number; costPerUnit: number };
+  limits?: { maxWidth?: number; maxHeight?: number; maxDuration?: number };
 }
 
 const GB = 1024 ** 3;
@@ -128,6 +135,8 @@ const MINIMAX_H3: CatalogEntry = {
     { nodeId: '92', input: 'filename_prefix', value: 'video/aixman', optional: true },
   ],
   baselineSecondsPerUnit: 48,
+  pricing: { creditsPerUnit: 12, costPerUnit: 0.05 },
+  limits: { maxWidth: 1344, maxHeight: 768, maxDuration: 15 },
 };
 
 /** length % 17 === 5, with Python modulo semantics — JS `%` would go negative. */
@@ -170,6 +179,8 @@ const ACE_STEP: CatalogEntry = {
     { nodeId: '107', input: 'filename_prefix', value: 'audio/aixman', optional: true },
   ],
   baselineSecondsPerUnit: 3,
+  pricing: { creditsPerUnit: 4, costPerUnit: 0.01 },
+  limits: { maxDuration: 240 },
 };
 
 // ---------------------------------------------------------------------------
@@ -205,6 +216,8 @@ const QWEN_IMAGE: CatalogEntry = {
     { nodeId: '60', input: 'filename_prefix', value: 'image/aixman', optional: true },
   ],
   baselineSecondsPerUnit: 12,
+  pricing: { creditsPerUnit: 3, costPerUnit: 0.02 },
+  limits: { maxWidth: 1328, maxHeight: 1328 },
 };
 
 export const MODEL_CATALOG: CatalogEntry[] = [MINIMAX_H3, ACE_STEP, QWEN_IMAGE];
