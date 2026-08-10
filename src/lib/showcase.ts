@@ -104,11 +104,14 @@ export const SHOWCASE_ITEMS: ShowcaseItem[] = [
     key: "temple",
     title: "โคมลอยในพระวิหาร",
     prompt:
-      "Ancient Thai temple hall at night, gilded naga balustrade, thousands of lanterns rising gold to cyan, 35mm",
-    model: "Seedream 5 Pro",
-    mode: "image",
+      "Thousands of candle-lanterns drift steadily upward between the temple columns, their glow shifting from warm gold to cyan as they rise",
+    // Poster is the 2K still; the clip was generated from it as start frame,
+    // so both are true and both are named.
+    model: "Seedream 5 Pro + Kling 2.5",
+    mode: "video",
     ratio: "3 / 4",
     image: "/showcase/temple.jpg",
+    video: "/showcase/temple.mp4",
     hue: 40,
   },
   {
