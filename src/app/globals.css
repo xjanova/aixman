@@ -369,3 +369,472 @@ body {
 .safe-bottom {
   padding-bottom: env(safe-area-inset-bottom, 0);
 }
+
+/* ═══════════════════════════════════════════
+   X-DREAMER landing — media-led sections
+   Styles for src/components/xdreamer/sections.tsx. Kept here rather than
+   in the page's styled-jsx block so the selectors are greppable and the
+   responsive rules live next to the rest of the design system.
+   ═══════════════════════════════════════════ */
+
+/* Namespaced on purpose: several pages declare their own `pulse` for
+   skeleton loaders (gallery's runs 0.4 → 0.7, not 1 → 0.5) and Tailwind
+   ships an `animate-pulse` utility. A global `@keyframes pulse` here would
+   silently retime all of them. */
+@keyframes xdr-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@keyframes xdr-blink { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+@keyframes xdr-marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+
+/* Base container — landing sections that don't set it inline.
+   The page's own media queries narrow this with !important. */
+.rp-container {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 48px;
+  width: 100%;
+}
+
+/* ── Hero ───────────────────────────────────────────────────────────── */
+.xdr-hero {
+  position: relative;
+  min-height: 100svh;
+  display: flex;
+  align-items: center;
+  padding: 150px 0 100px;
+  overflow: hidden;
+}
+
+.xdr-hero-inner {
+  position: relative;
+  z-index: 2;
+}
+
+.xdr-hero-sub {
+  margin-top: 26px;
+  max-width: 560px;
+  font-size: 18.5px;
+  line-height: 1.6;
+  color: rgba(226, 232, 240, 0.82);
+  font-weight: 300;
+  text-shadow: 0 2px 20px rgba(0, 0, 0, 0.7);
+}
+
+.xdr-hero-trust {
+  list-style: none;
+  padding: 0;
+  margin: 34px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 26px;
+  font-size: 13px;
+  color: rgba(203, 213, 225, 0.72);
+  font-weight: 300;
+}
+
+.xdr-hero-trust li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Stays absolutely positioned at every width on purpose. As a normal-flow
+   element it becomes a second flex item inside .xdr-hero and halves the
+   width of the prompt console on narrow screens. */
+.xdr-hero-credit {
+  position: absolute;
+  right: 48px;
+  bottom: 28px;
+  z-index: 2;
+  max-width: min(440px, calc(100% - 96px));
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: rgba(148, 163, 184, 0.8);
+  background: rgba(3, 6, 18, 0.5);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 999px;
+  padding: 7px 15px;
+}
+
+/* ── Hero prompt console ────────────────────────────────────────────── */
+.xdr-console {
+  margin-top: 42px;
+  max-width: 780px;
+  background: rgba(10, 16, 34, 0.62);
+  backdrop-filter: blur(22px) saturate(1.4);
+  -webkit-backdrop-filter: blur(22px) saturate(1.4);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 24px;
+  padding: 6px;
+  box-shadow: 0 44px 90px -24px rgba(0, 0, 0, 0.75), inset 0 1px 0 rgba(255, 255, 255, 0.09);
+}
+
+.xdr-console-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px 8px;
+}
+
+.xdr-console-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #34d399;
+  box-shadow: 0 0 10px #34d399;
+  animation: xdr-pulse 2s infinite;
+}
+
+.xdr-console-body {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 18px;
+  background: rgba(2, 6, 23, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 18px;
+  margin: 0 4px;
+}
+
+.xdr-console-text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.45;
+  color: #e2e8f0;
+  font-weight: 300;
+  min-height: 46px;
+}
+
+.xdr-caret {
+  display: inline-block;
+  width: 7px;
+  height: 17px;
+  background: #a5f3fc;
+  margin-left: 3px;
+  vertical-align: -2px;
+  animation: xdr-blink 1s step-end infinite;
+}
+
+.xdr-console-cta {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 22px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, hsl(230, 70%, 50%), hsl(340, 70%, 60%));
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  box-shadow: 0 12px 28px -10px hsla(340, 70%, 50%, 0.8);
+  transition: transform 200ms cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 200ms;
+}
+
+.xdr-console-cta:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 18px 36px -10px hsla(340, 75%, 55%, 0.9);
+}
+
+.xdr-console-tray {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  padding: 10px 4px 4px;
+}
+
+.xdr-tray-frame {
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid;
+  background: rgba(2, 6, 23, 0.6);
+  cursor: pointer;
+  padding: 0;
+  transition: opacity 350ms ease, box-shadow 350ms ease, border-color 350ms ease;
+}
+
+.xdr-tray-frame:hover {
+  opacity: 1 !important;
+}
+
+.xdr-tray-live {
+  position: absolute;
+  left: 7px;
+  bottom: 7px;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: #fff;
+  background: rgba(3, 6, 18, 0.62);
+  backdrop-filter: blur(6px);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+/* ── Provider marquee ───────────────────────────────────────────────── */
+.xdr-marquee-sec {
+  padding: 6px 0 40px;
+  position: relative;
+  z-index: 1;
+}
+
+.xdr-marquee-label {
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #64748b;
+  margin-bottom: 18px;
+}
+
+.xdr-marquee {
+  overflow: hidden;
+  mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+}
+
+.xdr-marquee-track {
+  display: flex;
+  width: max-content;
+  gap: 56px;
+  animation: xdr-marquee 38s linear infinite;
+}
+
+.xdr-marquee-item {
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: rgba(226, 232, 240, 0.4);
+  white-space: nowrap;
+  transition: color 250ms;
+}
+
+.xdr-marquee:hover .xdr-marquee-item {
+  color: rgba(226, 232, 240, 0.68);
+}
+
+/* ── Mode cards ─────────────────────────────────────────────────────── */
+.xdr-mode-card {
+  display: block;
+  border-radius: 22px;
+  overflow: hidden;
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(18px);
+  text-decoration: none;
+  transition: transform 420ms cubic-bezier(0.16, 1, 0.3, 1), border-color 420ms, box-shadow 420ms;
+}
+
+.xdr-mode-card:hover {
+  transform: translateY(-6px);
+  border-color: hsla(var(--h), 80%, 60%, 0.4);
+  box-shadow: 0 34px 60px -26px hsla(var(--h), 80%, 45%, 0.65);
+}
+
+.xdr-mode-go {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: transform 300ms;
+}
+
+.xdr-mode-card:hover .xdr-mode-go {
+  transform: translateX(4px);
+}
+
+/* ── Showcase wall ──────────────────────────────────────────────────── */
+.xdr-pill-link {
+  padding: 11px 22px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  color: #e2e8f0;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background 250ms, border-color 250ms;
+}
+
+.xdr-pill-link:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(165, 243, 252, 0.35);
+}
+
+.xdr-wall {
+  columns: 3;
+  column-gap: 18px;
+  margin-top: 52px;
+}
+
+.xdr-wall-item {
+  position: relative;
+  display: block;
+  break-inside: avoid;
+  margin: 0 0 18px;
+  border-radius: 20px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow: 0 18px 44px -20px rgba(0, 0, 0, 0.85);
+  transition: transform 500ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 500ms, border-color 500ms;
+}
+
+.xdr-wall-item:hover {
+  transform: translateY(-5px) scale(1.008);
+  border-color: rgba(165, 243, 252, 0.28);
+  box-shadow: 0 32px 68px -24px rgba(0, 0, 0, 0.95);
+}
+
+.xdr-wall-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: linear-gradient(180deg, rgba(3, 6, 18, 0.35) 0%, transparent 30%, transparent 45%, rgba(3, 6, 18, 0.92) 100%);
+  pointer-events: none;
+}
+
+.xdr-wall-cap {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 14px;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.xdr-wall-prompt {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: rgba(226, 232, 240, 0.72);
+  font-weight: 300;
+  font-style: italic;
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height 420ms cubic-bezier(0.16, 1, 0.3, 1), opacity 320ms, margin 420ms;
+}
+
+.xdr-wall-item:hover .xdr-wall-prompt {
+  max-height: 7em;
+  opacity: 1;
+  margin: 8px 0 10px;
+}
+
+.xdr-wall-model {
+  display: inline-block;
+  margin-top: 7px;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid;
+  background: rgba(3, 6, 18, 0.5);
+  backdrop-filter: blur(8px);
+}
+
+/* ── FAQ ────────────────────────────────────────────────────────────── */
+.xdr-faq {
+  border: 1px solid;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.42);
+  backdrop-filter: blur(14px);
+  overflow: hidden;
+  transition: border-color 280ms;
+}
+
+.xdr-faq-q {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 20px 24px;
+  background: transparent;
+  border: none;
+  color: #f1f5f9;
+  font-family: inherit;
+  font-size: 16px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.xdr-faq-a {
+  margin: 0;
+  padding: 0 24px 22px;
+  font-size: 14.5px;
+  line-height: 1.72;
+  color: rgba(203, 213, 225, 0.75);
+  font-weight: 300;
+}
+
+/* ── Scroll reveal ──────────────────────────────────────────────────── */
+/* Scroll-driven, so it can only ever ADD an animation to content that is
+   already visible. A browser without `animation-timeline` support, or a
+   visitor with reduced motion on, just gets the section rendered normally —
+   there is no state in which the page can end up blank. */
+@keyframes xdr-reveal-in {
+  from { opacity: 0; transform: translateY(30px); }
+  to   { opacity: 1; transform: none; }
+}
+
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .xdr-reveal {
+      animation: xdr-reveal-in linear both;
+      animation-timeline: view();
+      animation-range: entry 0% entry 92%;
+    }
+  }
+}
+
+/* ── Responsive ─────────────────────────────────────────────────────── */
+@media (max-width: 1180px) {
+  .xdr-wall { columns: 2; }
+}
+
+@media (max-width: 1024px) {
+  .xdr-hero { padding: 120px 0 80px; }
+  .xdr-hero-credit { right: 24px; bottom: 18px; }
+}
+
+@media (max-width: 720px) {
+  /* The credit chip drops out of its absolute corner below, which would
+     otherwise make it a second flex item on the same row and halve the
+     width of the prompt console. Stack the hero instead. */
+  .xdr-hero {
+    min-height: auto;
+    padding: 108px 0 64px;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: center;
+  }
+  .xdr-hero-sub { font-size: 16.5px; }
+  .xdr-console { margin-top: 32px; }
+  .xdr-console-body { flex-wrap: wrap; }
+  .xdr-console-cta { width: 100%; justify-content: center; }
+  .xdr-console-tray { grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  .xdr-hero-credit {
+    left: 18px;
+    right: 18px;
+    bottom: 12px;
+    max-width: none;
+    text-align: center;
+    font-size: 10px;
+    padding: 6px 12px;
+  }
+  .xdr-marquee-track { gap: 34px; animation-duration: 26s; }
+  .xdr-marquee-item { font-size: 14px; }
+  .xdr-wall { columns: 1; }
+  .xdr-faq-q { font-size: 15px; padding: 17px 18px; }
+  .xdr-faq-a { padding: 0 18px 18px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xdr-marquee-track { animation: none; }
+  .xdr-console-dot,
+  .xdr-caret { animation: none; }
+}
