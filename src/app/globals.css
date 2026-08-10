@@ -914,6 +914,31 @@ body {
   .xdr-emblem { animation: none; }
 }
 
+/* ── Admin shell backdrop ───────────────────────────────────────────── */
+/* Negative margins bleed it past <main>'s 32px padding. */
+.xdr-admin-backdrop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 360px;
+  margin: -32px -32px 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.42;
+}
+
+.xdr-admin-backdrop-scrim {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(3, 6, 18, 0.55) 0%, rgba(3, 6, 18, 0.8) 45%, #030612 100%);
+}
+
+@media (max-width: 720px) {
+  .xdr-admin-backdrop { height: 240px; margin: -20px -20px 0; }
+}
+
 /* ── Profile banner ─────────────────────────────────────────────────── */
 /* Pulled up behind the fixed nav; the avatar row overlaps its lower edge. */
 .xdr-profile-banner {

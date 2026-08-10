@@ -18,6 +18,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 import { useAppStore } from "@/lib/store/app-store";
 import { useToast } from "@/components/ui/toast-provider";
 
@@ -90,6 +91,45 @@ function Section({ label, children }: { label: string; children: React.ReactNode
 const ASPECT_RATIO_CSS: Record<string, string> = {
   "1:1": "1/1", "16:9": "16/9", "9:16": "9/16", "4:3": "4/3", "3:2": "3/2",
 };
+
+/**
+ * Empty-state tile showing a real frame made on this platform.
+ *
+ * Deliberately NOT used for the generating state — a placeholder standing in
+ * for work in progress should stay abstract, or it reads as someone else's
+ * output being passed off as yours. These are labelled "ตัวอย่าง" for the
+ * same reason.
+ */
+const STUDIO_SAMPLES: Record<string, { src: string; label: string }[]> = {
+  image: [
+    { src: "/showcase/portrait.jpg", label: "Seedream 5 Pro" },
+    { src: "/showcase/product.jpg", label: "Seedream 5 Pro" },
+    { src: "/showcase/temple.jpg", label: "Seedream 5 Pro" },
+    { src: "/showcase/coast.jpg", label: "Seedream 5 Pro" },
+  ],
+  video: [{ src: "/showcase/city.jpg", label: "Kling 2.5" }],
+  edit: [{ src: "/showcase/macro.jpg", label: "Seedream 5 Pro" }],
+};
+
+function SampleFrame({ src, label, aspect, isVideo = false }: { src: string; label: string; aspect: string; isVideo?: boolean }) {
+  return (
+    <div className="rp-studio-frame" style={{
+      aspectRatio: ASPECT_RATIO_CSS[aspect] || "1/1",
+      borderRadius: 14, position: "relative", overflow: "hidden",
+      border: "1px solid rgba(255,255,255,0.08)",
+      background: "rgba(2,6,23,0.6)",
+    }}>
+      <Image src={src} alt="" fill sizes="(max-width:900px) 50vw, 320px" style={{ objectFit: "cover", opacity: 0.62 }} />
+      <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(3,6,18,0.35) 0%, rgba(3,6,18,0.2) 45%, rgba(3,6,18,0.9) 100%)" }} />
+      <div style={{ position: "absolute", top: 10, left: 12, fontSize: 9, letterSpacing: "0.14em", textTransform: "uppercase", color: "rgba(255,255,255,0.72)", background: "rgba(3,6,18,0.55)", backdropFilter: "blur(6px)", padding: "3px 8px", borderRadius: 999 }}>
+        {isVideo ? "▶ ตัวอย่าง" : "ตัวอย่าง"}
+      </div>
+      <div style={{ position: "absolute", left: 12, bottom: 10, fontSize: 10, color: "rgba(255,255,255,0.6)", letterSpacing: "0.06em" }}>
+        {label}
+      </div>
+    </div>
+  );
+}
 
 function StudioFrame({ index, seed, aspect, generating }: { index: number; seed: number; aspect: string; generating: boolean }) {
   const hue1 = (140 + index * 35 + HUE + Math.floor(seed * 360)) % 360;
@@ -878,17 +918,19 @@ export default function GeneratePage() {
             <div style={{ width: "100%" }}>
               {tab === "image" ? (
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 16 }}>
-                  {[0, 1, 2, 3].map((i) => (
-                    <StudioFrame key={i} index={i} seed={(i + 1) * 0.137} aspect={aspectRatio} generating={false} />
+                  {STUDIO_SAMPLES.image.map((s) => (
+                    <SampleFrame key={s.src} src={s.src} label={s.label} aspect={aspectRatio} />
                   ))}
                 </div>
               ) : (
                 <div style={{ aspectRatio: tab === "video" ? "16/9" : ASPECT_RATIO_CSS[aspectRatio] || "1/1", maxHeight: 520, margin: "0 auto" }}>
-                  <StudioFrame index={0} seed={0.42} aspect={tab === "video" ? "16:9" : aspectRatio} generating={false} />
+                  {(STUDIO_SAMPLES[tab] || STUDIO_SAMPLES.edit).map((s) => (
+                    <SampleFrame key={s.src} src={s.src} label={s.label} aspect={tab === "video" ? "16:9" : aspectRatio} isVideo={tab === "video"} />
+                  ))}
                 </div>
               )}
               <p style={{ fontSize: 13, color: "rgba(203,213,225,0.55)", marginTop: 20, textAlign: "center" }}>
-                เลือกโมเดล พิมพ์ prompt แล้วกด <span style={{ color: "#a5f3fc" }}>ทอ</span> เพื่อเริ่มสร้าง{tab === "video" ? "วิดีโอ" : tab === "edit" ? "การแก้ไข" : "ภาพ"}
+                ตัวอย่างผลงานที่สร้างบนแพลตฟอร์มนี้ — เลือกโมเดล พิมพ์ prompt แล้วกด <span style={{ color: "#a5f3fc" }}>ทอ</span> เพื่อเริ่มสร้าง{tab === "video" ? "วิดีโอ" : tab === "edit" ? "การแก้ไข" : "ภาพ"}ของคุณเอง
               </p>
             </div>
           )}

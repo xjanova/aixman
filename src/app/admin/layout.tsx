@@ -140,7 +140,15 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           renders invisible — present in the DOM, correctly sized, but covered.
           The sidebar only escaped this because it already carries z-index 40. */}
       <main style={{ flex: 1, marginLeft: 256, padding: 32, minHeight: "100vh", position: "relative", zIndex: 1 }}>
-        {children}
+        {/* A shallow band of artwork at the top only. Admin pages are dense
+            tables — a full backdrop would fight them for attention, so this
+            fades out well above where the data starts. Sits at z-index 0
+            inside main's stacking context (see the note above). */}
+        <div className="xdr-admin-backdrop" aria-hidden="true">
+          <Image src="/showcase/admin-room.jpg" alt="" fill sizes="100vw" style={{ objectFit: "cover" }} />
+          <div className="xdr-admin-backdrop-scrim" />
+        </div>
+        <div style={{ position: "relative", zIndex: 1 }}>{children}</div>
       </main>
 
       <style jsx>{`
