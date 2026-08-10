@@ -73,9 +73,11 @@ export function Hero() {
     <section className="xdr-hero">
       {/* Full-bleed cinematic frame */}
       <div style={{ position: "absolute", inset: 0 }}>
-        {/* Still by design — see HERO_MEDIA in @/lib/showcase */}
+        {/* The clip was generated from this exact still, so the crossfade
+            from poster to video is a no-op visually. See @/lib/showcase. */}
         <MediaTile
           image={HERO_MEDIA.image}
+          video={HERO_MEDIA.video}
           alt="ตัวอย่างผลงานที่สร้างด้วย X-DREAMER"
           policy="eager"
           priority
@@ -229,7 +231,7 @@ export function Hero() {
       </div>
 
       <div className="xdr-hero-credit">
-        <span style={{ color: "#a5f3fc" }}>▲</span> ภาพพื้นหลังสร้างด้วย {HERO_MEDIA.model} บนแพลตฟอร์มนี้
+        <span style={{ color: "#a5f3fc" }}>▲</span> ฉากพื้นหลังสร้างด้วย {HERO_MEDIA.model} บนแพลตฟอร์มนี้
       </div>
     </section>
   );

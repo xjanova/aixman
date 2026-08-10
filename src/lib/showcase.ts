@@ -31,19 +31,23 @@ export type ShowcaseItem = {
 /**
  * Full-bleed cinematic frame behind the hero.
  *
- * Deliberately a still, and deliberately the 2K one. A clip was generated for
- * this slot but came back warm amber, which fights both the cyan→violet
- * headline sitting on top of it and every other section on the page. A hero
- * that is on-palette and sharp beats a hero that moves.
+ * The poster is the 2K Seedream still, and the clip was generated *from that
+ * exact still* as its start frame — so frame 0 of the video and the poster are
+ * the same picture and the handover is invisible, while the poster stays
+ * sharper than the 720p clip could be.
  *
- * If a clip is ever added back here, its poster must be that clip's own first
- * frame — otherwise the hero visibly jumps the moment the video takes over.
+ * An earlier attempt generated the clip from the prompt alone. It came back
+ * warm amber, fought the cyan→violet headline over it, and would have jumped
+ * on crossfade. If this clip is ever regenerated, pass `hero-reel.jpg` as
+ * `keyframes.start` again or both properties are lost.
  */
 export const HERO_MEDIA = {
   image: "/showcase/hero-reel.jpg",
+  video: "/showcase/hero-reel.mp4",
   prompt:
-    "A lone figure on a black mirror salt flat beneath a colossal helix of woven light, teal and violet volumetric rays, 65mm anamorphic",
-  model: "Seedream 5 Pro",
+    "The colossal helix of woven light slowly rotates and breathes, filaments unravelling and re-braiding, mist drifting across the mirror-still salt flat",
+  /** Poster from Seedream, motion from Kling — both are true, so name both. */
+  model: "Seedream 5 Pro + Kling 2.5",
 } as const;
 
 /** The credibility wall — mixed ratios so the masonry has rhythm. */
