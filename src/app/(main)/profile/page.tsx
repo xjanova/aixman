@@ -15,6 +15,7 @@ import { useState, useEffect } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import Image from "next/image";
 
 const HUE = 70;
 
@@ -70,9 +71,17 @@ export default function ProfilePage() {
   ];
 
   return (
-    <div style={{ padding: "30px 48px 80px", maxWidth: 1400, margin: "0 auto", color: "#f1f5f9" }}>
+    <>
+      {/* Banner sits behind the avatar row so the dashboard opens on artwork
+          rather than on a bare heading. */}
+      <div className="xdr-profile-banner">
+        <Image src="/showcase/profile-banner.jpg" alt="" fill priority sizes="100vw" style={{ objectFit: "cover", objectPosition: "center 40%" }} />
+        <div className="xdr-profile-banner-scrim" />
+      </div>
+
+      <div style={{ padding: "0 48px 80px", maxWidth: 1400, margin: "0 auto", color: "#f1f5f9" }}>
       {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 40, flexWrap: "wrap", gap: 16 }}>
+      <div className="xdr-profile-head" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 40, flexWrap: "wrap", gap: 16 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
           <div style={{
             width: 80, height: 80, borderRadius: "50%",
@@ -294,6 +303,7 @@ export default function ProfilePage() {
           .rp-stat-4 { grid-template-columns: repeat(2,1fr) !important; gap: 12px !important; }
         }
       `}</style>
-    </div>
+      </div>
+    </>
   );
 }

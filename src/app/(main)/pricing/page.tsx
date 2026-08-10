@@ -14,6 +14,8 @@
 import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 
+import { PageHero } from "@/components/xdreamer/page-hero";
+
 const HUE = 70;
 const HUE_BY_SLUG: Record<string, number> = {
   trial: 140, starter: 160, weaver: 200, creator: 220, pro: 260, studio: 280, enterprise: 300,
@@ -122,17 +124,18 @@ export default function PricingPage() {
   };
 
   return (
-    <div style={{ padding: "30px 48px 80px", maxWidth: 1400, margin: "0 auto", color: "#f1f5f9" }}>
-      {/* Header */}
-      <div style={{ textAlign: "center", marginBottom: 56 }}>
-        <div style={{ fontSize: 12, letterSpacing: "0.16em", color: "#a5f3fc", textTransform: "uppercase", marginBottom: 14 }}>· แผนการใช้งาน</div>
-        <h1 style={{ fontSize: "clamp(40px, 6vw, 80px)", fontWeight: 300, color: "#fff", letterSpacing: "-0.02em", lineHeight: 1.05, margin: 0 }}>
-          เลือกแพ็กเกจ<span className="xdr-italic-th" style={{ fontStyle: "italic", fontWeight: 200, color: "#c4b5fd" }}> ที่ใช่</span>
-        </h1>
-        <p style={{ marginTop: 18, color: "rgba(203,213,225,0.7)", fontSize: 17, fontWeight: 300, maxWidth: 560, margin: "18px auto 0" }}>
-          ซื้อเครดิตใช้สร้างภาพและวิดีโอ AI · ไม่มีวันหมดอายุ · ใช้ได้ทุก Provider
-        </p>
+    <>
+      <PageHero
+        image="/showcase/pricing-hero.jpg"
+        eyebrow="· แผนการใช้งาน"
+        title="เลือกแพ็กเกจ"
+        emphasis="ที่ใช่"
+        hue={270}
+        sub="ซื้อเครดิตใช้สร้างภาพและวิดีโอ AI · ไม่มีวันหมดอายุ · ใช้ได้ทุก Provider"
+      />
 
+      <div style={{ padding: "0 48px 80px", maxWidth: 1400, margin: "0 auto", color: "#f1f5f9" }}>
+      <div style={{ textAlign: "center", marginBottom: 56 }}>
         {/* Currency toggle */}
         <div style={{ display: "inline-flex", gap: 4, marginTop: 28, padding: 4, borderRadius: 999, background: "rgba(2,6,23,0.5)", border: "1px solid rgba(255,255,255,0.06)" }}>
           {([["thb", "฿ THB"], ["usd", "$ USD"]] as const).map(([key, label]) => (
@@ -322,6 +325,7 @@ export default function PricingPage() {
           .rp-grid-pkg { grid-template-columns: 1fr !important; }
         }
       `}</style>
-    </div>
+      </div>
+    </>
   );
 }

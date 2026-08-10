@@ -4,6 +4,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
+import { PageHero } from "@/components/xdreamer/page-hero";
+
 export const metadata: Metadata = {
   title: "นโยบายความเป็นส่วนตัว · X-DREAMER",
   description: "นโยบายความเป็นส่วนตัวและการจัดการข้อมูลของ X-DREAMER",
@@ -53,12 +55,19 @@ const SECTIONS: { h: string; body: string[] }[] = [
 
 export default function PrivacyPage() {
   return (
-    <div style={{ maxWidth: 860, margin: "0 auto", padding: "30px 24px 80px", color: "#e2e8f0" }}>
-      <div style={{ fontSize: 12, letterSpacing: "0.16em", color: "#a5f3fc", textTransform: "uppercase", marginBottom: 12 }}>· เอกสารทางกฎหมาย</div>
-      <h1 style={{ fontSize: "clamp(34px,5vw,52px)", fontWeight: 300, color: "#fff", letterSpacing: "-0.02em", margin: 0 }}>นโยบายความเป็นส่วนตัว</h1>
-      <p style={{ color: "#64748b", fontSize: 13, marginTop: 10 }}>ปรับปรุงล่าสุด: มิถุนายน 2026</p>
+    <>
+      <PageHero
+        image="/showcase/cta-weave.jpg"
+        eyebrow="· เอกสารทางกฎหมาย"
+        title="นโยบาย"
+        emphasis="ความเป็นส่วนตัว"
+        hue={160}
+        size="slim"
+        sub="ปรับปรุงล่าสุด: มิถุนายน 2026"
+      />
 
-      <div style={{ marginTop: 36, display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={{ maxWidth: 860, margin: "0 auto", padding: "0 24px 80px", color: "#e2e8f0" }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
         {SECTIONS.map((s, i) => (
           <section key={i} style={{ padding: 24, borderRadius: 16, background: "rgba(15,23,42,0.5)", border: "1px solid rgba(255,255,255,0.06)", backdropFilter: "blur(18px)" }}>
             <h2 style={{ fontSize: 18, color: "#fff", fontWeight: 500, marginTop: 0, marginBottom: 12 }}>{s.h}</h2>
@@ -73,6 +82,7 @@ export default function PrivacyPage() {
         ต้องการจัดการข้อมูลบัญชี? ไปที่ <a href={XMAN_URL} target="_blank" rel="noopener noreferrer" style={{ color: "#a5f3fc", textDecoration: "none" }}>XMAN Studio</a>
         {" "}หรือดู <Link href="/terms" style={{ color: "#a5f3fc", textDecoration: "none" }}>ข้อกำหนดการใช้งาน</Link>
       </p>
-    </div>
+      </div>
+    </>
   );
 }

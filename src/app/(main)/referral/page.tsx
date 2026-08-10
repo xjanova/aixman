@@ -13,6 +13,8 @@
 
 import { useState, useEffect } from "react";
 import { useSession } from "next-auth/react";
+
+import { PageHero } from "@/components/xdreamer/page-hero";
 import { useRouter } from "next/navigation";
 import { useToast } from "@/components/ui/toast-provider";
 
@@ -91,17 +93,17 @@ export default function ReferralPage() {
   if (!session) return null;
 
   return (
-    <div style={{ padding: "30px 48px 80px", maxWidth: 1100, margin: "0 auto", color: "#f1f5f9" }}>
-      {/* Header */}
-      <div style={{ textAlign: "center", marginBottom: 48 }}>
-        <div style={{ fontSize: 12, letterSpacing: "0.16em", color: "#a5f3fc", textTransform: "uppercase", marginBottom: 14 }}>· ชวนเพื่อน</div>
-        <h1 style={{ fontSize: "clamp(40px, 6vw, 72px)", fontWeight: 300, color: "#fff", letterSpacing: "-0.02em", lineHeight: 1.05, margin: 0 }}>
-          ทอความฝัน <span className="xdr-italic-th" style={{ fontStyle: "italic", color: "#c4b5fd" }}>ร่วมกัน</span>
-        </h1>
-        <p style={{ marginTop: 18, color: "rgba(203,213,225,0.7)", fontSize: 17, fontWeight: 300, maxWidth: 540, margin: "18px auto 0" }}>
-          ชวนเพื่อนมาใช้ X-DREAMER · รับเครดิตฟรีทั้งคู่ + ค่าคอมมิชชั่น {stats?.commissionRate || 10}% ตลอดอายุการใช้งาน
-        </p>
-      </div>
+    <>
+      <PageHero
+        image="/showcase/referral-art.jpg"
+        eyebrow="· ชวนเพื่อน"
+        title="ทอความฝัน"
+        emphasis="ร่วมกัน"
+        hue={300}
+        sub={`ชวนเพื่อนมาใช้ X-DREAMER · รับเครดิตฟรีทั้งคู่ + ค่าคอมมิชชั่น ${stats?.commissionRate || 10}% ตลอดอายุการใช้งาน`}
+      />
+
+      <div style={{ padding: "0 48px 80px", maxWidth: 1100, margin: "0 auto", color: "#f1f5f9" }}>
 
       {loading ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -249,6 +251,7 @@ export default function ReferralPage() {
           .rp-grid-3 { grid-template-columns: 1fr !important; }
         }
       `}</style>
-    </div>
+      </div>
+    </>
   );
 }

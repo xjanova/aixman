@@ -4,6 +4,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
+import { PageHero } from "@/components/xdreamer/page-hero";
+
 export const metadata: Metadata = {
   title: "เกี่ยวกับเรา · X-DREAMER",
   description: "X-DREAMER แพลตฟอร์มสร้างภาพและวิดีโอด้วย AI รวมผู้ให้บริการชั้นนำไว้ในที่เดียว",
@@ -18,17 +20,18 @@ const FEATURES = [
 
 export default function AboutPage() {
   return (
-    <div style={{ maxWidth: 900, margin: "0 auto", padding: "30px 24px 80px", color: "#e2e8f0" }}>
-      <div style={{ fontSize: 12, letterSpacing: "0.16em", color: "#a5f3fc", textTransform: "uppercase", marginBottom: 12 }}>· เกี่ยวกับเรา</div>
-      <h1 style={{ fontSize: "clamp(36px,5.5vw,60px)", fontWeight: 300, color: "#fff", letterSpacing: "-0.02em", margin: 0, lineHeight: 1.05 }}>
-        ทอความฝัน <span className="xdr-italic-th" style={{ fontStyle: "italic", color: "#c4b5fd" }}>ด้วย AI</span>
-      </h1>
-      <p style={{ marginTop: 20, fontSize: 17, lineHeight: 1.6, color: "rgba(203,213,225,0.8)", fontWeight: 300, maxWidth: 680 }}>
-        X-DREAMER คือแพลตฟอร์มสร้างสรรค์ด้วย AI ที่รวมโมเดลภาพและวิดีโอชั้นนำจาก 9 ผู้ให้บริการไว้ในอินเทอร์เฟซเดียว
-        คุณไม่ต้องสมัครและจัดการ API หลายเจ้า — เลือกโมเดล พิมพ์ไอเดีย แล้วจ่ายด้วยเครดิตเดียว
-      </p>
+    <>
+      <PageHero
+        image="/showcase/about-hero.jpg"
+        eyebrow="· เกี่ยวกับเรา"
+        title="ทอความฝัน"
+        emphasis="ด้วย AI"
+        hue={270}
+        sub="X-DREAMER คือแพลตฟอร์มสร้างสรรค์ด้วย AI ที่รวมโมเดลภาพและวิดีโอชั้นนำจาก 9 ผู้ให้บริการไว้ในอินเทอร์เฟซเดียว — เลือกโมเดล พิมพ์ไอเดีย แล้วจ่ายด้วยเครดิตเดียว ไม่ต้องถือหลายซับสคริปชัน"
+      />
 
-      <div style={{ marginTop: 40, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16 }}>
+      <div style={{ maxWidth: 900, margin: "0 auto", padding: "0 24px 80px", color: "#e2e8f0" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16 }}>
         {FEATURES.map((f, i) => (
           <div key={i} style={{ padding: 22, borderRadius: 16, background: "rgba(15,23,42,0.5)", border: "1px solid rgba(255,255,255,0.06)", backdropFilter: "blur(18px)" }}>
             <div style={{ fontSize: 16, color: "#fff", fontWeight: 500, marginBottom: 8 }}>{f.t}</div>
@@ -43,6 +46,7 @@ export default function AboutPage() {
           เริ่มสร้างเลย →
         </Link>
       </div>
-    </div>
+      </div>
+    </>
   );
 }

@@ -43,7 +43,8 @@ export default function LoginPage() {
   };
 
   return (
-    <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: "60px 24px 40px", color: "#f1f5f9" }}>
+    <div className="xdr-auth">
+      <div className="xdr-auth-form">
       <div style={{
         width: "100%", maxWidth: 440, padding: 40, borderRadius: 24,
         background: "rgba(15,23,42,0.65)",
@@ -128,6 +129,35 @@ export default function LoginPage() {
           </a>
         </div>
       </div>
+      </div>
+
+      {/* Showcase panel — a real generated frame, so the first screen a visitor
+          sees is the product's own output. Hidden on narrow screens where the
+          form should own the viewport. */}
+      <aside className="xdr-auth-art">
+        <Image src="/showcase/login-panel.jpg" alt="" fill priority sizes="50vw" style={{ objectFit: "cover" }} />
+        <div className="xdr-auth-art-scrim" />
+        <div className="xdr-auth-art-copy">
+          <div className="xdr-auth-quote">
+            ทุกภาพในเว็บนี้<br />
+            <span className="xdr-italic-th" style={{ fontStyle: "italic", fontWeight: 200, background: "linear-gradient(120deg, hsl(230,85%,75%), hsl(300,85%,80%))", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+              สร้างที่นี่ทั้งหมด
+            </span>
+          </div>
+          <div className="xdr-auth-stats">
+            {[
+              { v: "9", l: "ผู้ให้บริการ" },
+              { v: "17+", l: "โมเดล" },
+              { v: "1", l: "ระบบเครดิต" },
+            ].map((s) => (
+              <div key={s.l}>
+                <div className="xdr-auth-stat-v">{s.v}</div>
+                <div className="xdr-auth-stat-l">{s.l}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </aside>
     </div>
   );
 }

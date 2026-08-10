@@ -14,7 +14,9 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useToast } from "@/components/ui/toast-provider";
+import { EmptyState } from "@/components/xdreamer/page-hero";
 
 const HUE = 70;
 
@@ -232,21 +234,25 @@ export default function GalleryPage() {
           ))}
         </div>
       ) : generations.length === 0 ? (
-        <div style={{ textAlign: "center", padding: "80px 20px" }}>
-          <div style={{ width: 110, height: 110, borderRadius: 28, margin: "0 auto 28px", background: `linear-gradient(135deg, hsla(${160 + HUE},60%,20%,0.4), hsla(${280 + HUE},60%,15%,0.4))`, border: "1px solid rgba(255,255,255,0.08)", display: "grid", placeItems: "center", fontSize: 44, color: `hsl(${220 + HUE},70%,75%)` }}>
-            ▧
-          </div>
-          <h3 style={{ fontSize: 24, fontWeight: 300, color: "#fff", marginBottom: 8 }}>
-            {filter === "favorites" ? "ยังไม่มีรายการโปรด" : debouncedSearch ? "ไม่พบผลลัพธ์" : "ยังไม่มีผลงาน"}
-          </h3>
-          <p style={{ fontSize: 13, color: "rgba(203,213,225,0.6)", marginBottom: 24 }}>
-            {filter === "favorites" ? "กดหัวใจในผลงานเพื่อบันทึก" : debouncedSearch ? `ลองค้นหาด้วยคำอื่น` : "เริ่มทอความฝันแรกของคุณ"}
-          </p>
-          <button onClick={() => router.push("/generate")}
-            style={{ padding: "14px 28px", borderRadius: 12, background: `linear-gradient(135deg, hsl(${160 + HUE},70%,50%), hsl(${280 + HUE},70%,55%))`, color: "#fff", border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", boxShadow: `0 12px 30px -10px hsla(${270 + HUE},80%,50%,0.6)` }}>
+        <EmptyState
+          // Only the no-filter default gets the artwork; a fruitless search
+          // should read as "no match", not as a showpiece.
+          image={filter === "all" && !debouncedSearch ? "/showcase/gallery-empty.jpg" : undefined}
+          emblem={filter === "all" && !debouncedSearch}
+          title={filter === "favorites" ? "ยังไม่มีรายการโปรด" : debouncedSearch ? "ไม่พบผลลัพธ์" : "ปราสาทของคุณยังว่างอยู่"}
+          sub={
+            filter === "favorites"
+              ? "กดหัวใจในผลงานเพื่อบันทึกไว้ที่นี่"
+              : debouncedSearch
+                ? "ลองค้นหาด้วยคำอื่น หรือล้างคำค้นเพื่อดูผลงานทั้งหมด"
+                : "ทุกภาพและวิดีโอที่คุณสร้างจะมาเรียงอยู่ที่นี่ — เริ่มทอความฝันแรกของคุณได้เลย"
+          }
+        >
+          <button onClick={() => router.push("/generate")} className="xdr-cta-primary" style={{ border: "none", cursor: "pointer", fontFamily: "inherit" }}>
             ✦ เริ่มสร้างเลย
           </button>
-        </div>
+          <Link href="/pricing" className="xdr-cta-ghost">ดูแพ็กเกจเครดิต</Link>
+        </EmptyState>
       ) : (
         <>
           {view === "grid" ? (

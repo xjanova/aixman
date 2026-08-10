@@ -7,6 +7,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
+import { PageHero } from "@/components/xdreamer/page-hero";
+
 export const metadata: Metadata = {
   title: "ติดต่อเรา · X-DREAMER",
   description: "ช่องทางการติดต่อและการสนับสนุนของ X-DREAMER",
@@ -33,14 +35,18 @@ const CHANNELS = [
 
 export default function ContactPage() {
   return (
-    <div style={{ maxWidth: 760, margin: "0 auto", padding: "30px 24px 80px", color: "#e2e8f0" }}>
-      <div style={{ fontSize: 12, letterSpacing: "0.16em", color: "#a5f3fc", textTransform: "uppercase", marginBottom: 12 }}>· ติดต่อเรา</div>
-      <h1 style={{ fontSize: "clamp(34px,5vw,52px)", fontWeight: 300, color: "#fff", letterSpacing: "-0.02em", margin: 0 }}>เราพร้อมช่วยเหลือ</h1>
-      <p style={{ marginTop: 18, fontSize: 16, lineHeight: 1.6, color: "rgba(203,213,225,0.8)", fontWeight: 300 }}>
-        บัญชีผู้ใช้และการชำระเงินของ X-DREAMER ใช้ร่วมกับ XMAN Studio — เลือกช่องทางที่เหมาะกับเรื่องของคุณด้านล่าง
-      </p>
+    <>
+      <PageHero
+        image="/showcase/contact-art.jpg"
+        eyebrow="· ติดต่อเรา"
+        title="เราพร้อม"
+        emphasis="ช่วยเหลือ"
+        hue={190}
+        sub="บัญชีผู้ใช้และการชำระเงินของ X-DREAMER ใช้ร่วมกับ XMAN Studio — เลือกช่องทางที่เหมาะกับเรื่องของคุณด้านล่าง"
+      />
 
-      <div style={{ marginTop: 32, display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ maxWidth: 760, margin: "0 auto", padding: "0 24px 80px", color: "#e2e8f0" }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         {CHANNELS.map((c, i) => (
           <div key={i} style={{ padding: 24, borderRadius: 16, background: "rgba(15,23,42,0.5)", border: "1px solid rgba(255,255,255,0.06)", backdropFilter: "blur(18px)", display: "flex", flexWrap: "wrap", gap: 16, alignItems: "center", justifyContent: "space-between" }}>
             <div style={{ minWidth: 0, flex: 1 }}>
@@ -59,6 +65,7 @@ export default function ContactPage() {
         อยากเริ่มสร้างเลย? ไปที่ <Link href="/generate" style={{ color: "#a5f3fc", textDecoration: "none" }}>สตูดิโอ</Link> ·
         {" "}ดู <Link href="/pricing" style={{ color: "#a5f3fc", textDecoration: "none" }}>แพ็กเกจเครดิต</Link>
       </p>
-    </div>
+      </div>
+    </>
   );
 }
