@@ -17,6 +17,7 @@ import {
   Ban,
   CircleDollarSign,
   Cpu,
+  ExternalLink,
   Gauge,
   KeyRound,
   Percent,
@@ -115,6 +116,17 @@ interface Analytics {
   recentJobs: JobRow[];
   queue: { queued: number; running: number };
 }
+
+/**
+ * Where the marketplace API key lives.
+ *
+ * `simplepod.ai/account` is the only path confirmed by a real server redirect
+ * (to `dash.simplepod.ai/account`) — the dashboard is a single-page app, so
+ * every other path also answers 200 and proves nothing about existing.
+ */
+const SIMPLEPOD_KEY_URL = 'https://dash.simplepod.ai/account';
+/** Balance top-up. Renting stops dead when this runs out. */
+const SIMPLEPOD_BILLING_URL = 'https://dash.simplepod.ai/';
 
 const thb = (n: number) =>
   new Intl.NumberFormat("th-TH", { style: "currency", currency: "THB", maximumFractionDigits: 0 }).format(n);
@@ -277,7 +289,9 @@ function UtilisationGauge({ pct }: { pct: number | null }) {
 function KpiCard({
   label, value, sub, icon, tone = "default",
 }: {
-  label: string; value: string; sub?: string; icon: React.ReactNode;
+  // ReactNode rather than string so a card can carry an action — the balance
+  // card needs a top-up link exactly when the number is bad.
+  label: string; value: string; sub?: React.ReactNode; icon: React.ReactNode;
   tone?: "default" | "good" | "warn" | "bad";
 }) {
   const colour =
@@ -473,9 +487,20 @@ export default function GpuAdminPage() {
             <KeyRound className="w-5 h-5 text-warning" />
             <h2 className="font-bold">เชื่อมต่อ SimplePod</h2>
           </div>
-          <p className="text-sm text-muted mb-3">
-            กรอก API key จาก Account Settings → Subaccounts ของ SimplePod แล้วระบบจะตั้งค่าที่เหลือให้เองทั้งหมด
-            (สร้าง provider, เปิดโมเดล MiniMax H3, ตั้งเพดานงบ) — ไม่ต้อง build Docker image เอง
+          <p className="text-sm text-muted mb-2">
+            กรอก API key ครั้งเดียว ระบบจะตั้งค่าที่เหลือให้เองทั้งหมด — สร้าง provider, เพิ่มโมเดลทั้งหมด,
+            ตั้งเพดานงบ ไม่ต้อง build Docker image และไม่ต้องตั้ง cron เอง
+          </p>
+          <p className="text-sm mb-3 flex items-center gap-2 flex-wrap">
+            <a
+              href={SIMPLEPOD_KEY_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary-light underline underline-offset-2 hover:opacity-80 inline-flex items-center gap-1"
+            >
+              เปิดหน้าเอา API key ของ SimplePod <ExternalLink className="w-3.5 h-3.5" />
+            </a>
+            <span className="text-muted text-xs">(อยู่ในแท็บ Subaccounts — คัดลอกทั้งบรรทัด)</span>
           </p>
           <div className="flex gap-2 flex-wrap">
             <input
@@ -503,9 +528,23 @@ export default function GpuAdminPage() {
           label="ยอดเงิน SimplePod"
           value={data?.balance ? usd(data.balance.balanceUsd) : "–"}
           sub={
-            data?.balance?.hoursAtCurrentBurn != null
-              ? `พอใช้อีก ~${data.balance.hoursAtCurrentBurn} ชม. ที่อัตราปัจจุบัน`
-              : data?.balanceError ?? undefined
+            <span className="flex items-center gap-2 flex-wrap">
+              <span>
+                {data?.balance?.hoursAtCurrentBurn != null
+                  ? `พอใช้อีก ~${data.balance.hoursAtCurrentBurn} ชม. ที่อัตราปัจจุบัน`
+                  : data?.balanceError ?? ""}
+              </span>
+              {/* Surfaced here because an empty balance is the one failure that
+                  cannot be fixed from inside this app. */}
+              <a
+                href={SIMPLEPOD_BILLING_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary-light underline underline-offset-2 hover:opacity-80 inline-flex items-center gap-1"
+              >
+                เติมเงิน <ExternalLink className="w-3 h-3" />
+              </a>
+            </span>
           }
           icon={<Wallet className="w-4 h-4" />}
           tone={data?.balance && data.balance.balanceUsd < 1 ? "bad" : "default"}
