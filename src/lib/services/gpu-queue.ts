@@ -6,6 +6,7 @@ import { getGpuConfig, getWorkerProfile, type GpuBudgetConfig } from '@/lib/gpu/
 import { WorkerClient, type WorkerJobParams } from '@/lib/gpu/worker-client';
 import { GpuWorkerManager } from './gpu-worker';
 import { GenerationService } from './generation';
+import { ModelReadiness } from './model-readiness';
 import { uploadBuffer, isStorageConfigured } from '@/lib/storage/r2';
 
 /**
@@ -242,7 +243,12 @@ export class GpuQueue {
     if (!worker.endpoint) throw new Error('Worker has no reachable endpoint');
 
     const profile = await getWorkerProfile(job.modelKey);
-    const client = new WorkerClient(worker.endpoint, profile, GpuWorkerManager.readAuthToken(worker));
+    const client = new WorkerClient(
+      worker.endpoint,
+      profile,
+      GpuWorkerManager.readAuthToken(worker),
+      job.modelKey
+    );
     const { externalJobId } = await client.submit(job.payload as unknown as WorkerJobParams);
 
     await prisma.$transaction([
@@ -293,7 +299,8 @@ export class GpuQueue {
         const client = new WorkerClient(
           worker.endpoint || '',
           profile,
-          GpuWorkerManager.readAuthToken(worker)
+          GpuWorkerManager.readAuthToken(worker),
+          job.modelKey
         );
         const outcome = await client.poll(job.externalJobId as string);
 
@@ -436,6 +443,9 @@ export class GpuQueue {
     // Fix the retention window at delivery time, same as the synchronous path.
     const { RetentionService } = await import('./retention');
     await RetentionService.stampExpiry(job.generationId, now);
+
+    // First success is what promotes a self-hosted model out of 'tuning'.
+    if (generation?.modelId) await ModelReadiness.recordSuccess(generation.modelId);
   }
 
   /**
@@ -497,6 +507,10 @@ export class GpuQueue {
     if (generation && generation.creditsUsed > 0) {
       await GenerationService.refundCredits(generation.userId, generation.creditsUsed, generation.id);
     }
+
+    // A model failing repeatedly stops taking orders rather than quietly
+    // burning credits — one failure is not enough, a spot host can vanish.
+    if (generation?.modelId) await ModelReadiness.recordFailure(generation.modelId, message);
   }
 
   /** Terminal-fail every queued job for a model whose configuration cannot work. */

@@ -482,6 +482,10 @@ export class GpuWorkerManager {
             extraScript: profile.startScript,
             hfToken: process.env.GPU_HF_TOKEN,
             env,
+            // Each model brings its own weights and node packs, so the machine
+            // is provisioned for exactly the job it was rented for.
+            downloads: profile.downloads,
+            customNodes: profile.customNodes,
           })
         : ['#!/usr/bin/env bash', 'set -uo pipefail', renderEnvExports(env), profile.startScript ?? '']
             .filter(Boolean)

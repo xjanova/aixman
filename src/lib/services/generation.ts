@@ -4,6 +4,7 @@ import { Prisma } from '@/generated/prisma/client';
 import { getProvider } from '@/lib/providers';
 import { getGpuProvider } from '@/lib/gpu';
 import { AccountPoolManager } from './account-pool';
+import { ModelReadiness, TUNING_MESSAGE } from './model-readiness';
 import { persistAssetSafe, isStorageConfigured } from '@/lib/storage/r2';
 import type { GenerationRequest, GenerationResult, ProviderSlug } from '@/types';
 
@@ -15,7 +16,11 @@ export class GenerationService {
   /**
    * Submit a new generation request
    */
-  static async generate(userId: number, request: GenerationRequest): Promise<GenerationResult> {
+  static async generate(
+    userId: number,
+    request: GenerationRequest,
+    options: { isAdmin?: boolean } = {}
+  ): Promise<GenerationResult> {
     // 1. Get the model and provider info
     const model = await prisma.aiModel.findUnique({
       where: { id: request.modelId },
@@ -28,6 +33,13 @@ export class GenerationService {
 
     if (!model.provider.isActive) {
       throw new Error('Provider is currently unavailable');
+    }
+
+    // Checked before any credit is deducted: an unproven model must not be able
+    // to take payment for a render it cannot deliver. Admins are exempt because
+    // running it is exactly how a model gets proven and promoted.
+    if (!ModelReadiness.canOrder(model.readiness, options.isAdmin === true)) {
+      throw new Error(TUNING_MESSAGE);
     }
 
     const numOutputs = request.params?.numOutputs || 1;
@@ -232,6 +244,8 @@ export class GenerationService {
         // already promised.
         const { RetentionService, daysUntil } = await import('./retention');
         await RetentionService.stampExpiry(generation.id);
+        // A model that just delivered is proven, whatever we believed before.
+        await ModelReadiness.recordSuccess(model.id);
         const stamped = await prisma.aiGeneration.findUnique({
           where: { id: generation.id },
           select: { expiresAt: true },

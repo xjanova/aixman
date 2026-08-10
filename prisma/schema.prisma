@@ -179,6 +179,16 @@ model AiModel {
   thumbnail       String?  @db.VarChar(500)
   isActive        Boolean  @default(true) @map("is_active")
   isFeatured      Boolean  @default(false) @map("is_featured")
+  // tuning | ready | disabled.
+  // A self-hosted model is unproven until it has actually rendered something on
+  // this deployment — the weights, the workflow and the GPU all have to line up.
+  // 'tuning' models are visible but not orderable by customers (they see
+  // "กำลังปรับแต่ง") while an admin can still run them to prove them out.
+  // First success promotes to 'ready'; repeated failures demote back.
+  readiness       String   @default("ready") @map("readiness") @db.VarChar(20)
+  readinessNote   String?  @map("readiness_note") @db.Text
+  // Consecutive failures since the last success, used for auto-demotion.
+  failureStreak   Int      @default(0) @map("failure_streak")
   costPerUnit     Decimal  @map("cost_per_unit") @db.Decimal(10, 6)
   creditsPerUnit  Int      @map("credits_per_unit")
   unitType        String   @default("per_image") @map("unit_type") @db.VarChar(50)

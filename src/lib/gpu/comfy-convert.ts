@@ -446,6 +446,21 @@ export interface ParameterBinding {
   value: unknown;
   /** Bind only the Nth node of `nodeType`. Ignored when `nodeId` is set. */
   index?: number;
+  /**
+   * When true, this binding failing to land is not an error.
+   *
+   * Everything else is treated as load-bearing: a binding that silently misses
+   * leaves the template's *demo* value in place, so a wrong input name would
+   * render the sample prompt and charge the customer for it. Better to fail the
+   * job loudly and refund.
+   */
+  optional?: boolean;
+}
+
+export interface BindResult {
+  graph: ComfyGraph;
+  /** Required bindings that found no matching node/input. */
+  unmatched: ParameterBinding[];
 }
 
 /**
@@ -460,44 +475,55 @@ export interface ParameterBinding {
  * Returns a new graph; the input is left untouched so a cached conversion can
  * be reused across jobs.
  */
-export function bindParameters(graph: ComfyGraph, bindings: ParameterBinding[]): ComfyGraph {
+export function bindParameters(graph: ComfyGraph, bindings: ParameterBinding[]): BindResult {
   const out: ComfyGraph = {};
   for (const [id, node] of Object.entries(graph)) {
     out[id] = { class_type: node.class_type, inputs: { ...node.inputs } };
   }
 
   const orderedIds = Object.keys(out);
+  const unmatched: ParameterBinding[] = [];
 
-  /** Write to the first candidate name the node actually declares. */
-  const assign = (node: ComfyGraph[string], input: string | string[], value: unknown): void => {
+  /** Write to the first candidate name the node declares. Reports whether it landed. */
+  const assign = (node: ComfyGraph[string], input: string | string[], value: unknown): boolean => {
     for (const name of Array.isArray(input) ? input : [input]) {
       // Only bind inputs the node declares, so a stale binding after a template
       // change is inert rather than injecting a bogus input ComfyUI rejects.
       if (name in node.inputs) {
         node.inputs[name] = value;
-        return;
+        return true;
       }
     }
+    return false;
   };
 
   for (const binding of bindings) {
     if (binding.value === undefined) continue;
+    let landed = false;
 
     if (binding.nodeId) {
       const node = out[binding.nodeId];
-      if (node) assign(node, binding.input, binding.value);
-      continue;
+      if (node) landed = assign(node, binding.input, binding.value);
+    } else {
+      let matchIndex = 0;
+      for (const id of orderedIds) {
+        const node = out[id];
+        if (node.class_type !== binding.nodeType) continue;
+        const thisIndex = matchIndex++;
+        if (binding.index !== undefined && binding.index !== thisIndex) continue;
+        if (assign(node, binding.input, binding.value)) landed = true;
+      }
     }
 
-    let matchIndex = 0;
-    for (const id of orderedIds) {
-      const node = out[id];
-      if (node.class_type !== binding.nodeType) continue;
-      const thisIndex = matchIndex++;
-      if (binding.index !== undefined && binding.index !== thisIndex) continue;
-      assign(node, binding.input, binding.value);
-    }
+    if (!landed && !binding.optional) unmatched.push(binding);
   }
 
-  return out;
+  return { graph: out, unmatched };
+}
+
+/** Human-readable summary of bindings that failed to land, for error messages. */
+export function describeUnmatched(unmatched: ParameterBinding[]): string {
+  return unmatched
+    .map((b) => `${b.nodeId ?? b.nodeType}.${Array.isArray(b.input) ? b.input.join('|') : b.input}`)
+    .join(', ');
 }

@@ -207,10 +207,16 @@ export default function GeneratePage() {
   const filteredModels = models.filter((m) => m.category === tab);
 
   useEffect(() => {
-    if (filteredModels.length > 0 && (!selectedModelId || !filteredModels.find((m) => m.id === selectedModelId))) {
-      const featured = filteredModels.find((m) => m.isFeatured);
+    const current = filteredModels.find((m) => m.id === selectedModelId);
+    // Re-pick when nothing is selected, when the selection left this tab, or
+    // when the selected model has since been pulled back for tuning — landing
+    // on a model that cannot be ordered would look like a broken button.
+    if (filteredModels.length > 0 && (!current || current.canOrder === false)) {
+      const orderable = filteredModels.filter((m) => m.canOrder !== false);
+      const pool = orderable.length > 0 ? orderable : filteredModels;
+      const featured = pool.find((m) => m.isFeatured);
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setSelectedModelId(featured?.id ?? filteredModels[0].id);
+      setSelectedModelId(featured?.id ?? pool[0].id);
     }
   }, [tab, modelsLoaded, filteredModels, selectedModelId]);
 
@@ -481,19 +487,35 @@ export default function GeneratePage() {
               <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, maxHeight: 280, overflowY: "auto", background: "rgba(15,23,42,0.95)", backdropFilter: "blur(20px)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, zIndex: 30, boxShadow: "0 20px 40px -10px rgba(0,0,0,0.5)" }}>
                 {filteredModels.length === 0 ? (
                   <div style={{ padding: 16, textAlign: "center", fontSize: 13, color: "#94a3b8" }}>ไม่มีโมเดลสำหรับหมวดนี้</div>
-                ) : filteredModels.map(m => (
-                  <button key={m.id} onClick={() => { setSelectedModelId(m.id); setShowModelDropdown(false); }}
-                    style={{ width: "100%", padding: "10px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", border: "none", cursor: "pointer", textAlign: "left", background: selectedModelId === m.id ? `hsla(${220 + HUE},60%,50%,0.15)` : "transparent", color: "#e2e8f0", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                ) : filteredModels.map(m => {
+                  // A model still being proven out stays visible so customers
+                  // can see what is coming, but picking it is blocked — the
+                  // alternative is letting them spend credits on a render that
+                  // cannot be delivered yet.
+                  const tuning = m.canOrder === false;
+                  return (
+                  <button key={m.id} disabled={tuning}
+                    title={tuning ? (m.tuningMessage ?? undefined) : undefined}
+                    onClick={() => { if (tuning) return; setSelectedModelId(m.id); setShowModelDropdown(false); }}
+                    style={{ width: "100%", padding: "10px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", border: "none", cursor: tuning ? "not-allowed" : "pointer", textAlign: "left", background: selectedModelId === m.id ? `hsla(${220 + HUE},60%,50%,0.15)` : "transparent", color: "#e2e8f0", borderBottom: "1px solid rgba(255,255,255,0.04)", opacity: tuning ? 0.55 : 1 }}>
                     <div style={{ minWidth: 0, flex: 1 }}>
                       <div style={{ fontSize: 13, fontWeight: 500, display: "flex", alignItems: "center", gap: 6 }}>
                         {m.name}
                         {m.isFeatured && <span style={{ fontSize: 10, color: "#fbbf24" }}>✦</span>}
+                        {tuning && (
+                          <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 999, background: "hsla(38,90%,55%,0.18)", color: "#fbbf24", fontWeight: 600 }}>
+                            กำลังปรับแต่ง
+                          </span>
+                        )}
                       </div>
-                      <div style={{ fontSize: 11, color: "#94a3b8" }}>{m.provider.name}{m.subcategory ? ` · ${m.subcategory}` : ""}</div>
+                      <div style={{ fontSize: 11, color: "#94a3b8" }}>
+                        {tuning ? "ยังใช้งานไม่ได้ ลองใหม่ภายหลัง" : `${m.provider.name}${m.subcategory ? ` · ${m.subcategory}` : ""}`}
+                      </div>
                     </div>
                     <span style={{ padding: "2px 6px", borderRadius: 6, background: "hsla(48,90%,60%,0.15)", color: "#fbbf24", fontSize: 10, fontWeight: 600 }}>✦ {m.creditsPerUnit}</span>
                   </button>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -673,8 +695,22 @@ export default function GeneratePage() {
           </>
         )}
 
+        {/* Every model in this tab may still be unproven, in which case
+            auto-select lands on one anyway. Say why the button is dead rather
+            than letting it look broken. */}
+        {selectedModel?.canOrder === false && (
+          <div style={{
+            marginTop: 12, padding: "10px 12px", borderRadius: 10, fontSize: 12,
+            background: "hsla(38,90%,55%,0.12)", color: "#fbbf24",
+            border: "1px solid hsla(38,90%,55%,0.25)",
+          }}>
+            {selectedModel.tuningMessage ?? "โมเดลนี้กำลังปรับแต่งอยู่ ยังใช้งานไม่ได้ กรุณาลองใหม่ภายหลัง"}
+          </div>
+        )}
+
         {/* Generate Button */}
-        <button onClick={handleGenerate} disabled={isGenerating || !prompt.trim() || !selectedModelId}
+        <button onClick={handleGenerate}
+          disabled={isGenerating || !prompt.trim() || !selectedModelId || selectedModel?.canOrder === false}
           style={{
             marginTop: "auto", padding: 16, borderRadius: 12,
             background: `linear-gradient(135deg, hsl(${160 + HUE},70%,45%), hsl(${280 + HUE},70%,55%))`,

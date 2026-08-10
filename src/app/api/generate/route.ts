@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUserId } from '@/lib/auth';
+import { getCurrentUserId, isAdmin } from '@/lib/auth';
 import { GenerationService } from '@/lib/services/generation';
 import type { GenerationRequest } from '@/types';
 
@@ -47,7 +47,11 @@ export async function POST(request: NextRequest) {
       genRequest.params.numOutputs = MAX_NUM_OUTPUTS;
     }
 
-    const result = await GenerationService.generate(userId, genRequest);
+    // Admins may run models still in 'tuning' — that is how a self-hosted model
+    // gets proven and promoted out of it.
+    const result = await GenerationService.generate(userId, genRequest, {
+      isAdmin: await isAdmin(),
+    });
 
     return NextResponse.json(result);
   } catch (error) {
@@ -62,6 +66,11 @@ export async function POST(request: NextRequest) {
     }
     if (message.includes('unavailable') || message.includes('No available API accounts')) {
       return NextResponse.json({ error: 'Service temporarily unavailable. Please try again later.' }, { status: 503 });
+    }
+    // Already user-facing Thai copy from ModelReadiness — pass it through rather
+    // than flattening it into a generic failure.
+    if (message.includes('กำลังปรับแต่ง')) {
+      return NextResponse.json({ error: message }, { status: 409 });
     }
 
     console.error('Generation error:', error);

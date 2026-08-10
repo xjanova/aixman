@@ -1,6 +1,14 @@
 import { randomUUID } from 'crypto';
 import type { WorkerProfile } from './config';
 import { buildMiniMaxH3Workflow, frameLengthFor } from './workflows/minimax-h3';
+import { getCatalogEntry, type CatalogJobParams } from './catalog';
+import {
+  bindParameters,
+  convertUiWorkflowToApi,
+  describeUnmatched,
+  injectNodes,
+  pruneByClass,
+} from './comfy-convert';
 import {
   cacheSchema,
   clearSchema,
@@ -59,7 +67,13 @@ export class WorkerClient {
      * without a gate in the image anyone who finds the URL can run workflows
      * on the GPU we are paying for.
      */
-    private readonly authToken?: string
+    private readonly authToken?: string,
+    /**
+     * Which catalogue entry this worker serves. Without it the client cannot
+     * tell which official template to convert, and falls back to the built-in
+     * MiniMax H3 graph.
+     */
+    private readonly modelKey?: string
   ) {}
 
   private url(path: string): string {
@@ -146,39 +160,91 @@ export class WorkerClient {
   // ComfyUI
   // ----------------------------------------------------------------
 
+  /**
+   * Produce the graph to submit, in order of preference:
+   *
+   *  1. An API-format graph an admin pasted into the profile — an explicit
+   *     override always wins.
+   *  2. The model's catalogue entry: its vendored official template, converted
+   *     to API format against this worker's live schema, then bound to the
+   *     job's parameters. This is the normal path.
+   *  3. The hand-transcribed MiniMax H3 graph, kept as a fallback for a worker
+   *     whose model key predates the catalogue.
+   */
+  private async buildGraph(
+    params: WorkerJobParams,
+    objectInfo: ComfyObjectInfo
+  ): Promise<unknown> {
+    if (this.profile.workflow) {
+      return applyWorkflowVars(this.profile.workflow, {
+        prompt: params.prompt,
+        negative_prompt: params.negativePrompt ?? '',
+        width: params.width,
+        height: params.height,
+        duration: params.duration,
+        fps: params.fps,
+        seed: params.seed,
+        length: frameLengthFor(params.duration, params.fps),
+        input_image: params.inputImage ?? '',
+        ...(params.extra || {}),
+      });
+    }
+
+    const entry = this.modelKey ? getCatalogEntry(this.modelKey) : undefined;
+    if (entry) {
+      const jobParams: CatalogJobParams = {
+        prompt: params.prompt,
+        negativePrompt: params.negativePrompt,
+        width: params.width,
+        height: params.height,
+        durationSeconds: params.duration,
+        fps: params.fps,
+        seed: params.seed,
+        steps: typeof params.extra?.steps === 'number' ? params.extra.steps : undefined,
+        imageFilename: params.inputImage,
+        audioFilename: typeof params.extra?.audioFilename === 'string' ? params.extra.audioFilename : undefined,
+      };
+
+      let graph = convertUiWorkflowToApi(entry.template, objectInfo);
+      if (entry.inject) graph = injectNodes(graph, entry.inject(jobParams));
+      // Bind before pruning: pruning cascades through dependants, so redirecting
+      // a path first is what stops the cascade from eating it.
+      const bound = bindParameters(graph, entry.bind(jobParams));
+
+      // A binding that misses leaves the *template's demo value* in place — the
+      // customer would be charged for a render of the sample prompt. Fail loudly
+      // instead; the job refunds and the model drops back to 'tuning'.
+      if (bound.unmatched.length > 0) {
+        throw new Error(
+          `Workflow for "${entry.key}" does not accept: ${describeUnmatched(bound.unmatched)}. ` +
+            'The template or the node signatures have changed — the catalogue binding needs updating. ' +
+            'Refusing to render with the template default values.'
+        );
+      }
+
+      graph = bound.graph;
+      if (entry.prune?.length) graph = pruneByClass(graph, entry.prune);
+      return graph;
+    }
+
+    return buildMiniMaxH3Workflow({
+      prompt: params.prompt,
+      width: params.width,
+      height: params.height,
+      duration: params.duration,
+      fps: params.fps,
+      seed: params.seed,
+      steps: typeof params.extra?.steps === 'number' ? params.extra.steps : undefined,
+    });
+  }
+
   private async submitComfy(params: WorkerJobParams): Promise<SubmitResult> {
-    // A custom graph pasted by an admin wins; otherwise the built-in one,
-    // transcribed from the official Comfy-Org template, is used so the system
-    // works with no workflow configuration at all.
-    const rawGraph = this.profile.workflow
-      ? applyWorkflowVars(this.profile.workflow, {
-          prompt: params.prompt,
-          negative_prompt: params.negativePrompt ?? '',
-          width: params.width,
-          height: params.height,
-          duration: params.duration,
-          fps: params.fps,
-          seed: params.seed,
-          length: frameLengthFor(params.duration, params.fps),
-          input_image: params.inputImage ?? '',
-          ...(params.extra || {}),
-        })
-      : buildMiniMaxH3Workflow({
-          prompt: params.prompt,
-          width: params.width,
-          height: params.height,
-          duration: params.duration,
-          fps: params.fps,
-          seed: params.seed,
-          steps: typeof params.extra?.steps === 'number' ? params.extra.steps : undefined,
-        });
+    const objectInfo = await this.objectInfo();
+    const rawGraph = await this.buildGraph(params, objectInfo);
 
     // Check the graph against what this worker actually provides before
     // spending render time on it. Also catches half-downloaded weights.
-    const { graph, warnings } = validateGraph(
-      rawGraph as ComfyGraph,
-      await this.objectInfo()
-    );
+    const { graph, warnings } = validateGraph(rawGraph as ComfyGraph, objectInfo);
     for (const warning of warnings) {
       console.warn(`[gpu] workflow adjusted — ${warning}`);
     }

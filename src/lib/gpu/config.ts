@@ -1,5 +1,6 @@
 import prisma from '@/lib/db';
 import { DEFAULT_BASE_IMAGE, DEFAULT_BASE_TAG, DEFAULT_MIN_CUDA } from './provision';
+import { getCatalogEntry, type CatalogEntry } from './catalog';
 
 /**
  * GPU rental configuration, backed by `ai_settings` (group: `gpu`).
@@ -56,6 +57,10 @@ export interface WorkerProfile {
   minDownloadMbps?: number;
   /** Minimum host CUDA version, so the image's runtime actually loads. */
   minCudaVersion?: string;
+  /** Weight files to fetch, from the catalogue entry for this model. */
+  downloads?: { repo: string; file: string; dest: string; as?: string }[];
+  /** Community node packs the model's template needs. */
+  customNodes?: { repo: string; ref?: string }[];
   /** Extra bash appended to the generated start script. */
   startScript?: string;
   env?: Record<string, string>;
@@ -161,10 +166,47 @@ export async function getGpuConfig(): Promise<GpuBudgetConfig> {
 }
 
 /**
- * Worker profiles, stored as one JSON blob under `gpu_worker_profiles`:
- *   { "minimax-h3": { image: "...", tag: "...", ... } }
- * Unknown keys fall back to the MiniMax H3 defaults so a partial override
- * (e.g. just `image`) is valid.
+ * Build a worker profile from a catalogue entry.
+ *
+ * The catalogue is the source of truth for what a model needs — VRAM, disk,
+ * which weight files, which community nodes — so the hardware we rent follows
+ * the model automatically. A cheap audio model gets a cheap card; a 40 GB video
+ * model gets a big one.
+ */
+function profileFromCatalog(entry: CatalogEntry): WorkerProfile {
+  return {
+    image: DEFAULT_BASE_IMAGE,
+    tag: DEFAULT_BASE_TAG,
+    // The token-gated proxy. ComfyUI itself stays on loopback inside the
+    // container — never expose 8188, it has no authentication.
+    apiPort: 8189,
+    apiKind: 'comfyui',
+    healthPath: '/system_stats',
+    diskGb: entry.hardware.diskGb,
+    minVramMb: entry.hardware.minVramMb,
+    gpuModels: entry.hardware.gpuModels,
+    gpuCount: 1,
+    // Weights are tens of gigabytes; below this the cold start alone outlives
+    // the warmup timeout and the rental is wasted before it renders anything.
+    minDownloadMbps: 500,
+    minCudaVersion: entry.hardware.minCudaVersion ?? DEFAULT_MIN_CUDA,
+    downloads: entry.downloads.map((d) => ({
+      repo: d.repo,
+      file: d.file,
+      dest: d.dest,
+      as: d.as,
+    })),
+    customNodes: entry.customNodes,
+  };
+}
+
+/**
+ * Worker profile for a model.
+ *
+ * Derived from the catalogue, then overlaid with any operator overrides stored
+ * as one JSON blob under `gpu_worker_profiles`:
+ *   { "minimax-h3": { image: "...", diskGb: 200, ... } }
+ * A partial override is valid — only the named keys are replaced.
  */
 export async function getWorkerProfile(modelKey: string): Promise<WorkerProfile> {
   const row = await prisma.aiSetting.findUnique({ where: { key: 'gpu_worker_profiles' } });
@@ -181,8 +223,9 @@ export async function getWorkerProfile(modelKey: string): Promise<WorkerProfile>
     }
   }
 
-  const override = stored[modelKey] || {};
-  return { ...MINIMAX_H3_PROFILE, ...override };
+  const entry = getCatalogEntry(modelKey);
+  const base = entry ? profileFromCatalog(entry) : MINIMAX_H3_PROFILE;
+  return { ...base, ...(stored[modelKey] || {}) };
 }
 
 /**

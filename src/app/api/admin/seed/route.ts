@@ -169,6 +169,11 @@ export async function POST() {
       // VRAM), which this marketplace does not carry; 768P quantised fits a
       // single 24 GB card. 1344×768 matches the official ComfyUI template.
       { providerSlug: 'simplepod', modelId: 'minimax-h3', name: 'MiniMax H3 (Hailuo 3.0)', category: 'video', subcategory: 'self-hosted', costPerUnit: 0.05, creditsPerUnit: 12, maxDuration: 15, maxWidth: 1344, maxHeight: 768, isActive: false, description: 'รันบน GPU ที่เช่ามาเอง มีเสียงในตัว • คลิปแรกรอนานเพราะต้องบูตเครื่องและโหลดโมเดล (~20-40 นาที) • คลิปถัดไปเร็วขึ้นมาก' },
+      // ACE-Step is the cheapest thing in the catalogue to run — ~10 GB of
+      // weights on a 12 GB card — which makes it the sensible model to prove
+      // the whole rented-GPU pipeline with before spending on the big ones.
+      { providerSlug: 'simplepod', modelId: 'ace-step-1.5', name: 'ACE-Step 1.5 (เพลง/เสียง)', category: 'audio', subcategory: 'self-hosted', costPerUnit: 0.01, creditsPerUnit: 4, maxDuration: 240, isActive: false, description: 'สร้างเพลงและเสียงจากคำอธิบาย • เบาและถูกที่สุดในระบบ บูตเครื่องเร็วกว่าตัวอื่นมาก' },
+      { providerSlug: 'simplepod', modelId: 'qwen-image', name: 'Qwen-Image', category: 'image', subcategory: 'self-hosted', costPerUnit: 0.02, creditsPerUnit: 3, maxWidth: 1328, maxHeight: 1328, isActive: false, description: 'สร้างภาพนิ่งคุณภาพสูง เก่งเรื่องตัวอักษรทั้งไทยและอังกฤษ • ใช้ LoRA 8 สเต็ป' },
     ];
 
     for (const m of models) {
@@ -193,6 +198,12 @@ export async function POST() {
           // seed disabled so nobody spends credits on a queue that can't drain.
           isActive: m.isActive ?? true,
           isFeatured: m.isFeatured || false,
+          // Self-hosted models are unproven until they render something here, so
+          // they start in 'tuning': listed and clearly marked, but not
+          // orderable. First success promotes them automatically.
+          readiness: m.providerSlug === 'simplepod' ? 'tuning' : 'ready',
+          readinessNote:
+            m.providerSlug === 'simplepod' ? 'ยังไม่เคยสร้างงานสำเร็จบนระบบนี้ — รอทดสอบ' : null,
         },
         update: {
           name: m.name,

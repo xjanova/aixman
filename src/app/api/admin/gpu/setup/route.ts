@@ -18,7 +18,6 @@ import { GPU_DEFAULTS } from '@/lib/gpu/config';
 export const dynamic = 'force-dynamic';
 
 const PROVIDER_SLUG = 'simplepod';
-const MODEL_KEY = 'minimax-h3';
 
 /** Budget caps written on first setup. Existing values are never overwritten. */
 const DEFAULT_SETTINGS: Array<{ key: string; value: string; type: string }> = [
@@ -131,20 +130,20 @@ export async function POST(request: NextRequest) {
       create: { key: 'gpu_enabled', value: enable ? 'true' : 'false', type: 'boolean', group: 'gpu' },
     });
 
-    // Activate the model only alongside enabling — an active model with rental
-    // switched off would queue jobs that can never drain.
-    const model = await prisma.aiModel.findFirst({
-      where: { providerId: providerRow.id, modelId: MODEL_KEY },
+    // Activate the models only alongside enabling — an active model with rental
+    // switched off would queue jobs that can never drain. Every catalogue model
+    // for this provider is switched together; each still has to prove itself
+    // before customers can order it (see ModelReadiness).
+    const activated = await prisma.aiModel.updateMany({
+      where: { providerId: providerRow.id },
+      data: { isActive: enable },
     });
-    if (model) {
-      await prisma.aiModel.update({ where: { id: model.id }, data: { isActive: enable } });
-    }
 
     return NextResponse.json({
       success: true,
       enabled: enable,
       balanceUsd,
-      modelActivated: Boolean(model) && enable,
+      modelsActivated: enable ? activated.count : 0,
       // Surfaced so the admin immediately sees whether renting is even viable.
       warning:
         balanceUsd < GPU_DEFAULTS.maxPricePerHourUsd

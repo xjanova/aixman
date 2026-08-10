@@ -123,8 +123,9 @@ const MINIMAX_H3: CatalogEntry = {
     // MiniMax H3's latent temporal compression only accepts length % 17 === 5.
     { nodeId: '105_104', input: 'length', value: minimaxFrameLength(p.durationSeconds, p.fps) },
     { nodeId: '105_15', input: 'noise_seed', value: p.seed },
-    { nodeId: '105_91', input: 'fps', value: p.fps },
-    { nodeId: '92', input: 'filename_prefix', value: 'video/aixman' },
+    // Cosmetic: the template's own defaults are fine if these ever move.
+    { nodeId: '105_91', input: 'fps', value: p.fps, optional: true },
+    { nodeId: '92', input: 'filename_prefix', value: 'video/aixman', optional: true },
   ],
   baselineSecondsPerUnit: 48,
 };
@@ -156,13 +157,17 @@ const ACE_STEP: CatalogEntry = {
   ],
   hardware: { minVramMb: 12288, diskGb: 60, gpuModels: [], minCudaVersion: '12.8' },
   bind: (p) => [
-    // Input names differ across ACE-Step revisions; first match wins.
-    { nodeId: '94', input: ['tags', 'text', 'prompt'], value: p.prompt },
-    { nodeId: '94', input: ['lyrics'], value: p.negativePrompt ?? '' },
+    // Input names differ across ACE-Step revisions; first match wins. These are
+    // NOT verified against a live worker yet — if none matches, the job fails
+    // loudly and the model stays in 'tuning' rather than rendering the
+    // template's demo K-pop track and charging for it.
+    { nodeId: '94', input: ['tags', 'text', 'prompt', 'caption'], value: p.prompt },
+    // Lyrics are a bonus; a song still renders from the tags alone.
+    { nodeId: '94', input: ['lyrics'], value: p.negativePrompt ?? '', optional: true },
     { nodeId: '98', input: ['seconds', 'duration', 'length'], value: Math.min(240, Math.max(5, p.durationSeconds)) },
     { nodeId: '3', input: ['seed', 'noise_seed'], value: p.seed },
-    { nodeId: '3', input: 'steps', value: p.steps ?? 8 },
-    { nodeId: '107', input: 'filename_prefix', value: 'audio/aixman' },
+    { nodeId: '3', input: 'steps', value: p.steps ?? 8, optional: true },
+    { nodeId: '107', input: 'filename_prefix', value: 'audio/aixman', optional: true },
   ],
   baselineSecondsPerUnit: 3,
 };
@@ -196,8 +201,8 @@ const QWEN_IMAGE: CatalogEntry = {
     { nodeId: '76_58', input: 'width', value: p.width },
     { nodeId: '76_58', input: 'height', value: p.height },
     { nodeId: '76_3', input: ['seed', 'noise_seed'], value: p.seed },
-    { nodeId: '76_3', input: 'steps', value: p.steps ?? 8 },
-    { nodeId: '60', input: 'filename_prefix', value: 'image/aixman' },
+    { nodeId: '76_3', input: 'steps', value: p.steps ?? 8, optional: true },
+    { nodeId: '60', input: 'filename_prefix', value: 'image/aixman', optional: true },
   ],
   baselineSecondsPerUnit: 12,
 };

@@ -12,6 +12,14 @@ interface AIModel {
   maxDuration: number | null;
   isFeatured: boolean;
   provider: { name: string; slug: string; logo: string | null };
+  /**
+   * False while a self-hosted model is still being proven out on this
+   * deployment. It stays listed so customers can see it is coming, but ordering
+   * is blocked so nobody spends credits on a render it cannot deliver.
+   */
+  canOrder?: boolean;
+  tuningMessage?: string | null;
+  readiness?: string;
 }
 
 interface AIStyle {
