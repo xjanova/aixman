@@ -72,10 +72,22 @@ export async function POST(request: NextRequest) {
     return tooManyAttempts(emailLimit.retryAfter);
   }
 
-  const user = await prisma.user.findUnique({
-    where: { email },
-    select: { id: true, password: true, isActive: true },
-  });
+  let user: { id: number; password: string; isActive: boolean } | null;
+  try {
+    user = await prisma.user.findUnique({
+      where: { email },
+      select: { id: true, password: true, isActive: true },
+    });
+  } catch (error) {
+    // The DB being unreachable must not surface as a Next.js error page. This
+    // is the one endpoint a signed-out client has, so it has to answer in the
+    // JSON shape the app parses even when everything behind it is down.
+    console.error('Mobile login: user lookup failed', error);
+    return NextResponse.json(
+      { error: 'ระบบไม่พร้อมใช้งานชั่วคราว กรุณาลองใหม่อีกครั้ง' },
+      { status: 503 }
+    );
+  }
 
   if (!user) {
     await bcrypt.compare(password, getDecoyHash());
@@ -99,7 +111,16 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const session = await buildMobileSession(user.id);
+  let session;
+  try {
+    session = await buildMobileSession(user.id);
+  } catch (error) {
+    console.error('Mobile login: session build failed', error);
+    return NextResponse.json(
+      { error: 'ระบบไม่พร้อมใช้งานชั่วคราว กรุณาลองใหม่อีกครั้ง' },
+      { status: 503 }
+    );
+  }
   if (!session) {
     return NextResponse.json({ error: INVALID_CREDENTIALS }, { status: 401 });
   }

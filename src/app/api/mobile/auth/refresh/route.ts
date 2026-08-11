@@ -49,7 +49,19 @@ export async function POST(request: NextRequest) {
 
   // Re-read the account. A token minted 29 days ago must not outlive the
   // account being disabled in xmanstudio.
-  const session = await buildMobileSession(userId);
+  let session;
+  try {
+    session = await buildMobileSession(userId);
+  } catch (error) {
+    // Must be a 503, never a 401: the client treats 401 here as a hard sign-out
+    // and wipes its tokens. A database blip is not a reason to make somebody
+    // type their password again.
+    console.error('Mobile refresh: session build failed', error);
+    return NextResponse.json(
+      { error: 'ระบบไม่พร้อมใช้งานชั่วคราว กรุณาลองใหม่อีกครั้ง' },
+      { status: 503 }
+    );
+  }
   if (!session) {
     return NextResponse.json({ error: 'กรุณาเข้าสู่ระบบใหม่' }, { status: 401 });
   }
