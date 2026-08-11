@@ -90,6 +90,29 @@ async function readDigest(url: string, apkName: string, token: string | undefine
 }
 
 /**
+ * Whether the app repo is private, which is the only reason to stream the APK
+ * through this server instead of letting the phone pull it from GitHub's CDN.
+ *
+ * Asked directly rather than inferred from "is GITHUB_TOKEN set" — a token
+ * configured for some unrelated reason would otherwise silently route every
+ * 40MB download through here. Assumes public on failure: a wrong guess that way
+ * costs one failed download, the other way costs the bandwidth of every update.
+ */
+async function isRepoPrivate(): Promise<boolean> {
+  try {
+    const response = await fetch(`${GITHUB_API}/repos/${repoSlug()}`, {
+      headers: githubHeaders(),
+      cache: 'no-store',
+    });
+    if (!response.ok) return false;
+    const data = (await response.json()) as { private?: boolean };
+    return data.private === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The floor below which the app must refuse to run.
  *
  * Kept in `ai_settings` rather than derived from the release so a bad build can
@@ -140,8 +163,10 @@ export async function getLatestAppRelease(): Promise<AppRelease | null> {
         const sums = assets.find((asset) => asset.name.toUpperCase().startsWith('SHA256SUMS'));
         const token = process.env.GITHUB_TOKEN;
         // A private release asset is only readable with a token, so the phone
-        // has to come back through us for the bytes.
-        const proxied = Boolean(token);
+        // has to come back through us for the bytes. A public one should come
+        // straight off GitHub's CDN — that is tens of megabytes per update we
+        // do not serve.
+        const proxied = await isRepoPrivate();
 
         release = {
           latestVersion: normaliseVersion(data.tag_name ?? '0.0.0'),
