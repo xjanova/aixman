@@ -48,6 +48,43 @@ the login screen.
 
 Profile + credit balance in one call for cold start. Accepts either credential.
 
+### `GET /api/mobile/app-version`
+
+What the newest Android build is, so the app can update itself — it is
+sideloaded from GitHub Releases, not published to Play Store.
+
+```jsonc
+{ "update": {
+  "latestVersion": "0.2.0",
+  "minSupportedVersion": "0.1.0",
+  "releaseNotes": "…",           // the GitHub release body
+  "apkUrl": "https://github.com/…/xdreamer-0.2.0.apk",
+  "apkSizeBytes": 24117248,
+  "sha256": "…",                 // from the release's SHA256SUMS.txt, or null
+  "publishedAt": "2026-08-11T…",
+  "proxied": false
+} }
+```
+
+**Unauthenticated on purpose.** A build old enough to be blocked must still be
+able to fetch the update that unblocks it, and by definition it may not be able
+to sign in. Rate limited to 30 per IP per 10 minutes.
+
+`{ "update": null }` means "no release, or GitHub was unreachable" — the app
+treats that as up to date rather than showing an error about a version it cannot
+describe.
+
+GitHub is read **server-side**, cached 10 minutes. A private repo needs a token,
+and a token compiled into an APK is a token anybody can extract with `apktool`,
+so `GITHUB_TOKEN` stays here. When it is set, `apkUrl` becomes a path on this
+server and `GET /api/mobile/app-version/download` streams the asset (5 per IP
+per hour — each hit is tens of megabytes of egress). For a public repo the app
+downloads straight from GitHub's CDN and that route is never used.
+
+To force an update without cutting a release, set `ai_settings`
+`mobile_min_supported_version`. To point at a different repo, set
+`MOBILE_APP_REPO` (default `xjanova/xdreamerapp`).
+
 ## Registration
 
 There is none here on purpose. `users` is owned by xmanstudio (Laravel) — the
