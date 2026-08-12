@@ -2,6 +2,7 @@ import NextAuth from 'next-auth';
 import CredentialsProvider from 'next-auth/providers/credentials';
 import bcrypt from 'bcryptjs';
 import prisma from '@/lib/db';
+import { getBearerUserId } from '@/lib/mobile-auth';
 
 /**
  * NextAuth configuration
@@ -67,15 +68,37 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
 });
 
 /**
- * Get current session user ID (for API routes).
- * Re-validates against the DB so a long-lived (30-day) JWT cannot outlive a
- * deactivated account — xmanstudio owns the users table and may disable users.
+ * Resolve the caller's user id from either supported credential.
+ *
+ * The web app sends a NextAuth session cookie; the native mobile app sends
+ * `Authorization: Bearer <access token>` because it has no cookie jar and cannot
+ * complete NextAuth's CSRF flow. Bearer is checked first — it is only ever
+ * present when a mobile client deliberately sent it, so it never shadows a
+ * browser session.
+ *
+ * This returns a *claimed* id only. Both callers below re-check it against the
+ * DB; do not use it directly.
  */
-export async function getCurrentUserId(): Promise<number | null> {
+async function resolveUserId(): Promise<number | null> {
+  const fromBearer = await getBearerUserId();
+  if (fromBearer !== null) return fromBearer;
+
   const session = await auth();
   if (!session?.user?.id) return null;
   const userId = parseInt(session.user.id, 10);
-  if (!Number.isInteger(userId)) return null;
+  return Number.isInteger(userId) ? userId : null;
+}
+
+/**
+ * Get current user ID (for API routes).
+ * Re-validates against the DB so a long-lived (30-day) JWT cannot outlive a
+ * deactivated account — xmanstudio owns the users table and may disable users.
+ * This is also the only revocation path mobile bearer tokens have, so it must
+ * stay a live DB read.
+ */
+export async function getCurrentUserId(): Promise<number | null> {
+  const userId = await resolveUserId();
+  if (userId === null) return null;
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -90,10 +113,8 @@ export async function getCurrentUserId(): Promise<number | null> {
  * trusting the role baked into the JWT at login time.
  */
 export async function isAdmin(): Promise<boolean> {
-  const session = await auth();
-  if (!session?.user?.id) return false;
-  const userId = parseInt(session.user.id, 10);
-  if (!Number.isInteger(userId)) return false;
+  const userId = await resolveUserId();
+  if (userId === null) return false;
 
   const user = await prisma.user.findUnique({
     where: { id: userId },

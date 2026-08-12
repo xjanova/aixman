@@ -37,6 +37,7 @@
     "dotenv": "^17.4.0",
     "framer-motion": "^12.38.0",
     "gsap": "^3.14.2",
+    "jose": "^6.2.2",
     "lucide-react": "^1.7.0",
     "next": "16.2.2",
     "next-auth": "^5.0.0-beta.30",
