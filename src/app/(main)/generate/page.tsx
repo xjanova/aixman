@@ -34,6 +34,16 @@ const aspectRatios = [
   { value: "3:2",  label: "3:2",  w: 1216, h: 832 },
 ];
 
+/**
+ * The ratios the video providers accept. Kling, Luma and Replicate take an
+ * `aspect_ratio` string and none of them know 4:3 or 3:2, so offering those
+ * would just get silently coerced somewhere upstream.
+ */
+const VIDEO_ASPECTS = ["16:9", "9:16", "1:1"];
+
+/** Clip lengths, filtered per model against `ai_models.max_duration`. */
+const VIDEO_DURATIONS = [5, 10, 15, 20];
+
 /** Used to warn when a Thai prompt is sent to an English-only model. */
 const THAI_CHARS = /\p{Script=Thai}/u;
 
@@ -285,6 +295,17 @@ export default function GeneratePage() {
   const [guidance, setGuidance] = useState(7.5);
   const [seed, setSeed] = useState<number | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  /**
+   * Video only. Every provider already switches endpoint on whether an image
+   * was supplied — `kling.ts` picks image2video over text2video, `runway.ts`
+   * picks /image_to_video over /text_to_video — so the two modes have always
+   * existed on the server. The studio just never gave anyone a way to say
+   * which one they wanted.
+   */
+  const [videoMode, setVideoMode] = useState<"t2v" | "i2v">("t2v");
+  /** Clip length in seconds. Was never sent, so every clip came out at the
+   *  provider default regardless of what the model could do. */
+  const [duration, setDuration] = useState(5);
 
   useEffect(() => { if (session === null) router.push("/login"); }, [session, router]);
   useEffect(() => { fetchModels(); fetchStyles(); fetchTemplates(); fetchCredits(); }, [fetchModels, fetchStyles, fetchTemplates, fetchCredits]);
@@ -330,6 +351,27 @@ export default function GeneratePage() {
   }, [tab, modelsLoaded, filteredModels, selectedModelId]);
 
   const selectedModel = models.find((m) => m.id === selectedModelId);
+
+  /** Lengths this model can actually produce. Always offers at least 5s. */
+  const durationChoices = (() => {
+    const max = selectedModel?.maxDuration ?? 10;
+    const fits = VIDEO_DURATIONS.filter((d) => d <= max);
+    return fits.length > 0 ? fits : [VIDEO_DURATIONS[0]];
+  })();
+
+  useEffect(() => {
+    if (tab !== "video") return;
+    // The image tab's 4:3 and 3:2 mean nothing to a video provider, and the
+    // preview used to render 16:9 while the request still carried whatever the
+    // image tab had left behind — the frame you saw was not the frame you
+    // ordered.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!VIDEO_ASPECTS.includes(aspectRatio)) setAspectRatio("16:9");
+    if (!durationChoices.includes(duration)) setDuration(durationChoices[0]);
+  }, [tab, aspectRatio, duration, durationChoices]);
+
+  /** An image→video run has nothing to animate without its first frame. */
+  const missingStartFrame = tab === "video" && videoMode === "i2v" && !inputImage;
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -433,9 +475,16 @@ export default function GeneratePage() {
 
   const handleGenerate = async () => {
     if (!prompt.trim() || !selectedModelId || isGenerating) return;
+    if (missingStartFrame) {
+      toast("error", "ยังไม่ได้เลือกภาพเริ่มต้น", "โหมดภาพ → วิดีโอ ต้องอัปโหลดภาพก่อน");
+      return;
+    }
     setIsGenerating(true); setResult(null); setIsFavorited(false);
     const ar = aspectRatios.find((a) => a.value === aspectRatio);
-    const imageToSend = tab === "image" ? refImage : inputImage;
+    // On video the mode decides: text→video must not smuggle a start frame in,
+    // or the provider silently switches endpoint behind the customer's back.
+    const imageToSend =
+      tab === "image" ? refImage : tab === "video" && videoMode === "t2v" ? null : inputImage;
     try {
       const res = await fetch("/api/generate", {
         method: "POST",
@@ -450,8 +499,12 @@ export default function GeneratePage() {
             width: ar?.w || 1024, height: ar?.h || 1024, aspectRatio,
             strength: refImage && tab === "image" ? strength : undefined,
             numOutputs: tab === "image" ? numOutputs : undefined,
-            steps,
-            cfgScale: guidance,
+            // Every video adapter reads `duration`; none of them read steps or
+            // cfgScale. Sending diffusion knobs to a video endpoint is noise at
+            // best and a rejected request at worst.
+            duration: tab === "video" ? duration : undefined,
+            steps: tab === "video" ? undefined : steps,
+            cfgScale: tab === "video" ? undefined : guidance,
             seed: seed ?? undefined,
           },
         }),
@@ -721,10 +774,12 @@ export default function GeneratePage() {
             </Popover>
           )}
 
-          {tab === "image" && (
+          {tab !== "edit" && (
             <Popover id="aspect" open={openPanel} onToggle={setOpenPanel} label="สัดส่วน" value={aspectRatio} width={220} align="right">
               <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6 }}>
-                {aspectRatios.map(ar => (
+                {aspectRatios
+                  .filter(ar => tab !== "video" || VIDEO_ASPECTS.includes(ar.value))
+                  .map(ar => (
                   <button key={ar.value} onClick={() => { setAspectRatio(ar.value); setOpenPanel(null); }}
                     style={{
                       padding: "8px 0", borderRadius: 8, fontSize: 12, cursor: "pointer",
@@ -732,6 +787,25 @@ export default function GeneratePage() {
                       color: aspectRatio === ar.value ? "#fff" : "#94a3b8",
                       border: aspectRatio === ar.value ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
                     }}>{ar.label}</button>
+                ))}
+              </div>
+            </Popover>
+          )}
+
+          {/* Clip length. `ai_models.max_duration` is the ceiling — offering a
+              20s option on a model that tops out at 5 just buys a failed job. */}
+          {tab === "video" && (
+            <Popover id="duration" open={openPanel} onToggle={setOpenPanel} label="ความยาว"
+              value={`${duration}s`} width={200} align="right">
+              <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(durationChoices.length, 4)},1fr)`, gap: 6 }}>
+                {durationChoices.map(d => (
+                  <button key={d} onClick={() => { setDuration(d); setOpenPanel(null); }}
+                    style={{
+                      padding: "8px 0", borderRadius: 8, fontSize: 12, cursor: "pointer", fontWeight: 600,
+                      background: duration === d ? `hsla(${220 + HUE},60%,50%,0.25)` : "rgba(255,255,255,0.04)",
+                      color: duration === d ? "#fff" : "#94a3b8",
+                      border: duration === d ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
+                    }}>{d}s</button>
                 ))}
               </div>
             </Popover>
@@ -757,7 +831,14 @@ export default function GeneratePage() {
           )}
 
           {/* Reference image — functional, so it stays a first-class control
-              rather than moving behind a panel. */}
+              rather than moving behind a panel.
+
+              Hidden on video. handleGenerate only ever forwards refImage on the
+              image tab, so a video customer could drop an image in here, see it
+              accepted, press generate, and get a text-only clip — the upload was
+              discarded without a word. The video start frame is its own control
+              below, wired to the mode selector. */}
+          {tab !== "video" && (
           <Popover id="ref" open={openPanel} onToggle={setOpenPanel} label="ภาพอ้างอิง"
             value={refImagePreview ? "1" : "—"} width={286} align="right">
             {refImagePreview ? (
@@ -787,11 +868,41 @@ export default function GeneratePage() {
               </label>
             )}
           </Popover>
+          )}
         </div>
 
-        {/* Image upload (edit/video) */}
-        {(tab === "edit" || tab === "video") && (
-          <Section label={tab === "edit" ? "ภาพต้นฉบับ" : "ภาพเริ่มต้น (ไม่บังคับ)"}>
+        {/* Text→video or image→video.
+            The providers have always supported both; this is the control that
+            says which one, instead of leaving it to be inferred from whether an
+            upload happens to be present. */}
+        {tab === "video" && (
+          <div style={{ display: "flex", gap: 6 }}>
+            {([
+              { key: "t2v" as const, label: "ข้อความ → วิดีโอ", hint: "เริ่มจากคำอธิบายล้วน" },
+              { key: "i2v" as const, label: "ภาพ → วิดีโอ", hint: "ทำให้ภาพที่มีอยู่เคลื่อนไหว" },
+            ]).map((m) => (
+              <button key={m.key} onClick={() => setVideoMode(m.key)}
+                style={{
+                  flex: 1, padding: "9px 10px", borderRadius: 10, cursor: "pointer", textAlign: "left",
+                  background: videoMode === m.key
+                    ? `linear-gradient(135deg, hsla(${160 + HUE},70%,50%,0.22), hsla(${270 + HUE},70%,55%,0.28))`
+                    : "rgba(255,255,255,0.04)",
+                  color: videoMode === m.key ? "#fff" : "#94a3b8",
+                  border: videoMode === m.key
+                    ? `1px solid hsla(${220 + HUE},70%,60%,0.5)`
+                    : "1px solid rgba(255,255,255,0.08)",
+                }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600 }}>{m.label}</div>
+                <div style={{ fontSize: 10.5, opacity: 0.7, marginTop: 2 }}>{m.hint}</div>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Image upload — the edit source, or the video start frame when the
+            mode calls for one. */}
+        {(tab === "edit" || (tab === "video" && videoMode === "i2v")) && (
+          <Section label={tab === "edit" ? "ภาพต้นฉบับ" : "ภาพเริ่มต้น"}>
             {inputImagePreview ? (
               <div style={{ position: "relative" }}>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -812,9 +923,13 @@ export default function GeneratePage() {
         {/* Advanced + tips on one row. The tips used to be four stacked cards
             in the right rail; they are reference material, not controls. */}
         <div style={{ display: "flex", gap: 6 }}>
-          {tab !== "video" && (
-            <Popover id="advanced" open={openPanel} onToggle={setOpenPanel} label="⚙ ขั้นสูง" width={286}>
+          {/* Video keeps this panel too — steps and guidance mean nothing to a
+              video endpoint, but seed does, and locking the whole panel away
+              took reproducible clips with it. */}
+          <Popover id="advanced" open={openPanel} onToggle={setOpenPanel} label="⚙ ขั้นสูง" width={286}>
               <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                {tab !== "video" && (
+                <>
                 <div>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", marginBottom: 6 }}>
                     <span>Steps</span>
@@ -831,6 +946,8 @@ export default function GeneratePage() {
                   <input type="range" min={1} max={20} step={0.5} value={guidance} onChange={(e) => setGuidance(+e.target.value)}
                     style={{ width: "100%", accentColor: `hsl(${220 + HUE},70%,60%)` }} />
                 </div>
+                </>
+                )}
                 <div>
                   <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 6 }}>Seed</div>
                   <div style={{ display: "flex", gap: 6 }}>
@@ -842,7 +959,6 @@ export default function GeneratePage() {
                 </div>
               </div>
             </Popover>
-          )}
 
           <Popover id="tips" open={openPanel} onToggle={setOpenPanel} label="? คำแนะนำ" width={300} align="right">
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -874,15 +990,25 @@ export default function GeneratePage() {
           </div>
         )}
 
+        {missingStartFrame && (
+          <div style={{
+            marginTop: 12, padding: "10px 12px", borderRadius: 10, fontSize: 12,
+            background: "hsla(38,90%,55%,0.12)", color: "#fbbf24",
+            border: "1px solid hsla(38,90%,55%,0.25)",
+          }}>
+            โหมด “ภาพ → วิดีโอ” ต้องอัปโหลดภาพเริ่มต้นก่อน
+          </div>
+        )}
+
         {/* Generate Button */}
         <button onClick={handleGenerate}
-          disabled={isGenerating || !prompt.trim() || !selectedModelId || selectedModel?.canOrder === false}
+          disabled={isGenerating || !prompt.trim() || !selectedModelId || selectedModel?.canOrder === false || missingStartFrame}
           style={{
             marginTop: "auto", padding: 16, borderRadius: 12,
             background: `linear-gradient(135deg, hsl(${160 + HUE},70%,45%), hsl(${280 + HUE},70%,55%))`,
             color: "#fff", border: "none", fontSize: 15, fontWeight: 600,
-            cursor: (isGenerating || !prompt.trim() || !selectedModelId) ? "not-allowed" : "pointer",
-            opacity: (isGenerating || !prompt.trim() || !selectedModelId) ? 0.6 : 1,
+            cursor: (isGenerating || !prompt.trim() || !selectedModelId || missingStartFrame) ? "not-allowed" : "pointer",
+            opacity: (isGenerating || !prompt.trim() || !selectedModelId || missingStartFrame) ? 0.6 : 1,
             boxShadow: `0 10px 24px -8px hsla(${270 + HUE},70%,50%,0.55)`,
           }}>
           {isGenerating ? "⟳ กำลังทอ..." : (
@@ -937,8 +1063,8 @@ export default function GeneratePage() {
                   ))}
                 </div>
               ) : (
-                <div style={{ aspectRatio: tab === "video" ? "16/9" : ASPECT_RATIO_CSS[aspectRatio] || "1/1", maxHeight: 520, margin: "0 auto" }}>
-                  <StudioFrame index={0} seed={0.42} aspect={tab === "video" ? "16:9" : aspectRatio} generating={true} />
+                <div style={{ aspectRatio: ASPECT_RATIO_CSS[aspectRatio] || "1/1", maxHeight: 520, margin: "0 auto" }}>
+                  <StudioFrame index={0} seed={0.42} aspect={aspectRatio} generating={true} />
                 </div>
               )}
               <p style={{ fontSize: 13, color: "rgba(203,213,225,0.7)", marginTop: 20, textAlign: "center" }}>
@@ -1052,9 +1178,9 @@ export default function GeneratePage() {
                   ))}
                 </div>
               ) : (
-                <div style={{ aspectRatio: tab === "video" ? "16/9" : ASPECT_RATIO_CSS[aspectRatio] || "1/1", maxHeight: 520, margin: "0 auto" }}>
+                <div style={{ aspectRatio: ASPECT_RATIO_CSS[aspectRatio] || "1/1", maxHeight: 520, margin: "0 auto" }}>
                   {(STUDIO_SAMPLES[tab] || STUDIO_SAMPLES.edit).map((s) => (
-                    <SampleFrame key={s.src} src={s.src} label={s.label} aspect={tab === "video" ? "16:9" : aspectRatio} isVideo={tab === "video"} />
+                    <SampleFrame key={s.src} src={s.src} label={s.label} aspect={aspectRatio} isVideo={tab === "video"} />
                   ))}
                 </div>
               )}
