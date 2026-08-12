@@ -67,6 +67,22 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # `actions/checkout` gives us the commit that TRIGGERED the run, not the
+      # tip of main at the moment this job finally gets the concurrency slot.
+      # Merge two PRs a few seconds apart and both runs read the same VERSION,
+      # both bump to the same number, and the second dies on
+      # `fatal: tag 'vX.Y.Z' already exists` — which is exactly what happened
+      # when #3 and #4 landed ten seconds apart.
+      #
+      # Re-syncing here makes both the skip check below and the version read
+      # operate on what main actually is now. The second run then sees the
+      # bot's own release commit and skips, so a batch of merges produces one
+      # release instead of a collision.
+      - name: Sync to the tip of main
+        run: |
+          git fetch origin main
+          git reset --hard origin/main
+
       - name: Check if release needed
         id: check
         run: |
