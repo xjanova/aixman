@@ -33,6 +33,8 @@ export interface GpuOffer {
   /** Host uptime percentage, 0-100. */
   reliability?: number;
   downloadMbps?: number;
+  /** Host CUDA version as the vendor reported it, e.g. "13.3". */
+  cudaVersion?: string;
 }
 
 export interface GpuOfferFilter {
