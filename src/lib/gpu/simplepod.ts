@@ -30,6 +30,8 @@ interface MarketRow {
   downloadSpeedtest?: number;
   rentalStatus?: string;
   isAvailableForDemand?: boolean;
+  /** Host CUDA version as a string, e.g. "13.3". Filtered on client-side. */
+  gpuCudaVer?: string;
 }
 
 interface InstanceRow {
@@ -135,12 +137,20 @@ export class SimplePodProvider implements GpuRentalProvider {
     if (filter.minReliability) qs.set('sla[gte]', String(Math.floor(filter.minReliability)));
     if (filter.region) qs.set('region', filter.region);
     if (filter.gpuCount) qs.set('gpuCount[gte]', String(filter.gpuCount));
-    if (filter.minCudaVersion) {
-      qs.set('gpuCudaVer', filter.minCudaVersion);
-      qs.set('gpuCudaVerOperator', '>=');
-    }
-    // The price filter only accepts whole dollars, so it can only be a coarse
-    // pre-filter — the exact ceiling is enforced client-side below.
+    // `gpuCudaVer` + `gpuCudaVerOperator=>=` is deliberately NOT sent. It does
+    // not do a version comparison: asked for `>= 12.8` the marketplace returned
+    // 0 rows, `>= 13.0` returned 34 — the same 34 whose own `gpuCudaVer` reads
+    // 13.0. A looser floor returning fewer rows is backwards, so the parameter
+    // behaves like an equality match on something we cannot see.
+    //
+    // Sending it meant every catalogue entry (they all inherit
+    // DEFAULT_MIN_CUDA) found an empty market and reported
+    // "No RTX 5090/RTX 4090/RTX PRO 6000 GPU available under $X/hr" — a phantom
+    // shortage that reads like the market's fault. The floor is enforced below
+    // instead, where the number we compare is the one the host reported.
+    //
+    // The price filter only accepts whole dollars, so it too can only be a
+    // coarse pre-filter — the exact ceiling is enforced client-side below.
     if (filter.maxPricePerHourUsd) {
       qs.set('pricePerGpu[lte]', String(Math.max(1, Math.ceil(filter.maxPricePerHourUsd))));
     }
@@ -149,6 +159,7 @@ export class SimplePodProvider implements GpuRentalProvider {
     if (!Array.isArray(rows)) return [];
 
     const models = filter.gpuModels?.map((m) => m.toLowerCase().trim()).filter(Boolean);
+    const minCuda = parseCudaVersion(filter.minCudaVersion);
 
     return rows
       .filter((r) => r.instanceMarket && r.isAvailableForDemand !== false)
@@ -164,6 +175,7 @@ export class SimplePodProvider implements GpuRentalProvider {
         pricePerHourUsd: Number(r.pricePerGpu ?? 0),
         reliability: r.sla,
         downloadMbps: r.downloadSpeedtest,
+        cudaVersion: typeof r.gpuCudaVer === 'string' ? r.gpuCudaVer : undefined,
       }))
       .filter((o) => {
         if (o.pricePerHourUsd <= 0) return false;
@@ -171,6 +183,13 @@ export class SimplePodProvider implements GpuRentalProvider {
         if (filter.minGpuMemoryMb && o.gpuMemoryMb < filter.minGpuMemoryMb) return false;
         if (filter.minDiskGb && o.diskGb < filter.minDiskGb) return false;
         if (models?.length && !models.some((m) => o.gpuModel.toLowerCase().includes(m))) return false;
+        if (minCuda) {
+          const hostCuda = parseCudaVersion(o.cudaVersion);
+          // A host that does not report its CUDA version is kept. Dropping it
+          // would silently shrink the market on missing metadata, which is the
+          // failure this whole block exists to undo.
+          if (hostCuda && compareCudaVersions(hostCuda, minCuda) < 0) return false;
+        }
         return true;
       })
       .sort((a, b) => a.pricePerHourUsd - b.pricePerHourUsd);
@@ -380,6 +399,28 @@ export class SimplePodProvider implements GpuRentalProvider {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Split a CUDA version into numeric components, or null if it is not a version.
+ *
+ * Kept as a tuple rather than a float because `parseFloat` puts 12.10 *below*
+ * 12.9, and CUDA minor versions do reach double digits.
+ */
+export function parseCudaVersion(raw: string | undefined | null): number[] | null {
+  if (typeof raw !== 'string') return null;
+  const parts = raw.trim().split('.').map((p) => Number.parseInt(p, 10));
+  if (!parts.length || parts.some((n) => !Number.isFinite(n) || n < 0)) return null;
+  return parts;
+}
+
+/** Standard version ordering: negative if `a` is older than `b`. */
+export function compareCudaVersions(a: number[], b: number[]): number {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const diff = (a[i] ?? 0) - (b[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
 }
 
 function toStringArray(value: unknown): string[] {
