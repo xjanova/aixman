@@ -6,7 +6,7 @@ export type GenerationType = 'image' | 'video' | 'edit';
 export type GenerationStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
 export type CreditTransactionType = 'purchase' | 'usage' | 'refund' | 'bonus' | 'admin_adjust';
 export type PoolRotationMode = 'round_robin' | 'balanced' | 'quota_first';
-export type ProviderSlug = 'pollinations' | 'byteplus' | 'openai' | 'replicate' | 'fal' | 'stability' | 'runway' | 'kling' | 'luma' | 'leonardo' | 'simplepod';
+export type ProviderSlug = 'pollinations' | 'byteplus' | 'openai' | 'replicate' | 'fal' | 'stability' | 'runway' | 'kling' | 'luma' | 'leonardo' | 'minimax' | 'simplepod';
 
 /**
  * GPU-rental providers have no inference API — we rent a machine and run the
@@ -101,6 +101,12 @@ export interface ProviderGenerateParams {
   cfgScale?: number;
   seed?: number;
   duration?: number;
+  /**
+   * The model row's `maxDuration`. Providers that bill per output second must
+   * clamp to this: credits are charged per generation, not per second, so an
+   * unclamped duration is billed to us but not to the user.
+   */
+  maxDuration?: number;
   fps?: number;
   aspectRatio?: string;
   numOutputs?: number;

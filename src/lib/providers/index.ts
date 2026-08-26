@@ -13,6 +13,7 @@ import { RunwayProvider } from './runway';
 import { KlingProvider } from './kling';
 import { LumaProvider } from './luma';
 import { LeonardoProvider } from './leonardo';
+import { MiniMaxProvider } from './minimax';
 
 const providers: Record<string, AIProviderAdapter> = {
   pollinations: new PollinationsProvider(),
@@ -25,6 +26,7 @@ const providers: Record<string, AIProviderAdapter> = {
   kling: new KlingProvider(),
   luma: new LumaProvider(),
   leonardo: new LeonardoProvider(),
+  minimax: new MiniMaxProvider(),
 };
 
 export function getProvider(slug: ProviderSlug): AIProviderAdapter | null {
@@ -39,4 +41,4 @@ export function getProviderSlugs(): ProviderSlug[] {
   return Object.keys(providers) as ProviderSlug[];
 }
 
-export { PollinationsProvider, BytePlusProvider, OpenAIProvider, ReplicateProvider, FalProvider, StabilityProvider, RunwayProvider, KlingProvider, LumaProvider, LeonardoProvider };
+export { PollinationsProvider, BytePlusProvider, OpenAIProvider, ReplicateProvider, FalProvider, StabilityProvider, RunwayProvider, KlingProvider, LumaProvider, LeonardoProvider, MiniMaxProvider };

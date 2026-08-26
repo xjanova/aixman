@@ -38,10 +38,14 @@ export async function POST() {
       { slug: 'kling', name: 'Kling AI', description: 'Kling 2.5 video generation by Kuaishou', baseUrl: 'https://api.klingai.com', authType: 'api_key_secret', supportsImage: true, supportsVideo: true, supportsEdit: false, sortOrder: 7 },
       { slug: 'luma', name: 'Luma AI', description: 'Dream Machine — photorealistic video from text/image', baseUrl: 'https://api.lumalabs.ai/dream-machine/v1', authType: 'bearer', supportsImage: true, supportsVideo: true, supportsEdit: false, sortOrder: 8 },
       { slug: 'leonardo', name: 'Leonardo.ai', description: 'Creative AI — Phoenix, Kino XL models', baseUrl: 'https://cloud.leonardo.ai/api/rest/v1', authType: 'bearer', supportsImage: true, supportsVideo: false, supportsEdit: false, sortOrder: 9 },
+      // MiniMax hosted API. Distinct from the `simplepod` route below, which
+      // runs H3's open weights on a rented card: this one runs MiniMax's full
+      // stack, so it understands Thai prompts, speaks Thai, and can reach 2K.
+      { slug: 'minimax', name: 'MiniMax (Hailuo)', description: 'MiniMax H3 — วิดีโอพร้อมเสียงพูดในตัว เข้าใจพรอมต์ไทยและพากย์ไทยได้', baseUrl: 'https://api.minimax.io', authType: 'bearer', supportsImage: false, supportsVideo: true, supportsEdit: false, sortOrder: 10 },
       // GPU rental — not an inference API. We rent a machine and run the model
       // on it ourselves; see src/lib/gpu. The API key below is the marketplace
       // key, not a model key.
-      { slug: 'simplepod', name: 'SimplePod (เช่า GPU)', description: 'เช่า GPU มารันโมเดลเอง (MiniMax H3) — คิดเงินตามเวลาที่เครื่องเปิด ไม่ใช่ตามจำนวนงาน', baseUrl: 'https://api.simplepod.ai', authType: 'api_key', supportsImage: false, supportsVideo: true, supportsEdit: false, sortOrder: 10 },
+      { slug: 'simplepod', name: 'SimplePod (เช่า GPU)', description: 'เช่า GPU มารันโมเดลเอง (MiniMax H3) — คิดเงินตามเวลาที่เครื่องเปิด ไม่ใช่ตามจำนวนงาน', baseUrl: 'https://api.simplepod.ai', authType: 'api_key', supportsImage: false, supportsVideo: true, supportsEdit: false, sortOrder: 11 },
     ];
 
     for (const p of providers) {
@@ -91,7 +95,23 @@ export async function POST() {
     // ══════════════════════════════════════════
     // 2. AI MODELS
     // ══════════════════════════════════════════
-    const models = [
+    const models: Array<{
+      providerSlug: string;
+      modelId: string;
+      name: string;
+      category: string;
+      subcategory?: string;
+      costPerUnit: number;
+      creditsPerUnit: number;
+      maxWidth?: number;
+      maxHeight?: number;
+      maxDuration?: number;
+      isFeatured?: boolean;
+      description?: string;
+      /** Adapters that have never run against a real key start `tuning`:
+       *  admin-only until the first success promotes them. */
+      readiness?: 'tuning' | 'ready';
+    }> = [
       // Pollinations — Image (free, no key). One model only: the anonymous tier
       // ignores the `model` param and serves whatever it picks, so listing
       // flux/turbo variants here would be fiction.
@@ -160,6 +180,30 @@ export async function POST() {
       { providerSlug: 'leonardo', modelId: 'kino-xl', name: 'Kino XL', category: 'image', subcategory: 'cinematic', costPerUnit: 0.03, creditsPerUnit: 3, maxWidth: 1024, maxHeight: 1024 },
       { providerSlug: 'leonardo', modelId: 'leonardo-diffusion-xl', name: 'Leonardo Diffusion XL', category: 'image', subcategory: 'general', costPerUnit: 0.02, creditsPerUnit: 2, maxWidth: 1024, maxHeight: 1024 },
 
+      // MiniMax — Video (native audio; the only API model here that speaks Thai)
+      //
+      // Priced from the vendor rate, not a placeholder: 768P is $0.08 per
+      // OUTPUT SECOND, so 6s = $0.48 ≈ ฿16.3. Credits are charged flat per
+      // generation, which is why `maxDuration` is 6 and the adapter treats it
+      // as a hard ceiling — an unclamped 15s clip would cost us $1.20 for the
+      // same credits.
+      //
+      // A credit is NOT worth a fixed amount: the packages below sell it for
+      // ฿0.99 (Starter) down to ฿0.3845 (Enterprise). Margin has to hold at the
+      // cheapest one or bulk buyers are served at a loss, so 85 credits here
+      // (≈ ฿32.7 at the Enterprise rate = 2x cost). Break-even alone is 43.
+      //
+      // ⚠ This clashes with the packages' own copy, which quotes “~5-8 / ~36 /
+      // ~116 / ~433 คลิป” — all of them exactly 15 credits per clip. At 15 credits
+      // this model loses ฿1.47 per clip even for Starter buyers and ฿10.55 for
+      // Enterprise. It stays `tuning` (admin-only) until the owner decides:
+      // reprice the packages, sell it as a premium tier, or serve it from the
+      // rented GPU instead (≈$0.055/clip, which clears 15 credits at every tier).
+      //
+      // 2K is not seeded: it is $0.13/s and needs its own priced row. Raise a
+      // copy's maxHeight past 768 and the adapter switches resolution itself.
+      { providerSlug: 'minimax', modelId: 'MiniMax-H3', name: 'MiniMax H3', category: 'video', subcategory: 'premium', costPerUnit: 0.48, creditsPerUnit: 85, maxWidth: 1344, maxHeight: 768, maxDuration: 6, isFeatured: true, readiness: 'tuning', description: 'วิดีโอพร้อมเสียงพูดในตัว • เขียนบทไทยในพรอมต์ได้เลย ไม่ต้องพากย์ทีหลัง • 6 วินาที 768p' },
+
       // SimplePod's self-hosted models are deliberately NOT listed here. They
       // are created from MODEL_CATALOG by Admin → GPU ที่เช่า when the API key
       // is supplied, so the catalogue stays the single source of truth for what
@@ -190,7 +234,7 @@ export async function POST() {
           // come from MODEL_CATALOG via the GPU setup route and start 'tuning'.
           isActive: true,
           isFeatured: m.isFeatured || false,
-          readiness: 'ready',
+          readiness: m.readiness ?? 'ready',
         },
         update: {
           name: m.name,
