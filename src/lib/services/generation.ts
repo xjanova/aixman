@@ -163,6 +163,7 @@ export class GenerationService {
         cfgScale: request.params?.cfgScale,
         seed: request.params?.seed,
         duration: request.params?.duration || model.maxDuration || undefined,
+        maxDuration: model.maxDuration ?? undefined,
         fps: request.params?.fps,
         aspectRatio: request.params?.aspectRatio,
         numOutputs: request.params?.numOutputs || 1,
