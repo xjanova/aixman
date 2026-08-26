@@ -259,6 +259,9 @@ fetch_model() {
       # The repo path is preserved by the downloader; ComfyUI only looks in the
       # flat models/<dest>/ directories, so move it into place.
       if [ -s "${ROOT}/dl/$path" ]; then
+        # ComfyUI ships models/{loras,vae,...} in its repo, but relying on that
+        # layout means a download that succeeded still fails at the move.
+        mkdir -p "$(dirname "$target")"
         mv -f "${ROOT}/dl/$path" "$target"
         echo "[aixman] placed $base -> $dest"
         return 0
