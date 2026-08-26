@@ -108,6 +108,27 @@ const GB = 1024 ** 3;
 // ---------------------------------------------------------------------------
 // Template: video_minimax_h3_t2v.json. Everything lives inside one subgraph
 // (outer node 105), so converted ids are prefixed `105_`.
+/**
+ * Turbo LoRA from lightx2v / ModelTC, repackaged by Comfy-Org (Apache-2.0 —
+ * unlike the base weights, which carry the MiniMax community licence).
+ *
+ * The 768p variant is the one used because it is distilled at exactly the
+ * 1344x768 this entry renders at. The 544p variants exist too but want a
+ * different sigma shift (12/3 rather than 6/3), so mixing them up costs quality
+ * in a way nothing in the pipeline would flag.
+ */
+const MINIMAX_H3_TURBO_LORA = 'minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors';
+
+/** The LoRA is distilled to this step count. Other values degrade it. */
+const MINIMAX_H3_TURBO_STEPS = 4;
+
+/** Training shifts published for the 768p variant (544p ones use 12 / 3). */
+const MINIMAX_H3_SHIFT_VIDEO = 6;
+const MINIMAX_H3_SHIFT_AUDIO = 3;
+
+/** The turbo workflow swaps the base template's res_multistep for euler. */
+const MINIMAX_H3_TURBO_SAMPLER = 'euler';
+
 const MINIMAX_H3: CatalogEntry = {
   key: 'minimax-h3',
   name: 'MiniMax H3 (Hailuo 3.0)',
@@ -121,8 +142,41 @@ const MINIMAX_H3: CatalogEntry = {
     { repo: 'Comfy-Org/MiniMax-H3', file: 'text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors', dest: 'text_encoders', bytes: 15_687_142_551 },
     { repo: 'Comfy-Org/MiniMax-H3', file: 'vae/minimax_h3_video_vae_fp16.safetensors', dest: 'vae', bytes: 5_207_808_496 },
     { repo: 'Comfy-Org/MiniMax-H3', file: 'vae/minimax_h3_audio_vae_fp32.safetensors', dest: 'vae', bytes: 605_254_808 },
+    // 1.9 GB against 42.5 GB of base weights — it barely moves warmup, and it
+    // is what turns a 20-step render into a 4-step one.
+    { repo: 'Comfy-Org/MiniMax-H3', file: 'loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors', dest: 'loras', bytes: 1_956_192_992 },
   ],
   hardware: { minVramMb: 24576, diskGb: 120, gpuModels: ['RTX 5090', 'RTX 4090', 'RTX PRO 6000'], minCudaVersion: '12.8' },
+  /**
+   * Splice the turbo chain into the model path:
+   *
+   *   UNETLoader#6 -> LoraLoaderModelOnly#119 -> MiniMaxH3SigmaShift#120 -> guider + scheduler
+   *
+   * Node ids and ordering are copied from ModelTC's own
+   * `example_workflows/video_minimax_h3_t2v_lightx2v_turbo.json`, so this graph
+   * matches the one the LoRA was published with rather than an arrangement we
+   * invented. Both new classes ship with core ComfyUI's MiniMax H3 support; a
+   * worker too old to have `MiniMaxH3SigmaShift` fails validation loudly rather
+   * than rendering at the wrong shift.
+   */
+  inject: () => ({
+    '105_119': {
+      class_type: 'LoraLoaderModelOnly',
+      inputs: {
+        model: ['105_6', 0],
+        lora_name: MINIMAX_H3_TURBO_LORA,
+        strength_model: 1,
+      },
+    },
+    '105_120': {
+      class_type: 'MiniMaxH3SigmaShift',
+      inputs: {
+        model: ['105_119', 0],
+        shift_video: MINIMAX_H3_SHIFT_VIDEO,
+        shift_audio: MINIMAX_H3_SHIFT_AUDIO,
+      },
+    },
+  }),
   bind: (p) => [
     { nodeId: '105_104', input: 'prompt', value: p.prompt },
     { nodeId: '105_104', input: 'width', value: p.width },
@@ -130,11 +184,28 @@ const MINIMAX_H3: CatalogEntry = {
     // MiniMax H3's latent temporal compression only accepts length % 17 === 5.
     { nodeId: '105_104', input: 'length', value: minimaxFrameLength(p.durationSeconds, p.fps) },
     { nodeId: '105_15', input: 'noise_seed', value: p.seed },
+
+    // Move BOTH model consumers onto the turbo chain. Leaving BasicScheduler on
+    // the raw UNET would build a 20-step sigma curve and hand it to a model
+    // distilled for 4 — which still renders, so nothing would catch it except
+    // the output looking wrong.
+    { nodeId: '105_16', input: 'model', value: ['105_120', 0] },
+    { nodeId: '105_9', input: 'model', value: ['105_120', 0] },
+    // Fixed, not taken from `p.steps`: the LoRA is distilled to this count and
+    // any other value degrades it.
+    { nodeId: '105_9', input: 'steps', value: MINIMAX_H3_TURBO_STEPS },
+    { nodeId: '105_17', input: 'sampler_name', value: MINIMAX_H3_TURBO_SAMPLER },
+
     // Cosmetic: the template's own defaults are fine if these ever move.
     { nodeId: '105_91', input: 'fps', value: p.fps, optional: true },
     { nodeId: '92', input: 'filename_prefix', value: 'video/aixman', optional: true },
   ],
-  baselineSecondsPerUnit: 48,
+  // Estimate, and only used until this deployment has real history. Derived
+  // from the one public 1344x768 measurement on a 5090-class card (5s at ~10
+  // steps = 335s) scaled to 4 steps, with headroom left because VAE decode and
+  // model load do not shrink with step count. The previous value of 48 was a
+  // guess that never matched the 20-step config it described (~126 measured).
+  baselineSecondsPerUnit: 36,
   pricing: { creditsPerUnit: 12, costPerUnit: 0.05 },
   limits: { maxWidth: 1344, maxHeight: 768, maxDuration: 15 },
 };
