@@ -29,6 +29,33 @@ const providerDefaults = [
   { slug: "leonardo", name: "Leonardo.ai", apiKeyLabel: "API Key", hasSecret: false, baseUrl: "https://cloud.leonardo.ai/api/rest/v1" },
 ];
 
+interface SetupPayload {
+  siteName: string;
+  siteDesc: string;
+  encryptionKey: string;
+  providers: { slug: string; apiKey: string; apiSecret: string }[];
+}
+
+/**
+ * POST the wizard's answers and report whether the request got through.
+ *
+ * Outside the component deliberately: it owns the try/catch that the caller
+ * cannot have (see `handleFinish`), so the caller needs no error handling —
+ * and therefore no `finally` — of its own.
+ */
+async function saveSetup(payload: SetupPayload): Promise<boolean> {
+  try {
+    await fetch("/api/setup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export default function SetupWizard() {
   const router = useRouter();
   const [step, setStep] = useState<Step>(1);
@@ -51,27 +78,25 @@ export default function SetupWizard() {
 
   const handleFinish = async () => {
     setSaving(true);
-    try {
-      await fetch("/api/setup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          siteName,
-          siteDesc,
-          encryptionKey,
-          providers: selectedProviders.map((slug) => ({
-            slug,
-            apiKey: apiKeys[slug]?.key || "",
-            apiSecret: apiKeys[slug]?.secret || "",
-          })),
-        }),
-      });
-      router.push("/admin");
-    } catch {
-      // Error handling
-    } finally {
-      setSaving(false);
-    }
+
+    // The network work lives in `saveSetup` outside the component, and there is
+    // no try/finally here, on purpose: React Compiler cannot compile a function
+    // containing `finally` and silently gives up on the **whole** component,
+    // costing this page its auto-memoization and turning off every
+    // compiler-based lint rule for the file, with no diagnostic to say so.
+    const saved = await saveSetup({
+      siteName,
+      siteDesc,
+      encryptionKey,
+      providers: selectedProviders.map((slug) => ({
+        slug,
+        apiKey: apiKeys[slug]?.key || "",
+        apiSecret: apiKeys[slug]?.secret || "",
+      })),
+    });
+
+    if (saved) router.push("/admin");
+    setSaving(false);
   };
 
   const steps = [

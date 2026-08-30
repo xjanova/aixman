@@ -43,6 +43,34 @@ interface Model {
   provider: { name: string };
 }
 
+type PurchaseResult =
+  | { status: "ok"; credits: number; walletBalance: number }
+  | { status: "duplicate" }
+  | { status: "error"; message: string };
+
+/**
+ * Buy one credit package with the wallet and report the outcome as a value.
+ *
+ * Outside the component deliberately: it owns the try/catch that the caller
+ * cannot have (see `buyWithWallet`), so the caller needs no error handling —
+ * and therefore no `finally` — of its own.
+ */
+async function purchasePackage(slug: string): Promise<PurchaseResult> {
+  try {
+    const res = await fetch("/api/credits/purchase", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ packageSlug: slug, idempotencyKey: crypto.randomUUID() }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { status: "error", message: data.error || "ซื้อไม่สำเร็จ" };
+    if (data.duplicate) return { status: "duplicate" };
+    return { status: "ok", credits: data.credits, walletBalance: data.walletBalance };
+  } catch {
+    return { status: "error", message: "เกิดข้อผิดพลาด กรุณาลองใหม่" };
+  }
+}
+
 export default function PricingPage() {
   const [currency, setCurrency] = useState<"thb" | "usd">("thb");
   const [packages, setPackages] = useState<Package[]>([]);
@@ -74,31 +102,34 @@ export default function PricingPage() {
 
   const buyWithWallet = async (pkg: Package) => {
     if (buying) return;
-    if (!walletInfo) { window.location.href = "/login"; return; }
+    // `assign()` rather than `location.href = ...`: identical full-page
+    // navigation, but React Compiler counts assigning to a global's property as
+    // mutating a value it does not own, bails on the **whole** component, and
+    // then silently stops running every compiler lint rule on this file.
+    if (!walletInfo) { window.location.assign("/login"); return; }
     const price = Number(pkg.priceThb);
     if (!window.confirm(`ยืนยันซื้อ "${pkg.name}" ราคา ฿${price.toLocaleString()} จาก Wallet?\nจะได้รับ ${pkg.credits.toLocaleString()}${pkg.bonusCredits > 0 ? ` + ${pkg.bonusCredits.toLocaleString()} โบนัส` : ""} เครดิต`)) return;
     setBuying(pkg.slug);
     setNotice(null);
-    try {
-      const res = await fetch("/api/credits/purchase", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ packageSlug: pkg.slug, idempotencyKey: crypto.randomUUID() }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setNotice({ ok: false, text: data.error || "ซื้อไม่สำเร็จ" });
-      } else if (data.duplicate) {
-        setNotice({ ok: true, text: "รายการนี้ถูกดำเนินการไปแล้ว" });
-      } else {
-        setNotice({ ok: true, text: `สำเร็จ! ยอดเครดิตคงเหลือ ${Number(data.credits).toLocaleString()} เครดิต` });
-        setWalletInfo(w => (w ? { ...w, balance: data.walletBalance, credits: data.credits } : w));
-      }
-    } catch {
-      setNotice({ ok: false, text: "เกิดข้อผิดพลาด กรุณาลองใหม่" });
-    } finally {
-      setBuying(null);
+
+    // The network work lives in `purchasePackage` outside the component, and
+    // there is no try/finally here, on purpose: React Compiler cannot compile a
+    // function containing `finally` and silently gives up on the **whole**
+    // component, costing this page its auto-memoization and turning off every
+    // compiler-based lint rule for the file, with no diagnostic to say so.
+    const result = await purchasePackage(pkg.slug);
+    setBuying(null);
+
+    if (result.status === "error") {
+      setNotice({ ok: false, text: result.message });
+      return;
     }
+    if (result.status === "duplicate") {
+      setNotice({ ok: true, text: "รายการนี้ถูกดำเนินการไปแล้ว" });
+      return;
+    }
+    setNotice({ ok: true, text: `สำเร็จ! ยอดเครดิตคงเหลือ ${Number(result.credits).toLocaleString()} เครดิต` });
+    setWalletInfo(w => (w ? { ...w, balance: result.walletBalance, credits: result.credits } : w));
   };
 
   const creditCosts = useMemo(() => {

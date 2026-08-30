@@ -310,6 +310,71 @@ function KpiCard({
   );
 }
 
+/*
+ * The three helpers below own the try/catch that their callers inside
+ * `GpuAdminPage` cannot have, and hand back errors as values. They live outside
+ * the component on purpose: React Compiler cannot compile a function containing
+ * `finally` and responds by silently giving up on the **whole** component —
+ * this page would lose its auto-memoization and every compiler-based lint rule
+ * would stop running on the file, with no diagnostic to say so.
+ */
+
+type LoadResult =
+  | { ok: true; data: Analytics }
+  | { ok: false; error: string };
+
+async function fetchAnalytics(): Promise<LoadResult> {
+  try {
+    const res = await fetch("/api/admin/gpu/analytics");
+    if (!res.ok) {
+      return {
+        ok: false,
+        error:
+          res.status === 403
+            ? "ต้องเข้าสู่ระบบด้วยบัญชีผู้ดูแลระบบก่อน"
+            : `เซิร์ฟเวอร์ตอบกลับ HTTP ${res.status}`,
+      };
+    }
+    return { ok: true, data: (await res.json()) as Analytics };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message || "เชื่อมต่อเซิร์ฟเวอร์ไม่ได้" };
+  }
+}
+
+async function postAction(
+  payload: Record<string, unknown>,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const res = await fetch("/api/admin/gpu", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const body = await res.json();
+    if (!res.ok) return { ok: false, error: body.error || "ทำรายการไม่สำเร็จ" };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+async function postApiKey(
+  apiKey: string,
+): Promise<{ ok: true; warning?: string; balanceUsd: number } | { ok: false; error: string }> {
+  try {
+    const res = await fetch("/api/admin/gpu/setup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey, enable: true }),
+    });
+    const body = await res.json();
+    if (!res.ok) return { ok: false, error: body.error || "บันทึกไม่สำเร็จ" };
+    return { ok: true, warning: body.warning, balanceUsd: body.balanceUsd };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
 export default function GpuAdminPage() {
   const [data, setData] = useState<Analytics | null>(null);
   const [loading, setLoading] = useState(true);
@@ -320,32 +385,30 @@ export default function GpuAdminPage() {
   const [form, setForm] = useState<GpuConfig | null>(null);
 
   const load = useCallback(async () => {
-    try {
-      const res = await fetch("/api/admin/gpu/analytics");
-      if (!res.ok) {
-        throw new Error(
-          res.status === 403
-            ? "ต้องเข้าสู่ระบบด้วยบัญชีผู้ดูแลระบบก่อน"
-            : `เซิร์ฟเวอร์ตอบกลับ HTTP ${res.status}`
-        );
-      }
-      const d: Analytics = await res.json();
-      setData(d);
-      setLoadError(null);
-      // Only seed the form once, so a background refresh can't discard edits
-      // the admin is in the middle of typing.
-      setForm((prev) => prev ?? d.config);
-    } catch (e) {
+    const result = await fetchAnalytics();
+    setLoading(false);
+
+    if (!result.ok) {
       // Recorded separately from `message` so the page can render an explicit
       // failure state. Without it a failed load leaves every section hidden and
       // the panel just looks blank, with nothing telling the admin why.
-      setLoadError((e as Error).message || "เชื่อมต่อเซิร์ฟเวอร์ไม่ได้");
-    } finally {
-      setLoading(false);
+      setLoadError(result.error);
+      return;
     }
+    setData(result.data);
+    setLoadError(null);
+    // Only seed the form once, so a background refresh can't discard edits
+    // the admin is in the middle of typing.
+    setForm((prev) => prev ?? result.data.config);
   }, []);
 
   useEffect(() => {
+    // `load` reaches its first setState only after awaiting the network, so
+    // nothing here is a synchronous cascading render — but the rule cannot see
+    // through the await and flags the call site either way. This suppression
+    // was invisible until the `finally` blocks came out of this file: while
+    // React Compiler was bailing on the component, no compiler rule ran at all.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
     const t = setInterval(() => void load(), 30_000);
     return () => clearInterval(t);
@@ -354,47 +417,41 @@ export default function GpuAdminPage() {
   const post = async (payload: Record<string, unknown>, label: string) => {
     setBusy(label);
     setMessage(null);
-    try {
-      const res = await fetch("/api/admin/gpu", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error || "ทำรายการไม่สำเร็จ");
-      setMessage({ kind: "ok", text: "เรียบร้อย" });
-      await load();
-    } catch (e) {
-      setMessage({ kind: "err", text: (e as Error).message });
-    } finally {
+
+    const result = await postAction(payload);
+    if (!result.ok) {
+      setMessage({ kind: "err", text: result.error });
       setBusy(null);
+      return;
     }
+    setMessage({ kind: "ok", text: "เรียบร้อย" });
+    // `busy` stays set across the reload, so the control the admin just used
+    // keeps its spinner until the fresh numbers are actually on screen.
+    await load();
+    setBusy(null);
   };
 
   const saveKey = async () => {
-    if (!apiKey.trim()) return;
+    const key = apiKey.trim();
+    if (!key) return;
     setBusy("setup");
     setMessage(null);
-    try {
-      const res = await fetch("/api/admin/gpu/setup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: apiKey.trim(), enable: true }),
-      });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error || "บันทึกไม่สำเร็จ");
-      setApiKey("");
-      setMessage({
-        kind: body.warning ? "err" : "ok",
-        text: body.warning || `เชื่อมต่อสำเร็จ • ยอดเงิน ${usd(body.balanceUsd)}`,
-      });
-      setForm(null);
-      await load();
-    } catch (e) {
-      setMessage({ kind: "err", text: (e as Error).message });
-    } finally {
+
+    const result = await postApiKey(key);
+    if (!result.ok) {
+      setMessage({ kind: "err", text: result.error });
       setBusy(null);
+      return;
     }
+    setApiKey("");
+    setMessage({
+      kind: result.warning ? "err" : "ok",
+      text: result.warning || `เชื่อมต่อสำเร็จ • ยอดเงิน ${usd(result.balanceUsd)}`,
+    });
+    setForm(null);
+    // As in `post`, `busy` stays set across the reload.
+    await load();
+    setBusy(null);
   };
 
   // This page renders entirely on the client, so the server sends an empty
