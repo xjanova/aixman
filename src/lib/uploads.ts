@@ -20,14 +20,26 @@ export function isUploadKind(value: unknown): value is UploadKind {
 /**
  * Per-kind ceilings, in bytes.
  *
- * Audio is capped at roughly ten minutes of 128 kbps MP3 and video at a short
- * clip, because both are only ever inputs to a render that is itself capped at
- * tens of seconds. A larger file cannot produce a longer result — it can only
- * cost us egress and R2 storage, so there is no reason to accept it.
+ * The audio cap is the one that guards spend, not just storage. A lip-sync
+ * render is billed on the length of its **output**, and the output follows the
+ * voice track — so the voice track is what decides the invoice, while credits
+ * are charged flat per generation. 12 MB is comfortably more than forty
+ * seconds in any sane format (uncompressed 44.1 kHz stereo WAV is ~7 MB) and
+ * far less than the tens of minutes that would turn a 36-credit job into a
+ * multi-dollar one.
+ *
+ * It is a bound, not an exact limit: a deliberately low-bitrate file could
+ * still be long. The studio probes duration in the browser before uploading,
+ * which catches the honest mistake, and the real fix — decoding server-side —
+ * is not worth a media pipeline here. Whoever raises this number should know
+ * they are raising the worst-case bill with it.
+ *
+ * Video only bounds egress and storage: a longer source does not make the
+ * render longer, because the voice still decides that.
  */
 export const MAX_BYTES: Record<UploadKind, number> = {
   image: 12 * 1024 * 1024,
-  audio: 25 * 1024 * 1024,
+  audio: 12 * 1024 * 1024,
   video: 120 * 1024 * 1024,
 };
 
