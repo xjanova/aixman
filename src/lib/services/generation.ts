@@ -45,6 +45,18 @@ export class GenerationService {
     const numOutputs = request.params?.numOutputs || 1;
     const requiredCredits = model.creditsPerUnit * numOutputs;
 
+    // Uploaded inputs are folded into params so they are persisted with the
+    // row. `ai_generations` has an `inputImage` column but no audio or video
+    // equivalent, and adding them would mean a migration on a table the
+    // retention sweep, the gallery and Laravel all read — params is already
+    // JSON and already stored, so it carries them instead. RetentionService
+    // knows to look here; see INPUT_URL_PARAMS there.
+    const storedParams: Record<string, unknown> = {
+      ...(request.params ?? {}),
+      ...(request.inputAudio ? { inputAudio: request.inputAudio } : {}),
+      ...(request.inputVideo ? { inputVideo: request.inputVideo } : {}),
+    };
+
     // 2. Select an account from the pool
     const account = await AccountPoolManager.selectAccount(model.providerId);
     if (!account) {
@@ -74,7 +86,9 @@ export class GenerationService {
           status: 'pending',
           prompt: request.prompt,
           negativePrompt: request.negativePrompt,
-          params: (request.params ?? Prisma.JsonNull) as Prisma.InputJsonValue,
+          params: (Object.keys(storedParams).length > 0
+            ? storedParams
+            : Prisma.JsonNull) as Prisma.InputJsonValue,
           inputImage: request.inputImage,
           creditsUsed: requiredCredits,
           accountPoolId: account.id,
@@ -116,7 +130,7 @@ export class GenerationService {
           fps: request.params?.fps || 24,
           seed: request.params?.seed ?? Math.floor(Math.random() * 2_147_483_647),
           inputImage: request.inputImage,
-          extra: (request.params ?? {}) as Record<string, unknown>,
+          extra: storedParams,
         },
       });
 
@@ -168,6 +182,8 @@ export class GenerationService {
         aspectRatio: request.params?.aspectRatio,
         numOutputs: request.params?.numOutputs || 1,
         inputImage: request.inputImage,
+        inputAudio: request.inputAudio,
+        inputVideo: request.inputVideo,
         apiKey: account.apiKey,
         apiSecret: account.apiSecret,
         apiEndpoint: account.apiEndpoint,

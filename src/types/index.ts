@@ -22,6 +22,17 @@ export interface GenerationRequest {
   negativePrompt?: string;
   params?: GenerationParams;
   inputImage?: string; // base64 or URL
+  /**
+   * Voice track to drive a lip-sync render, as a URL from `/api/uploads`.
+   *
+   * A URL rather than base64 like `inputImage`: audio and video are megabytes,
+   * and every consumer — fal reads `audio_url` over the network, a rented
+   * worker downloads into its own input dir — wants to fetch rather than be
+   * handed bytes.
+   */
+  inputAudio?: string;
+  /** Clip to re-dub, as a URL from `/api/uploads`. See `inputAudio`. */
+  inputVideo?: string;
   styleId?: number;
 }
 
@@ -111,6 +122,10 @@ export interface ProviderGenerateParams {
   aspectRatio?: string;
   numOutputs?: number;
   inputImage?: string;
+  /** Voice track for lip-sync models. Always a fetchable URL, never base64. */
+  inputAudio?: string;
+  /** Source clip for models that re-dub existing footage. */
+  inputVideo?: string;
   apiKey: string;
   apiSecret?: string;
   apiEndpoint?: string;
