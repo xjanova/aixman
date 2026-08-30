@@ -114,6 +114,40 @@ function Section({ label, children, grow = false }: { label: string; children: R
 }
 
 /**
+ * Longest input these endpoints are priced for.
+ *
+ * LatentSync costs a flat $0.20 up to 40 seconds of **output**, and the output
+ * length follows the voice track rather than the source clip. Past that it is
+ * $0.005 per second, against a credit price that does not move — so a
+ * ten-minute recording would cost several dollars and earn the same 36 credits.
+ */
+const MAX_INPUT_SECONDS = 40;
+
+/**
+ * Read a media file's duration in the browser, before it is uploaded.
+ *
+ * This is a courtesy check, not the billing control: a determined caller can
+ * skip the page entirely. It exists because the honest failure mode — someone
+ * picks a twenty-minute recording, waits for a 25 MB upload, and only then
+ * finds out — is the common one, and the server genuinely cannot tell without
+ * decoding the file. Anything unreadable resolves to null and is allowed
+ * through rather than blocking a valid file we simply could not parse.
+ */
+function probeDuration(file: File, kind: "audio" | "video"): Promise<number | null> {
+  return new Promise((resolve) => {
+    const el = document.createElement(kind === "audio" ? "audio" : "video");
+    const url = URL.createObjectURL(file);
+    const done = (value: number | null) => { URL.revokeObjectURL(url); resolve(value); };
+    el.preload = "metadata";
+    el.onloadedmetadata = () => done(Number.isFinite(el.duration) ? el.duration : null);
+    el.onerror = () => done(null);
+    // A file the browser cannot decode would otherwise never settle this promise.
+    setTimeout(() => done(null), 10_000);
+    el.src = url;
+  });
+}
+
+/**
  * POST one file to `/api/uploads` and report either its URL or a message.
  *
  * Outside the component deliberately: it owns the try/catch that the caller
@@ -548,6 +582,18 @@ export default function GeneratePage() {
     if (!file) return;
 
     setUploading(kind);
+
+    const seconds = await probeDuration(file, kind);
+    if (seconds !== null && seconds > MAX_INPUT_SECONDS) {
+      setUploading(null);
+      toast(
+        "error",
+        "ไฟล์ยาวเกินไป",
+        `รองรับไม่เกิน ${MAX_INPUT_SECONDS} วินาที (ไฟล์นี้ ${Math.round(seconds)} วินาที) กรุณาตัดให้สั้นลงก่อน`,
+      );
+      return;
+    }
+
     const result = await uploadMedia(file, kind);
     setUploading(null);
 
