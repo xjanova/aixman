@@ -1,4 +1,5 @@
 import prisma from '@/lib/db';
+import { Prisma } from '@/generated/prisma/client';
 import { deleteObjects, keyFromPublicUrl, isStorageConfigured } from '@/lib/storage/r2';
 
 /**
@@ -19,6 +20,16 @@ import { deleteObjects, keyFromPublicUrl, isStorageConfigured } from '@/lib/stor
 
 const DEFAULT_RETENTION_DAYS = 30;
 const SETTING_KEY = 'media_retention_days';
+
+/**
+ * Keys inside a generation's `params` that hold a URL to an object we stored.
+ *
+ * These ride in params rather than in columns of their own so that adding
+ * lip-sync did not require a migration on a table Laravel also reads. The cost
+ * is that the sweep has to know their names — so they are listed here once, and
+ * anything added to `/api/uploads` must be added here too or it leaks.
+ */
+const INPUT_URL_PARAMS = ['inputAudio', 'inputVideo'] as const;
 
 export interface SweepResult {
   scanned: number;
@@ -75,7 +86,19 @@ export class RetentionService {
         expiresAt: { not: null, lt: new Date() },
         mediaDeletedAt: null,
       },
-      select: { id: true, resultUrl: true, resultUrls: true, thumbnailUrl: true },
+      select: {
+        id: true,
+        resultUrl: true,
+        resultUrls: true,
+        thumbnailUrl: true,
+        // Inputs count too. A lip-sync job is driven by a voice track and often
+        // a clip the customer uploaded, both of which sit in our bucket under
+        // `uploads/`. Sweeping only the outputs would leave those behind
+        // forever — the generation row is the sole record that they exist, so
+        // once it is marked deleted nothing else could ever find them.
+        inputImage: true,
+        params: true,
+      },
       orderBy: { expiresAt: 'asc' },
       take: limit,
     });
@@ -90,6 +113,15 @@ export class RetentionService {
       if (gen.thumbnailUrl) urls.push(gen.thumbnailUrl);
       if (Array.isArray(gen.resultUrls)) {
         for (const u of gen.resultUrls) if (typeof u === 'string') urls.push(u);
+      }
+      // `inputImage` predates uploads and is usually a base64 data URL, and a
+      // params value can be anything the client sent. Both are handed to
+      // `keyFromPublicUrl` unchecked because it already answers null for
+      // everything that is not one of our own object URLs.
+      if (gen.inputImage) urls.push(gen.inputImage);
+      for (const field of INPUT_URL_PARAMS) {
+        const value = (gen.params as Record<string, unknown> | null)?.[field];
+        if (typeof value === 'string') urls.push(value);
       }
       for (const url of urls) {
         const key = keyFromPublicUrl(url);
@@ -111,9 +143,33 @@ export class RetentionService {
     const now = new Date();
     await prisma.aiGeneration.updateMany({
       where: { id: { in: due.map((g) => g.id) } },
-      data: { mediaDeletedAt: now, resultUrl: null, resultUrls: undefined, thumbnailUrl: null },
+      data: {
+        mediaDeletedAt: now,
+        resultUrl: null,
+        resultUrls: undefined,
+        thumbnailUrl: null,
+        inputImage: null,
+      },
     });
     result.generations = due.length;
+
+    // `params` is JSON, so the upload URLs inside it cannot be cleared by the
+    // bulk update above. Only rows that actually carry one are touched, which
+    // in practice means lip-sync jobs rather than the whole batch. The rest of
+    // params — size, seed, duration — is preserved: the customer can still see
+    // what they asked for after the media itself is gone.
+    for (const gen of due) {
+      const params = gen.params as Record<string, unknown> | null;
+      if (!params || !INPUT_URL_PARAMS.some((f) => typeof params[f] === 'string')) continue;
+
+      const stripped = { ...params };
+      for (const field of INPUT_URL_PARAMS) delete stripped[field];
+
+      await prisma.aiGeneration.update({
+        where: { id: gen.id },
+        data: { params: stripped as Prisma.InputJsonValue },
+      });
+    }
 
     return result;
   }

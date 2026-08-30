@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId, isAdmin } from '@/lib/auth';
 import { GenerationService } from '@/lib/services/generation';
+import { keyFromPublicUrl } from '@/lib/storage/r2';
 import type { GenerationRequest } from '@/types';
 
 const MAX_PROMPT_LENGTH = 10000;
@@ -19,14 +20,40 @@ export async function POST(request: NextRequest) {
     const genRequest: GenerationRequest = {
       modelId: body.modelId,
       type: body.type || 'image',
-      prompt: body.prompt,
+      // Normalised rather than passed through: a lip-sync request legitimately
+      // arrives without one, and the service concatenates a style suffix onto
+      // this value — `undefined + ''` would store the literal "undefined" as
+      // the customer's prompt.
+      prompt: typeof body.prompt === 'string' ? body.prompt : '',
       negativePrompt: body.negativePrompt,
       params: body.params,
       inputImage: body.inputImage,
+      inputAudio: body.inputAudio,
+      inputVideo: body.inputVideo,
       styleId: body.styleId,
     };
 
-    if (!genRequest.prompt?.trim()) {
+    // Lip-sync inputs are handed to a third party to fetch — fal downloads
+    // `audio_url` itself, and a rented worker curls the URL into its input dir.
+    // Accepting an arbitrary URL here would let a caller aim our providers at
+    // any host they like on our account, so only URLs we minted in
+    // /api/uploads are allowed through. keyFromPublicUrl answers null for
+    // anything outside our own bucket, which is exactly the test we need.
+    for (const field of ['inputAudio', 'inputVideo'] as const) {
+      const value = genRequest[field];
+      if (value !== undefined && (typeof value !== 'string' || !keyFromPublicUrl(value))) {
+        return NextResponse.json(
+          { error: 'ไฟล์ที่แนบไม่ถูกต้อง กรุณาอัปโหลดใหม่' },
+          { status: 400 }
+        );
+      }
+    }
+
+    // A voice track is itself the instruction: re-dubbing a clip has nothing to
+    // describe, and LatentSync's schema has no prompt field to put one in. Every
+    // other route still requires a prompt, so an empty text-to-image request is
+    // rejected exactly as before.
+    if (!genRequest.prompt?.trim() && !genRequest.inputAudio) {
       return NextResponse.json({ error: 'Prompt is required' }, { status: 400 });
     }
 
