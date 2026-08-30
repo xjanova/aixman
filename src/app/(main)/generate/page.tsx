@@ -24,7 +24,22 @@ import { useToast } from "@/components/ui/toast-provider";
 
 const HUE = 70;
 
-type TabType = "image" | "video" | "edit";
+type TabType = "image" | "video" | "edit" | "lipsync";
+
+/**
+ * Lip-sync models are `category: 'video'` on the server — a clip is what comes
+ * out — but they are driven by an uploaded voice track rather than a prompt, so
+ * the studio gives them their own tab and keeps them out of the video one.
+ * The server-side marker for that split is the subcategory.
+ *
+ * The suffix says what the model animates, which is what decides whether the
+ * second upload slot asks for a clip or a still. It is data rather than a list
+ * of model ids here so that adding a third lip-sync model is a seed change.
+ */
+const LIPSYNC_VIDEO = "lipsync";
+const LIPSYNC_PORTRAIT = "lipsync-portrait";
+const isLipsyncModel = (subcategory?: string | null) =>
+  subcategory === LIPSYNC_VIDEO || subcategory === LIPSYNC_PORTRAIT;
 
 const aspectRatios = [
   { value: "1:1",  label: "1:1",  w: 1024, h: 1024 },
@@ -95,6 +110,77 @@ function Section({ label, children, grow = false }: { label: string; children: R
       <div style={{ fontSize: 11, letterSpacing: "0.14em", color: "#a5f3fc", marginBottom: 8, textTransform: "uppercase" }}>{label}</div>
       {children}
     </div>
+  );
+}
+
+/**
+ * POST one file to `/api/uploads` and report either its URL or a message.
+ *
+ * Outside the component deliberately: it owns the try/catch that the caller
+ * cannot have (see `handleMediaUpload`), and errors come back as a value so
+ * the caller needs no error handling of its own.
+ */
+async function uploadMedia(
+  file: File,
+  kind: "audio" | "video",
+): Promise<{ url?: string; error?: string }> {
+  try {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch(`/api/uploads?kind=${kind}`, { method: "POST", body: form });
+    const data = await res.json();
+    if (!res.ok) return { error: data.error || "ลองใหม่อีกครั้ง" };
+    if (typeof data.url !== "string") return { error: "เซิร์ฟเวอร์ไม่ได้ส่งลิงก์ไฟล์กลับมา" };
+    return { url: data.url };
+  } catch {
+    return { error: "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้" };
+  }
+}
+
+/**
+ * Picker for a file that lives on the server rather than in the page.
+ *
+ * The image pickers elsewhere show a thumbnail because they hold the bytes as
+ * a data URL. These do not: audio and video are uploaded on selection and only
+ * the URL is kept, so what can honestly be shown is the filename and whether
+ * the upload finished. Showing a player here would mean re-downloading a file
+ * the customer already has.
+ */
+function FilePick({
+  value, busy, accept, hint, onPick, onClear,
+}: {
+  value: string | null;
+  busy: boolean;
+  accept: string;
+  hint: string;
+  onPick: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onClear: () => void;
+}) {
+  if (busy) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 18, borderRadius: 12, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#94a3b8", fontSize: 12 }}>
+        กำลังอัปโหลด…
+      </div>
+    );
+  }
+
+  if (value) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", borderRadius: 10, background: "rgba(2,6,23,0.45)", border: "1px solid rgba(255,255,255,0.08)" }}>
+        <span style={{ fontSize: 14 }}>✓</span>
+        <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: "#e2e8f0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{value}</span>
+        <button onClick={onClear} aria-label="เอาไฟล์ออก"
+          style={{ width: 22, height: 22, borderRadius: "50%", background: "rgba(0,0,0,0.5)", color: "#fff", border: "none", cursor: "pointer", fontSize: 13, lineHeight: 1 }}>×</button>
+      </div>
+    );
+  }
+
+  return (
+    <label style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, borderRadius: 12, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#64748b", fontSize: 12, cursor: "pointer" }}>
+      <div style={{ fontSize: 22, marginBottom: 4 }}>↑</div>
+      {hint}
+      <input type="file" accept={accept} style={{ display: "none" }} onChange={onPick} />
+    </label>
   );
 }
 
@@ -303,6 +389,17 @@ export default function GeneratePage() {
    * which one they wanted.
    */
   const [videoMode, setVideoMode] = useState<"t2v" | "i2v">("t2v");
+  /**
+   * Lip-sync inputs. Unlike every other upload in this page these are stored
+   * as URLs, not base64: a voice track and a clip are megabytes, and both
+   * routes that consume them (fal fetches `audio_url`, a rented worker curls
+   * the file down) want a URL anyway. `/api/uploads` returns one.
+   */
+  const [inputAudio, setInputAudio] = useState<string | null>(null);
+  const [inputAudioName, setInputAudioName] = useState<string | null>(null);
+  const [sourceVideo, setSourceVideo] = useState<string | null>(null);
+  const [sourceVideoName, setSourceVideoName] = useState<string | null>(null);
+  const [uploading, setUploading] = useState<"audio" | "video" | null>(null);
   /** Clip length in seconds. Was never sent, so every clip came out at the
    *  provider default regardless of what the model could do. */
   const [duration, setDuration] = useState(5);
@@ -334,7 +431,15 @@ export default function GeneratePage() {
     });
   };
 
-  const filteredModels = models.filter((m) => m.category === tab);
+  const filteredModels = models.filter((m) =>
+    tab === "lipsync"
+      ? isLipsyncModel(m.subcategory)
+      : // Lip-sync models are stored under 'video' but belong to their own tab;
+        // leaving them in this list would offer a model whose required inputs
+        // the video controls cannot supply.
+        m.category === tab && !isLipsyncModel(m.subcategory)
+  );
+
 
   useEffect(() => {
     const current = filteredModels.find((m) => m.id === selectedModelId);
@@ -351,6 +456,12 @@ export default function GeneratePage() {
   }, [tab, modelsLoaded, filteredModels, selectedModelId]);
 
   const selectedModel = models.find((m) => m.id === selectedModelId);
+
+  /** Which second file the chosen lip-sync model animates — a clip, or a still. */
+  const lipsyncNeeds: "image" | "video" =
+    selectedModel?.subcategory === LIPSYNC_PORTRAIT ? "image" : "video";
+  /** The still the portrait models animate reuses the existing image picker. */
+  const lipsyncSource = lipsyncNeeds === "image" ? inputImage : sourceVideo;
 
   /** Lengths this model can actually produce. Always offers at least 5s. */
   const durationChoices = (() => {
@@ -373,6 +484,23 @@ export default function GeneratePage() {
   /** An image→video run has nothing to animate without its first frame. */
   const missingStartFrame = tab === "video" && videoMode === "i2v" && !inputImage;
 
+  /** Lip-sync needs both halves: the voice, and the thing that speaks it. */
+  const missingLipsyncInput = tab === "lipsync" && (!inputAudio || !lipsyncSource);
+
+  /**
+   * One source of truth for whether the button can fire. It used to be spelled
+   * out three times — in `disabled`, in `cursor` and in `opacity` — and the
+   * three had already drifted: `disabled` checked `canOrder`, the other two did
+   * not, so a model pulled back for tuning still rendered as clickable.
+   */
+  const cannotSubmit =
+    isGenerating ||
+    !selectedModelId ||
+    selectedModel?.canOrder === false ||
+    (tab !== "lipsync" && !prompt.trim()) ||
+    missingStartFrame ||
+    missingLipsyncInput;
+
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) setShowModelDropdown(false);
@@ -391,6 +519,44 @@ export default function GeneratePage() {
       else { setInputImage(base64); setInputImagePreview(base64); }
     };
     reader.readAsDataURL(file);
+  };
+
+  /**
+   * Send a lip-sync input to R2 and keep the URL it comes back with.
+   *
+   * Deliberately not the base64 path `handleImageUpload` uses: a voice track is
+   * megabytes and a clip tens of them, and inlining that into the generation
+   * request would carry it through JSON twice before a provider ever sees it.
+   *
+   * The network work lives in `uploadMedia` outside the component, and there is
+   * no `try/finally` here, on purpose. React Compiler cannot compile a function
+   * containing `finally` and responds by silently giving up on the **whole**
+   * component — this page loses its auto-memoization and every compiler-based
+   * lint rule stops running on it, with no diagnostic to say so. The only
+   * visible symptom is that the `set-state-in-effect` suppressions above start
+   * reporting as unused. Reintroducing a `finally` anywhere in this component
+   * will bring that back.
+   */
+  const handleMediaUpload = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+    kind: "audio" | "video",
+  ) => {
+    const file = e.target.files?.[0];
+    // Clearing the picker lets the same file be chosen again after a failure —
+    // without it the change event never fires a second time.
+    e.target.value = "";
+    if (!file) return;
+
+    setUploading(kind);
+    const result = await uploadMedia(file, kind);
+    setUploading(null);
+
+    if (result.error) {
+      toast("error", "อัปโหลดไม่สำเร็จ", result.error);
+      return;
+    }
+    if (kind === "audio") { setInputAudio(result.url!); setInputAudioName(file.name); }
+    else { setSourceVideo(result.url!); setSourceVideoName(file.name); }
   };
 
   const pollResult = useCallback(async (generationId: number) => {
@@ -474,9 +640,24 @@ export default function GeneratePage() {
   }, [setIsGenerating, fetchCredits, fetchHistory, toast]);
 
   const handleGenerate = async () => {
-    if (!prompt.trim() || !selectedModelId || isGenerating) return;
+    // Lip-sync is driven by the uploaded voice, not by text, so it is the one
+    // mode that may legitimately run with an empty prompt.
+    if (!selectedModelId || isGenerating) return;
+    if (tab !== "lipsync" && !prompt.trim()) return;
     if (missingStartFrame) {
       toast("error", "ยังไม่ได้เลือกภาพเริ่มต้น", "โหมดภาพ → วิดีโอ ต้องอัปโหลดภาพก่อน");
+      return;
+    }
+    if (missingLipsyncInput) {
+      toast(
+        "error",
+        "ยังใส่ไฟล์ไม่ครบ",
+        !inputAudio
+          ? "ต้องอัปโหลดไฟล์เสียงที่จะให้พูด"
+          : lipsyncNeeds === "image"
+            ? "ต้องอัปโหลดรูปหน้าคนที่จะให้พูด"
+            : "ต้องอัปโหลดคลิปต้นฉบับที่จะพากย์ทับ",
+      );
       return;
     }
     setIsGenerating(true); setResult(null); setIsFavorited(false);
@@ -490,11 +671,17 @@ export default function GeneratePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          modelId: selectedModelId, type: tab,
+          modelId: selectedModelId,
+          // Lip-sync has no generation type of its own on the server: what it
+          // produces is a clip, and the tab exists only to give it the right
+          // controls here.
+          type: tab === "lipsync" ? "video" : tab,
           prompt: prompt.trim(),
           negativePrompt: negativePrompt.trim() || undefined,
           styleId: selectedStyle || undefined,
-          inputImage: imageToSend || undefined,
+          inputImage: tab === "lipsync" && lipsyncNeeds === "video" ? undefined : imageToSend || undefined,
+          inputAudio: tab === "lipsync" ? inputAudio ?? undefined : undefined,
+          inputVideo: tab === "lipsync" ? sourceVideo ?? undefined : undefined,
           params: {
             width: ar?.w || 1024, height: ar?.h || 1024, aspectRatio,
             strength: refImage && tab === "image" ? strength : undefined,
@@ -502,9 +689,13 @@ export default function GeneratePage() {
             // Every video adapter reads `duration`; none of them read steps or
             // cfgScale. Sending diffusion knobs to a video endpoint is noise at
             // best and a rejected request at worst.
+            //
+            // Lip-sync sends none of the three. Its length is set by the voice
+            // track, and the adapter derives the frame count from the model
+            // row's own ceiling rather than from anything chosen here.
             duration: tab === "video" ? duration : undefined,
-            steps: tab === "video" ? undefined : steps,
-            cfgScale: tab === "video" ? undefined : guidance,
+            steps: tab === "video" || tab === "lipsync" ? undefined : steps,
+            cfgScale: tab === "video" || tab === "lipsync" ? undefined : guidance,
             seed: seed ?? undefined,
           },
         }),
@@ -611,6 +802,7 @@ export default function GeneratePage() {
             { key: "image" as TabType, label: "สร้างภาพ", icon: "▧" },
             { key: "video" as TabType, label: "สร้างวิดีโอ", icon: "▶" },
             { key: "edit"  as TabType, label: "แก้ไขภาพ", icon: "✦" },
+            { key: "lipsync" as TabType, label: "ลิปซิงค์", icon: "♪" },
           ]).map(t => (
             <button key={t.key}
               onClick={() => { setTab(t.key); setResult(null); setNumOutputs(1); }}
@@ -685,9 +877,17 @@ export default function GeneratePage() {
 
         {/* Prompt — the only element allowed to grow, so it absorbs whatever
             height the viewport has spare and the rail still fits one screen. */}
-        <Section label="Prompt" grow>
+        <Section label={tab === "lipsync" ? "Prompt (ไม่บังคับ)" : "Prompt"} grow>
           <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)}
-            placeholder={tab === "video" ? "อธิบายวิดีโอที่ต้องการ..." : "อธิบายภาพที่ต้องการ..."}
+            placeholder={
+              tab === "lipsync"
+                ? lipsyncNeeds === "image"
+                  ? "อธิบายท่าทาง/บรรยากาศเพิ่มได้ เช่น พิธีกรยิ้มแย้ม พูดกับกล้อง..."
+                  : "ไม่ต้องใส่ก็ได้ — เสียงที่อัปโหลดเป็นตัวกำหนดผลลัพธ์"
+                : tab === "video"
+                  ? "อธิบายวิดีโอที่ต้องการ..."
+                  : "อธิบายภาพที่ต้องการ..."
+            }
             style={{ ...xdrInputStyle, padding: 14, fontSize: 14, lineHeight: 1.5, resize: "none", flex: 1, minHeight: 96 }} />
           {/* The free Pollinations model does not understand Thai — it renders an
               unrelated image instead of failing, so warn before credits are spent. */}
@@ -774,7 +974,9 @@ export default function GeneratePage() {
             </Popover>
           )}
 
-          {tab !== "edit" && (
+          {/* Lip-sync has no aspect to choose: the result keeps the shape of the
+              clip or the portrait it was given. */}
+          {tab !== "edit" && tab !== "lipsync" && (
             <Popover id="aspect" open={openPanel} onToggle={setOpenPanel} label="สัดส่วน" value={aspectRatio} width={220} align="right">
               <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6 }}>
                 {aspectRatios
@@ -901,8 +1103,14 @@ export default function GeneratePage() {
 
         {/* Image upload — the edit source, or the video start frame when the
             mode calls for one. */}
-        {(tab === "edit" || (tab === "video" && videoMode === "i2v")) && (
-          <Section label={tab === "edit" ? "ภาพต้นฉบับ" : "ภาพเริ่มต้น"}>
+        {(tab === "edit" ||
+          (tab === "video" && videoMode === "i2v") ||
+          (tab === "lipsync" && lipsyncNeeds === "image")) && (
+          <Section
+            label={
+              tab === "edit" ? "ภาพต้นฉบับ" : tab === "lipsync" ? "รูปหน้าคนที่จะให้พูด" : "ภาพเริ่มต้น"
+            }
+          >
             {inputImagePreview ? (
               <div style={{ position: "relative" }}>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -917,6 +1125,41 @@ export default function GeneratePage() {
                 <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => handleImageUpload(e)} />
               </label>
             )}
+          </Section>
+        )}
+
+        {/* Lip-sync inputs. Both are uploaded to R2 first and only their URLs
+            travel with the request, so what is held here is a link and a
+            filename rather than the bytes. */}
+        {tab === "lipsync" && lipsyncNeeds === "video" && (
+          <Section label="คลิปต้นฉบับที่จะพากย์ทับ">
+            <FilePick
+              value={sourceVideoName}
+              busy={uploading === "video"}
+              accept="video/mp4,video/webm,video/quicktime"
+              hint="อัปโหลดคลิป (MP4 / WebM)"
+              onPick={(e) => handleMediaUpload(e, "video")}
+              onClear={() => { setSourceVideo(null); setSourceVideoName(null); }}
+            />
+            <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
+              คลิปควรเห็นหน้าชัดและยาวไม่เกิน 40 วินาที · เสียงเดิมในคลิปจะถูกแทนที่ทั้งหมด
+            </div>
+          </Section>
+        )}
+
+        {tab === "lipsync" && (
+          <Section label="ไฟล์เสียงที่จะให้พูด">
+            <FilePick
+              value={inputAudioName}
+              busy={uploading === "audio"}
+              accept="audio/mpeg,audio/wav,audio/ogg,audio/flac,audio/mp4,audio/x-m4a"
+              hint="อัปโหลดเสียง (MP3 / WAV / M4A)"
+              onPick={(e) => handleMediaUpload(e, "audio")}
+              onClear={() => { setInputAudio(null); setInputAudioName(null); }}
+            />
+            <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
+              พูดภาษาอะไรก็ได้รวมถึงไทย — โมเดลอ่านคลื่นเสียงเป็นรูปปาก ไม่ได้อ่านภาษา
+            </div>
           </Section>
         )}
 
@@ -1000,15 +1243,29 @@ export default function GeneratePage() {
           </div>
         )}
 
+        {missingLipsyncInput && (
+          <div style={{
+            marginTop: 12, padding: "10px 12px", borderRadius: 10, fontSize: 12,
+            background: "hsla(38,90%,55%,0.12)", color: "#fbbf24",
+            border: "1px solid hsla(38,90%,55%,0.25)",
+          }}>
+            {!inputAudio
+              ? "ต้องอัปโหลดไฟล์เสียงที่จะให้พูดก่อน"
+              : lipsyncNeeds === "image"
+                ? "ต้องอัปโหลดรูปหน้าคนที่จะให้พูดก่อน"
+                : "ต้องอัปโหลดคลิปต้นฉบับที่จะพากย์ทับก่อน"}
+          </div>
+        )}
+
         {/* Generate Button */}
         <button onClick={handleGenerate}
-          disabled={isGenerating || !prompt.trim() || !selectedModelId || selectedModel?.canOrder === false || missingStartFrame}
+          disabled={cannotSubmit}
           style={{
             marginTop: "auto", padding: 16, borderRadius: 12,
             background: `linear-gradient(135deg, hsl(${160 + HUE},70%,45%), hsl(${280 + HUE},70%,55%))`,
             color: "#fff", border: "none", fontSize: 15, fontWeight: 600,
-            cursor: (isGenerating || !prompt.trim() || !selectedModelId || missingStartFrame) ? "not-allowed" : "pointer",
-            opacity: (isGenerating || !prompt.trim() || !selectedModelId || missingStartFrame) ? 0.6 : 1,
+            cursor: cannotSubmit ? "not-allowed" : "pointer",
+            opacity: cannotSubmit ? 0.6 : 1,
             boxShadow: `0 10px 24px -8px hsla(${270 + HUE},70%,50%,0.55)`,
           }}>
           {isGenerating ? "⟳ กำลังทอ..." : (
@@ -1030,7 +1287,7 @@ export default function GeneratePage() {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Pill active>
-              {tab === "image" ? `ภาพ ${numOutputs} ใบ` : tab === "video" ? "วิดีโอ" : "แก้ไขภาพ"}
+              {tab === "image" ? `ภาพ ${numOutputs} ใบ` : tab === "video" ? "วิดีโอ" : tab === "lipsync" ? "ลิปซิงค์" : "แก้ไขภาพ"}
             </Pill>
             <Pill onClick={() => { setSeed(Math.floor(Math.random() * 99999)); if (prompt.trim() && selectedModelId) handleGenerate(); }}>Variations</Pill>
             {tab === "image" && (
