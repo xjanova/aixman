@@ -14,7 +14,11 @@ AIXMAN is an AI image and video generation platform at **https://ai.xman4289.com
 - **AIXMAN tables (owned by this project, prefixed `ai_`):** `ai_settings`, `ai_providers`, `ai_account_pools`, `ai_models`, `ai_credit_packages`, `ai_user_credits`, `ai_credit_transactions`, `ai_generations`, `ai_templates`, `ai_styles`, `ai_favorites`, `ai_usage_logs`
 
 ### Integration Points:
-1. **Auth:** Users log in with same credentials as xmanstudio (Laravel bcrypt hashes, `$2y$` → `$2a$` compatible)
+1. **Auth:** Two ways in, both landing on the same shared `users` row:
+   - **Password** — same credentials as xmanstudio (Laravel bcrypt hashes, `$2y$` → `$2a$` compatible)
+   - **"Sign in with XMAN ID" (SSO)** — `src/lib/xman-sso.ts` + `/api/auth/xman/{start,callback}` for the web, `/api/mobile/auth/xman-exchange` for the app. PKCE; the verifier stays server-side in an httpOnly cookie, the code comes back through the browser. The callback trades it server-to-server, then hands the browser a single-use ticket that the `xman-sso` NextAuth provider redeems.
+   - **`XMAN_SSO_SECRET` must equal xmanstudio's `XDREAMER_SSO_SECRET`** (different variable name, same value). Missing on either side → exchange answers 503 and SSO is dead; the UI shows `?xman_error=unavailable` rather than failing silently.
+   - The ticket store in `xman-sso.ts` is in-process, like `rate-limit.ts`. It is correct only because `ecosystem.config.cjs` runs `instances: 1` — under cluster mode a redeem can land on a different worker and sign-ins fail at random.
 2. **Wallet → Credits:** Users buy AI credit packages via xmanstudio checkout. After payment, xmanstudio calls `POST /api/webhooks/xman-credit` to add credits
 3. **Credit Packages:** `ai_credit_packages` table is the single source of truth for pricing. xmanstudio reads this for billing/affiliate. `GET /api/packages` is the public endpoint
 4. **Affiliate:** Orders for AI credits go through xmanstudio's order/affiliate system
