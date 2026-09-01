@@ -21,8 +21,22 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       async authorize(credentials) {
         if (!credentials?.email || !credentials?.password) return null;
 
+        // Explicit `select`, never a bare findUnique. `users` is owned by
+        // xmanstudio and its columns move without warning here; Prisma names
+        // every column in its SELECT, so one stale field in schema.prisma turns
+        // into P2022 and takes down every login on the site. Naming only what we
+        // use keeps a dropped column a Prisma-schema chore, not an outage.
         const user = await prisma.user.findUnique({
           where: { email: credentials.email as string },
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            avatar: true,
+            role: true,
+            isActive: true,
+            password: true,
+          },
         });
 
         if (!user || !user.isActive) return null;
@@ -67,7 +81,11 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
 
         // Re-read rather than trusting the id carried on the ticket: the account
         // could have been deactivated in the seconds since the exchange.
-        const user = await prisma.user.findUnique({ where: { id: userId } });
+        // Explicit select, for the same reason as the password provider above.
+        const user = await prisma.user.findUnique({
+          where: { id: userId },
+          select: { id: true, name: true, email: true, avatar: true, role: true, isActive: true },
+        });
         if (!user || !user.isActive) return null;
 
         return {

@@ -26,7 +26,12 @@ model User {
   phone              String?
   role               String    @default("user")
   isActive           Boolean   @default(true) @map("is_active")
-  preferredTheme     String?   @map("preferred_theme")
+  // NOTE: no `preferredTheme` here. xmanstudio dropped users.preferred_theme on
+  // 2026-08-03 (drop_preferred_theme_from_users_table). Prisma names every
+  // column explicitly in its SELECT, so leaving a phantom field here makes any
+  // bare `user.findUnique()` throw P2022 — which is exactly what silently killed
+  // *all* logins on this site until 2026-09-01. This model must mirror the
+  // Laravel-owned table exactly; it is never the other way round.
   stripeCustomerId   String?   @map("stripe_customer_id")
   rememberToken      String?   @map("remember_token")
   createdAt          DateTime  @default(now()) @map("created_at")
