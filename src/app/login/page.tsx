@@ -18,6 +18,19 @@ import Image from "next/image";
 const HUE = 70;
 const XMAN_URL = process.env.NEXT_PUBLIC_XMAN_URL || "https://xman4289.com";
 
+/**
+ * What each `?xman_error=` code means to a customer. Deliberately vague about
+ * the internals — "upstream" and "invalid" are our problem, not something they
+ * can act on beyond trying again.
+ */
+const XMAN_ERRORS: Record<string, string> = {
+  unavailable: "ระบบเข้าสู่ระบบด้วย XMAN ID ยังไม่พร้อมใช้งาน กรุณาใช้อีเมลและรหัสผ่าน",
+  expired: "ลิงก์เข้าสู่ระบบหมดอายุแล้ว กรุณาลองใหม่อีกครั้ง",
+  upstream: "ติดต่อ xman4289.com ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
+  inactive: "บัญชีนี้ถูกระงับการใช้งาน กรุณาติดต่อฝ่ายบริการลูกค้า",
+  invalid: "เข้าสู่ระบบด้วย XMAN ID ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
+};
+
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
@@ -25,12 +38,49 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [isSignup, setIsSignup] = useState(false);
+  const [ssoBusy, setSsoBusy] = useState(false);
 
   // Read ?signup=1 client-side (avoids needing a Suspense boundary for useSearchParams).
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsSignup(new URLSearchParams(window.location.search).get("signup") === "1");
   }, []);
+
+  /**
+   * Finish "Sign in with XMAN ID".
+   *
+   * /api/auth/xman/callback has already proved who this is, server to server,
+   * and left a single-use ticket on the URL. All that is left is to trade it for
+   * a NextAuth session — which only the browser can do.
+   */
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+
+    const failure = params.get("xman_error");
+    if (failure) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setError(XMAN_ERRORS[failure] ?? XMAN_ERRORS.invalid);
+      window.history.replaceState({}, "", "/login");
+      return;
+    }
+
+    const ticket = params.get("xman_ticket");
+    if (!ticket) return;
+
+    const destination = params.get("callbackUrl") || "/generate";
+    // Strip the ticket before anything can put it in history or a Referer.
+    window.history.replaceState({}, "", "/login");
+
+    setSsoBusy(true);
+    signIn("xman-sso", { ticket, redirect: false }).then((result) => {
+      if (result?.error) {
+        setSsoBusy(false);
+        setError(XMAN_ERRORS.expired);
+        return;
+      }
+      router.push(destination.startsWith("/") && !destination.startsWith("//") ? destination : "/generate");
+    });
+  }, [router]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -82,6 +132,30 @@ export default function LoginPage() {
             </a>
           </div>
         )}
+
+        {/* One click for anyone already signed in at xman4289.com — no password
+            to retype, and no second account to keep track of. */}
+        {/* A real document navigation, not a Link: /api/auth/xman/start answers
+            with a 302 to xman4289.com, and client-side routing cannot follow a
+            redirect off this origin. */}
+        <button type="button" disabled={ssoBusy}
+          onClick={() => { setSsoBusy(true); window.location.href = "/api/auth/xman/start"; }}
+          style={{
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
+            width: "100%", padding: "13px 0", borderRadius: 12,
+            background: "rgba(2,6,23,0.5)", border: `1px solid hsla(${220 + HUE},70%,65%,0.35)`,
+            color: "#e2e8f0", fontSize: 14, fontWeight: 600, fontFamily: "inherit",
+            cursor: ssoBusy ? "wait" : "pointer", opacity: ssoBusy ? 0.6 : 1,
+          }}>
+          <span aria-hidden style={{ color: "#a5f3fc", fontWeight: 800, letterSpacing: 1 }}>X</span>
+          {ssoBusy ? "กำลังเข้าสู่ระบบ..." : "เข้าสู่ระบบด้วย XMAN ID"}
+        </button>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "18px 0" }}>
+          <div style={{ flex: 1, height: 1, background: "rgba(255,255,255,0.1)" }} />
+          <span style={{ fontSize: 11, color: "#64748b" }}>หรือใช้อีเมล</span>
+          <div style={{ flex: 1, height: 1, background: "rgba(255,255,255,0.1)" }} />
+        </div>
 
         <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {isSignup && (

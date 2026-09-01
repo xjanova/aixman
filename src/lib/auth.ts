@@ -3,6 +3,7 @@ import CredentialsProvider from 'next-auth/providers/credentials';
 import bcrypt from 'bcryptjs';
 import prisma from '@/lib/db';
 import { getBearerUserId } from '@/lib/mobile-auth';
+import { consumeTicket } from '@/lib/xman-sso';
 
 /**
  * NextAuth configuration
@@ -31,6 +32,43 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         const isValid = await bcrypt.compare(credentials.password as string, passwordHash);
 
         if (!isValid) return null;
+
+        return {
+          id: String(user.id),
+          name: user.name,
+          email: user.email,
+          image: user.avatar,
+          role: user.role,
+        };
+      },
+    }),
+
+    /**
+     * "Sign in with XMAN ID" — the browser hands back a ticket that
+     * /api/auth/xman/callback minted after xmanstudio vouched for the user
+     * server-to-server.
+     *
+     * No password is involved and none is accepted: the only input is a ticket
+     * this process issued itself, single-use and valid for a minute. Everything
+     * that authenticates the customer already happened at xman4289.com.
+     */
+    CredentialsProvider({
+      id: 'xman-sso',
+      name: 'XMAN ID',
+      credentials: {
+        ticket: { label: 'Ticket', type: 'text' },
+      },
+      async authorize(credentials) {
+        const ticket = typeof credentials?.ticket === 'string' ? credentials.ticket : '';
+        if (!ticket) return null;
+
+        const userId = consumeTicket(ticket);
+        if (userId === null) return null;
+
+        // Re-read rather than trusting the id carried on the ticket: the account
+        // could have been deactivated in the seconds since the exchange.
+        const user = await prisma.user.findUnique({ where: { id: userId } });
+        if (!user || !user.isActive) return null;
 
         return {
           id: String(user.id),
