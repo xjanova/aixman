@@ -12,9 +12,22 @@ import { S3Client, PutObjectCommand, DeleteObjectsCommand } from '@aws-sdk/clien
  * Required env:
  *   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET, R2_PUBLIC_URL
  * R2_PUBLIC_URL is the bucket's public base (r2.dev URL or a custom domain).
+ *
+ * Optional: R2_KEY_PREFIX — a folder this app owns inside a *shared* bucket
+ * (production shares Thaiprompt's `fortune-voice`). Every key written gets it,
+ * and only keys under it are ever treated as ours. That second half is the one
+ * that matters: the retention sweep deletes whatever `keyFromPublicUrl` claims,
+ * and without the prefix a customer who pasted a URL from the other app as an
+ * input would have that app's file deleted when this one's retention ran out.
  */
 
 let cachedClient: S3Client | null = null;
+
+/** `aixman/` for R2_KEY_PREFIX=aixman, empty when unset. */
+function keyPrefix(): string {
+  const raw = process.env.R2_KEY_PREFIX?.trim().replace(/^\/+|\/+$/g, '');
+  return raw ? `${raw}/` : '';
+}
 
 export function isStorageConfigured(): boolean {
   return Boolean(
@@ -80,30 +93,34 @@ async function resolveAsset(src: string): Promise<FetchedAsset> {
 /** Upload raw bytes to R2 and return the public URL. */
 export async function uploadBuffer(buffer: Buffer, key: string, contentType: string): Promise<string> {
   if (!isStorageConfigured()) throw new Error('R2 storage is not configured');
+  const fullKey = `${keyPrefix()}${key}`;
   await getClient().send(
     new PutObjectCommand({
       Bucket: process.env.R2_BUCKET!,
-      Key: key,
+      Key: fullKey,
       Body: buffer,
       ContentType: contentType,
     })
   );
   const base = process.env.R2_PUBLIC_URL!.replace(/\/+$/, '');
-  return `${base}/${key}`;
+  return `${base}/${fullKey}`;
 }
 
 /**
  * Recover the object key from a public URL we handed out.
  *
  * Returns null for anything not served from our bucket — a provider URL that
- * was stored before R2 was configured, say. The retention sweep relies on that
- * to avoid trying to delete objects it does not own.
+ * was stored before R2 was configured, say — and, when the bucket is shared,
+ * for anything outside our prefix. The retention sweep relies on that to avoid
+ * deleting objects it does not own.
  */
 export function keyFromPublicUrl(url: string): string | null {
   const base = process.env.R2_PUBLIC_URL?.replace(/\/+$/, '');
   if (!base || !url?.startsWith(`${base}/`)) return null;
   const key = url.slice(base.length + 1).split('?')[0];
-  return key.length > 0 ? key : null;
+  if (key.length === 0) return null;
+  const prefix = keyPrefix();
+  return prefix && !key.startsWith(prefix) ? null : key;
 }
 
 /**
