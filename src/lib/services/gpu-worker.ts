@@ -11,7 +11,8 @@ import {
 } from '@/lib/gpu/config';
 import type { AiGpuWorker } from '@/generated/prisma/client';
 import { buildComfyUiStartScript, renderEnvExports } from '@/lib/gpu/provision';
-import type { GpuOffer, GpuRentalProvider } from '@/lib/gpu/types';
+import { RentUnconfirmedError, type GpuOffer, type GpuRentalProvider, type PendingRental } from '@/lib/gpu/types';
+import { isStorageConfigured } from '@/lib/storage/r2';
 
 /**
  * Reserved prefix for instance names we own. The orphan sweep terminates any
@@ -28,6 +29,24 @@ const NAME_PREFIX = 'aixman-';
 const ORPHAN_GRACE_MS = 5 * 60_000;
 
 const HEALTH_TIMEOUT_MS = 8_000;
+
+/** Unconfirmed rentals are chased this long before being given up on. */
+const PENDING_RENTAL_TTL_MS = 30 * 60_000;
+const PENDING_RENTAL_KEY = 'gpu_pending_rentals';
+
+/** SimplePod lists disk per GB per month (see GpuOffer.diskPricePerGbMonthUsd). */
+const HOURS_PER_MONTH = 730;
+
+/** How long to hold off re-renting a model whose last boot failed. */
+const BOOT_FAILURE_BACKOFF_MS = 10 * 60_000;
+/** Termination reason for a boot the worker itself reported as failed. */
+const BOOT_FAILURE_PREFIX = 'Worker failed to provision';
+
+export interface WorkerProbe {
+  state: 'ready' | 'warming' | 'failed';
+  /** Progress or failure text from the worker, for the admin panel. */
+  detail?: string;
+}
 
 export type WorkerStatus =
   | 'provisioning'
@@ -130,8 +149,16 @@ export class GpuWorkerManager {
   // Health
   // ----------------------------------------------------------------
 
-  /** True once the inference server inside the container answers. */
-  static async isHealthy(endpoint: string, profile: WorkerProfile, authToken?: string): Promise<boolean> {
+  /**
+   * Ask the worker whether it can take a job.
+   *
+   * For a ComfyUI worker the health path is the proxy's readiness endpoint,
+   * which answers 200 only once every weight file is on disk *and* ComfyUI is
+   * up, 503 while it is still getting there, and 500 once the boot has failed.
+   * The last one matters: a boot that fails early says so in a minute, rather
+   * than billing until the warmup timeout.
+   */
+  static async probe(endpoint: string, profile: WorkerProfile, authToken?: string): Promise<WorkerProbe> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
     try {
@@ -140,9 +167,26 @@ export class GpuWorkerManager {
         signal: controller.signal,
         cache: 'no-store',
       });
-      return res.ok;
+      const body = (await res.json().catch(() => null)) as
+        | { ready?: boolean; failed?: string; stage?: string; bytes?: number; auth?: boolean }
+        | null;
+
+      if (res.ok) {
+        if (body?.auth === false) {
+          // The proxy fails open when it has no token. Still usable, but the
+          // GPU is reachable by anyone holding the tunnel URL — say so loudly.
+          console.error('[gpu] SECURITY: worker at ready endpoint is not enforcing its bearer token');
+          return { state: 'ready', detail: 'Worker is not enforcing its bearer token' };
+        }
+        return { state: 'ready' };
+      }
+      if (body?.failed) return { state: 'failed', detail: body.failed };
+      if (body?.stage === 'downloading' && typeof body.bytes === 'number') {
+        return { state: 'warming', detail: `downloading weights, ${(body.bytes / 1024 ** 3).toFixed(1)} GB so far` };
+      }
+      return { state: 'warming', detail: body?.stage ? `${body.stage}` : `HTTP ${res.status}` };
     } catch {
-      return false;
+      return { state: 'warming', detail: 'not reachable yet' };
     } finally {
       clearTimeout(timer);
     }
@@ -294,12 +338,17 @@ export class GpuWorkerManager {
         return;
       }
 
-      const healthy = await this.isHealthy(endpoint, profile, this.readAuthToken(worker));
+      const probe = await this.probe(endpoint, profile, this.readAuthToken(worker));
+      if (probe.state === 'failed') {
+        await this.terminate(worker.id, `${BOOT_FAILURE_PREFIX}: ${probe.detail ?? 'unknown'}`);
+        return;
+      }
       await prisma.aiGpuWorker.update({
         where: { id: worker.id },
-        data: healthy
-          ? { status: 'ready', readyAt: now, lastError: null }
-          : { status: 'warming' },
+        data:
+          probe.state === 'ready'
+            ? { status: 'ready', readyAt: now, lastError: probe.detail ?? null }
+            : { status: 'warming', lastError: probe.detail ? `Warming: ${probe.detail}` : undefined },
       });
       return;
     }
@@ -376,46 +425,90 @@ export class GpuWorkerManager {
       };
     }
 
+    // --- Configuration: a failure here cannot fix itself, so it throws and
+    // the queue refunds the waiting jobs instead of retrying forever. ---
     const profile = await getWorkerProfile(modelKey);
     assertProfileUsable(modelKey, profile);
 
     const apiKey = await this.getApiKey(cfg.providerSlug);
     const provider = this.resolveProvider(cfg.providerSlug);
 
-    // Renting with an empty vendor balance produces an instance that dies
-    // mid-render; check before committing.
-    const balance = await provider.getBalance(apiKey);
-    if (balance.balanceUsd <= cfg.maxPricePerHourUsd) {
-      return {
-        worker: null,
-        reason: `Provider balance too low ($${balance.balanceUsd.toFixed(2)}) to rent for an hour`,
-      };
+    // The render lives on the worker's tunnel and dies with the machine, so it
+    // must be copied to R2 before the worker is released. Without R2 every
+    // render would be thrown away after it was paid for — do not rent at all.
+    if (!isStorageConfigured()) {
+      throw new Error(
+        'R2 storage is not configured, so a GPU render could not be kept once the worker is released. ' +
+          'Set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET and R2_PUBLIC_URL.'
+      );
     }
 
-    const offers = await provider.findOffers(
-      {
-        minGpuMemoryMb: profile.minVramMb,
-        gpuModels: profile.gpuModels,
-        maxPricePerHourUsd: cfg.maxPricePerHourUsd,
-        minDiskGb: profile.diskGb,
-        minDownloadMbps: profile.minDownloadMbps,
-        minCudaVersion: profile.minCudaVersion,
-        gpuCount: profile.gpuCount,
-        region: cfg.region,
+    // A boot that just failed will most likely fail the same way again (a
+    // weight file gone from the repo, a broken ComfyUI requirement). Pause
+    // before paying for the next attempt, and say why.
+    const recentBootFailure = await prisma.aiGpuWorker.findFirst({
+      where: {
+        modelKey,
+        terminatedAt: { gte: new Date(Date.now() - BOOT_FAILURE_BACKOFF_MS) },
+        lastError: { startsWith: BOOT_FAILURE_PREFIX },
       },
-      apiKey
-    );
-
-    if (offers.length === 0) {
+      orderBy: { terminatedAt: 'desc' },
+    });
+    if (recentBootFailure) {
       return {
         worker: null,
-        reason:
-          `No ${profile.gpuModels.join('/') || 'suitable'} GPU available under ` +
-          `$${cfg.maxPricePerHourUsd}/hr with ${Math.round(profile.minVramMb / 1024)} GB VRAM`,
+        reason: `Waiting before re-renting after a failed boot — ${recentBootFailure.lastError}`.slice(0, 500),
       };
     }
 
-    return { worker: await this.rentWorker(offers[0], modelKey, profile, provider, apiKey, cfg) };
+    // --- Vendor calls: SimplePod's API returns intermittent 502s, which say
+    // nothing about whether renting can work. Report them as a reason and let
+    // the next tick try again, rather than failing every queued job. ---
+    try {
+      // Renting with an empty vendor balance produces an instance that dies
+      // mid-render; check before committing.
+      const balance = await provider.getBalance(apiKey);
+      if (balance.balanceUsd <= cfg.maxPricePerHourUsd) {
+        return {
+          worker: null,
+          reason: `Provider balance too low ($${balance.balanceUsd.toFixed(2)}) to rent for an hour`,
+        };
+      }
+
+      const offers = await provider.findOffers(
+        {
+          minGpuMemoryMb: profile.minVramMb,
+          gpuModels: profile.gpuModels,
+          maxPricePerHourUsd: cfg.maxPricePerHourUsd,
+          minDiskGb: profile.diskGb,
+          minDownloadMbps: profile.minDownloadMbps,
+          minCudaVersion: profile.minCudaVersion,
+          gpuCount: profile.gpuCount,
+          region: cfg.region,
+        },
+        apiKey
+      );
+
+      if (offers.length === 0) {
+        return {
+          worker: null,
+          reason:
+            `No ${profile.gpuModels.join('/') || 'suitable'} GPU available under ` +
+            `$${cfg.maxPricePerHourUsd}/hr with ${Math.round(profile.minVramMb / 1024)} GB VRAM`,
+        };
+      }
+
+      return { worker: await this.rentWorker(offers[0], modelKey, profile, provider, apiKey, cfg) };
+    } catch (error) {
+      if (error instanceof RentUnconfirmedError) {
+        // Possibly billing with nothing tracking it. Remember the order so the
+        // sweep can find the machine, tag it and terminate it.
+        await this.rememberPendingRental(error.pending);
+      }
+      const message = (error as Error).message;
+      console.error(`[gpu] could not rent for ${modelKey}:`, message);
+      return { worker: null, reason: `Could not rent a GPU right now: ${message}`.slice(0, 500) };
+    }
   }
 
   /**
@@ -475,21 +568,27 @@ export class GpuWorkerManager {
     // For a ComfyUI worker on the stock PyTorch image, the start script installs
     // everything — no custom Docker build is needed. A 'simple' profile points
     // at an image that serves itself, so it only gets the env exports.
-    const startScript =
+    const scriptFor = (scriptEnv: Record<string, string>, hfToken: string | undefined) =>
       profile.apiKind === 'comfyui'
         ? buildComfyUiStartScript({
             publicPort: profile.apiPort,
             extraScript: profile.startScript,
-            hfToken: process.env.GPU_HF_TOKEN,
-            env,
+            hfToken,
+            env: scriptEnv,
             // Each model brings its own weights and node packs, so the machine
             // is provisioned for exactly the job it was rented for.
             downloads: profile.downloads,
             customNodes: profile.customNodes,
           })
-        : ['#!/usr/bin/env bash', 'set -uo pipefail', renderEnvExports(env), profile.startScript ?? '']
+        : ['#!/usr/bin/env bash', 'set -uo pipefail', renderEnvExports(scriptEnv), profile.startScript ?? '']
             .filter(Boolean)
             .join('\n');
+
+    const startScript = scriptFor(env, process.env.GPU_HF_TOKEN);
+    // The vendor keeps templates after the machine is gone; nothing secret
+    // goes into one.
+    const publicEnv = Object.fromEntries(Object.entries(env).filter(([key]) => key !== 'AIXMAN_WORKER_TOKEN'));
+    const templateStartScript = scriptFor(publicEnv, undefined);
 
     const instance = await provider.rent(
       {
@@ -500,6 +599,7 @@ export class GpuWorkerManager {
         diskGb: profile.diskGb,
         exposePorts: [profile.apiPort],
         startScript,
+        templateStartScript,
         env,
         registry: getRegistryCredentials(),
         nameTag,
@@ -522,7 +622,11 @@ export class GpuWorkerManager {
           gpuMemoryMb: instance.gpuMemoryMb ?? offer.gpuMemoryMb,
           // Stored as the instance's *total* burn rate, not per-GPU, so every
           // downstream cost calculation can multiply by hours and stop there.
-          pricePerHourUsd: offer.pricePerHourUsd * profile.gpuCount,
+          // Disk is billed for the whole rental too; leaving it out made the
+          // daily budget under-count real spend.
+          pricePerHourUsd:
+            offer.pricePerHourUsd * profile.gpuCount +
+            ((offer.diskPricePerGbMonthUsd ?? 0) * profile.diskGb) / HOURS_PER_MONTH,
           metadata: { offerId: offer.id, region: offer.region ?? null, image: `${profile.image}:${profile.tag}` },
         },
       });
@@ -601,6 +705,10 @@ export class GpuWorkerManager {
     const apiKey = await this.getApiKey(cfg.providerSlug);
     const provider = this.resolveProvider(cfg.providerSlug);
 
+    // First, tag anything an unconfirmed rental left behind, so the pass below
+    // can see it as ours. It becomes eligible once past the grace period.
+    await this.adoptPendingRentals(provider, apiKey);
+
     const [instances, known] = await Promise.all([
       provider.listInstances(apiKey),
       prisma.aiGpuWorker.findMany({
@@ -638,6 +746,61 @@ export class GpuWorkerManager {
     }
 
     return { terminated };
+  }
+
+  // ----------------------------------------------------------------
+  // Unconfirmed rentals
+  // ----------------------------------------------------------------
+
+  private static async readPendingRentals(): Promise<PendingRental[]> {
+    const row = await prisma.aiSetting.findUnique({ where: { key: PENDING_RENTAL_KEY } });
+    if (!row?.value) return [];
+    try {
+      const parsed = JSON.parse(row.value);
+      return Array.isArray(parsed) ? (parsed as PendingRental[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private static async writePendingRentals(list: PendingRental[]): Promise<void> {
+    const value = JSON.stringify(list);
+    await prisma.aiSetting.upsert({
+      where: { key: PENDING_RENTAL_KEY },
+      update: { value },
+      create: { key: PENDING_RENTAL_KEY, value, type: 'json', group: 'gpu' },
+    });
+  }
+
+  private static async rememberPendingRental(pending: PendingRental): Promise<void> {
+    const list = await this.readPendingRentals();
+    // Bounded: each entry is chased for PENDING_RENTAL_TTL_MS anyway.
+    await this.writePendingRentals([...list, pending].slice(-5));
+  }
+
+  /**
+   * Chase every unconfirmed rental until its machine is tagged or the order is
+   * old enough that nothing is coming. A vendor that is still failing just
+   * leaves the list for the next tick.
+   */
+  private static async adoptPendingRentals(provider: GpuRentalProvider, apiKey: string): Promise<void> {
+    const list = await this.readPendingRentals();
+    if (list.length === 0 || !provider.adoptUnconfirmed) return;
+
+    const keep: PendingRental[] = [];
+    for (const pending of list) {
+      try {
+        const tagged = await provider.adoptUnconfirmed(pending, apiKey);
+        if (tagged > 0) {
+          console.warn(`[gpu] tagged ${tagged} instance(s) from an unconfirmed rental for termination`);
+          continue;
+        }
+      } catch (error) {
+        console.error('[gpu] could not check an unconfirmed rental:', (error as Error).message);
+      }
+      if (Date.now() - pending.at < PENDING_RENTAL_TTL_MS) keep.push(pending);
+    }
+    if (keep.length !== list.length) await this.writePendingRentals(keep);
   }
 }
 

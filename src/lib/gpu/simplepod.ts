@@ -1,12 +1,15 @@
-import type {
-  GpuBalance,
-  GpuInstance,
-  GpuInstanceStatus,
-  GpuOffer,
-  GpuOfferFilter,
-  GpuProviderSlug,
-  GpuRentSpec,
-  GpuRentalProvider,
+import { createHash } from 'crypto';
+import {
+  RentUnconfirmedError,
+  type GpuBalance,
+  type GpuInstance,
+  type GpuInstanceStatus,
+  type GpuOffer,
+  type GpuOfferFilter,
+  type GpuProviderSlug,
+  type GpuRentSpec,
+  type GpuRentalProvider,
+  type PendingRental,
 } from './types';
 
 const DEFAULT_BASE_URL = 'https://api.simplepod.ai';
@@ -32,6 +35,8 @@ interface MarketRow {
   isAvailableForDemand?: boolean;
   /** Host CUDA version as a string, e.g. "13.3". Filtered on client-side. */
   gpuCudaVer?: string;
+  /** Disk rate, USD per GB per month (see GpuOffer.diskPricePerGbMonthUsd). */
+  pricePerDiskSize?: number;
 }
 
 interface InstanceRow {
@@ -176,6 +181,7 @@ export class SimplePodProvider implements GpuRentalProvider {
         reliability: r.sla,
         downloadMbps: r.downloadSpeedtest,
         cudaVersion: typeof r.gpuCudaVer === 'string' ? r.gpuCudaVer : undefined,
+        diskPricePerGbMonthUsd: typeof r.pricePerDiskSize === 'number' ? r.pricePerDiskSize : undefined,
       }))
       .filter((o) => {
         if (o.pricePerHourUsd <= 0) return false;
@@ -203,11 +209,23 @@ export class SimplePodProvider implements GpuRentalProvider {
    * Find-or-create the private template that describes our container.
    *
    * `POST /instances/templates` returns an empty body, so the id is recovered
-   * by re-listing and matching on name. Template names are therefore treated as
-   * unique keys and must be stable per image+config.
+   * by re-listing and matching on name. The name therefore carries a hash of
+   * everything the template pins — image, tag, disk, ports, boot script — so a
+   * change to any of them gets a fresh template instead of silently reusing
+   * one that boots last month's image.
+   *
+   * The template never holds the worker's bearer token: it outlives the
+   * machine, and the per-rental script and env are sent with each order.
    */
   private async ensureTemplate(spec: GpuRentSpec, apiKey: string): Promise<string> {
-    const name = spec.nameTag;
+    const script = spec.templateStartScript ?? '';
+    const fingerprint = createHash('sha256')
+      .update(
+        JSON.stringify([spec.image, spec.imageTag, spec.diskGb, spec.exposePorts, spec.registry?.host ?? '', script])
+      )
+      .digest('hex')
+      .slice(0, 10);
+    const name = `${spec.nameTag}-${fingerprint}`;
 
     const existing = await this.findTemplateByName(name, apiKey);
     if (existing) return `/instances/templates/${existing}`;
@@ -219,7 +237,7 @@ export class SimplePodProvider implements GpuRentalProvider {
       categoryName: 'aixman',
       diskSize: spec.diskGb,
       exposePorts: spec.exposePorts.join(','),
-      startScript: spec.startScript || '',
+      startScript: script,
       notes: 'Managed by AIXMAN. Deleting this template does not stop running instances.',
       isPasswordProtected: Boolean(spec.registry),
       isRunSshServerOn: false,
@@ -230,9 +248,6 @@ export class SimplePodProvider implements GpuRentalProvider {
       body.host = spec.registry.host;
       body.username = spec.registry.username;
       body.password = spec.registry.password;
-    }
-    if (spec.env && Object.keys(spec.env).length > 0) {
-      body.envVariables = Object.entries(spec.env).map(([k, v]) => ({ name: k, value: v }));
     }
 
     await this.call(apiKey, '/instances/templates', {
@@ -267,7 +282,9 @@ export class SimplePodProvider implements GpuRentalProvider {
 
     // `POST /instances` returns an empty body, so the new instance is identified
     // by diffing the instance list before and after. Snapshot first.
-    const before = new Set((await this.listInstanceRows(apiKey)).map((r) => r.id).filter(Boolean));
+    const beforeRows = await this.listInstanceRows(apiKey);
+    const before = new Set(beforeRows.map((r) => r.id).filter((id) => id != null).map(String));
+    const pending: PendingRental = { before: [...before], at: Date.now(), nameTag: spec.nameTag };
 
     const body: Record<string, unknown> = {
       gpuCount: spec.gpuCount,
@@ -279,16 +296,33 @@ export class SimplePodProvider implements GpuRentalProvider {
       body.envVariables = Object.entries(spec.env).map(([k, v]) => ({ name: k, value: v }));
     }
 
-    await this.call(apiKey, '/instances', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    try {
+      await this.call(apiKey, '/instances', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
+      // A 4xx is a refusal — nothing was rented. Anything else (timeout, 502
+      // from the vendor's edge) may have been processed anyway, so look for
+      // the machine before deciding.
+      if (/→ 4dd/.test((error as Error).message)) throw error;
+      console.warn('[gpu] rent request did not complete cleanly, checking whether it went through:', (error as Error).message);
+    }
 
     const deadline = Date.now() + RENT_SETTLE_TIMEOUT_MS;
     while (Date.now() < deadline) {
-      const rows = await this.listInstanceRows(apiKey);
-      const fresh = rows.find((r) => r.id != null && !before.has(r.id));
+      let rows: InstanceRow[];
+      try {
+        rows = await this.listInstanceRows(apiKey);
+      } catch (error) {
+        // The list endpoint fails intermittently (502s in production logs).
+        // One bad poll must not abandon a machine that is already billing.
+        console.warn('[gpu] instance list failed while confirming a rental, retrying:', (error as Error).message);
+        await sleep(RENT_SETTLE_INTERVAL_MS);
+        continue;
+      }
+      const fresh = rows.find((r) => r.id != null && !before.has(String(r.id)));
       if (fresh) {
         const id = String(fresh.id);
         // Name it so an orphan sweep (or a human in the SimplePod console) can
@@ -311,12 +345,41 @@ export class SimplePodProvider implements GpuRentalProvider {
       await sleep(RENT_SETTLE_INTERVAL_MS);
     }
 
-    // The rental may still have succeeded — we simply can't identify it. Say so
-    // loudly: the caller must trigger an orphan sweep rather than silently retry.
-    throw new Error(
-      'SimplePod accepted the rental but no new instance appeared within 90s. ' +
-        'Run an orphan sweep before renting again to avoid paying for a machine we lost track of.'
+    throw new RentUnconfirmedError(
+      `SimplePod may have accepted the rental but no new instance appeared within ${RENT_SETTLE_TIMEOUT_MS / 1000}s. ` +
+        'It will be tagged and swept on the next ticks.',
+      pending
     );
+  }
+
+  /**
+   * Tag whatever an unconfirmed rental produced so the orphan sweep can kill it.
+   *
+   * Tagging marks a machine for termination, so this errs hard toward not
+   * touching one: only an instance absent from the pre-order snapshot, created
+   * within minutes of the order, qualifies — and only the first such, since one
+   * order makes one machine. Someone renting by hand on the same account later
+   * in the day is outside the window; an instance with no creation time is
+   * never assumed to be ours.
+   */
+  async adoptUnconfirmed(pending: PendingRental, apiKey: string): Promise<number> {
+    const before = new Set(pending.before);
+    const rows = await this.listInstanceRows(apiKey);
+    const windowStart = pending.at - 60_000; // vendor clock skew
+    const windowEnd = pending.at + RENT_SETTLE_TIMEOUT_MS + 5 * 60_000;
+
+    const candidates = rows
+      .filter((row) => row.id != null && !before.has(String(row.id)))
+      .map((row) => ({ row, created: row.createdAt ? new Date(row.createdAt).getTime() : NaN }))
+      .filter(({ created }) => Number.isFinite(created) && created >= windowStart && created <= windowEnd)
+      .sort((a, b) => a.created - b.created);
+
+    const first = candidates[0]?.row;
+    if (!first) return 0;
+    // Already carries our tag (the rename landed after all): nothing to do.
+    if (first.name?.startsWith(pending.nameTag)) return 1;
+    await this.rename(String(first.id), pending.nameTag, apiKey);
+    return 1;
   }
 
   private async rename(id: string, name: string, apiKey: string): Promise<void> {

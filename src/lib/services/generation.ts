@@ -42,6 +42,13 @@ export class GenerationService {
       throw new Error(TUNING_MESSAGE);
     }
 
+    // A rented-GPU render has to be copied to R2 before the machine goes, and
+    // the queue will not rent without it. Refuse here, before credits move,
+    // instead of charging and refunding a tick later.
+    if (getGpuProvider(model.provider.slug) && !isStorageConfigured()) {
+      throw new Error('โมเดลนี้ยังตั้งค่าไม่เสร็จ กรุณาติดต่อผู้ดูแลระบบ');
+    }
+
     const numOutputs = request.params?.numOutputs || 1;
     const requiredCredits = model.creditsPerUnit * numOutputs;
 
@@ -118,15 +125,26 @@ export class GenerationService {
       // static cycle would leave one of the two undefined at module init.
       const { GpuQueue } = await import('./gpu-queue');
 
+      // The model's limits are what its price was set against and what the
+      // rented card can hold. The API (and the mobile app) can send anything,
+      // and credits here are flat per generation — an unclamped 60 s request
+      // would cost four times the render the price assumes, or not fit at all.
+      const bounded = (value: unknown, fallback: number, max: number | null | undefined) => {
+        const n = Number(value);
+        const v = Number.isFinite(n) && n > 0 ? n : fallback;
+        return max && max > 0 ? Math.min(v, max) : v;
+      };
+
       await GpuQueue.enqueue({
         generationId: generation.id,
         modelKey: model.modelId,
         payload: {
           prompt: request.prompt + styleSuffix,
           negativePrompt: request.negativePrompt,
-          width: request.params?.width || model.maxWidth || 768,
-          height: request.params?.height || model.maxHeight || 768,
-          duration: request.params?.duration || model.maxDuration || 5,
+          width: bounded(request.params?.width, model.maxWidth || 768, model.maxWidth),
+          height: bounded(request.params?.height, model.maxHeight || 768, model.maxHeight),
+          // Default to a short clip, not the longest the model allows.
+          duration: bounded(request.params?.duration, 5, model.maxDuration),
           fps: request.params?.fps || 24,
           seed: request.params?.seed ?? Math.floor(Math.random() * 2_147_483_647),
           inputImage: request.inputImage,

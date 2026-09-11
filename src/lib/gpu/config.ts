@@ -1,5 +1,5 @@
 import prisma from '@/lib/db';
-import { DEFAULT_BASE_IMAGE, DEFAULT_BASE_TAG, DEFAULT_MIN_CUDA } from './provision';
+import { DEFAULT_BASE_IMAGE, DEFAULT_BASE_TAG, DEFAULT_MIN_CUDA, READY_PATH } from './provision';
 import { getCatalogEntry, type CatalogEntry } from './catalog';
 
 /**
@@ -80,7 +80,10 @@ export const GPU_DEFAULTS: GpuBudgetConfig = {
   enabled: false,
   providerSlug: 'simplepod',
   maxConcurrentWorkers: 1,
-  maxPricePerHourUsd: 0.6,
+  // 0.6 excluded every card that can hold MiniMax H3 or Qwen-Image: on
+  // 2026-09-11 the cheapest were A100 40 GB $0.48, RTX 5090 $0.72 and RTX PRO
+  // 6000 $0.89–1.00, and the only one under 0.6 was ruled out by its driver.
+  maxPricePerHourUsd: 1.0,
   dailyBudgetUsd: 10,
   idleTimeoutMinutes: 10,
   maxWorkerLifetimeMinutes: 240,
@@ -107,11 +110,11 @@ export const MINIMAX_H3_PROFILE: WorkerProfile = {
   // container — never expose 8188, it has no authentication.
   apiPort: 8189,
   apiKind: 'comfyui',
-  healthPath: '/system_stats',
+  healthPath: READY_PATH,
   // ~42.5 GB of weights plus ComfyUI, torch and render output.
   diskGb: 120,
   minVramMb: 24576,
-  gpuModels: ['RTX 5090', 'RTX 4090', 'RTX PRO 6000'],
+  gpuModels: ['A100', 'RTX 5090', 'RTX PRO 6000', 'RTX 4090'],
   gpuCount: 1,
   // Weights are tens of gigabytes; below this the cold start alone outlives the
   // warmup timeout and the rental is wasted before it renders anything.
@@ -181,7 +184,7 @@ function profileFromCatalog(entry: CatalogEntry): WorkerProfile {
     // container — never expose 8188, it has no authentication.
     apiPort: 8189,
     apiKind: 'comfyui',
-    healthPath: '/system_stats',
+    healthPath: READY_PATH,
     diskGb: entry.hardware.diskGb,
     minVramMb: entry.hardware.minVramMb,
     gpuModels: entry.hardware.gpuModels,

@@ -4,6 +4,7 @@ import prisma from '@/lib/db';
 import { getGpuConfig } from '@/lib/gpu/config';
 import { getGpuProvider } from '@/lib/gpu';
 import { GpuWorkerManager } from '@/lib/services/gpu-worker';
+import { isStorageConfigured } from '@/lib/storage/r2';
 
 /**
  * Profit and usage analytics for rented GPUs.
@@ -183,6 +184,9 @@ export async function GET() {
         }
       : null,
     balanceError,
+    // Without R2 the queue refuses to rent (a render would be lost with the
+    // machine), so the admin needs to see why nothing is happening.
+    storageConfigured: isStorageConfigured(),
     budget: {
       spentTodayUsd: Number(spentToday.toFixed(4)),
       dailyBudgetUsd: cfg.dailyBudgetUsd,
