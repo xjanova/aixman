@@ -156,7 +156,9 @@ export function buildMiniMaxH3Workflow(
     },
     '92': {
       class_type: 'SaveVideo',
-      inputs: { video: ['91', 0], filename_prefix: 'video/aixman', format: 'auto', codec: 'auto' },
+      // `format` is a V3 dynamic combo: its codec is nested as `format.codec`.
+      // A top-level `codec` is a hidden legacy input and fails validation.
+      inputs: { video: ['91', 0], filename_prefix: 'video/aixman', format: 'auto', 'format.codec': 'auto' },
     },
   };
 

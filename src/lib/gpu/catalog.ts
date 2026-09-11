@@ -129,6 +129,15 @@ const MINIMAX_H3_SHIFT_AUDIO = 3;
 /** The turbo workflow swaps the base template's res_multistep for euler. */
 const MINIMAX_H3_TURBO_SAMPLER = 'euler';
 
+/** H3 generates at 24 fps; its frame-count grid is defined in those frames. */
+const MINIMAX_H3_FPS = 24;
+
+/** Round to the model's size step, falling back when the input is unusable. */
+function snap(value: number, step: number, fallback: number): number {
+  const n = Number.isFinite(value) && value > 0 ? value : fallback;
+  return Math.max(step, Math.round(n / step) * step);
+}
+
 const MINIMAX_H3: CatalogEntry = {
   key: 'minimax-h3',
   name: 'MiniMax H3 (Hailuo 3.0)',
@@ -146,7 +155,10 @@ const MINIMAX_H3: CatalogEntry = {
     // is what turns a 20-step render into a 4-step one.
     { repo: 'Comfy-Org/MiniMax-H3', file: 'loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors', dest: 'loras', bytes: 1_956_192_992 },
   ],
-  hardware: { minVramMb: 24576, diskGb: 120, gpuModels: ['RTX 5090', 'RTX 4090', 'RTX PRO 6000'], minCudaVersion: '12.8' },
+  // A100 40 GB is on the list because on SimplePod it was the cheapest card
+  // with room for these weights ($0.48/hr against $0.72 for a 5090, measured
+  // 2026-09-11). int8 and the nvfp4 text encoder do not need Blackwell.
+  hardware: { minVramMb: 24576, diskGb: 120, gpuModels: ['A100', 'RTX 5090', 'RTX PRO 6000', 'RTX 4090'] },
   /**
    * Splice the turbo chain into the model path:
    *
@@ -179,10 +191,12 @@ const MINIMAX_H3: CatalogEntry = {
   }),
   bind: (p) => [
     { nodeId: '105_104', input: 'prompt', value: p.prompt },
-    { nodeId: '105_104', input: 'width', value: p.width },
-    { nodeId: '105_104', input: 'height', value: p.height },
-    // MiniMax H3's latent temporal compression only accepts length % 17 === 5.
-    { nodeId: '105_104', input: 'length', value: minimaxFrameLength(p.durationSeconds, p.fps) },
+    // The node steps in 32s; ComfyUI does not enforce step, the model does.
+    { nodeId: '105_104', input: 'width', value: snap(p.width, 32, 1344) },
+    { nodeId: '105_104', input: 'height', value: snap(p.height, 32, 768) },
+    // MiniMax H3's latent temporal compression only accepts length % 17 === 5,
+    // counted at its native 24 fps — a caller's fps must not change the maths.
+    { nodeId: '105_104', input: 'length', value: minimaxFrameLength(p.durationSeconds, MINIMAX_H3_FPS) },
     { nodeId: '105_15', input: 'noise_seed', value: p.seed },
 
     // Move BOTH model consumers onto the turbo chain. Leaving BasicScheduler on
@@ -197,7 +211,7 @@ const MINIMAX_H3: CatalogEntry = {
     { nodeId: '105_17', input: 'sampler_name', value: MINIMAX_H3_TURBO_SAMPLER },
 
     // Cosmetic: the template's own defaults are fine if these ever move.
-    { nodeId: '105_91', input: 'fps', value: p.fps, optional: true },
+    { nodeId: '105_91', input: 'fps', value: MINIMAX_H3_FPS, optional: true },
     { nodeId: '92', input: 'filename_prefix', value: 'video/aixman', optional: true },
   ],
   // Estimate, and only used until this deployment has real history. Derived
@@ -235,17 +249,27 @@ const ACE_STEP: CatalogEntry = {
     { repo: 'Comfy-Org/ace_step_1.5_ComfyUI_files', file: 'split_files/text_encoders/qwen_1.7b_ace15.safetensors', dest: 'text_encoders', bytes: 3_708_523_360 },
     { repo: 'Comfy-Org/ace_step_1.5_ComfyUI_files', file: 'split_files/vae/ace_1.5_vae.safetensors', dest: 'vae', bytes: 337_431_732 },
   ],
-  hardware: { minVramMb: 12288, diskGb: 60, gpuModels: [], minCudaVersion: '12.8' },
+  // Any card that holds it — but not *any* name: the CUDA 13 image has no
+  // kernels for Volta, and the market's cheapest 16 GB cards are V100s that
+  // report a CUDA 13 driver. Unfiltered, this would rent one and fail at the
+  // first tensor. Every entry here is Turing or newer.
+  hardware: { minVramMb: 12288, diskGb: 60, gpuModels: ['RTX', 'A100', 'A40', 'A10', 'L4', 'H100', 'H200'] },
   bind: (p) => [
-    // Input names differ across ACE-Step revisions; first match wins. These are
-    // NOT verified against a live worker yet — if none matches, the job fails
-    // loudly and the model stays in 'tuning' rather than rendering the
-    // template's demo K-pop track and charging for it.
+    // Input names differ across ACE-Step revisions; first match wins. Verified
+    // against ComfyUI v0.35.1's /prompt validation (see provision.ts); if a
+    // later version renames them the job fails loudly and the model stays in
+    // 'tuning' rather than rendering the template's demo K-pop track.
     { nodeId: '94', input: ['tags', 'text', 'prompt', 'caption'], value: p.prompt },
     // Lyrics are a bonus; a song still renders from the tags alone.
     { nodeId: '94', input: ['lyrics'], value: p.negativePrompt ?? '', optional: true },
-    { nodeId: '98', input: ['seconds', 'duration', 'length'], value: Math.min(240, Math.max(5, p.durationSeconds)) },
+    // The template feeds one duration and one seed to *two* nodes through
+    // editor-only primitives. The text encoder plans the song for its own
+    // duration, so binding only the latent would write a 30 s clip of a song
+    // composed for the template's 120 s.
+    { nodeId: '98', input: ['seconds', 'duration', 'length'], value: aceDuration(p.durationSeconds) },
+    { nodeId: '94', input: ['duration'], value: aceDuration(p.durationSeconds) },
     { nodeId: '3', input: ['seed', 'noise_seed'], value: p.seed },
+    { nodeId: '94', input: ['seed'], value: p.seed },
     { nodeId: '3', input: 'steps', value: p.steps ?? 8, optional: true },
     { nodeId: '107', input: 'filename_prefix', value: 'audio/aixman', optional: true },
   ],
@@ -253,6 +277,10 @@ const ACE_STEP: CatalogEntry = {
   pricing: { creditsPerUnit: 4, costPerUnit: 0.01 },
   limits: { maxDuration: 240 },
 };
+
+function aceDuration(seconds: number): number {
+  return Math.min(240, Math.max(5, seconds));
+}
 
 // ---------------------------------------------------------------------------
 // Qwen-Image — stills
@@ -273,17 +301,25 @@ const QWEN_IMAGE: CatalogEntry = {
     // The template's LoraLoaderModelOnly expects this exact filename.
     { repo: 'lightx2v/Qwen-Image-Lightning', file: 'Qwen-Image-Lightning-8steps-V1.0.safetensors', dest: 'loras', bytes: 1_698_951_104 },
   ],
-  hardware: { minVramMb: 24576, diskGb: 90, gpuModels: ['RTX 5090', 'RTX PRO 6000', 'RTX 4090'], minCudaVersion: '12.8' },
+  hardware: { minVramMb: 24576, diskGb: 90, gpuModels: ['A100', 'RTX 5090', 'RTX PRO 6000', 'RTX 4090'] },
   bind: (p) => [
     // 6 and 7 are positive and negative. Binding by id rather than by class is
     // deliberate — two CLIPTextEncode nodes are indistinguishable by type and
     // swapping them silently inverts the prompt.
     { nodeId: '76_6', input: 'text', value: p.prompt },
     { nodeId: '76_7', input: 'text', value: p.negativePrompt ?? '' },
-    { nodeId: '76_58', input: 'width', value: p.width },
-    { nodeId: '76_58', input: 'height', value: p.height },
+    // Qwen-Image's latent patches need multiples of 16.
+    { nodeId: '76_58', input: 'width', value: snap(p.width, 16, 1328) },
+    { nodeId: '76_58', input: 'height', value: snap(p.height, 16, 1328) },
     { nodeId: '76_3', input: ['seed', 'noise_seed'], value: p.seed },
-    { nodeId: '76_3', input: 'steps', value: p.steps ?? 8, optional: true },
+    // The template ships with its Lightning switch OFF: the model path skips the
+    // LoRA and cfg comes out at 4. Left that way, forcing 8 steps renders the
+    // base model undercooked at the wrong cfg — valid to ComfyUI, visibly bad.
+    // This one boolean moves model and cfg onto the Lightning branch together.
+    { nodeId: '76_86', input: 'value', value: true },
+    // Distilled to 8; the switch would pick 8 too, but pinning it means a
+    // caller-supplied step count cannot drag it off the distilled schedule.
+    { nodeId: '76_3', input: 'steps', value: 8 },
     { nodeId: '60', input: 'filename_prefix', value: 'image/aixman', optional: true },
   ],
   baselineSecondsPerUnit: 12,
