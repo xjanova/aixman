@@ -7,6 +7,7 @@ import { AccountPoolManager } from './account-pool';
 import { ModelReadiness, TUNING_MESSAGE } from './model-readiness';
 import { persistAssetSafe, isStorageConfigured } from '@/lib/storage/r2';
 import type { GenerationRequest, GenerationResult, ProviderSlug } from '@/types';
+import { fitFrame } from '@/lib/gpu/frame';
 
 /**
  * Generation Service
@@ -134,6 +135,7 @@ export class GenerationService {
         const v = Number.isFinite(n) && n > 0 ? n : fallback;
         return max && max > 0 ? Math.min(v, max) : v;
       };
+      const size = fitFrame(request.params?.width, request.params?.height, model.maxWidth, model.maxHeight);
 
       await GpuQueue.enqueue({
         generationId: generation.id,
@@ -141,8 +143,8 @@ export class GenerationService {
         payload: {
           prompt: request.prompt + styleSuffix,
           negativePrompt: request.negativePrompt,
-          width: bounded(request.params?.width, model.maxWidth || 768, model.maxWidth),
-          height: bounded(request.params?.height, model.maxHeight || 768, model.maxHeight),
+          width: size.width,
+          height: size.height,
           // Default to a short clip, not the longest the model allows.
           duration: bounded(request.params?.duration, 5, model.maxDuration),
           fps: request.params?.fps || 24,
