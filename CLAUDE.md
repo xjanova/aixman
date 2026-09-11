@@ -136,24 +136,42 @@ generating. Consequences that must never be regressed:
 - The container port is publicly reachable and ComfyUI has no auth of its own.
   Each worker gets `AIXMAN_WORKER_TOKEN`; the image is expected to enforce it.
 
-**Setup is API-key-only.** Admin → GPU ที่เช่า → paste the SimplePod key. That
-verifies it, creates the provider + encrypted credential, writes the budget
-caps, and activates the model. Nothing else is required because:
+**Setup is an API key plus R2.** Admin → GPU ที่เช่า → paste the SimplePod key.
+That verifies it, creates the provider + encrypted credential, writes the budget
+caps, and activates the models. R2 (`R2_*` in `.env`) must also be set: without
+it the queue refuses to rent and refunds, because a render dies with the machine.
+Nothing else is required because:
 
-- **No custom Docker image.** A stock `pytorch/pytorch` CUDA 12.8 image is
+- **No custom Docker image.** A stock `pytorch/pytorch` **CUDA 13.0** image is
   booted and `src/lib/gpu/provision.ts` installs ComfyUI, pulls the weights, and
-  starts a token-gated proxy. CUDA 12.8 is deliberate: first release with
-  Blackwell (5090) support that still runs on common host drivers.
-- **No workflow to paste.** `src/lib/gpu/workflows/minimax-h3.ts` is the official
-  Comfy-Org `video_minimax_h3_t2v` template flattened out of its subgraph into
-  API format. `comfy-validate.ts` checks it against the worker's live
-  `/object_info` before each submit, which also catches half-downloaded weights.
+  starts a token-gated proxy. cu130 is required, not a preference: ComfyUI
+  disables comfy-kitchen's CUDA kernels below it, and those run the int8_convrot
+  / nvfp4 weights in the catalogue. Minimum host CUDA follows (`DEFAULT_MIN_CUDA`).
+- **ComfyUI is pinned** (`COMFYUI_REF`). Templates are converted against node
+  signatures, which change between releases. Bump it only after submitting all
+  catalogue graphs to that version's own `/prompt` validator (a CPU-only
+  ComfyUI with zero-byte weight stubs is enough — it fails at model load, which
+  is the pass condition).
+- **No workflow to paste.** Each catalogue entry vendors an official Comfy-Org
+  template; `comfy-convert.ts` flattens subgraphs, drops editor-only nodes
+  (MarkdownNote, PrimitiveNode, Reroute, bypassed), expands V3 dynamic combos
+  (`format.codec`), then prunes whatever no output depends on. `comfy-validate.ts`
+  checks the result against the worker's live `/object_info` and fills required
+  inputs the template predates — ComfyUI's server fills nothing.
+- **"Ready" means weights on disk.** The worker's health path is the proxy's
+  `/aixman/ready`: 503 while downloading, 500 once the boot failed (the worker
+  is released at once), 200 only when every file is in place and ComfyUI answers.
+  ComfyUI itself is up long before 40 GB of weights land.
 - **No crontab.** `src/instrumentation.ts` starts an in-process scheduler.
 
 Gotchas that will bite if changed carelessly:
 - Frame count must satisfy `length % 17 === 5` (latent temporal compression) —
-  `frameLengthFor()` handles it. The official template does this with
-  `ComfyMathExpression`, a custom node we deliberately do not depend on.
+  `frameLengthFor()` handles it, at H3's native 24 fps. The template computes
+  it with `ComfyMathExpression`; binding `length` orphans that node and the
+  prune drops it.
+- Bindings can be *valid and wrong*: Qwen-Image's template ships its Lightning
+  switch off, which ComfyUI happily renders undercooked. Check a new model's
+  converted graph by eye, not just by whether `/prompt` accepts it.
 - Weights are ~42.5 GB, so warmup is 20–40 min on a fresh host. The client
   poller must outlast `warmupTimeout + jobTimeout` or it tells users a healthy
   job failed and they pay twice.
