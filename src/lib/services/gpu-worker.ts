@@ -10,7 +10,7 @@ import {
   type WorkerProfile,
 } from '@/lib/gpu/config';
 import type { AiGpuWorker } from '@/generated/prisma/client';
-import { buildComfyUiStartScript, renderEnvExports } from '@/lib/gpu/provision';
+import { buildComfyUiStartScript, LOG_PATH, renderEnvExports } from '@/lib/gpu/provision';
 import { RentUnconfirmedError, type GpuOffer, type GpuRentalProvider, type PendingRental } from '@/lib/gpu/types';
 import { isStorageConfigured } from '@/lib/storage/r2';
 
@@ -187,6 +187,34 @@ export class GpuWorkerManager {
       return { state: 'warming', detail: body?.stage ? `${body.stage}` : `HTTP ${res.status}` };
     } catch {
       return { state: 'warming', detail: 'not reachable yet' };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * The tail of a live worker's boot, ComfyUI and proxy logs.
+   *
+   * The machine — and its disk — vanish on release, so while it is up this is
+   * the only place a failed boot explains itself. Fetched through the same
+   * token-gated proxy as everything else.
+   */
+  static async fetchLogs(workerId: number): Promise<Record<string, string>> {
+    const worker = await prisma.aiGpuWorker.findUnique({ where: { id: workerId } });
+    if (!worker || worker.terminatedAt) throw new Error('เครื่องนี้ถูกปิดไปแล้ว');
+    if (!worker.endpoint) throw new Error('เครื่องยังไม่มี endpoint (ยังบูตไม่ถึงขั้นเปิดพอร์ต)');
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15_000);
+    try {
+      const token = this.readAuthToken(worker);
+      const res = await fetch(`${worker.endpoint.replace(/\/+$/, '')}${LOG_PATH}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        signal: controller.signal,
+        cache: 'no-store',
+      });
+      if (!res.ok) throw new Error(`เครื่องตอบ HTTP ${res.status}`);
+      return (await res.json()) as Record<string, string>;
     } finally {
       clearTimeout(timer);
     }

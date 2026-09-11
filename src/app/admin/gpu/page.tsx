@@ -55,6 +55,7 @@ interface WorkerRow {
   lastError: string | null;
   rentedAt: string;
   readyAt: string | null;
+  hasEndpoint: boolean;
 }
 
 interface JobRow {
@@ -384,6 +385,24 @@ export default function GpuAdminPage() {
   const [message, setMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [form, setForm] = useState<GpuConfig | null>(null);
+  // Boot/ComfyUI logs of one worker, read through its proxy on demand.
+  const [logs, setLogs] = useState<{ workerId: number; text: Record<string, string> | null; error?: string } | null>(null);
+
+  const showLogs = async (workerId: number) => {
+    setLogs({ workerId, text: null });
+    try {
+      const res = await fetch("/api/admin/gpu", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "worker-log", workerId }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      setLogs({ workerId, text: body.logs ?? {} });
+    } catch (error) {
+      setLogs({ workerId, text: null, error: (error as Error).message });
+    }
+  };
 
   const load = useCallback(async () => {
     const result = await fetchAnalytics();
@@ -860,7 +879,15 @@ export default function GpuAdminPage() {
                     <td className="py-2 pr-3">
                       {w.jobsCompleted} <span className="text-error">/ {w.jobsFailed}</span>
                     </td>
-                    <td className="py-2">
+                    <td className="py-2 whitespace-nowrap">
+                      <button
+                        onClick={() => void showLogs(w.id)}
+                        disabled={!w.hasEndpoint}
+                        title={w.hasEndpoint ? "ดู log การบูตและ ComfyUI" : "เครื่องยังไม่เปิดพอร์ต"}
+                        className="px-2 py-1 mr-1 rounded glass-light hover:bg-surface-light text-xs disabled:opacity-40"
+                      >
+                        log
+                      </button>
                       <button
                         onClick={() => {
                           if (confirm("ปิดเครื่องนี้ทันที?")) void post({ action: "terminate", workerId: w.id }, `t${w.id}`);
@@ -875,6 +902,31 @@ export default function GpuAdminPage() {
                 ))}
               </tbody>
             </table>
+            {logs && (
+              <div className="mt-4">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs text-muted">log ของเครื่อง #{logs.workerId} (ท้ายไฟล์)</span>
+                  <span className="flex gap-2">
+                    <button onClick={() => void showLogs(logs.workerId)} className="text-xs text-primary-light hover:opacity-80">รีเฟรช</button>
+                    <button onClick={() => setLogs(null)} className="text-xs text-muted hover:opacity-80">ปิด</button>
+                  </span>
+                </div>
+                {logs.error ? (
+                  <p className="text-sm text-error">{logs.error}</p>
+                ) : !logs.text ? (
+                  <p className="text-sm text-muted">กำลังโหลด log...</p>
+                ) : (
+                  Object.entries(logs.text).map(([name, text]) => (
+                    <details key={name} open={name === "boot.log"} className="mb-2">
+                      <summary className="text-xs cursor-pointer text-muted">{name}</summary>
+                      <pre className="text-[11px] leading-relaxed max-h-80 overflow-auto p-3 rounded-lg bg-black/40 whitespace-pre-wrap break-all">
+                        {text?.trim() ? text.split("\n").slice(-150).join("\n") : "(ว่าง)"}
+                      </pre>
+                    </details>
+                  ))
+                )}
+              </div>
+            )}
           </div>
         ) : (
           <p className="text-sm text-muted py-6 text-center">

@@ -54,6 +54,9 @@ const ROOT = '/workspace/aixman';
  */
 export const READY_PATH = '/aixman/ready';
 
+/** Proxy path returning the tail of the boot, ComfyUI and proxy logs, for diagnosis. */
+export const LOG_PATH = '/aixman/log';
+
 export interface ProvisionOptions {
   /** Port the token-gated proxy listens on — the one published publicly. */
   publicPort: number;
@@ -106,7 +109,18 @@ UPSTREAM = "http://127.0.0.1:8188"
 PORT = int(os.environ.get("AIXMAN_PROXY_PORT", "8189"))
 ROOT = os.environ.get("AIXMAN_ROOT", "/workspace/aixman")
 READY_PATH = "${READY_PATH}"
+LOG_PATH = "${LOG_PATH}"
 HOP = {"connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-authorization"}
+
+def tail(path, limit=64 * 1024):
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - limit))
+            return fh.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
 
 def weights_bytes():
     total = 0
@@ -173,9 +187,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not self._authorized():
             self._deny()
             return
-        if self.path.split("?", 1)[0] == READY_PATH:
+        route = self.path.split("?", 1)[0]
+        if route == READY_PATH:
             code, payload = readiness()
             self._json(code, payload)
+            return
+        if route == LOG_PATH:
+            # The only window into a boot that went wrong: the machine and its
+            # disk vanish when it is released. Behind the same token as the rest.
+            self._json(200, {name: tail(os.path.join(ROOT, name)) for name in ("boot.log", "comfyui.log", "proxy.log")})
             return
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else None
