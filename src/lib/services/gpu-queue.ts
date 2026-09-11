@@ -127,6 +127,8 @@ export class GpuQueue {
     report.failed += dispatched.failed;
     if (dispatched.reason) report.reason = dispatched.reason;
 
+    report.failed += await this.failStuckQueued(cfg, dispatched.reason);
+
     report.queued = await prisma.aiGpuJob.count({ where: { status: 'queued' } });
     report.liveWorkers = await prisma.aiGpuWorker.count({
       where: { status: { in: ['provisioning', 'warming', 'ready', 'busy', 'draining'] } },
@@ -184,8 +186,9 @@ export class GpuQueue {
           continue;
         }
       } catch (error) {
-        // A misconfigured profile (no image, no workflow) can never succeed —
-        // fail the queued jobs instead of retrying forever and refunding late.
+        // Only configuration errors reach here (bad profile, no key, no R2) —
+        // ensureWorker turns vendor hiccups into a reason instead. Those can
+        // never succeed, so refund now rather than retrying forever.
         const message = (error as Error).message;
         reason ??= message;
         failed += await this.failAllQueued(modelKey, message);
@@ -371,7 +374,8 @@ export class GpuQueue {
         job,
         worker,
         'R2 storage is not configured. GPU-rendered videos cannot be kept once the worker is released.',
-        false
+        false,
+        { countAgainstModel: false }
       );
       return;
     }
@@ -456,7 +460,8 @@ export class GpuQueue {
     job: AiGpuJob,
     worker: AiGpuWorker | null,
     message: string,
-    retryable: boolean
+    retryable: boolean,
+    { countAgainstModel = true }: { countAgainstModel?: boolean } = {}
   ): Promise<void> {
     const now = new Date();
     const canRetry = retryable && job.attempts < job.maxAttempts;
@@ -510,16 +515,61 @@ export class GpuQueue {
 
     // A model failing repeatedly stops taking orders rather than quietly
     // burning credits — one failure is not enough, a spot host can vanish.
-    if (generation?.modelId) await ModelReadiness.recordFailure(generation.modelId, message);
+    if (countAgainstModel && generation?.modelId) {
+      await ModelReadiness.recordFailure(generation.modelId, message);
+    }
   }
 
   /** Terminal-fail every queued job for a model whose configuration cannot work. */
   private static async failAllQueued(modelKey: string, message: string): Promise<number> {
     const jobs = await prisma.aiGpuJob.findMany({ where: { status: 'queued', modelKey } });
     for (const job of jobs) {
-      await this.settleFailure(job, null, message, false);
+      // The setup is at fault, not the model — do not pull it from sale.
+      await this.settleFailure(job, null, message, false, { countAgainstModel: false });
     }
     return jobs.length;
+  }
+
+  /**
+   * Refund jobs that have waited too long for a machine that never came.
+   *
+   * Transient vendor errors, an empty market or a spent budget all leave jobs
+   * queued so a later tick can serve them — which, unbounded, means credits held
+   * forever for a render that never starts. A job is stuck once it has waited
+   * the full warmup-plus-render allowance *and* no worker for its model is
+   * serving. A long queue behind a working GPU is not stuck.
+   */
+  private static async failStuckQueued(cfg: GpuBudgetConfig, reason: string | undefined): Promise<number> {
+    const allowanceMs = (cfg.warmupTimeoutMinutes + cfg.jobTimeoutMinutes) * 60_000;
+    const cutoff = new Date(Date.now() - allowanceMs);
+    const stale = await prisma.aiGpuJob.findMany({
+      where: { status: 'queued', queuedAt: { lt: cutoff } },
+    });
+    if (stale.length === 0) return 0;
+
+    let failed = 0;
+    const serving = new Map<string, boolean>();
+    for (const job of stale) {
+      if (!serving.has(job.modelKey)) {
+        const count = await prisma.aiGpuWorker.count({
+          where: { modelKey: job.modelKey, status: { in: ['ready', 'busy'] } },
+        });
+        serving.set(job.modelKey, count > 0);
+      }
+      if (serving.get(job.modelKey)) continue;
+
+      const minutes = Math.round(allowanceMs / 60_000);
+      await this.settleFailure(
+        job,
+        null,
+        `No suitable GPU available within ${minutes} min${reason ? `: ${reason}` : ''}`,
+        false,
+        // Market shortage or a spent budget says nothing about the model.
+        { countAgainstModel: false }
+      );
+      failed += 1;
+    }
+    return failed;
   }
 
   // ----------------------------------------------------------------
@@ -555,16 +605,21 @@ export class GpuQueue {
 function userFacingError(technical: string): string {
   const REFUNDED = ' (คืนเครดิตแล้ว)';
 
+  // Checked first: it quotes the last vendor reason, which can itself contain
+  // "timeout" or "budget" and would otherwise be misread by the rules below.
+  if (/^No suitable GPU available within/i.test(technical)) {
+    return 'ยังหาเครื่อง GPU ว่างไม่ได้ในเวลาที่กำหนด กรุณาลองใหม่ภายหลัง' + REFUNDED;
+  }
   if (/terminated mid-render|worker was terminated|no longer exists/i.test(technical)) {
     return 'เครื่อง GPU หยุดทำงานระหว่างเรนเดอร์ กรุณาลองใหม่อีกครั้ง' + REFUNDED;
   }
   if (/exceeded \d+ min|timed out|timeout/i.test(technical)) {
     return 'ใช้เวลาเรนเดอร์นานเกินกำหนด กรุณาลองใหม่หรือลดความยาวคลิป' + REFUNDED;
   }
-  if (/no container image|workflow|invalid nodes|profile/i.test(technical)) {
+  if (/no container image|workflow|invalid nodes|profile|R2 storage is not configured|No active API key/i.test(technical)) {
     return 'โมเดลนี้ยังตั้งค่าไม่เสร็จ กรุณาติดต่อผู้ดูแลระบบ' + REFUNDED;
   }
-  if (/R2 storage is not configured|Failed to save render/i.test(technical)) {
+  if (/Failed to save render/i.test(technical)) {
     return 'บันทึกไฟล์ผลลัพธ์ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง' + REFUNDED;
   }
   if (/budget|capacity|balance too low/i.test(technical)) {

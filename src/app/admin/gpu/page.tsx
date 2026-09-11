@@ -86,6 +86,7 @@ interface Analytics {
   pricing: { thbPerCredit: number; usdToThb: number };
   balance: { balanceUsd: number; availableRentalHours: number | null; hoursAtCurrentBurn: number | null } | null;
   balanceError: string | null;
+  storageConfigured: boolean;
   budget: {
     spentTodayUsd: number;
     dailyBudgetUsd: number;
@@ -534,6 +535,24 @@ export default function GpuAdminPage() {
       {message && (
         <div className={`mb-4 rounded-xl p-3 text-sm ${message.kind === "ok" ? "bg-success/10 text-success" : "bg-error/10 text-error"}`}>
           {message.text}
+        </div>
+      )}
+
+      {/* A render lives on the rented machine's tunnel and dies with it; without
+          R2 there is nowhere to keep it, so the queue refunds instead of renting. */}
+      {data.storageConfigured === false && (
+        <div className="glass rounded-xl p-5 mb-6 border border-error/30">
+          <div className="flex items-center gap-2 mb-2">
+            <AlertTriangle className="w-5 h-5 text-error" />
+            <h2 className="font-bold">ยังไม่ได้ตั้งค่าที่เก็บไฟล์ (R2)</h2>
+          </div>
+          <p className="text-sm text-muted">
+            ไฟล์ที่เรนเดอร์บนเครื่อง GPU จะหายไปพร้อมเครื่องตอนคืนเครื่อง จึงต้องก๊อปไปเก็บที่ Cloudflare R2 ก่อนเสมอ
+            ระหว่างที่ยังไม่ได้ตั้งค่า ระบบจะไม่เช่าเครื่อง และคืนเครดิตให้งานที่สั่งเข้ามาทันที
+          </p>
+          <p className="text-xs text-muted mt-2">
+            ตั้งค่าใน .env ของเซิร์ฟเวอร์: R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET, R2_PUBLIC_URL
+          </p>
         </div>
       )}
 

@@ -96,7 +96,7 @@ export async function POST(request: NextRequest) {
     }
     // Already user-facing Thai copy from ModelReadiness — pass it through rather
     // than flattening it into a generic failure.
-    if (message.includes('กำลังปรับแต่ง')) {
+    if (message.includes('กำลังปรับแต่ง') || message.includes('ยังตั้งค่าไม่เสร็จ')) {
       return NextResponse.json({ error: message }, { status: 409 });
     }
 

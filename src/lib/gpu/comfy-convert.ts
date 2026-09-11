@@ -24,8 +24,30 @@ import type { ComfyGraph, ComfyObjectInfo } from './comfy-validate';
 /** Input types that carry a value, as opposed to a wire from another node. */
 const WIDGET_TYPES = new Set(['INT', 'FLOAT', 'STRING', 'BOOLEAN', 'COMBO']);
 
+/**
+ * A V3 combo whose chosen option brings its own nested inputs — SaveVideo's
+ * `format` carries a `codec`. The API format names the nested ones with a dotted
+ * path (`format.codec`), and the UI stores their values right after the parent's.
+ */
+const DYNAMIC_COMBO = 'COMFY_DYNAMICCOMBO_V3';
+
 /** Values ComfyUI appends after a seed widget for its "control after generate" mode. */
 const SEED_CONTROL_VALUES = new Set(['fixed', 'increment', 'decrement', 'randomize']);
+
+/**
+ * Node types that exist only in the editor. The server has no class for them,
+ * so sending one fails the whole prompt — every official template carries at
+ * least one MarkdownNote of model links.
+ */
+const NOTE_TYPES = new Set(['Note', 'MarkdownNote']);
+/** Editor-only constant: its output is its own widget value. */
+const PRIMITIVE_TYPE = 'PrimitiveNode';
+/** Editor-only pass-through for tidying wires. */
+const REROUTE_TYPE = 'Reroute';
+
+/** LiteGraph node modes. */
+const MODE_MUTED = 2;
+const MODE_BYPASSED = 4;
 
 interface UiLink {
   id: number;
@@ -46,7 +68,7 @@ interface UiNode {
   id: number;
   type: string;
   inputs?: UiNodeInput[];
-  outputs?: { name?: string; links?: number[] | null }[];
+  outputs?: { name?: string; type?: string; links?: number[] | null }[];
   widgets_values?: unknown[];
   mode?: number;
 }
@@ -67,8 +89,11 @@ export interface UiWorkflow {
   definitions?: { subgraphs?: UiSubgraph[] };
 }
 
-/** A resolved source for one input: either a wire, or nothing (use the widget). */
-type Wire = { node: string; slot: number };
+/**
+ * A resolved source for one input: a wire to a real node, or a constant that an
+ * editor-only PrimitiveNode was feeding in.
+ */
+type Wire = { node: string; slot: number } | { literal: unknown };
 
 /** Normalise both link encodings. Outer graphs use arrays, subgraphs use objects. */
 function normaliseLinks(raw: unknown[] | undefined): Map<number, UiLink> {
@@ -93,31 +118,68 @@ function normaliseLinks(raw: unknown[] | undefined): Map<number, UiLink> {
   return out;
 }
 
-/**
- * Ordered widget-input names for a node class, from the live schema.
- * Combo inputs are widgets; typed wires (MODEL, IMAGE, …) are not.
- */
-function widgetInputNames(spec: ComfyObjectInfo[string] | undefined): string[] {
-  if (!spec?.input) return [];
-  const names: string[] = [];
-  for (const group of [spec.input.required, spec.input.optional]) {
-    for (const [name, def] of Object.entries(group ?? {})) {
-      const first = Array.isArray(def) ? def[0] : undefined;
-      if (Array.isArray(first)) {
-        names.push(name); // combo: [[...choices], {...}]
-        continue;
-      }
-      if (typeof first === 'string' && WIDGET_TYPES.has(first)) names.push(name);
-    }
-  }
-  return names;
+type InputGroups = { required?: Record<string, unknown>; optional?: Record<string, unknown> };
+
+/** Type tag of an input definition. A legacy combo's bare choice list reads as COMBO. */
+function inputType(def: unknown): string | undefined {
+  const first = Array.isArray(def) ? def[0] : undefined;
+  if (Array.isArray(first)) return 'COMBO';
+  return typeof first === 'string' ? first : undefined;
 }
 
-/** True when this input's schema carries ComfyUI's seed control companion. */
-function hasSeedControl(spec: ComfyObjectInfo[string] | undefined, name: string): boolean {
-  const def = (spec?.input?.required?.[name] ?? spec?.input?.optional?.[name]) as unknown[] | undefined;
-  const opts = Array.isArray(def) && def.length > 1 ? (def[1] as Record<string, unknown>) : undefined;
-  return Boolean(opts && 'control_after_generate' in opts);
+function inputOptions(def: unknown): Record<string, unknown> {
+  const opts = Array.isArray(def) && def.length > 1 ? def[1] : undefined;
+  return opts && typeof opts === 'object' ? (opts as Record<string, unknown>) : {};
+}
+
+/**
+ * Pair positional `widgets_values` with input names, in the order the live
+ * schema declares them, and return the next unread index.
+ *
+ * Wires (MODEL, IMAGE, …) take no slot; hidden inputs have no widget at all. A
+ * dynamic combo's selected option contributes its own nested widgets straight
+ * after it, named `parent.child`.
+ */
+function assignWidgets(
+  groups: InputGroups | undefined,
+  widgets: unknown[],
+  start: number,
+  inputs: Record<string, unknown>,
+  prefix: string
+): number {
+  let vi = start;
+  for (const group of [groups?.required, groups?.optional]) {
+    for (const [name, def] of Object.entries(group ?? {})) {
+      if (vi >= widgets.length) return vi;
+      const opts = inputOptions(def);
+      if (opts.hidden === true) continue;
+      const type = inputType(def);
+      const full = prefix ? `${prefix}.${name}` : name;
+
+      if (type === DYNAMIC_COMBO) {
+        const value = widgets[vi++];
+        if (!(full in inputs)) inputs[full] = value;
+        const options = Array.isArray(opts.options) ? (opts.options as { key?: unknown; inputs?: InputGroups }[]) : [];
+        const chosen = options.find((o) => o?.key === inputs[full]);
+        vi = assignWidgets(chosen?.inputs, widgets, vi, inputs, full);
+        continue;
+      }
+
+      if (!type || !WIDGET_TYPES.has(type)) continue;
+      const value = widgets[vi++];
+      if (!(full in inputs)) inputs[full] = value;
+      // A seed widget is followed by its control mode ("randomize" etc.), which
+      // is UI state and must not be mistaken for the next widget's value.
+      if (
+        'control_after_generate' in opts &&
+        typeof widgets[vi] === 'string' &&
+        SEED_CONTROL_VALUES.has(widgets[vi] as string)
+      ) {
+        vi++;
+      }
+    }
+  }
+  return vi;
 }
 
 /**
@@ -143,7 +205,8 @@ class Flattener {
     boundary?: (slot: number) => Wire | undefined
   ): Map<number, (slot: number) => Wire | undefined> {
     const id = (n: number) => `${prefix}${n}`;
-    const live = nodes.filter((n) => n.mode !== 2 && n.mode !== 4); // 2/4 = muted/bypassed
+    // Muted nodes produce nothing; notes are documentation. Neither exists at run time.
+    const live = nodes.filter((n) => n.mode !== MODE_MUTED && !NOTE_TYPES.has(n.type));
     const byId = new Map(live.map((n) => [n.id, n]));
 
     // How to resolve one output slot of a node in this scope. Subgraph entries
@@ -152,8 +215,25 @@ class Flattener {
     const resolvers = new Map<number, (slot: number) => Wire | undefined>();
     const expanded = new Map<number, (slot: number) => Wire | undefined>();
 
+    /** Editor-only or bypassed: resolved through, never emitted. */
+    const isPassThrough = (node: UiNode) =>
+      node.type === PRIMITIVE_TYPE || node.type === REROUTE_TYPE || node.mode === MODE_BYPASSED;
+
     for (const node of live) {
-      if (!this.subgraphs.has(node.type)) {
+      if (node.type === PRIMITIVE_TYPE) {
+        // Its output is simply its own value, delivered as a literal.
+        const value = node.widgets_values?.[0];
+        resolvers.set(node.id, () => (value === undefined ? undefined : { literal: value }));
+      } else if (node.type === REROUTE_TYPE) {
+        resolvers.set(node.id, () => sourceOf(node.id, 0));
+      } else if (node.mode === MODE_BYPASSED) {
+        // ComfyUI's bypass hands each output the first input of the same type.
+        resolvers.set(node.id, (slot) => {
+          const type = node.outputs?.[slot]?.type;
+          const inputSlot = (node.inputs ?? []).findIndex((i) => i.type === type && i.link != null);
+          return inputSlot >= 0 ? sourceOf(node.id, inputSlot) : undefined;
+        });
+      } else if (!this.subgraphs.has(node.type)) {
         resolvers.set(node.id, (slot) => ({ node: id(node.id), slot }));
       }
     }
@@ -201,6 +281,7 @@ class Flattener {
     }
 
     for (const node of live) {
+      if (isPassThrough(node)) continue;
       if (this.subgraphs.has(node.type)) {
         resolverFor(node.id); // force expansion even if nothing consumes it
         continue;
@@ -278,6 +359,9 @@ class Flattener {
       const value = values[vi++];
       // A wired boundary input wins over the promoted widget value.
       if (innerBoundary(slot)) return;
+      // Newer editors keep promoted values on the inner nodes (`proxyWidgets`)
+      // and leave this array empty; the inner widget then stands as authored.
+      if (value === undefined) return;
 
       // Deliver the value to every inner node consuming this boundary slot.
       for (const link of innerLinks.values()) {
@@ -320,10 +404,12 @@ export function convertUiWorkflowToApi(workflow: UiWorkflow, objectInfo: ComfyOb
     const inputs: Record<string, unknown> = {};
     const names = flattener.inputNames.get(nodeId) ?? [];
 
-    // 1. Wires win over everything.
+    // 1. Wires win over everything. A constant from an editor-only primitive
+    //    lands as the value itself.
     for (const [slot, wire] of node.wires) {
       const name = names[slot];
-      if (name) inputs[name] = [wire.node, wire.slot];
+      if (!name) continue;
+      inputs[name] = 'literal' in wire ? wire.literal : [wire.node, wire.slot];
     }
 
     // 2. Values promoted down from a subgraph boundary.
@@ -333,22 +419,7 @@ export function convertUiWorkflowToApi(workflow: UiWorkflow, objectInfo: ComfyOb
     }
 
     // 3. Positional widgets_values, against the schema's declared widget order.
-    const widgetNames = widgetInputNames(spec);
-    let vi = 0;
-    for (const name of widgetNames) {
-      if (vi >= node.widgets.length) break;
-      const value = node.widgets[vi++];
-      if (!(name in inputs)) inputs[name] = value;
-      // A seed widget is followed by its control mode ("randomize" etc.), which
-      // is UI state and must not be mistaken for the next widget's value.
-      if (
-        hasSeedControl(spec, name) &&
-        typeof node.widgets[vi] === 'string' &&
-        SEED_CONTROL_VALUES.has(node.widgets[vi] as string)
-      ) {
-        vi++;
-      }
-    }
+    assignWidgets(spec.input, node.widgets, 0, inputs, '');
 
     graph[nodeId] = { class_type: node.type, inputs };
   }
@@ -423,6 +494,36 @@ export function pruneByClass(graph: ComfyGraph, classes: string[]): ComfyGraph {
   }
 
   return out;
+}
+
+/**
+ * Keep only the nodes some output node actually depends on.
+ *
+ * Binding a literal over a wire orphans the helper that used to feed it — the
+ * MiniMax template's ResolutionSelector and frame-count maths are left behind
+ * once width, height and length are set directly. ComfyUI would never run them,
+ * but it still rejects the whole prompt if any of them fails validation, so an
+ * orphan is pure risk. Output nodes are the ones the schema flags `output_node`.
+ */
+export function pruneUnreachable(graph: ComfyGraph, objectInfo: ComfyObjectInfo): ComfyGraph {
+  const roots = Object.keys(graph).filter((id) => objectInfo[graph[id].class_type]?.output_node === true);
+  // Nothing to anchor on: leave the graph alone and let validation say why.
+  if (roots.length === 0) return graph;
+
+  const keep = new Set<string>();
+  const stack = [...roots];
+  while (stack.length > 0) {
+    const id = stack.pop() as string;
+    if (keep.has(id) || !graph[id]) continue;
+    keep.add(id);
+    for (const value of Object.values(graph[id].inputs)) {
+      if (Array.isArray(value) && value.length === 2 && typeof value[1] === 'number') {
+        stack.push(String(value[0]));
+      }
+    }
+  }
+
+  return Object.fromEntries(Object.entries(graph).filter(([id]) => keep.has(id)));
 }
 
 /** One per-job value to force into the converted graph. */

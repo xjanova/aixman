@@ -15,18 +15,44 @@
  */
 
 /**
- * Stock PyTorch image. CUDA 12.8 is the deliberate choice: it is the first
- * release with Blackwell (RTX 5090, sm_120) support while still running on the
- * widely-deployed 12.8+ host drivers. A 13.x image would need a much newer
- * driver and would exclude most of the marketplace.
+ * Stock PyTorch image, built for CUDA 13.0.
+ *
+ * Not 12.8, although 12.8 was the first release with Blackwell support: ComfyUI
+ * turns off comfy-kitchen's CUDA kernels on anything below cu130
+ * (`comfy/quant_ops.py`), and those kernels are what run the int8_convrot and
+ * nvfp4 weights the catalogue uses — Comfy-Org's MiniMax H3 README says to use
+ * int8_convrot only "if you are able to use pytorch with cu130". On cu128 the
+ * same files load, then crawl through the pure-PyTorch fallback.
+ *
+ * The cost is hosts with drivers older than CUDA 13. Measured on SimplePod
+ * (2026-09-11), every card able to hold these models reported 13.0+; the
+ * 12.7 hosts were 4090s and 3060s.
+ *
+ * 2.13 rather than the newest 2.14: ComfyUI recommends a torch at least two
+ * weeks old, and 2.14 was nine days old when this was chosen.
  */
 export const DEFAULT_BASE_IMAGE = 'pytorch/pytorch';
-export const DEFAULT_BASE_TAG = '2.11.0-cuda12.8-cudnn9-runtime';
+export const DEFAULT_BASE_TAG = '2.13.0-cuda13.0-cudnn9-runtime';
 /** Minimum host CUDA version the image above can run on. */
-export const DEFAULT_MIN_CUDA = '12.8';
+export const DEFAULT_MIN_CUDA = '13.0';
+
+/**
+ * ComfyUI release the workers install. Pinned, because templates are converted
+ * against node signatures and those change between releases — the catalogue's
+ * three graphs were checked against this exact tag by submitting them to its
+ * own `/prompt` validator. Bump it only after repeating that check.
+ */
+export const COMFYUI_REPO = 'https://github.com/Comfy-Org/ComfyUI.git';
+export const COMFYUI_REF = 'v0.35.1';
 
 /** Where ComfyUI is installed inside the container. */
 const ROOT = '/workspace/aixman';
+
+/**
+ * Proxy path that answers whether the worker can take a job. Served by the
+ * proxy itself, so it works before ComfyUI is up and can report a boot failure.
+ */
+export const READY_PATH = '/aixman/ready';
 
 export interface ProvisionOptions {
   /** Port the token-gated proxy listens on — the one published publicly. */
@@ -73,18 +99,59 @@ export function renderEnvExports(env: Record<string, string>): string {
  */
 function proxySource(): string {
   return String.raw`
-import os, sys, http.server, socketserver, urllib.request, urllib.error, hmac
+import os, sys, json, http.server, socketserver, urllib.request, urllib.error, hmac
 
 TOKEN = os.environ.get("AIXMAN_WORKER_TOKEN", "")
 UPSTREAM = "http://127.0.0.1:8188"
 PORT = int(os.environ.get("AIXMAN_PROXY_PORT", "8189"))
+ROOT = os.environ.get("AIXMAN_ROOT", "/workspace/aixman")
+READY_PATH = "${READY_PATH}"
 HOP = {"connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-authorization"}
+
+def weights_bytes():
+    total = 0
+    for base in (os.path.join(ROOT, "models"), os.path.join(ROOT, "dl")):
+        for dirpath, _dirs, files in os.walk(base):
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.join(dirpath, f))
+                except OSError:
+                    pass
+    return total
+
+def readiness():
+    # Ready means every weight file is on disk AND ComfyUI answers. ComfyUI
+    # comes up long before 40 GB of weights land, so answering on its health
+    # alone hands out jobs that can only fail.
+    failed = os.path.join(ROOT, "models.failed")
+    if os.path.exists(failed):
+        with open(failed, errors="replace") as fh:
+            return 500, {"ready": False, "failed": fh.read()[:500]}
+    if not os.path.exists(os.path.join(ROOT, "models.ready")):
+        return 503, {"ready": False, "stage": "downloading", "bytes": weights_bytes()}
+    try:
+        with urllib.request.urlopen(UPSTREAM + "/system_stats", timeout=5) as up:
+            if up.status == 200:
+                # "auth" lets the platform notice a worker that booted without
+                # its token (the gate fails open) instead of assuming it is shut.
+                return 200, {"ready": True, "auth": bool(TOKEN)}
+    except Exception:
+        pass
+    return 503, {"ready": False, "stage": "starting"}
 
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
         sys.stderr.write("[proxy] " + (fmt % args) + "\n")
+
+    def _json(self, code, payload):
+        body = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _authorized(self):
         if not TOKEN:
@@ -106,6 +173,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not self._authorized():
             self._deny()
             return
+        if self.path.split("?", 1)[0] == READY_PATH:
+            code, payload = readiness()
+            self._json(code, payload)
+            return
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else None
         req = urllib.request.Request(UPSTREAM + self.path, data=body, method=method)
@@ -118,6 +189,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 for k, v in up.headers.items():
                     if k.lower() not in HOP:
                         self.send_header(k, v)
+                # Transfer-Encoding is dropped above, so a body with no length
+                # has no framing left — the only honest end marker is closing
+                # the connection. Otherwise a keep-alive client waits forever.
+                if up.headers.get("Content-Length") is None:
+                    self.send_header("Connection", "close")
+                    self.close_connection = True
                 self.end_headers()
                 # Streamed in chunks: renders can be hundreds of megabytes and
                 # buffering one whole in memory would exhaust the container.
@@ -157,10 +234,15 @@ Server(("0.0.0.0", PORT), Handler).serve_forever()
 /**
  * Build the full start script.
  *
- * Ordering matters: ComfyUI is started as soon as it is installed, *before* the
- * weights finish downloading, so `/system_stats` answers early and the health
- * check can distinguish "still warming" from "dead". The workflow validator
- * then reports precisely if a model file is still missing when a job arrives.
+ * Paid time is the budget here, so the slow parts overlap:
+ *
+ *   proxy up ─┬─ weights download (background, the long pole) ─────────┐
+ *             └─ apt/git ─ ComfyUI (pinned) ─ pip ─ start ComfyUI ──────┴─ ready
+ *
+ * The proxy starts first because it is what reports progress and failure
+ * (`READY_PATH`) — a boot that dies early says why within a minute instead of
+ * idling until the warmup timeout. "Ready" means every weight file is on disk
+ * and ComfyUI answers; ComfyUI alone comes up long before the weights do.
  */
 export function buildComfyUiStartScript(opts: ProvisionOptions): string {
   // Repo layouts differ — Comfy-Org/MiniMax-H3 stores files at the same paths
@@ -169,7 +251,7 @@ export function buildComfyUiStartScript(opts: ProvisionOptions): string {
   // fetched then moved to the directory ComfyUI actually loads from.
   const downloads = (opts.downloads ?? []).map(
     (d) =>
-      `fetch_model ${shellQuote(d.repo)} ${shellQuote(d.file)} ${shellQuote(d.dest)} ${shellQuote(d.as ?? '')}`
+      `  fetch_model ${shellQuote(d.repo)} ${shellQuote(d.file)} ${shellQuote(d.dest)} ${shellQuote(d.as ?? '')} || ok=0`
   );
 
   const customNodes = (opts.customNodes ?? []).map(
@@ -181,69 +263,61 @@ export function buildComfyUiStartScript(opts: ProvisionOptions): string {
 # NOTE: -e is deliberately omitted. A failed apt mirror or an optional step must
 # not abort the boot and strand a machine that is already being billed.
 set -uo pipefail
-mkdir -p ${ROOT}
+mkdir -p ${ROOT}/models ${ROOT}/dl
 exec > >(tee -a ${ROOT}/boot.log) 2>&1
 
 export DEBIAN_FRONTEND=noninteractive
 export AIXMAN_PROXY_PORT=${opts.publicPort}
-export HF_HUB_ENABLE_HF_TRANSFER=1
+export AIXMAN_ROOT=${ROOT}
 ${opts.hfToken ? `export HF_TOKEN=${shellQuote(opts.hfToken)}` : '# no HF token supplied'}
 ${opts.env ? renderEnvExports(opts.env) : ''}
 
 cd ${ROOT}
+rm -f ${ROOT}/models.ready ${ROOT}/models.failed ${ROOT}/failed.list
 
-echo "[aixman] installing system packages"
-apt-get update -qq && apt-get install -y -qq git curl ca-certificates || true
-
-echo "[aixman] installing ComfyUI"
-if [ ! -d ${ROOT}/ComfyUI ]; then
-  git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git ${ROOT}/ComfyUI
-fi
-pip install --no-cache-dir -q -r ${ROOT}/ComfyUI/requirements.txt
-pip install --no-cache-dir -q "huggingface_hub[hf_transfer,cli]"
-
-# Community node packs some official templates depend on. Pinned by ref where
-# the catalogue supplies one, because an unpinned pack can change its node
-# names and break a workflow that worked yesterday.
-install_custom_node() {
-  local repo="$1" ref="$2" name dir
-  name="$(basename "$repo" .git)"
-  dir="${ROOT}/ComfyUI/custom_nodes/$name"
-  if [ ! -d "$dir" ]; then
-    git clone --depth 1 "$repo" "$dir" || { echo "[aixman] failed to clone $repo"; return 1; }
-  fi
-  if [ -n "$ref" ]; then
-    (cd "$dir" && git fetch --depth 1 origin "$ref" && git checkout -q FETCH_HEAD) || true
-  fi
-  [ -f "$dir/requirements.txt" ] && pip install --no-cache-dir -q -r "$dir/requirements.txt"
-  echo "[aixman] custom node ready: $name"
+# Recorded for the proxy, which reports it at ${READY_PATH} so the platform can
+# release the machine now rather than after the warmup timeout.
+fail_boot() {
+  echo "[aixman] BOOT FAILED: $1"
+  [ -f ${ROOT}/models.failed ] || printf '%s' "$1" > ${ROOT}/models.failed
 }
-${customNodes.join('\n')}
-
-mkdir -p ${ROOT}/ComfyUI/models/{diffusion_models,text_encoders,vae,loras,checkpoints,audio_encoders,clip_vision} \\
-         ${ROOT}/dl
 
 cat > ${ROOT}/proxy.py <<'AIXMAN_PROXY_EOF'
 ${proxySource()}
 AIXMAN_PROXY_EOF
 
-# ComfyUI binds to loopback only; the proxy is the sole public entrance.
-echo "[aixman] starting ComfyUI on 127.0.0.1:8188"
-nohup python3 ${ROOT}/ComfyUI/main.py --listen 127.0.0.1 --port 8188 \\
-  > ${ROOT}/comfyui.log 2>&1 &
-
+# The proxy is the sole public entrance; ComfyUI binds to loopback only.
+start_proxy() {
+  nohup python3 ${ROOT}/proxy.py >> ${ROOT}/proxy.log 2>&1 &
+  PROXY_PID=$!
+}
 echo "[aixman] starting auth proxy on 0.0.0.0:${opts.publicPort}"
-nohup python3 ${ROOT}/proxy.py > ${ROOT}/proxy.log 2>&1 &
+start_proxy
 
-# Downloads run last and in the foreground. hf resumes partial files, so a
-# retry after a network drop does not restart 42 GB from zero.
+# A host whose driver is older than the image's CUDA boots the container fine
+# and only fails at the first tensor — find out now, not 40 minutes in.
+if ! python3 -c "import sys, torch; sys.exit(0 if torch.cuda.is_available() else 1)"; then
+  fail_boot "CUDA is unavailable in the container: the host driver is older than the image's CUDA, or no GPU was attached"
+fi
+
+# Freeze the image's torch stack. A dependency that asks for a different torch
+# would otherwise pull gigabytes of CUDA wheels over a build that works; with
+# the constraint it fails loudly instead.
+python3 -m pip list --format=freeze 2>/dev/null \\
+  | grep -iE '^(torch|torchvision|torchaudio|triton)==' > ${ROOT}/constraints.txt || true
+export PIP_CONSTRAINT=${ROOT}/constraints.txt
+
+# hf_xet is the transfer backend HF serves large files through now;
+# hf_transfer is deprecated and must not be enabled.
+pip install --no-cache-dir -q -U "huggingface_hub>=0.34" hf_xet
+
 fetch_model() {
   local repo="$1" path="$2" dest="$3" rename="$4"
   local base target
   base="$(basename "$path")"
   # A template may hardcode a filename the upstream repo doesn't use.
   [ -n "$rename" ] && base="$rename"
-  target="${ROOT}/ComfyUI/models/$dest/$base"
+  target="${ROOT}/models/$dest/$base"
 
   if [ -s "$target" ]; then
     echo "[aixman] already have $base"
@@ -256,11 +330,9 @@ fetch_model() {
     # restart tens of gigabytes from zero.
     if hf download "$repo" "$path" --local-dir "${ROOT}/dl" \\
        || huggingface-cli download "$repo" "$path" --local-dir "${ROOT}/dl"; then
-      # The repo path is preserved by the downloader; ComfyUI only looks in the
-      # flat models/<dest>/ directories, so move it into place.
+      # The downloader keeps the repo path; ComfyUI only looks in the flat
+      # models/<dest>/ directories, so move it into place.
       if [ -s "${ROOT}/dl/$path" ]; then
-        # ComfyUI ships models/{loras,vae,...} in its repo, but relying on that
-        # layout means a download that succeeded still fails at the move.
         mkdir -p "$(dirname "$target")"
         mv -f "${ROOT}/dl/$path" "$target"
         echo "[aixman] placed $base -> $dest"
@@ -270,26 +342,91 @@ fetch_model() {
     fi
     sleep 10
   done
+  echo "$path" >> ${ROOT}/failed.list
   echo "[aixman] FAILED to download $path"
   return 1
 }
 
-${downloads.join('\n')}
-
-echo "[aixman] model download stage complete"
-touch ${ROOT}/models.ready
-${opts.extraScript?.trim() ? `\n# operator script\n${opts.extraScript.trim()}\n` : ''}
-# Keep PID 1 alive: if this script exits the container stops and the rental is
-# wasted. Restart either service if it dies so a transient crash self-heals.
-while true; do
-  if ! pgrep -f "ComfyUI/main.py" > /dev/null; then
-    echo "[aixman] ComfyUI died, restarting"
-    nohup python3 ${ROOT}/ComfyUI/main.py --listen 127.0.0.1 --port 8188 \\
-      > ${ROOT}/comfyui.log 2>&1 &
+# Only a complete set counts. Marking ready after a failed file would hand the
+# worker jobs that cannot load their model.
+fetch_all() {
+  local ok=1
+${downloads.join('\n') || '  :'}
+  if [ "$ok" = 1 ]; then
+    touch ${ROOT}/models.ready
+    echo "[aixman] all weights in place"
+  else
+    fail_boot "weights failed to download: $(tr '\\n' ' ' < ${ROOT}/failed.list)"
   fi
-  if ! pgrep -f "proxy.py" > /dev/null; then
-    echo "[aixman] proxy died, restarting"
-    nohup python3 ${ROOT}/proxy.py > ${ROOT}/proxy.log 2>&1 &
+}
+echo "[aixman] downloading weights in the background"
+fetch_all &
+
+echo "[aixman] installing system packages"
+apt-get update -qq && apt-get install -y -qq git ca-certificates || true
+
+echo "[aixman] installing ComfyUI ${COMFYUI_REF}"
+if [ ! -d ${ROOT}/ComfyUI ]; then
+  git clone --depth 1 --branch ${shellQuote(COMFYUI_REF)} ${COMFYUI_REPO} ${ROOT}/ComfyUI \\
+    || fail_boot "could not clone ComfyUI ${COMFYUI_REF}"
+fi
+if [ -d ${ROOT}/ComfyUI ]; then
+  # Weights land outside the checkout (the download started before it
+  # existed); point ComfyUI's model folders at them.
+  rm -rf ${ROOT}/ComfyUI/models
+  ln -sfn ${ROOT}/models ${ROOT}/ComfyUI/models
+  pip install --no-cache-dir -q -r ${ROOT}/ComfyUI/requirements.txt \\
+    || echo "[aixman] WARNING: some ComfyUI requirements failed to install"
+fi
+
+# Community node packs some official templates depend on. Pinned by ref where
+# the catalogue supplies one, because an unpinned pack can change its node
+# names and break a workflow that worked yesterday.
+install_custom_node() {
+  local repo="$1" ref="$2" name dir
+  name="$(basename "$repo" .git)"
+  dir="${ROOT}/ComfyUI/custom_nodes/$name"
+  if [ ! -d "$dir" ]; then
+    git clone --depth 1 "$repo" "$dir" || { fail_boot "could not clone custom node $repo"; return 1; }
+  fi
+  if [ -n "$ref" ]; then
+    (cd "$dir" && git fetch --depth 1 origin "$ref" && git checkout -q FETCH_HEAD) || true
+  fi
+  [ -f "$dir/requirements.txt" ] && pip install --no-cache-dir -q -r "$dir/requirements.txt"
+  echo "[aixman] custom node ready: $name"
+}
+${customNodes.join('\n')}
+${opts.extraScript?.trim() ? `\n# operator script\n${opts.extraScript.trim()}\n` : ''}
+COMFY_PID=""
+start_comfy() {
+  nohup python3 ${ROOT}/ComfyUI/main.py --listen 127.0.0.1 --port 8188 \\
+    >> ${ROOT}/comfyui.log 2>&1 &
+  COMFY_PID=$!
+}
+if [ -f ${ROOT}/ComfyUI/main.py ]; then
+  echo "[aixman] starting ComfyUI on 127.0.0.1:8188"
+  start_comfy
+fi
+
+# Keep PID 1 alive: if this script exits the container stops and the rental is
+# wasted. Services are tracked by PID rather than pgrep, which a runtime image
+# is not guaranteed to ship — a missing pgrep reads as "dead" and would respawn
+# a CUDA process every 20 seconds.
+restarts=0
+while true; do
+  if [ -n "$COMFY_PID" ] && ! kill -0 "$COMFY_PID" 2>/dev/null; then
+    restarts=$((restarts + 1))
+    if [ "$restarts" -gt 5 ]; then
+      fail_boot "ComfyUI keeps exiting: $(tail -n 5 ${ROOT}/comfyui.log | tr '\\n' ' ' | cut -c1-400)"
+      COMFY_PID=""
+    else
+      echo "[aixman] ComfyUI exited, restarting ($restarts)"
+      start_comfy
+    fi
+  fi
+  if ! kill -0 "$PROXY_PID" 2>/dev/null; then
+    echo "[aixman] proxy exited, restarting"
+    start_proxy
   fi
   sleep 20
 done

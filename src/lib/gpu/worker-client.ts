@@ -8,6 +8,7 @@ import {
   describeUnmatched,
   injectNodes,
   pruneByClass,
+  pruneUnreachable,
 } from './comfy-convert';
 import {
   cacheSchema,
@@ -224,7 +225,9 @@ export class WorkerClient {
 
       graph = bound.graph;
       if (entry.prune?.length) graph = pruneByClass(graph, entry.prune);
-      return graph;
+      // Helpers whose output a binding replaced are now dead weight that can
+      // still fail validation — drop everything no output depends on.
+      return pruneUnreachable(graph, objectInfo);
     }
 
     return buildMiniMaxH3Workflow({
@@ -240,13 +243,22 @@ export class WorkerClient {
 
   private async submitComfy(params: WorkerJobParams): Promise<SubmitResult> {
     const objectInfo = await this.objectInfo();
-    const rawGraph = await this.buildGraph(params, objectInfo);
 
     // Check the graph against what this worker actually provides before
     // spending render time on it. Also catches half-downloaded weights.
-    const { graph, warnings } = validateGraph(rawGraph as ComfyGraph, objectInfo);
-    for (const warning of warnings) {
-      console.warn(`[gpu] workflow adjusted — ${warning}`);
+    let graph: ComfyGraph;
+    try {
+      const rawGraph = await this.buildGraph(params, objectInfo);
+      const validated = validateGraph(rawGraph as ComfyGraph, objectInfo);
+      graph = validated.graph;
+      for (const warning of validated.warnings) {
+        console.warn(`[gpu] workflow adjusted — ${warning}`);
+      }
+    } catch (error) {
+      // The cached schema lists the files that were on disk when it was read.
+      // If one was missing then, a retry must see the disk as it is now.
+      this.forgetSchema();
+      throw error;
     }
 
     const res = await this.request('/prompt', {
@@ -328,26 +340,35 @@ export class WorkerClient {
       ? [outputs[this.profile.outputNodeId]].filter(Boolean)
       : Object.values(outputs);
 
-    const urls: string[] = [];
+    const found: { url: string; filename: string }[] = [];
     for (const node of nodes) {
       if (!node) continue;
       // Video nodes vary by extension pack: gifs/videos/images all appear.
+      // Core SaveVideo reports its file under `images` with `animated: true`.
       for (const bucket of ['videos', 'gifs', 'images', 'audio'] as const) {
         const items = node[bucket];
         if (!Array.isArray(items)) continue;
         for (const item of items) {
           const file = item as { filename?: string; subfolder?: string; type?: string };
           if (!file?.filename) continue;
+          // `temp` files are previews a template shows along the way, not the
+          // result — storing one as the deliverable would hand back a still.
+          if (file.type === 'temp') continue;
           const qs = new URLSearchParams({
             filename: file.filename,
             subfolder: file.subfolder || '',
             type: file.type || 'output',
           });
-          urls.push(this.url(`/view?${qs.toString()}`));
+          found.push({ url: this.url(`/view?${qs.toString()}`), filename: file.filename });
         }
       }
     }
-    return urls;
+
+    // The first URL becomes the generation's result, so the file matching what
+    // this model produces goes first.
+    const wanted = this.modelKey ? getCatalogEntry(this.modelKey)?.outputKind : 'video';
+    const rank = (filename: string) => (wanted && mediaKindOf(filename) === wanted ? 0 : 1);
+    return found.sort((a, b) => rank(a.filename) - rank(b.filename)).map((f) => f.url);
   }
 
   // ----------------------------------------------------------------
@@ -444,6 +465,14 @@ export function applyWorkflowVars(graph: unknown, vars: Record<string, unknown>)
   };
 
   return walk(graph);
+}
+
+function mediaKindOf(filename: string): 'video' | 'image' | 'audio' | undefined {
+  const ext = /\.([a-z0-9]+)$/i.exec(filename)?.[1]?.toLowerCase() ?? '';
+  if (['mp4', 'webm', 'mov', 'mkv', 'gif'].includes(ext)) return 'video';
+  if (['png', 'jpg', 'jpeg', 'webp'].includes(ext)) return 'image';
+  if (['flac', 'mp3', 'wav', 'ogg', 'opus', 'm4a'].includes(ext)) return 'audio';
+  return undefined;
 }
 
 function summariseComfyMessages(messages: unknown[] | undefined): string {

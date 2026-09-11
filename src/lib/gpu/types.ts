@@ -29,10 +29,19 @@ export interface GpuOffer {
   diskGb: number;
   /** USD per hour, per GPU. */
   pricePerHourUsd: number;
+  /**
+   * Disk rate as the vendor lists it. SimplePod shows `pricePerDiskSize` = 0.15
+   * on hosts renting GPUs for $0.48–1.00/hr, which only makes sense as USD per
+   * GB per month — per GB-hour, 120 GB would cost $18/hr. Treated that way
+   * until a real invoice says otherwise.
+   */
+  diskPricePerGbMonthUsd?: number;
   region?: string;
   /** Host uptime percentage, 0-100. */
   reliability?: number;
   downloadMbps?: number;
+  /** Host CUDA version as the vendor reported it, e.g. "13.3". */
+  cudaVersion?: string;
 }
 
 export interface GpuOfferFilter {
@@ -94,6 +103,12 @@ export interface GpuRentSpec {
   /** Bash run at container start. Env vars are exported here (see below). */
   startScript?: string;
   /**
+   * The same script minus per-rental secrets, for the vendor-side template.
+   * Templates outlive machines and are reused, so a bearer token baked into
+   * one would be stale for the next rental and linger at the vendor.
+   */
+  templateStartScript?: string;
+  /**
    * Passed to the vendor when it supports structured env vars. Adapters MUST
    * also fold these into `startScript` as exports, because vendor env-var
    * payload shapes are inconsistent and silently dropping them would leave the
@@ -104,6 +119,22 @@ export interface GpuRentSpec {
   registry?: { host: string; username: string; password: string };
   /** Tag written into the instance name so orphan sweeps can identify us. */
   nameTag: string;
+}
+
+/** An order the vendor accepted whose instance we never saw. */
+export interface PendingRental {
+  /** Instance ids that existed before the order — anything else new is ours. */
+  before: string[];
+  /** When the order was placed, ms since epoch. */
+  at: number;
+  nameTag: string;
+}
+
+export class RentUnconfirmedError extends Error {
+  constructor(message: string, readonly pending: PendingRental) {
+    super(message);
+    this.name = 'RentUnconfirmedError';
+  }
 }
 
 export interface GpuBalance {
@@ -118,8 +149,21 @@ export interface GpuRentalProvider {
   /** Cheapest-first list of machines matching `filter`. */
   findOffers(filter: GpuOfferFilter, apiKey: string): Promise<GpuOffer[]>;
 
-  /** Rent a machine and boot `spec.image` on it. Resolves once the instance exists — not once it is ready. */
+  /**
+   * Rent a machine and boot `spec.image` on it. Resolves once the instance
+   * exists — not once it is ready.
+   *
+   * Throws `RentUnconfirmedError` when the vendor accepted the order but the
+   * new instance could not be identified: it may be billing, so the caller
+   * must not treat that like an ordinary failure.
+   */
   rent(spec: GpuRentSpec, apiKey: string): Promise<GpuInstance>;
+
+  /**
+   * Find instances created by an unconfirmed rental and tag them as ours, so
+   * the orphan sweep can terminate them. Returns how many were tagged.
+   */
+  adoptUnconfirmed?(pending: PendingRental, apiKey: string): Promise<number>;
 
   /** Current state. Returns null when the instance no longer exists. */
   getInstance(id: string, apiKey: string): Promise<GpuInstance | null>;
