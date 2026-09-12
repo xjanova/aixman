@@ -167,6 +167,7 @@ export class GpuQueue {
       by: ['modelKey'],
       where: { status: 'queued' },
       _count: { _all: true },
+      _min: { queuedAt: true },
     });
     if (pending.length === 0) return { dispatched: 0, failed: 0 };
 
@@ -176,44 +177,54 @@ export class GpuQueue {
 
     for (const group of pending) {
       const modelKey = group.modelKey;
+      let queued = group._count._all;
 
-      let worker: AiGpuWorker | null = null;
-      try {
-        const result = await GpuWorkerManager.ensureWorker(modelKey, cfg);
-        worker = result.worker;
-        if (!worker) {
-          reason ??= result.reason;
-          continue;
+      // 1. Every booted, idle machine serving this model takes the next job —
+      //    one GPU renders one job at a time. Only a booted machine can take
+      //    one: submitting to one still starting fails and costs the job an
+      //    attempt for nothing. Warmest first.
+      const ready = await prisma.aiGpuWorker.findMany({
+        where: { modelKey, status: 'ready', endpoint: { not: null } },
+        orderBy: { lastJobAt: { sort: 'desc', nulls: 'last' } },
+      });
+      for (const worker of ready) {
+        if (queued <= 0) break;
+        const busy = await prisma.aiGpuJob.count({
+          where: { workerId: worker.id, status: { in: ['assigned', 'running'] } },
+        });
+        if (busy > 0) continue;
+
+        const job = await this.claimNextJob(modelKey, worker.id);
+        if (!job) {
+          queued = 0;
+          break;
         }
+        queued -= 1;
+        try {
+          await this.submitJob(job, worker);
+          dispatched += 1;
+        } catch (error) {
+          await this.settleFailure(job, worker, (error as Error).message, true);
+          failed += 1;
+        }
+      }
+      if (queued <= 0) continue;
+
+      // 2. Jobs still waiting: rent another machine if that finishes them
+      //    sooner (or if this model has none) — see addCapacity.
+      try {
+        const result = await GpuWorkerManager.addCapacity(modelKey, cfg, {
+          queued,
+          oldestQueuedAt: group._min.queuedAt,
+        });
+        reason ??= result.reason;
       } catch (error) {
         // Only configuration errors reach here (bad profile, no key, no R2) —
-        // ensureWorker turns vendor hiccups into a reason instead. Those can
+        // addCapacity turns vendor hiccups into a reason instead. Those can
         // never succeed, so refund now rather than retrying forever.
         const message = (error as Error).message;
         reason ??= message;
         failed += await this.failAllQueued(modelKey, message);
-        continue;
-      }
-
-      // Only a booted worker can take a job; submitting to one still starting
-      // fails and costs the job an attempt for nothing.
-      if (worker.status !== 'ready' || !worker.endpoint) continue;
-
-      // One GPU renders one video at a time.
-      const busy = await prisma.aiGpuJob.count({
-        where: { workerId: worker.id, status: { in: ['assigned', 'running'] } },
-      });
-      if (busy > 0) continue;
-
-      const job = await this.claimNextJob(modelKey, worker.id);
-      if (!job) continue;
-
-      try {
-        await this.submitJob(job, worker);
-        dispatched += 1;
-      } catch (error) {
-        await this.settleFailure(job, worker, (error as Error).message, true);
-        failed += 1;
       }
     }
 

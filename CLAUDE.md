@@ -128,6 +128,14 @@ generating. Consequences that must never be regressed:
 - Budget caps live in `ai_settings` group `gpu` and are read fresh every tick:
   `gpu_daily_budget_usd`, `gpu_max_concurrent_workers`, `gpu_idle_timeout_minutes`,
   `gpu_max_worker_lifetime_minutes` (absolute kill switch).
+- Scaling (`GpuQueue.dispatchQueued` → `GpuWorkerManager.addCapacity`): every
+  idle booted machine of a model takes a job; another machine is rented only
+  when the backlog per machine exceeds `1 + boot/render` (`gpu-scaler.ts` —
+  H3 ≈ 3 waiting, Qwen ≈ 6). Models run side by side up to the cap; at the cap
+  a model with no machine may take an *idle* other-model machine's slot, but
+  not one just used or open in a customer's studio for the first 90 s
+  (anti ping-pong). Extra machines close on the plain idle timeout; only the
+  warmest idle machine per model gets the studio-presence grace.
 - The orphan sweep only terminates instances named `aixman-*`. Never name an
   unrelated SimplePod instance with that prefix.
 - Results **must** go to R2 before the worker is reaped — the tunnel URL dies
