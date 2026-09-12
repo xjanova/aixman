@@ -18,6 +18,9 @@ import { withTickLock } from '@/lib/services/gpu-lock';
 
 export const dynamic = 'force-dynamic';
 
+/** Job failure reason for an emergency stop; `userFacingError` matches its prefix. */
+const STOPPED_BY_ADMIN = 'Stopped by admin (emergency stop)';
+
 export async function GET() {
   if (!(await isAdmin())) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
@@ -175,6 +178,12 @@ export async function POST(request: NextRequest) {
       }
 
       case 'terminate-all': {
+        // An emergency stop has to stop. Shutting machines down alone did not:
+        // the next tick re-queued the interrupted render and rented another
+        // machine. So rental goes off first, then everything unfinished is
+        // refunded, then the machines go.
+        await saveConfig({ enabled: false });
+        let refunded = await GpuQueue.cancelAllPending(STOPPED_BY_ADMIN);
         const workers = await prisma.aiGpuWorker.findMany({
           where: { status: { in: ['provisioning', 'warming', 'ready', 'busy', 'draining'] } },
           select: { id: true },
@@ -182,7 +191,9 @@ export async function POST(request: NextRequest) {
         for (const w of workers) {
           await GpuWorkerManager.terminate(w.id, 'Emergency stop by admin');
         }
-        return NextResponse.json({ success: true, terminated: workers.length });
+        // A tick that was mid-poll may have re-queued a job in between.
+        refunded += await GpuQueue.cancelAllPending(STOPPED_BY_ADMIN);
+        return NextResponse.json({ success: true, terminated: workers.length, refunded, rentalEnabled: false });
       }
 
       case 'sweep-orphans': {
@@ -198,7 +209,12 @@ export async function POST(request: NextRequest) {
 
       case 'save-config': {
         const saved = await saveConfig(body.config);
-        return NextResponse.json({ success: true, saved });
+        const enabled = (body.config as { enabled?: unknown } | undefined)?.enabled;
+        return NextResponse.json({
+          success: true,
+          saved,
+          ...(typeof enabled === 'boolean' ? { rentalEnabled: enabled } : {}),
+        });
       }
 
       default:

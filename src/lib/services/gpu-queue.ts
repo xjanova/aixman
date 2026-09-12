@@ -524,6 +524,26 @@ export class GpuQueue {
     }
   }
 
+  /**
+   * Refund every job that has not finished — the job half of an emergency stop.
+   *
+   * Terminating machines alone does not stop anything: a render cut off
+   * mid-way is retryable, so the next tick re-queues it and rents a fresh
+   * machine, and queued jobs keep customers' credits held until the stale-queue
+   * sweep runs out (warmup + job timeout, 90 min by default). Call this with
+   * rental already switched off, so nothing it fails can be picked up again.
+   */
+  static async cancelAllPending(message: string): Promise<number> {
+    const jobs = await prisma.aiGpuJob.findMany({
+      where: { status: { in: ['queued', 'assigned', 'running'] } },
+    });
+    for (const job of jobs) {
+      // An admin decision says nothing about the model — keep it on sale.
+      await this.settleFailure(job, null, message, false, { countAgainstModel: false });
+    }
+    return jobs.length;
+  }
+
   /** Terminal-fail every queued job for a model whose configuration cannot work. */
   private static async failAllQueued(modelKey: string, message: string): Promise<number> {
     const jobs = await prisma.aiGpuJob.findMany({ where: { status: 'queued', modelKey } });
@@ -613,6 +633,9 @@ function userFacingError(technical: string): string {
   // "timeout" or "budget" and would otherwise be misread by the rules below.
   if (/^No suitable GPU available within/i.test(technical)) {
     return 'ยังหาเครื่อง GPU ว่างไม่ได้ในเวลาที่กำหนด กรุณาลองใหม่ภายหลัง' + REFUNDED;
+  }
+  if (/^Stopped by admin/i.test(technical)) {
+    return 'ผู้ดูแลระบบหยุดระบบสร้างวิดีโอชั่วคราว กรุณาลองใหม่ภายหลัง' + REFUNDED;
   }
   if (/terminated mid-render|worker was terminated|no longer exists/i.test(technical)) {
     return 'เครื่อง GPU หยุดทำงานระหว่างเรนเดอร์ กรุณาลองใหม่อีกครั้ง' + REFUNDED;
