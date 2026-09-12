@@ -340,13 +340,15 @@ function aspectNumber(aspect: string): number {
 }
 
 /**
- * Tallest the in-progress frame may be. The canvas shares one screen with the
- * header and the history strip, and a 2×2 grid of full-width squares (what the
- * image tab used to draw, three of them empty) was ~1,500 px tall: the canvas
- * clipped it top and bottom, so the queue animation at the frame's centre and
- * the status under it were never on screen.
+ * Tallest the in-progress frame may be: `--gen-frame-h`, set on the canvas in
+ * the page styles. On desktop the canvas is a size container and the value is
+ * its own height less the status block under the frame — the canvas shares one
+ * screen with the header and the history strip, so the viewport height says
+ * little about the room actually left. A 2×2 grid of full-width squares (what
+ * the image tab used to draw, three of them empty) was ~1,500 px tall and hid
+ * the queue animation at its centre off the top of the canvas.
  */
-const GENERATING_FRAME_MAX_H = "min(460px, 44vh)";
+const GENERATING_FRAME_MAX_H = "var(--gen-frame-h, min(460px, 44vh))";
 
 /**
  * Compact control that opens its contents in a floating panel.
@@ -1776,8 +1778,11 @@ export default function GeneratePage() {
           )}
         </div>
 
-        {/* History strip — recent generations */}
-        {history.length > 0 && (
+        {/* History strip — recent generations. Stepped aside while a result
+            is being made: its two rows took ~420px of a one-screen layout and
+            left the canvas too short to show the queue and its animation. It
+            comes back, with the new result in it, when the job settles. */}
+        {history.length > 0 && !isGenerating && (
           <div style={{ marginTop: 32 }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
               <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em", textTransform: "uppercase" }}>· รุ่นก่อนหน้า (history)</div>
@@ -1890,6 +1895,11 @@ export default function GeneratePage() {
           justify-content: safe center;
           overflow-x: hidden;
           overflow-y: auto;
+          /* Its height comes from the layout, never from its content, so it
+             can be a size container: the in-progress frame sizes itself from
+             the room left here (less ~170px for the status block and padding). */
+          container-type: size;
+          --gen-frame-h: min(460px, max(160px, calc(100cqh - 170px)));
         }
         @media (max-width: 1180px) {
           .rp-studio { grid-template-columns: 300px 1fr; }
@@ -1908,7 +1918,13 @@ export default function GeneratePage() {
             border-bottom: 1px solid rgba(255,255,255,0.06) !important;
           }
           .rp-studio-center { overflow: visible; }
-          .rp-studio-canvas { overflow: visible; min-height: 320px; }
+          /* Here the canvas grows with its content, which a size container
+             cannot do — fall back to the viewport for the frame cap. */
+          .rp-studio-canvas {
+            overflow: visible; min-height: 320px;
+            container-type: normal;
+            --gen-frame-h: min(460px, 44vh);
+          }
         }
       `}</style>
     </div>
