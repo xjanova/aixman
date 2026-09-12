@@ -34,6 +34,8 @@ export interface EtaEstimate {
   queuePosition: number | null;
   /** True when a machine still has to be rented and warmed. */
   includesWarmup: boolean;
+  /** Seconds of machine start-up still ahead of this job (0 once one is up). */
+  warmupRemainingSeconds: number;
 }
 
 function median(values: number[]): number | null {
@@ -101,7 +103,7 @@ export class GpuEta {
       include: { worker: true },
     });
     if (!job || ['completed', 'failed', 'cancelled'].includes(job.status)) {
-      return { seconds: null, basis: 'baseline', queuePosition: null, includesWarmup: false };
+      return { seconds: null, basis: 'baseline', queuePosition: null, includesWarmup: false, warmupRemainingSeconds: 0 };
     }
 
     const [historyRender, historyWarmup, cfg] = await Promise.all([
@@ -123,6 +125,7 @@ export class GpuEta {
         basis,
         queuePosition: 0,
         includesWarmup: false,
+        warmupRemainingSeconds: 0,
       };
     }
 
@@ -140,6 +143,7 @@ export class GpuEta {
 
     let seconds = render * (ahead + 1);
     let includesWarmup = false;
+    let warmupRemainingSeconds = 0;
 
     const worker = job.worker;
     const usableWorker = await prisma.aiGpuWorker.findFirst({
@@ -150,14 +154,15 @@ export class GpuEta {
 
     if (!live) {
       // Nothing running for this model — a machine must be rented first.
-      seconds += warmup;
+      warmupRemainingSeconds = warmup;
       includesWarmup = true;
     } else if (live.status === 'warming' || live.status === 'provisioning') {
       // Credit the warmup already served, so the number falls as it progresses.
       const elapsed = (Date.now() - live.rentedAt.getTime()) / 1000;
-      seconds += Math.max(30, warmup - elapsed);
+      warmupRemainingSeconds = Math.max(30, warmup - elapsed);
       includesWarmup = true;
     }
+    seconds += warmupRemainingSeconds;
 
     // Never quote longer than the point at which the system would give up.
     const ceiling = (cfg.warmupTimeoutMinutes + cfg.jobTimeoutMinutes) * 60;
@@ -166,6 +171,7 @@ export class GpuEta {
       basis,
       queuePosition: ahead + 1,
       includesWarmup,
+      warmupRemainingSeconds: Math.round(warmupRemainingSeconds),
     };
   }
 }

@@ -226,7 +226,8 @@ export const MODE_CARDS: ModeCard[] = [
 
 /**
  * Providers wired into the platform. Kept factual — these are the adapters
- * that exist under `src/lib/providers/` plus the self-hosted GPU path.
+ * that exist under `src/lib/providers/` plus our in-house engine. How the
+ * in-house models run is not advertised (see lib/public-provider.ts).
  */
 export const PROVIDERS = [
   "BytePlus",
@@ -238,7 +239,7 @@ export const PROVIDERS = [
   "Kling",
   "Luma",
   "Leonardo",
-  "Self-hosted GPU",
+  "X-DREAMER Engine",
 ] as const;
 
 /** Straight answers to the things that stop people from paying. */

@@ -4,15 +4,27 @@ import prisma from '@/lib/db';
 import { GpuQueue } from '@/lib/services/gpu-queue';
 import { RetentionService, daysUntil } from '@/lib/services/retention';
 import { GpuEta, formatEta } from '@/lib/services/gpu-eta';
+import { publicProvider } from '@/lib/public-provider';
 
-/** Thai progress copy for GPU-backed jobs, keyed by worker state. */
-const GPU_STAGE_LABELS: Record<string, string> = {
-  queued: 'อยู่ในคิว รอเครื่อง GPU ว่าง',
-  provisioning: 'กำลังเช่าเครื่อง GPU',
-  warming: 'กำลังโหลดโมเดลเข้าเครื่อง (ครั้งแรกใช้เวลาสักพัก)',
-  ready: 'เครื่องพร้อมแล้ว กำลังเริ่มเรนเดอร์',
-  rendering: 'กำลังเรนเดอร์วิดีโอ',
-};
+/**
+ * What the customer sees while an in-house job waits: a queue.
+ *
+ * How the work is run — renting a machine, booting it, loading weights — is a
+ * trade secret, so none of it is named here. A machine that is still starting
+ * is shown as places in the queue instead, one place per this many seconds of
+ * start-up left, which count down as it boots. The ETA beside it stays the
+ * real estimate, so the wait itself is never misstated.
+ */
+const STARTUP_SECONDS_PER_PLACE = 30;
+/** A slow boot must not show an absurd queue; the ETA carries the rest. */
+const MAX_STARTUP_PLACES = 8;
+
+const QUEUE_LABELS = {
+  queued: 'อยู่ในคิว',
+  next: 'ใกล้ถึงคิวของคุณแล้ว',
+  starting: 'ถึงคิวของคุณแล้ว กำลังเริ่มสร้าง',
+  rendering: 'กำลังสร้างผลงานของคุณ',
+} as const;
 
 export async function GET(
   _request: Request,
@@ -35,7 +47,7 @@ export async function GET(
       model: {
         include: { provider: { select: { name: true, slug: true } } },
       },
-      gpuJob: { include: { worker: { select: { status: true, gpuModel: true } } } },
+      gpuJob: { select: { status: true } },
     },
   });
 
@@ -45,14 +57,14 @@ export async function GET(
 
   const retentionDays = await RetentionService.getRetentionDays();
 
-  // GPU-backed jobs rent a machine on demand, so a first render can legitimately
-  // take 10-25 minutes. Reporting progress lets the client wait it out instead
-  // of declaring a timeout and pushing the user to pay for a second attempt.
+  // In-house jobs wait in a queue that can take minutes. Reporting progress
+  // lets the client wait it out instead of declaring a timeout and pushing the
+  // user to pay for a second attempt. (The key stays `gpu` for app builds
+  // already in the field; nothing inside it names hardware.)
   let gpu: {
-    stage: string;
+    stage: 'queued' | 'starting' | 'rendering';
     label: string;
     queuePosition: number | null;
-    gpuModel: string | null;
     etaSeconds: number | null;
     etaLabel: string | null;
     etaBasis: string;
@@ -60,29 +72,29 @@ export async function GET(
 
   if (generation.gpuJob && ['pending', 'processing'].includes(generation.status)) {
     const job = generation.gpuJob;
-    const stage =
-      job.status === 'running'
-        ? 'rendering'
-        : job.worker?.status === 'ready'
-          ? 'ready'
-          : job.worker?.status === 'warming'
-            ? 'warming'
-            : job.worker?.status === 'provisioning'
-              ? 'provisioning'
-              : 'queued';
-
     const eta = await GpuEta.estimate(generation.id);
-    gpu = {
-      stage,
-      label: GPU_STAGE_LABELS[stage] ?? GPU_STAGE_LABELS.queued,
-      queuePosition: await GpuQueue.getQueuePosition(generation.id),
-      gpuModel: job.worker?.gpuModel ?? null,
-      etaSeconds: eta.seconds,
-      etaLabel: formatEta(eta.seconds),
-      // 'baseline' means no history yet — the UI softens the wording so a first
-      // run's rough guess isn't presented as a firm promise.
-      etaBasis: eta.basis,
-    };
+
+    if (job.status === 'running') {
+      gpu = { stage: 'rendering', label: QUEUE_LABELS.rendering, queuePosition: 0, etaSeconds: eta.seconds, etaLabel: formatEta(eta.seconds), etaBasis: eta.basis };
+    } else if (job.status === 'assigned') {
+      gpu = { stage: 'starting', label: QUEUE_LABELS.starting, queuePosition: 0, etaSeconds: eta.seconds, etaLabel: formatEta(eta.seconds), etaBasis: eta.basis };
+    } else {
+      // The ETA's count includes jobs already rendering ahead, which is what
+      // "people in front of you" means to a customer.
+      const real = eta.queuePosition ?? (await GpuQueue.getQueuePosition(generation.id)) ?? 1;
+      const startup = Math.min(MAX_STARTUP_PLACES, Math.ceil(eta.warmupRemainingSeconds / STARTUP_SECONDS_PER_PLACE));
+      const position = real + startup;
+      gpu = {
+        stage: 'queued',
+        label: position <= 1 ? QUEUE_LABELS.next : QUEUE_LABELS.queued,
+        queuePosition: position,
+        etaSeconds: eta.seconds,
+        etaLabel: formatEta(eta.seconds),
+        // 'baseline' means no history yet — the UI softens the wording so a
+        // first run's rough guess isn't presented as a firm promise.
+        etaBasis: eta.basis,
+      };
+    }
   }
 
   return NextResponse.json({
@@ -105,7 +117,7 @@ export async function GET(
     prompt: generation.prompt,
     model: {
       name: generation.model.name,
-      provider: generation.model.provider.name,
+      provider: publicProvider(generation.model.provider).name,
     },
     createdAt: generation.createdAt,
     completedAt: generation.completedAt,

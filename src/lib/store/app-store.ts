@@ -21,6 +21,10 @@ interface AIModel {
   canOrder?: boolean;
   tuningMessage?: string | null;
   readiness?: string;
+  /** 'unavailable': provider not connected, keys failing, or switched off. */
+  status?: 'ready' | 'tuning' | 'unavailable';
+  /** Customer-safe reason when `canOrder` is false. */
+  unavailableReason?: string | null;
   /** Set when one order yields at most this many outputs (rented-GPU models: 1). */
   maxOutputs?: number | null;
   /** Set when the price grows with clip length; see lib/pricing.ts. */

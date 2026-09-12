@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth';
 import prisma from '@/lib/db';
 import { daysUntil } from '@/lib/services/retention';
+import { publicProvider } from '@/lib/public-provider';
 import type { Prisma } from '@/generated/prisma/client';
 
 export async function GET(request: NextRequest) {
@@ -105,8 +106,9 @@ export async function GET(request: NextRequest) {
       favoritesCount: g._count.favorites,
       model: {
         name: g.model.name,
-        provider: g.model.provider.name,
-        providerSlug: g.model.provider.slug,
+        // In-house models show our brand, not the rented hardware behind them.
+        provider: publicProvider(g.model.provider).name,
+        providerSlug: publicProvider(g.model.provider).slug,
       },
       createdAt: g.createdAt,
     })),

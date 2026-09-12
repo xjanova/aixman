@@ -330,7 +330,129 @@ function SampleFrame({ src, label, aspect, isVideo = false }: { src: string; lab
   );
 }
 
-function StudioFrame({ index, seed, aspect, generating }: { index: number; seed: number; aspect: string; generating: boolean }) {
+/**
+ * What /api/generate/[id] reports while a queued job waits — a place in the
+ * queue and an honest ETA, never how the work is run.
+ */
+interface QueueProgress {
+  stage: "queued" | "starting" | "rendering";
+  label: string;
+  position: number | null;
+  etaSeconds: number | null;
+  etaLabel: string | null;
+  basis: string;
+  /** When this reading arrived, so the bar keeps moving between polls. */
+  at: number;
+}
+
+/** Rotating captions while a result is being made — flavour, not status. */
+const CREATING_TIPS: Record<string, string[]> = {
+  video: ["กำลังจัดแสงและมุมกล้อง…", "กำลังวาดเฟรมทีละภาพ…", "กำลังใส่เสียงประกอบ…", "กำลังเก็บรายละเอียดการเคลื่อนไหว…"],
+  image: ["กำลังเรียงองค์ประกอบภาพ…", "กำลังลงสีและแสงเงา…", "กำลังเก็บรายละเอียดให้คมชัด…"],
+  edit: ["กำลังอ่านภาพต้นฉบับ…", "กำลังแก้ไขตามที่สั่ง…", "กำลังเกลี่ยรอยต่อให้เนียน…"],
+  lipsync: ["กำลังฟังเสียงพูด…", "กำลังขยับปากให้ตรงจังหวะ…", "กำลังเก็บรายละเอียดใบหน้า…"],
+};
+
+/** The animated centre of a frame while its result is being made. */
+function GeneratingOverlay({ progress }: { progress: QueueProgress | null }) {
+  const place = progress?.stage === "queued" ? progress.position ?? 0 : 0;
+  return (
+    <div style={{ position: "absolute", inset: 0, background: "rgba(2,6,23,0.45)", backdropFilter: "blur(3px)", overflow: "hidden", display: "grid", placeItems: "center" }}>
+      {/* A soft band of light sweeping down the frame. */}
+      <div className="xdr-motion" style={{ position: "absolute", left: 0, right: 0, top: 0, height: "45%", background: "linear-gradient(180deg, transparent, hsla(190,90%,70%,0.12), transparent)", animation: "xdr-scan 3.2s linear infinite" }} />
+      {/* Sparks rising from the bottom edge. */}
+      {Array.from({ length: 10 }).map((_, i) => (
+        <span key={i} className="xdr-motion" style={{
+          position: "absolute", bottom: 8, left: `${6 + i * 9.5}%`, width: 3, height: 3, borderRadius: 999,
+          background: `hsl(${180 + i * 16},90%,75%)`, boxShadow: `0 0 8px hsl(${180 + i * 16},90%,70%)`,
+          animation: `xdr-rise ${3 + (i % 4) * 0.6}s ease-out ${i * 0.35}s infinite`, opacity: 0,
+        }} />
+      ))}
+      <div style={{ position: "relative", width: 128, height: 128, display: "grid", placeItems: "center" }}>
+        <div className="xdr-motion" style={{
+          position: "absolute", inset: 0, borderRadius: "50%",
+          background: "conic-gradient(from 0deg, hsl(180,90%,60%), hsl(265,90%,66%), hsl(320,90%,66%), hsl(180,90%,60%))",
+          WebkitMask: "radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4px))",
+          mask: "radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4px))",
+          animation: "xdr-spin 2.4s linear infinite",
+        }} />
+        <div className="xdr-motion" style={{
+          position: "absolute", inset: 20, borderRadius: "50%",
+          background: "radial-gradient(circle, hsla(200,95%,70%,0.55), hsla(270,90%,60%,0.16) 60%, transparent 72%)",
+          animation: "xdr-core 2.2s ease-in-out infinite",
+        }} />
+        <div style={{ position: "relative", textAlign: "center", color: "#fff" }}>
+          {place > 0 ? (
+            <>
+              <div style={{ fontSize: 10, letterSpacing: "0.18em", opacity: 0.75 }}>คิวที่</div>
+              {/* Keyed on the number, so each step down replays the pop. */}
+              <div key={place} className="xdr-motion" style={{ fontSize: 40, fontWeight: 700, lineHeight: 1.05, animation: "xdr-pop 450ms ease-out" }}>{place}</div>
+            </>
+          ) : (
+            <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: "0.04em" }}>กำลังสร้าง</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Queue place, the honest ETA and a moving bar, under the frame(s). */
+function GeneratingStatus({ progress, tab, startedAt }: { progress: QueueProgress | null; tab: string; startedAt: number | null }) {
+  const [now, setNow] = useState(() => Date.now());
+  const [tip, setTip] = useState(0);
+  useEffect(() => {
+    const clockTimer = setInterval(() => setNow(Date.now()), 1000);
+    const tipTimer = setInterval(() => setTip((i) => i + 1), 4000);
+    return () => { clearInterval(clockTimer); clearInterval(tipTimer); };
+  }, []);
+
+  const tips = CREATING_TIPS[tab] ?? CREATING_TIPS.image;
+  const elapsed = startedAt ? Math.max(0, (now - startedAt) / 1000) : 0;
+  // What was left at the last reading, less the time since — so the bar and
+  // the countdown move every second, not only when a poll lands.
+  const remaining = progress?.etaSeconds != null ? Math.max(0, progress.etaSeconds - (now - progress.at) / 1000) : null;
+  const fraction = remaining != null ? Math.min(0.97, elapsed / Math.max(1, elapsed + remaining)) : null;
+  const queued = progress?.stage === "queued";
+
+  const headline = progress
+    ? `${progress.label}${queued && (progress.position ?? 0) > 1 ? ` • คิวที่ ${progress.position}` : ""}`
+    : "กำลังสร้างผลงานของคุณ";
+  const eta = progress?.etaLabel
+    ? `${progress.basis === "baseline" ? "คาดว่าใช้เวลา" : "เหลืออีก"} ${progress.etaLabel}`
+    : !progress
+      ? tab === "video" ? "วิดีโอมักใช้เวลา 30-120 วินาที" : "รอสักครู่"
+      : null;
+
+  return (
+    <div style={{ maxWidth: 460, margin: "20px auto 0", textAlign: "center" }}>
+      <div style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0" }}>{headline}</div>
+      {eta && <div style={{ fontSize: 12, color: "rgba(203,213,225,0.7)", marginTop: 4 }}>{eta}</div>}
+      <div style={{ height: 6, borderRadius: 999, background: "rgba(255,255,255,0.06)", overflow: "hidden", marginTop: 12 }}>
+        <div className="xdr-motion" style={{
+          height: "100%", borderRadius: 999,
+          width: fraction != null ? `${Math.max(4, fraction * 100)}%` : "38%",
+          background: "linear-gradient(90deg, hsl(180,85%,55%), hsl(265,85%,65%), hsl(320,85%,65%), hsl(180,85%,55%))",
+          backgroundSize: "200% 100%",
+          animation: "xdr-bar 2.4s linear infinite",
+          transition: "width 900ms ease",
+          // No estimate (a direct provider): an indeterminate bar that drifts.
+          marginLeft: fraction != null ? 0 : `${(tip % 3) * 30}%`,
+        }} />
+      </div>
+      <div key={tip} className="xdr-motion" style={{ fontSize: 12, color: "rgba(165,243,252,0.75)", marginTop: 10, animation: "xdr-fade-in 500ms ease-out" }}>
+        {queued ? "ระบบจะเริ่มสร้างให้อัตโนมัติเมื่อถึงคิวของคุณ" : tips[tip % tips.length]}
+      </div>
+      {progress && (
+        <div style={{ fontSize: 11, color: "rgba(203,213,225,0.45)", marginTop: 6 }}>
+          ปิดหน้านี้ได้ ผลงานจะเข้าแกลเลอรีเมื่อเสร็จ
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StudioFrame({ index, seed, aspect, generating, progress = null }: { index: number; seed: number; aspect: string; generating: boolean; progress?: QueueProgress | null }) {
   const hue1 = (140 + index * 35 + HUE + Math.floor(seed * 360)) % 360;
   const hue2 = (hue1 + 60) % 360;
   return (
@@ -355,14 +477,7 @@ function StudioFrame({ index, seed, aspect, generating }: { index: number; seed:
           />
         ))}
       </svg>
-      {generating && (
-        <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.4)", backdropFilter: "blur(4px)", display: "grid", placeItems: "center", color: "#fff", fontSize: 12, letterSpacing: "0.1em" }}>
-          <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 24, marginBottom: 8, animation: "spin 2s linear infinite" }}>⟳</div>
-            WEAVING...
-          </div>
-        </div>
-      )}
+      {generating && <GeneratingOverlay progress={progress} />}
       <div style={{ position: "absolute", left: 12, bottom: 10, fontSize: 10, color: "rgba(255,255,255,0.55)", letterSpacing: "0.08em", fontFamily: "ui-monospace,monospace" }}>
         #{String(index + 1).padStart(2, "0")} · seed {Math.floor(seed * 99999)}
       </div>
@@ -409,9 +524,11 @@ export default function GeneratePage() {
   const [strength, setStrength] = useState(0.75);
   const [numOutputs, setNumOutputs] = useState(1);
   const [isUpscaling, setIsUpscaling] = useState(false);
-  // Progress line for GPU-backed models, which rent a machine on demand and can
-  // legitimately take many minutes before the first frame is rendered.
-  const [progressNote, setProgressNote] = useState<string | null>(null);
+  // Queue place and ETA for queued (in-house) models, which can legitimately
+  // wait minutes before their turn comes; null for direct providers.
+  const [progress, setProgress] = useState<QueueProgress | null>(null);
+  /** When the current generation started, for the progress bar. */
+  const [genStartedAt, setGenStartedAt] = useState<number | null>(null);
   const [steps, setSteps] = useState(42);
   const [guidance, setGuidance] = useState(7.5);
   const [seed, setSeed] = useState<number | null>(null);
@@ -466,14 +583,26 @@ export default function GeneratePage() {
     });
   };
 
-  const filteredModels = models.filter((m) =>
-    tab === "lipsync"
+  const inTab = (m: (typeof models)[number], key: TabType) =>
+    key === "lipsync"
       ? isLipsyncModel(m.subcategory)
       : // Lip-sync models are stored under 'video' but belong to their own tab;
         // leaving them in this list would offer a model whose required inputs
         // the video controls cannot supply.
-        m.category === tab && !isLipsyncModel(m.subcategory)
-  );
+        m.category === key && !isLipsyncModel(m.subcategory);
+  const filteredModels = models.filter((m) => inTab(m, tab));
+  /**
+   * Why a whole tab is unusable right now (no model in it can be ordered —
+   * provider not connected, keys failing, switched off), or null. The tab is
+   * dimmed with the reason rather than letting someone write a prompt for it.
+   */
+  const tabBlockedReason = (key: TabType): string | null => {
+    if (!modelsLoaded) return null;
+    const inThisTab = models.filter((m) => inTab(m, key));
+    if (inThisTab.length === 0) return "ยังไม่มีโมเดลในหมวดนี้";
+    if (inThisTab.some((m) => m.canOrder !== false)) return null;
+    return inThisTab[0].unavailableReason ?? inThisTab[0].tuningMessage ?? "ยังใช้งานไม่ได้ในขณะนี้";
+  };
 
 
   useEffect(() => {
@@ -671,17 +800,19 @@ export default function GeneratePage() {
         if (data.gpu) {
           sawGpu = true;
           deadlineMs = GPU_DEADLINE_MS;
-          const queued = data.gpu.queuePosition && data.gpu.queuePosition > 1
-            ? ` • คิวที่ ${data.gpu.queuePosition}`
-            : "";
-          // With no history the estimate is a rough baseline, so it is worded
-          // as such rather than quoted like a firm figure.
-          const eta = data.gpu.etaLabel
-            ? ` • ${data.gpu.etaBasis === "baseline" ? "คาดว่า" : "เหลืออีก"} ${data.gpu.etaLabel}`
-            : "";
-          setProgressNote(`${data.gpu.label}${queued}${eta}`);
+          setProgress({
+            stage: data.gpu.stage,
+            label: data.gpu.label,
+            position: data.gpu.queuePosition ?? null,
+            etaSeconds: data.gpu.etaSeconds ?? null,
+            etaLabel: data.gpu.etaLabel ?? null,
+            // With no history the estimate is a rough baseline, and is worded
+            // as such rather than quoted like a firm figure.
+            basis: data.gpu.etaBasis ?? "history",
+            at: Date.now(),
+          });
         } else if (sawGpu) {
-          setProgressNote(null);
+          setProgress(null);
         }
 
         if (data.status === "completed") {
@@ -693,13 +824,13 @@ export default function GeneratePage() {
             creditsUsed: data.creditsUsed, processingMs: data.processingMs,
             expiresAt: data.expiresAt, daysLeft: data.daysLeft,
           });
-          setIsGenerating(false); setProgressNote(null); fetchCredits(); fetchHistory();
+          setIsGenerating(false); setProgress(null); fetchCredits(); fetchHistory();
           toast("success", "สร้างสำเร็จ!", `ใช้ ${data.creditsUsed} เครดิต`);
           return;
         }
         if (data.status === "failed") {
           setResult({ id: data.id, status: "failed", creditsUsed: 0, error: data.errorMessage });
-          setIsGenerating(false); setProgressNote(null); fetchCredits();
+          setIsGenerating(false); setProgress(null); fetchCredits();
           toast("error", "สร้างไม่สำเร็จ", data.errorMessage || "เกิดข้อผิดพลาด");
           return;
         }
@@ -708,7 +839,7 @@ export default function GeneratePage() {
       }
     }
 
-    setIsGenerating(false); setProgressNote(null);
+    setIsGenerating(false); setProgress(null);
     // The job is still running server-side and the credits are already spent —
     // telling the user to "try again" here would charge them twice for one clip.
     toast(
@@ -741,6 +872,7 @@ export default function GeneratePage() {
       return;
     }
     setIsGenerating(true); setResult(null); setIsFavorited(false);
+    setProgress(null); setGenStartedAt(Date.now());
     const ar = aspectRatios.find((a) => a.value === aspectRatio);
     // On video the mode decides: text→video must not smuggle a start frame in,
     // or the provider silently switches endpoint behind the customer's back.
@@ -883,18 +1015,27 @@ export default function GeneratePage() {
             { key: "video" as TabType, label: "สร้างวิดีโอ", icon: "▶" },
             { key: "edit"  as TabType, label: "แก้ไขภาพ", icon: "✦" },
             { key: "lipsync" as TabType, label: "ลิปซิงค์", icon: "♪" },
-          ]).map(t => (
+          ]).map(t => {
+            const blocked = tabBlockedReason(t.key);
+            return (
             <button key={t.key}
+              disabled={blocked !== null && tab !== t.key}
+              title={blocked ?? undefined}
               onClick={() => { setTab(t.key); setResult(null); setNumOutputs(1); }}
               style={{
-                flex: 1, padding: "8px 6px", borderRadius: 8, border: "none", cursor: "pointer",
+                flex: 1, padding: "8px 6px", borderRadius: 8, border: "none",
+                cursor: blocked !== null && tab !== t.key ? "not-allowed" : "pointer",
                 background: tab === t.key ? `linear-gradient(135deg, hsl(${160 + HUE},70%,50%), hsl(${270 + HUE},70%,55%))` : "transparent",
                 color: tab === t.key ? "#fff" : "rgba(226,232,240,0.6)",
+                // Dimmed, not hidden: the customer can see it exists, and the
+                // tooltip says why it is not available right now.
+                opacity: blocked !== null && tab !== t.key ? 0.38 : 1,
                 fontSize: 12, fontWeight: 500, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
               }}>
               <span style={{ fontSize: 12 }}>{t.icon}</span>{t.label}
             </button>
-          ))}
+            );
+          })}
         </div>
 
         {/* Model Selector */}
@@ -922,28 +1063,34 @@ export default function GeneratePage() {
                 {filteredModels.length === 0 ? (
                   <div style={{ padding: 16, textAlign: "center", fontSize: 13, color: "#94a3b8" }}>ไม่มีโมเดลสำหรับหมวดนี้</div>
                 ) : filteredModels.map(m => {
-                  // A model still being proven out stays visible so customers
-                  // can see what is coming, but picking it is blocked — the
-                  // alternative is letting them spend credits on a render that
-                  // cannot be delivered yet.
-                  const tuning = m.canOrder === false;
+                  // A model that cannot be ordered right now — still being
+                  // proven out, or its provider not connected / failing —
+                  // stays visible, dimmed, with the reason. Picking it is
+                  // blocked: the alternative is letting a customer spend
+                  // credits on a render that cannot be delivered.
+                  const blocked = m.canOrder === false;
+                  const reason = m.unavailableReason ?? m.tuningMessage ?? "ยังใช้งานไม่ได้ ลองใหม่ภายหลัง";
                   return (
-                  <button key={m.id} disabled={tuning}
-                    title={tuning ? (m.tuningMessage ?? undefined) : undefined}
-                    onClick={() => { if (tuning) return; setSelectedModelId(m.id); setShowModelDropdown(false); }}
-                    style={{ width: "100%", padding: "10px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", border: "none", cursor: tuning ? "not-allowed" : "pointer", textAlign: "left", background: selectedModelId === m.id ? `hsla(${220 + HUE},60%,50%,0.15)` : "transparent", color: "#e2e8f0", borderBottom: "1px solid rgba(255,255,255,0.04)", opacity: tuning ? 0.55 : 1 }}>
+                  <button key={m.id} disabled={blocked}
+                    title={blocked ? reason : undefined}
+                    onClick={() => { if (blocked) return; setSelectedModelId(m.id); setShowModelDropdown(false); }}
+                    style={{ width: "100%", padding: "10px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", border: "none", cursor: blocked ? "not-allowed" : "pointer", textAlign: "left", background: selectedModelId === m.id ? `hsla(${220 + HUE},60%,50%,0.15)` : "transparent", color: "#e2e8f0", borderBottom: "1px solid rgba(255,255,255,0.04)", opacity: blocked ? 0.45 : 1 }}>
                     <div style={{ minWidth: 0, flex: 1 }}>
                       <div style={{ fontSize: 13, fontWeight: 500, display: "flex", alignItems: "center", gap: 6 }}>
                         {m.name}
                         {m.isFeatured && <span style={{ fontSize: 10, color: "#fbbf24" }}>✦</span>}
-                        {tuning && (
-                          <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 999, background: "hsla(38,90%,55%,0.18)", color: "#fbbf24", fontWeight: 600 }}>
-                            กำลังปรับแต่ง
+                        {blocked && (
+                          <span style={{
+                            fontSize: 9, padding: "1px 6px", borderRadius: 999, fontWeight: 600,
+                            background: m.status === "tuning" ? "hsla(38,90%,55%,0.18)" : "rgba(148,163,184,0.18)",
+                            color: m.status === "tuning" ? "#fbbf24" : "#cbd5e1",
+                          }}>
+                            {m.status === "tuning" ? "กำลังปรับแต่ง" : "ยังใช้ไม่ได้"}
                           </span>
                         )}
                       </div>
                       <div style={{ fontSize: 11, color: "#94a3b8" }}>
-                        {tuning ? "ยังใช้งานไม่ได้ ลองใหม่ภายหลัง" : `${m.provider.name}${m.subcategory ? ` · ${m.subcategory}` : ""}`}
+                        {blocked ? reason : `${m.provider.name}${m.subcategory ? ` · ${m.subcategory}` : ""}`}
                       </div>
                     </div>
                     <span style={{ padding: "2px 6px", borderRadius: 6, background: "hsla(48,90%,60%,0.15)", color: "#fbbf24", fontSize: 10, fontWeight: 600 }}>✦ {m.creditsPerUnit}</span>
@@ -1317,7 +1464,7 @@ export default function GeneratePage() {
             background: "hsla(38,90%,55%,0.12)", color: "#fbbf24",
             border: "1px solid hsla(38,90%,55%,0.25)",
           }}>
-            {selectedModel.tuningMessage ?? "โมเดลนี้กำลังปรับแต่งอยู่ ยังใช้งานไม่ได้ กรุณาลองใหม่ภายหลัง"}
+            {selectedModel.unavailableReason ?? selectedModel.tuningMessage ?? "โมเดลนี้ยังใช้งานไม่ได้ในขณะนี้ กรุณาลองใหม่ภายหลัง"}
           </div>
         )}
 
@@ -1356,7 +1503,7 @@ export default function GeneratePage() {
             opacity: cannotSubmit ? 0.6 : 1,
             boxShadow: `0 10px 24px -8px hsla(${270 + HUE},70%,50%,0.55)`,
           }}>
-          {isGenerating ? "⟳ กำลังทอ..." : (
+          {isGenerating ? (progress?.stage === "queued" && (progress.position ?? 0) > 0 ? `⟳ รอคิว • คิวที่ ${progress.position}` : "⟳ กำลังทอ...") : (
             <>ทอ ✦ {outputs > 1 ? `${outputs} ภาพ · ` : ""}{totalCredits || "—"} credits</>
           )}
         </button>
@@ -1401,7 +1548,7 @@ export default function GeneratePage() {
               {tab === "image" ? (
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 16 }}>
                   {Array.from({ length: Math.max(outputs, 1) }).map((_, i) => (
-                    <StudioFrame key={i} index={i} seed={(i + 1) * 0.137} aspect={aspectRatio} generating={true} />
+                    <StudioFrame key={i} index={i} seed={(i + 1) * 0.137} aspect={aspectRatio} generating={true} progress={progress} />
                   ))}
                   {outputs < 4 && Array.from({ length: 4 - outputs }).map((_, i) => (
                     <StudioFrame key={`pad${i}`} index={outputs + i} seed={(outputs + i + 1) * 0.137} aspect={aspectRatio} generating={false} />
@@ -1409,20 +1556,10 @@ export default function GeneratePage() {
                 </div>
               ) : (
                 <div style={{ aspectRatio: ASPECT_RATIO_CSS[aspectRatio] || "1/1", maxHeight: 520, margin: "0 auto" }}>
-                  <StudioFrame index={0} seed={0.42} aspect={aspectRatio} generating={true} />
+                  <StudioFrame index={0} seed={0.42} aspect={aspectRatio} generating={true} progress={progress} />
                 </div>
               )}
-              <p style={{ fontSize: 13, color: "rgba(203,213,225,0.7)", marginTop: 20, textAlign: "center" }}>
-                {progressNote
-                  ? progressNote
-                  : tab === "video" ? "วิดีโออาจใช้เวลา 30-120 วินาที..." : "กำลังทอ... รอสักครู่"}
-              </p>
-              {progressNote && (
-                <p style={{ fontSize: 11, color: "rgba(203,213,225,0.45)", marginTop: 6, textAlign: "center" }}>
-                  โมเดลนี้รันบน GPU ที่เช่ามาเอง • คลิปแรกอาจรอ 20-40 นาที (ต้องบูตเครื่องและโหลดโมเดล)
-                  ปิดหน้านี้ได้ ผลลัพธ์จะขึ้นในแกลเลอรี
-                </p>
-              )}
+              <GeneratingStatus progress={progress} tab={tab} startedAt={genStartedAt} />
             </div>
           ) : result?.status === "completed" && result.resultUrl ? (
             <div style={{ width: "100%" }}>
