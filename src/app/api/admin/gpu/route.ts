@@ -166,6 +166,14 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ success: true });
       }
 
+      case 'worker-log': {
+        const workerId = parseInt(body.workerId, 10);
+        if (!Number.isInteger(workerId) || workerId <= 0) {
+          return NextResponse.json({ error: 'workerId ไม่ถูกต้อง' }, { status: 400 });
+        }
+        return NextResponse.json({ success: true, logs: await GpuWorkerManager.fetchLogs(workerId) });
+      }
+
       case 'terminate-all': {
         const workers = await prisma.aiGpuWorker.findMany({
           where: { status: { in: ['provisioning', 'warming', 'ready', 'busy', 'draining'] } },

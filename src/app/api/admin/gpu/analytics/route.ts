@@ -243,6 +243,9 @@ export async function GET() {
       lastError: w.lastError,
       rentedAt: w.rentedAt.toISOString(),
       readyAt: w.readyAt?.toISOString() ?? null,
+      // Whether the proxy is reachable yet (gates the log button). The URL
+      // itself is a live tunnel into the machine and stays server-side.
+      hasEndpoint: Boolean(w.endpoint),
     })),
     recentJobs: jobs.slice(0, 25).map((j) => ({
       id: j.id,
