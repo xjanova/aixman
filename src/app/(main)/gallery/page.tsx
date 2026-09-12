@@ -17,6 +17,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useToast } from "@/components/ui/toast-provider";
 import { EmptyState } from "@/components/xdreamer/page-hero";
+import { downloadAs, saveFavorite } from "@/lib/client-actions";
 
 const HUE = 70;
 
@@ -42,6 +43,34 @@ interface Generation {
 }
 
 type ViewMode = "grid" | "list";
+
+/*
+ * Network calls live outside the component and hand back failures as values
+ * (see lib/client-actions.ts for why React Compiler needs that).
+ */
+
+async function fetchGalleryPage(
+  params: URLSearchParams,
+): Promise<{ ok: true; items: Generation[]; pages: number } | { ok: false }> {
+  try {
+    const res = await fetch(`/api/gallery?${params}`);
+    const data = await res.json();
+    return { ok: true, items: data.data || [], pages: data.pages || 1 };
+  } catch {
+    return { ok: false };
+  }
+}
+
+async function requestUpscale(generationId: number): Promise<{ ok: true } | { ok: false; error?: string }> {
+  try {
+    const res = await fetch("/api/upscale", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ generationId }) });
+    const data = await res.json();
+    if (!res.ok) return { ok: false, error: data.error };
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+}
 
 export default function GalleryPage() {
   const { data: session } = useSession();
@@ -89,14 +118,14 @@ export default function GalleryPage() {
     if (filter === "favorites") params.set("favorites", "true");
     else if (filter !== "all") params.set("type", filter);
     if (debouncedSearch) params.set("search", debouncedSearch);
-    try {
-      const res = await fetch(`/api/gallery?${params}`);
-      const data = await res.json();
-      if (append) setGenerations(prev => [...prev, ...(data.data || [])]);
-      else setGenerations(data.data || []);
-      setTotalPages(data.pages || 1);
+    const result = await fetchGalleryPage(params);
+    if (result.ok) {
+      const items = result.items;
+      if (append) setGenerations(prev => [...prev, ...items]);
+      else setGenerations(items);
+      setTotalPages(result.pages);
       setPage(pageNum);
-    } catch {}
+    }
     setLoading(false); setLoadingMore(false);
   }, [session, filter, debouncedSearch, sort]);
 
@@ -105,40 +134,23 @@ export default function GalleryPage() {
 
   const toggleFavorite = async (gen: Generation, e?: React.MouseEvent) => {
     e?.stopPropagation();
-    try {
-      if (gen.isFavorited) {
-        await fetch("/api/favorites", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ generationId: gen.id }) });
-      } else {
-        await fetch("/api/favorites", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ generationId: gen.id }) });
-      }
-      setGenerations(prev => prev.map(g => g.id === gen.id ? { ...g, isFavorited: !g.isFavorited } : g));
-      if (selectedItem?.id === gen.id) setSelectedItem({ ...gen, isFavorited: !gen.isFavorited });
-    } catch { toast("error", "เกิดข้อผิดพลาด"); }
+    if (!(await saveFavorite(gen.id, !gen.isFavorited))) { toast("error", "เกิดข้อผิดพลาด"); return; }
+    setGenerations(prev => prev.map(g => g.id === gen.id ? { ...g, isFavorited: !g.isFavorited } : g));
+    if (selectedItem?.id === gen.id) setSelectedItem({ ...gen, isFavorited: !gen.isFavorited });
   };
 
   const handleDownload = async (gen: Generation, e?: React.MouseEvent) => {
     e?.stopPropagation();
     if (!gen.resultUrl) return;
-    try {
-      const res = await fetch(gen.resultUrl);
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `xdreamer-${gen.id}.${gen.type === "video" ? "mp4" : "webp"}`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      toast("success", "ดาวน์โหลดสำเร็จ");
-    } catch { toast("error", "ดาวน์โหลดไม่สำเร็จ"); }
+    const ok = await downloadAs(gen.resultUrl, `xdreamer-${gen.id}.${gen.type === "video" ? "mp4" : "webp"}`);
+    if (ok) toast("success", "ดาวน์โหลดสำเร็จ");
+    else toast("error", "ดาวน์โหลดไม่สำเร็จ");
   };
 
   const handleUpscale = async (gen: Generation) => {
-    try {
-      const res = await fetch("/api/upscale", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ generationId: gen.id }) });
-      const data = await res.json();
-      if (!res.ok) { toast("error", "Upscale ไม่สำเร็จ", data.error); return; }
-      toast("info", "กำลัง Upscale...", "ผลลัพธ์จะปรากฏในแกลเลอรี");
-    } catch { toast("error", "Upscale ไม่สำเร็จ"); }
+    const result = await requestUpscale(gen.id);
+    if (!result.ok) { toast("error", "Upscale ไม่สำเร็จ", result.error); return; }
+    toast("info", "กำลัง Upscale...", "ผลลัพธ์จะปรากฏในแกลเลอรี");
   };
 
   if (!session) return null;

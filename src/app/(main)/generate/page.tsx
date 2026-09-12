@@ -22,6 +22,7 @@ import Image from "next/image";
 import { useAppStore } from "@/lib/store/app-store";
 import { useToast } from "@/components/ui/toast-provider";
 import { creditsForDuration } from "@/lib/pricing";
+import { downloadAs, saveFavorite } from "@/lib/client-actions";
 
 const HUE = 70;
 
@@ -89,6 +90,28 @@ interface HistoryItem {
   resultUrl?: string;
   thumbnailUrl?: string;
   createdAt: string;
+}
+
+/** The fields of GET /api/generate/[id] this page reads while polling. */
+interface GenerationStatus {
+  id: number;
+  status: string;
+  resultUrl?: string;
+  resultUrls?: string[] | string | null;
+  thumbnailUrl?: string;
+  creditsUsed: number;
+  processingMs?: number;
+  expiresAt?: string;
+  daysLeft?: number | null;
+  errorMessage?: string | null;
+  gpu?: {
+    stage: QueueProgress["stage"];
+    label: string;
+    queuePosition?: number | null;
+    etaSeconds?: number | null;
+    etaLabel?: string | null;
+    etaBasis?: string;
+  } | null;
 }
 
 // ─── X-DREAMER UI primitives (local helpers) ───────────────────────────
@@ -171,6 +194,91 @@ async function uploadMedia(
     return { url: data.url };
   } catch {
     return { error: "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้" };
+  }
+}
+
+/*
+ * Like `uploadMedia`, the helpers below own every try/catch this page needs
+ * and return failures as values. React Compiler cannot compile a component
+ * whose try/catch contains a value block (`||`, `??`, `?.`, a ternary) or a
+ * `throw`, and gives up on the whole component silently when it meets one —
+ * see lib/client-actions.ts and `react-hooks/todo` in eslint.config.mjs.
+ */
+
+/** Recent finished generations for the history strip, or null on failure. */
+async function fetchHistoryItems(): Promise<HistoryItem[] | null> {
+  try {
+    const res = await fetch("/api/gallery?limit=16&page=1");
+    if (!res.ok) return null;
+    const data = await res.json();
+    return (data.data ?? []).filter((g: HistoryItem) => g.resultUrl || g.thumbnailUrl);
+  } catch {
+    return null;
+  }
+}
+
+/** One status read for a generation; `status` is null when the request failed. */
+async function readGeneration(
+  generationId: number,
+): Promise<{ ok: true; data: GenerationStatus } | { ok: false; status: number | null }> {
+  try {
+    const res = await fetch(`/api/generate/${generationId}`);
+    if (!res.ok) return { ok: false, status: res.status };
+    return { ok: true, data: (await res.json()) as GenerationStatus };
+  } catch {
+    return { ok: false, status: null };
+  }
+}
+
+/** POST an order. `network` covers an unreachable server and a non-JSON answer. */
+async function postGeneration(
+  body: Record<string, unknown>,
+): Promise<{ kind: "ok"; data: GenerationResult } | { kind: "rejected"; error: string } | { kind: "network" }> {
+  try {
+    const res = await fetch("/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) return { kind: "rejected", error: data.error || "ไม่สามารถสร้างได้" };
+    return { kind: "ok", data: data as GenerationResult };
+  } catch {
+    return { kind: "network" };
+  }
+}
+
+type UpscaleOutcome =
+  | { kind: "done"; resultUrl: string; creditsUsed: number }
+  | { kind: "rejected"; error: string }
+  | { kind: "failed"; error?: string }
+  /** Polling ended without an answer — nothing to tell the customer. */
+  | { kind: "gave-up" }
+  | { kind: "network" };
+
+/** Start an upscale and, unless it finished at once, poll it (60 × 3 s). */
+async function runUpscale(generationId: number): Promise<UpscaleOutcome> {
+  try {
+    const res = await fetch("/api/upscale", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ generationId }) });
+    const data = await res.json();
+    if (!res.ok) return { kind: "rejected", error: data.error || "เกิดข้อผิดพลาด" };
+    if (data.status === "completed" && data.resultUrl) {
+      return { kind: "done", resultUrl: data.resultUrl, creditsUsed: data.creditsUsed };
+    }
+    const maxAttempts = 60;
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const pollRes = await fetch(`/api/generate/${data.id}`);
+      if (!pollRes.ok) return { kind: "gave-up" };
+      const pollData = await pollRes.json();
+      if (pollData.status === "completed") {
+        return { kind: "done", resultUrl: pollData.resultUrl, creditsUsed: pollData.creditsUsed };
+      }
+      if (pollData.status === "failed") return { kind: "failed", error: pollData.errorMessage };
+    }
+    return { kind: "gave-up" };
+  } catch {
+    return { kind: "network" };
   }
 }
 
@@ -562,12 +670,8 @@ export default function GeneratePage() {
   useEffect(() => { fetchModels(); fetchStyles(); fetchTemplates(); fetchCredits(); }, [fetchModels, fetchStyles, fetchTemplates, fetchCredits]);
 
   const fetchHistory = useCallback(async () => {
-    try {
-      const res = await fetch("/api/gallery?limit=16&page=1");
-      if (!res.ok) return;
-      const data = await res.json();
-      setHistory((data.data ?? []).filter((g: HistoryItem) => g.resultUrl || g.thumbnailUrl));
-    } catch {}
+    const items = await fetchHistoryItems();
+    if (items) setHistory(items);
   }, []);
   useEffect(() => {
     if (session) {
@@ -798,55 +902,55 @@ export default function GeneratePage() {
     while (Date.now() - startedAt < deadlineMs) {
       // Poll gently once the job is known to be a long-running GPU render.
       await new Promise((r) => setTimeout(r, sawGpu ? 5000 : 2000));
-      try {
-        const res = await fetch(`/api/generate/${generationId}`);
-        if (!res.ok) {
-          if (res.status === 404 || res.status === 401) break;
-          if (++consecutiveErrors >= 5) break;
-          continue;
-        }
-        consecutiveErrors = 0;
-        const data = await res.json();
-
-        if (data.gpu) {
-          sawGpu = true;
-          deadlineMs = GPU_DEADLINE_MS;
-          setProgress({
-            stage: data.gpu.stage,
-            label: data.gpu.label,
-            position: data.gpu.queuePosition ?? null,
-            etaSeconds: data.gpu.etaSeconds ?? null,
-            etaLabel: data.gpu.etaLabel ?? null,
-            // With no history the estimate is a rough baseline, and is worded
-            // as such rather than quoted like a firm figure.
-            basis: data.gpu.etaBasis ?? "history",
-            at: Date.now(),
-          });
-        } else if (sawGpu) {
-          setProgress(null);
-        }
-
-        if (data.status === "completed") {
-          setResult({
-            id: data.id, status: "completed",
-            resultUrl: data.resultUrl,
-            resultUrls: data.resultUrls ? (Array.isArray(data.resultUrls) ? data.resultUrls : [data.resultUrl]) : [data.resultUrl],
-            thumbnailUrl: data.thumbnailUrl,
-            creditsUsed: data.creditsUsed, processingMs: data.processingMs,
-            expiresAt: data.expiresAt, daysLeft: data.daysLeft,
-          });
-          setIsGenerating(false); setProgress(null); fetchCredits(); fetchHistory();
-          toast("success", "สร้างสำเร็จ!", `ใช้ ${data.creditsUsed} เครดิต`);
-          return;
-        }
-        if (data.status === "failed") {
-          setResult({ id: data.id, status: "failed", creditsUsed: 0, error: data.errorMessage });
-          setIsGenerating(false); setProgress(null); fetchCredits();
-          toast("error", "สร้างไม่สำเร็จ", data.errorMessage || "เกิดข้อผิดพลาด");
-          return;
-        }
-      } catch {
+      const read = await readGeneration(generationId);
+      if (!read.ok) {
+        // An unreachable server or a garbled answer counts as a blip, like
+        // any other non-OK status; only 404/401 mean the job is not ours.
+        if (read.status === 404 || read.status === 401) break;
         if (++consecutiveErrors >= 5) break;
+        continue;
+      }
+      consecutiveErrors = 0;
+      const data = read.data;
+
+      if (data.gpu) {
+        sawGpu = true;
+        deadlineMs = GPU_DEADLINE_MS;
+        setProgress({
+          stage: data.gpu.stage,
+          label: data.gpu.label,
+          position: data.gpu.queuePosition ?? null,
+          etaSeconds: data.gpu.etaSeconds ?? null,
+          etaLabel: data.gpu.etaLabel ?? null,
+          // With no history the estimate is a rough baseline, and is worded
+          // as such rather than quoted like a firm figure.
+          basis: data.gpu.etaBasis ?? "history",
+          at: Date.now(),
+        });
+      } else if (sawGpu) {
+        setProgress(null);
+      }
+
+      if (data.status === "completed") {
+        setResult({
+          id: data.id, status: "completed",
+          resultUrl: data.resultUrl,
+          resultUrls: data.resultUrls
+            ? (Array.isArray(data.resultUrls) ? data.resultUrls : [data.resultUrl as string])
+            : [data.resultUrl as string],
+          thumbnailUrl: data.thumbnailUrl,
+          creditsUsed: data.creditsUsed, processingMs: data.processingMs,
+          expiresAt: data.expiresAt, daysLeft: data.daysLeft,
+        });
+        setIsGenerating(false); setProgress(null); fetchCredits(); fetchHistory();
+        toast("success", "สร้างสำเร็จ!", `ใช้ ${data.creditsUsed} เครดิต`);
+        return;
+      }
+      if (data.status === "failed") {
+        setResult({ id: data.id, status: "failed", creditsUsed: 0, error: data.errorMessage ?? undefined });
+        setIsGenerating(false); setProgress(null); fetchCredits();
+        toast("error", "สร้างไม่สำเร็จ", data.errorMessage || "เกิดข้อผิดพลาด");
+        return;
       }
     }
 
@@ -889,86 +993,67 @@ export default function GeneratePage() {
     // or the provider silently switches endpoint behind the customer's back.
     const imageToSend =
       tab === "image" ? refImage : tab === "video" && videoMode === "t2v" ? null : inputImage;
-    try {
-      const res = await fetch("/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          modelId: selectedModelId,
-          // Lip-sync has no generation type of its own on the server: what it
-          // produces is a clip, and the tab exists only to give it the right
-          // controls here.
-          type: tab === "lipsync" ? "video" : tab,
-          prompt: prompt.trim(),
-          negativePrompt: negativePrompt.trim() || undefined,
-          styleId: selectedStyle || undefined,
-          inputImage: tab === "lipsync" && lipsyncNeeds === "video" ? undefined : imageToSend || undefined,
-          inputAudio: tab === "lipsync" ? inputAudio ?? undefined : undefined,
-          inputVideo: tab === "lipsync" ? sourceVideo ?? undefined : undefined,
-          params: {
-            width: ar?.w || 1024, height: ar?.h || 1024, aspectRatio,
-            strength: refImage && tab === "image" ? strength : undefined,
-            numOutputs: tab === "image" ? outputs : undefined,
-            // Every video adapter reads `duration`; none of them read steps or
-            // cfgScale. Sending diffusion knobs to a video endpoint is noise at
-            // best and a rejected request at worst.
-            //
-            // Lip-sync sends none of the three. Its length is set by the voice
-            // track, and the adapter derives the frame count from the model
-            // row's own ceiling rather than from anything chosen here.
-            duration: tab === "video" ? duration : undefined,
-            steps: tab === "video" || tab === "lipsync" ? undefined : steps,
-            cfgScale: tab === "video" || tab === "lipsync" ? undefined : guidance,
-            seed: seed ?? undefined,
-          },
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setIsGenerating(false);
-        toast("error", "เกิดข้อผิดพลาด", data.error || "ไม่สามารถสร้างได้");
-        return;
-      }
-      if (data.status === "completed") {
-        setResult(data); setIsGenerating(false); fetchCredits(); fetchHistory();
-        toast("success", "สร้างสำเร็จ!", `ใช้ ${data.creditsUsed} เครดิต`);
-      } else if (data.status === "failed") {
-        setResult(data); setIsGenerating(false); fetchCredits();
-        toast("error", "สร้างไม่สำเร็จ", data.error || "เกิดข้อผิดพลาด");
-      } else { pollResult(data.id); }
-    } catch {
+    const sent = await postGeneration({
+      modelId: selectedModelId,
+      // Lip-sync has no generation type of its own on the server: what it
+      // produces is a clip, and the tab exists only to give it the right
+      // controls here.
+      type: tab === "lipsync" ? "video" : tab,
+      prompt: prompt.trim(),
+      negativePrompt: negativePrompt.trim() || undefined,
+      styleId: selectedStyle || undefined,
+      inputImage: tab === "lipsync" && lipsyncNeeds === "video" ? undefined : imageToSend || undefined,
+      inputAudio: tab === "lipsync" ? inputAudio ?? undefined : undefined,
+      inputVideo: tab === "lipsync" ? sourceVideo ?? undefined : undefined,
+      params: {
+        width: ar?.w || 1024, height: ar?.h || 1024, aspectRatio,
+        strength: refImage && tab === "image" ? strength : undefined,
+        numOutputs: tab === "image" ? outputs : undefined,
+        // Every video adapter reads `duration`; none of them read steps or
+        // cfgScale. Sending diffusion knobs to a video endpoint is noise at
+        // best and a rejected request at worst.
+        //
+        // Lip-sync sends none of the three. Its length is set by the voice
+        // track, and the adapter derives the frame count from the model
+        // row's own ceiling rather than from anything chosen here.
+        duration: tab === "video" ? duration : undefined,
+        steps: tab === "video" || tab === "lipsync" ? undefined : steps,
+        cfgScale: tab === "video" || tab === "lipsync" ? undefined : guidance,
+        seed: seed ?? undefined,
+      },
+    });
+    if (sent.kind === "network") {
       setIsGenerating(false);
       toast("error", "เกิดข้อผิดพลาด", "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้");
+      return;
     }
+    if (sent.kind === "rejected") {
+      setIsGenerating(false);
+      toast("error", "เกิดข้อผิดพลาด", sent.error);
+      return;
+    }
+    const data = sent.data;
+    if (data.status === "completed") {
+      setResult(data); setIsGenerating(false); fetchCredits(); fetchHistory();
+      toast("success", "สร้างสำเร็จ!", `ใช้ ${data.creditsUsed} เครดิต`);
+    } else if (data.status === "failed") {
+      setResult(data); setIsGenerating(false); fetchCredits();
+      toast("error", "สร้างไม่สำเร็จ", data.error || "เกิดข้อผิดพลาด");
+    } else { pollResult(data.id); }
   };
 
   const handleDownload = async (url?: string) => {
     const downloadUrl = url || result?.resultUrl;
     if (!downloadUrl) return;
-    try {
-      const res = await fetch(downloadUrl);
-      const blob = await res.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = blobUrl;
-      a.download = `xdreamer-${result?.id || "gen"}.${downloadUrl.includes(".mp4") ? "mp4" : "webp"}`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      URL.revokeObjectURL(blobUrl);
-      toast("success", "ดาวน์โหลดสำเร็จ");
-    } catch { toast("error", "ดาวน์โหลดไม่สำเร็จ"); }
+    const ok = await downloadAs(downloadUrl, `xdreamer-${result?.id || "gen"}.${downloadUrl.includes(".mp4") ? "mp4" : "webp"}`);
+    if (ok) toast("success", "ดาวน์โหลดสำเร็จ");
+    else toast("error", "ดาวน์โหลดไม่สำเร็จ");
   };
 
   const handleFavorite = async () => {
     if (!result?.id) return;
-    try {
-      if (isFavorited) {
-        await fetch("/api/favorites", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ generationId: result.id }) });
-        setIsFavorited(false);
-      } else {
-        await fetch("/api/favorites", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ generationId: result.id }) });
-        setIsFavorited(true);
-      }
-    } catch {}
+    const next = !isFavorited;
+    if (await saveFavorite(result.id, next)) setIsFavorited(next);
   };
 
   const handleShare = async () => {
@@ -984,29 +1069,16 @@ export default function GeneratePage() {
   const handleUpscale = async () => {
     if (!result?.id) return;
     setIsUpscaling(true);
-    try {
-      const res = await fetch("/api/upscale", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ generationId: result.id }) });
-      const data = await res.json();
-      if (!res.ok) { toast("error", "Upscale ไม่สำเร็จ", data.error || "เกิดข้อผิดพลาด"); setIsUpscaling(false); return; }
-      if (data.status === "completed" && data.resultUrl) {
-        setResult(prev => prev ? { ...prev, resultUrl: data.resultUrl } : prev);
-        fetchCredits(); toast("success", "Upscale สำเร็จ!", `ใช้ ${data.creditsUsed} เครดิต`);
-      } else {
-        const maxAttempts = 60;
-        for (let i = 0; i < maxAttempts; i++) {
-          await new Promise((r) => setTimeout(r, 3000));
-          const pollRes = await fetch(`/api/generate/${data.id}`);
-          if (!pollRes.ok) break;
-          const pollData = await pollRes.json();
-          if (pollData.status === "completed") {
-            setResult(prev => prev ? { ...prev, resultUrl: pollData.resultUrl } : prev);
-            fetchCredits(); toast("success", "Upscale สำเร็จ!", `ใช้ ${pollData.creditsUsed} เครดิต`);
-            break;
-          }
-          if (pollData.status === "failed") { toast("error", "Upscale ไม่สำเร็จ", pollData.errorMessage); break; }
-        }
-      }
-    } catch { toast("error", "Upscale ไม่สำเร็จ"); }
+    const outcome = await runUpscale(result.id);
+    if (outcome.kind === "done") {
+      const upscaledUrl = outcome.resultUrl;
+      setResult(prev => prev ? { ...prev, resultUrl: upscaledUrl } : prev);
+      fetchCredits(); toast("success", "Upscale สำเร็จ!", `ใช้ ${outcome.creditsUsed} เครดิต`);
+    } else if (outcome.kind === "rejected" || outcome.kind === "failed") {
+      toast("error", "Upscale ไม่สำเร็จ", outcome.error);
+    } else if (outcome.kind === "network") {
+      toast("error", "Upscale ไม่สำเร็จ");
+    }
     setIsUpscaling(false);
   };
 
