@@ -1,3 +1,4 @@
+import { Prisma } from '@/generated/prisma/client';
 import prisma from '@/lib/db';
 import { getGpuConfig } from '@/lib/gpu/config';
 import { getCatalogEntry } from '@/lib/gpu/catalog';
@@ -77,13 +78,49 @@ interface RenderSampleRow {
  */
 async function renderSamples(modelKey: string, take: number): Promise<RenderSampleRow[]> {
   const since = new Date(Date.now() - HISTORY_WINDOW_DAYS * 86_400_000);
-  return prisma.$queryRaw<RenderSampleRow[]>`
-    SELECT j.gpu_seconds, JSON_EXTRACT(j.payload, '$.duration') AS duration, w.gpu_model
-    FROM ai_gpu_jobs j
-    LEFT JOIN ai_gpu_workers w ON w.id = j.worker_id
-    WHERE j.model_key = ${modelKey} AND j.status = 'completed' AND j.gpu_seconds > 0 AND j.queued_at >= ${since}
-    ORDER BY j.completed_at DESC
-    LIMIT ${take}`;
+  try {
+    return await prisma.$queryRaw<RenderSampleRow[]>`
+      SELECT j.gpu_seconds, JSON_EXTRACT(j.payload, '$.duration') AS duration, w.gpu_model
+      FROM ai_gpu_jobs j
+      LEFT JOIN ai_gpu_workers w ON w.id = j.worker_id
+      WHERE j.model_key = ${modelKey} AND j.status = 'completed' AND j.gpu_seconds > 0 AND j.queued_at >= ${since}
+      ORDER BY j.completed_at DESC
+      LIMIT ${take}`;
+  } catch (error) {
+    // An estimate is never worth failing for: addCapacity reads this, and an
+    // error escaping it is taken for a broken setup and refunds the queue.
+    // No history means the catalogue baseline, which is what a new model gets.
+    console.error('[gpu-eta] render history query failed:', error);
+    return [];
+  }
+}
+
+/**
+ * Clip lengths of a model's jobs in the given states, queued before `before`
+ * when given (with `priority`, the jobs ahead of one job). Null if the query
+ * fails — callers fall back to counting jobs as unit-length.
+ */
+async function jobDurations(
+  modelKey: string,
+  statuses: string[],
+  ahead?: { priority: number; queuedAt: Date }
+): Promise<unknown[] | null> {
+  try {
+    const rows = ahead
+      ? await prisma.$queryRaw<{ duration: unknown }[]>`
+          SELECT JSON_EXTRACT(payload, '$.duration') AS duration
+          FROM ai_gpu_jobs
+          WHERE model_key = ${modelKey} AND status IN (${Prisma.join(statuses)})
+            AND (priority > ${ahead.priority} OR (priority = ${ahead.priority} AND queued_at < ${ahead.queuedAt}))`
+      : await prisma.$queryRaw<{ duration: unknown }[]>`
+          SELECT JSON_EXTRACT(payload, '$.duration') AS duration
+          FROM ai_gpu_jobs
+          WHERE model_key = ${modelKey} AND status IN (${Prisma.join(statuses)})`;
+    return rows.map((r) => r.duration);
+  } catch (error) {
+    console.error('[gpu-eta] queued lengths query failed:', error);
+    return null;
+  }
 }
 
 /** A sample's render time scaled to the model's unit length. */
@@ -154,12 +191,9 @@ export class GpuEta {
    * the backlog they would actually have to clear. 1 when nothing is queued.
    */
   static async queuedLengthFactor(modelKey: string): Promise<number> {
-    const rows = await prisma.$queryRaw<{ duration: unknown }[]>`
-      SELECT JSON_EXTRACT(payload, '$.duration') AS duration
-      FROM ai_gpu_jobs
-      WHERE model_key = ${modelKey} AND status = 'queued'`;
-    if (rows.length === 0) return 1;
-    return rows.reduce((sum, r) => sum + lengthFactor(modelKey, r.duration), 0) / rows.length;
+    const durations = await jobDurations(modelKey, ['queued']);
+    if (!durations || durations.length === 0) return 1;
+    return durations.reduce<number>((sum, d) => sum + lengthFactor(modelKey, d), 0) / durations.length;
   }
 
   /** Seconds from renting a machine to it being ready — history first. */
@@ -226,14 +260,27 @@ export class GpuEta {
 
     // Queued: everything ahead of it for the same model has to render first,
     // each at its own length. Only `$.duration` is read — see renderSamples.
-    const aheadRows = await prisma.$queryRaw<{ duration: unknown }[]>`
-      SELECT JSON_EXTRACT(payload, '$.duration') AS duration
-      FROM ai_gpu_jobs
-      WHERE model_key = ${job.modelKey}
-        AND status IN ('queued', 'assigned', 'running')
-        AND (priority > ${job.priority} OR (priority = ${job.priority} AND queued_at < ${job.queuedAt}))`;
-    const ahead = aheadRows.length;
-    const workAhead = aheadRows.reduce((sum, r) => sum + renderFor(r.duration), 0);
+    const statuses = ['queued', 'assigned', 'running'];
+    const aheadDurations = await jobDurations(job.modelKey, statuses, job);
+    let ahead: number;
+    let workAhead: number;
+    if (aheadDurations) {
+      ahead = aheadDurations.length;
+      workAhead = aheadDurations.reduce<number>((sum, d) => sum + renderFor(d), 0);
+    } else {
+      // Lengths unreadable: count the jobs ahead as if they were this one.
+      ahead = await prisma.aiGpuJob.count({
+        where: {
+          modelKey: job.modelKey,
+          status: { in: statuses },
+          OR: [
+            { priority: { gt: job.priority } },
+            { priority: job.priority, queuedAt: { lt: job.queuedAt } },
+          ],
+        },
+      });
+      workAhead = ahead * render;
+    }
 
     // Machines already up share the queue; with several, the jobs ahead are
     // rendered side by side rather than one after another — but this job's own
