@@ -1523,6 +1523,8 @@ export default function GeneratePage() {
               {history.slice(0, 16).map((g) => {
                 const src = g.thumbnailUrl || g.resultUrl;
                 const isVideo = g.type === "video" || g.resultUrl?.endsWith(".mp4");
+                // A provider that hands back a real poster image keeps <img>.
+                const srcIsVideo = isVideo && !/\.(png|jpe?g|webp|gif|avif)(\?|$)/i.test(src ?? "");
                 return (
                   <button key={g.id} type="button" title={g.prompt}
                     onClick={() => {
@@ -1540,7 +1542,14 @@ export default function GeneratePage() {
                       cursor: "pointer",
                       background: `linear-gradient(135deg, hsl(${(g.id * 23 + HUE) % 360}, 50%, 15%), hsl(${(g.id * 23 + 60 + HUE) % 360}, 50%, 8%))`,
                     }}>
-                    {src && (
+                    {/* A video's thumbnail is the video itself (rented-GPU jobs
+                        store the mp4 there), and <img> draws that as a broken
+                        icon. #t=0.1 makes the browser paint the first frame. */}
+                    {src && srcIsVideo && (
+                      <video src={`${src}#t=0.1`} muted playsInline preload="metadata"
+                        style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", pointerEvents: "none" }} />
+                    )}
+                    {src && !srcIsVideo && (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={src} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
                     )}

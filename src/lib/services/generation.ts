@@ -134,6 +134,14 @@ export class GenerationService {
       });
 
       return { generation: gen };
+    }, {
+      // Prisma's defaults (2 s to start, 5 s to finish) are tighter than the
+      // shared MySQL guarantees: one stall of 9.2 s expired a valid order and
+      // the customer got "Generation failed" for nothing (rolled back, no
+      // charge). Four short statements finish in milliseconds; this only
+      // gives a slow moment room to pass.
+      maxWait: 5_000,
+      timeout: 15_000,
     });
 
     // 5b. GPU-backed providers have no inference API to call — they rent a
