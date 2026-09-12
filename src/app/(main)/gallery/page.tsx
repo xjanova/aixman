@@ -17,7 +17,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useToast } from "@/components/ui/toast-provider";
 import { EmptyState } from "@/components/xdreamer/page-hero";
-import { downloadAs, extensionOf, saveFavorite } from "@/lib/client-actions";
+import { downloadGeneration, extensionOf, saveFavorite } from "@/lib/client-actions";
 import { AudioCover } from "@/components/xdreamer/audio";
 
 const HUE = 70;
@@ -144,7 +144,7 @@ export default function GalleryPage() {
     e?.stopPropagation();
     if (!gen.resultUrl) return;
     const fallback = gen.type === "video" ? "mp4" : gen.type === "audio" ? "flac" : "webp";
-    const ok = await downloadAs(gen.resultUrl, `xdreamer-${gen.id}.${extensionOf(gen.resultUrl, fallback)}`);
+    const ok = await downloadGeneration(gen.id, gen.resultUrl, `xdreamer-${gen.id}.${extensionOf(gen.resultUrl, fallback)}`);
     if (ok) toast("success", "ดาวน์โหลดสำเร็จ");
     else toast("error", "ดาวน์โหลดไม่สำเร็จ");
   };

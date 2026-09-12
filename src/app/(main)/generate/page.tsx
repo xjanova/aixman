@@ -22,7 +22,7 @@ import Image from "next/image";
 import { useAppStore } from "@/lib/store/app-store";
 import { useToast } from "@/components/ui/toast-provider";
 import { creditsForDuration } from "@/lib/pricing";
-import { downloadAs, extensionOf, saveFavorite } from "@/lib/client-actions";
+import { downloadGeneration, extensionOf, saveFavorite } from "@/lib/client-actions";
 import { AUDIO_EXT, AudioCover, AudioResult } from "@/components/xdreamer/audio";
 
 const HUE = 70;
@@ -1094,8 +1094,9 @@ export default function GeneratePage() {
 
   const handleDownload = async (url?: string) => {
     const downloadUrl = url || result?.resultUrl;
-    if (!downloadUrl) return;
-    const ok = await downloadAs(downloadUrl, `xdreamer-${result?.id || "gen"}.${extensionOf(downloadUrl, "webp")}`);
+    if (!downloadUrl || !result?.id) return;
+    const filename = `xdreamer-${result.id}.${extensionOf(downloadUrl, "webp")}`;
+    const ok = await downloadGeneration(result.id, downloadUrl, filename, url ? result.resultUrls?.indexOf(url) ?? -1 : -1);
     if (ok) toast("success", "ดาวน์โหลดสำเร็จ");
     else toast("error", "ดาวน์โหลดไม่สำเร็จ");
   };
