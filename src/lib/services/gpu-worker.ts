@@ -498,10 +498,14 @@ export class GpuWorkerManager {
       where: { modelKey, status: { in: ['ready', 'busy', 'warming', 'provisioning'] } },
     });
     if (serving > 0) {
-      const [renderSeconds, bootSeconds] = await Promise.all([
+      const [unitRenderSeconds, bootSeconds, lengthFactor] = await Promise.all([
         GpuEta.typicalRenderSeconds(modelKey),
         GpuEta.typicalBootSeconds(),
+        GpuEta.queuedLengthFactor(modelKey),
       ]);
+      // The waiting jobs' own length: a backlog of 15 s clips clears five
+      // times slower than one of 5 s clips, and is worth a machine sooner.
+      const renderSeconds = unitRenderSeconds * lengthFactor;
       const decision = shouldAddMachine({ queued: backlog.queued, machines: serving, renderSeconds, bootSeconds });
       if (!decision.add) return { reason: decision.reason };
     }
@@ -704,14 +708,19 @@ export class GpuWorkerManager {
     serving: number
   ): Promise<RankedOffer> {
     const entry = getCatalogEntry(modelKey);
-    const [renderSecondsByGpu, defaultRenderSeconds, booting] = await Promise.all([
+    const [unitSecondsByGpu, unitRenderSeconds, lengthFactor, booting] = await Promise.all([
       GpuEta.medianRenderSecondsByGpu(modelKey),
       GpuEta.typicalRenderSeconds(modelKey),
+      GpuEta.queuedLengthFactor(modelKey),
       prisma.aiGpuWorker.findMany({
         where: { status: { in: ['provisioning', 'warming'] } },
         select: { metadata: true },
       }),
     ]);
+    // History is kept at the unit length; price each card on the waiting jobs'
+    // own length, or a slow card looks as cheap for 15 s clips as for 5 s.
+    const renderSecondsByGpu = new Map([...unitSecondsByGpu].map(([gpu, s]) => [gpu, s * lengthFactor]));
+    const defaultRenderSeconds = unitRenderSeconds * lengthFactor;
     const bootingOnOffer = new Map<string, number>();
     for (const w of booting) {
       const offerId = (w.metadata as { offerId?: unknown } | null)?.offerId;

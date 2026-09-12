@@ -45,6 +45,52 @@ function median(values: number[]): number | null {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
+/**
+ * How many times longer a render of `seconds` of footage takes than one of the
+ * model's unit length (5 s for H3). The price curve was fitted to measured
+ * render time (lib/pricing.ts: A100, 5 s in 107 s, 15 s in 556 s), so the same
+ * curve converts between clip lengths. 1 for a model priced flat.
+ *
+ * Without it every length shared one median: a 15 s render was quoted "under a
+ * minute" for its whole nine, and a run of 15 s jobs in the history would then
+ * quote every 5 s customer nine minutes.
+ */
+export function lengthFactor(modelKey: string, seconds: unknown): number {
+  const curve = getCatalogEntry(modelKey)?.pricing.durationCurve;
+  const s = Number(seconds);
+  if (!curve || !Number.isFinite(s) || s <= 0) return 1;
+  return Math.pow(s / curve.unitSeconds, curve.exponent);
+}
+
+interface RenderSampleRow {
+  gpu_seconds: number;
+  duration: unknown;
+  gpu_model: string | null;
+}
+
+/**
+ * Completed renders for a model, each with its clip length.
+ *
+ * Raw SQL so only `$.duration` leaves the database: the payload also carries
+ * the start frame, which the studio sends as a data URL of several MB, and
+ * this runs on every poll of a pending generation.
+ */
+async function renderSamples(modelKey: string, take: number): Promise<RenderSampleRow[]> {
+  const since = new Date(Date.now() - HISTORY_WINDOW_DAYS * 86_400_000);
+  return prisma.$queryRaw<RenderSampleRow[]>`
+    SELECT j.gpu_seconds, JSON_EXTRACT(j.payload, '$.duration') AS duration, w.gpu_model
+    FROM ai_gpu_jobs j
+    LEFT JOIN ai_gpu_workers w ON w.id = j.worker_id
+    WHERE j.model_key = ${modelKey} AND j.status = 'completed' AND j.gpu_seconds > 0 AND j.queued_at >= ${since}
+    ORDER BY j.completed_at DESC
+    LIMIT ${take}`;
+}
+
+/** A sample's render time scaled to the model's unit length. */
+function unitSeconds(modelKey: string, row: RenderSampleRow): number {
+  return Number(row.gpu_seconds) / lengthFactor(modelKey, row.duration);
+}
+
 export class GpuEta {
   /** Median seconds from rental to a healthy inference server. */
   static async medianWarmupSeconds(): Promise<number | null> {
@@ -63,38 +109,30 @@ export class GpuEta {
     return samples.length >= MIN_SAMPLES ? median(samples) : null;
   }
 
-  /** Median render seconds for a model, from jobs that actually completed. */
+  /**
+   * Median render seconds for a model at its unit length (a 5 s clip, one
+   * image), from jobs that actually completed. Scale by `lengthFactor` for
+   * another length.
+   */
   static async medianRenderSeconds(modelKey: string): Promise<number | null> {
-    const since = new Date(Date.now() - HISTORY_WINDOW_DAYS * 86_400_000);
-    const jobs = await prisma.aiGpuJob.findMany({
-      where: { modelKey, status: 'completed', gpuSeconds: { gt: 0 }, queuedAt: { gte: since } },
-      select: { gpuSeconds: true },
-      take: 50,
-      orderBy: { completedAt: 'desc' },
-    });
-
-    const samples = jobs.map((j) => j.gpuSeconds).filter((s) => s > 0);
+    const rows = await renderSamples(modelKey, 50);
+    const samples = rows.map((r) => unitSeconds(modelKey, r)).filter((s) => s > 0);
     return samples.length >= MIN_SAMPLES ? median(samples) : null;
   }
 
   /**
-   * Median render seconds per GPU model for one model, where a GPU has enough
-   * history — so the offer picker can price a card by how fast it really is.
+   * Median unit-length render seconds per GPU model for one model, where a GPU
+   * has enough history — so the offer picker can price a card by how fast it
+   * really is.
    */
   static async medianRenderSecondsByGpu(modelKey: string): Promise<Map<string, number>> {
-    const since = new Date(Date.now() - HISTORY_WINDOW_DAYS * 86_400_000);
-    const jobs = await prisma.aiGpuJob.findMany({
-      where: { modelKey, status: 'completed', gpuSeconds: { gt: 0 }, queuedAt: { gte: since }, workerId: { not: null } },
-      select: { gpuSeconds: true, worker: { select: { gpuModel: true } } },
-      take: 200,
-      orderBy: { completedAt: 'desc' },
-    });
+    const rows = await renderSamples(modelKey, 200);
     const byGpu = new Map<string, number[]>();
-    for (const j of jobs) {
-      const gpu = j.worker?.gpuModel;
+    for (const r of rows) {
+      const gpu = r.gpu_model;
       if (!gpu) continue;
       const list = byGpu.get(gpu) ?? [];
-      list.push(j.gpuSeconds);
+      list.push(unitSeconds(modelKey, r));
       byGpu.set(gpu, list);
     }
     const out = new Map<string, number>();
@@ -105,9 +143,23 @@ export class GpuEta {
     return out;
   }
 
-  /** Render seconds for a typical job (a 5 s clip, one image) — history first. */
+  /** Render seconds for a unit-length job (a 5 s clip, one image) — history first. */
   static async typicalRenderSeconds(modelKey: string): Promise<number> {
     return (await this.medianRenderSeconds(modelKey)) ?? this.baselineRenderSeconds(modelKey, { duration: 5 });
+  }
+
+  /**
+   * How much longer than a unit-length render the average waiting job takes —
+   * a queue of 15 s H3 clips is 5.2 — so the scaler and the offer picker weigh
+   * the backlog they would actually have to clear. 1 when nothing is queued.
+   */
+  static async queuedLengthFactor(modelKey: string): Promise<number> {
+    const rows = await prisma.$queryRaw<{ duration: unknown }[]>`
+      SELECT JSON_EXTRACT(payload, '$.duration') AS duration
+      FROM ai_gpu_jobs
+      WHERE model_key = ${modelKey} AND status = 'queued'`;
+    if (rows.length === 0) return 1;
+    return rows.reduce((sum, r) => sum + lengthFactor(modelKey, r.duration), 0) / rows.length;
   }
 
   /** Seconds from renting a machine to it being ready — history first. */
@@ -150,7 +202,12 @@ export class GpuEta {
       getGpuConfig(),
     ]);
 
-    const render = historyRender ?? this.baselineRenderSeconds(job.modelKey, job.payload);
+    // History is kept at the unit length; each job is quoted at its own.
+    const renderFor = (duration: unknown): number =>
+      historyRender !== null
+        ? historyRender * lengthFactor(job.modelKey, duration)
+        : this.baselineRenderSeconds(job.modelKey, { duration });
+    const render = renderFor((job.payload as { duration?: unknown } | null)?.duration);
     const warmup = historyWarmup ?? DEFAULT_WARMUP_SECONDS;
     const basis: EtaBasis =
       historyRender && historyWarmup ? 'history' : historyRender || historyWarmup ? 'mixed' : 'baseline';
@@ -167,24 +224,24 @@ export class GpuEta {
       };
     }
 
-    // Queued: everything ahead of it for the same model has to render first.
-    const ahead = await prisma.aiGpuJob.count({
-      where: {
-        modelKey: job.modelKey,
-        status: { in: ['queued', 'assigned', 'running'] },
-        OR: [
-          { priority: { gt: job.priority } },
-          { priority: job.priority, queuedAt: { lt: job.queuedAt } },
-        ],
-      },
-    });
+    // Queued: everything ahead of it for the same model has to render first,
+    // each at its own length. Only `$.duration` is read — see renderSamples.
+    const aheadRows = await prisma.$queryRaw<{ duration: unknown }[]>`
+      SELECT JSON_EXTRACT(payload, '$.duration') AS duration
+      FROM ai_gpu_jobs
+      WHERE model_key = ${job.modelKey}
+        AND status IN ('queued', 'assigned', 'running')
+        AND (priority > ${job.priority} OR (priority = ${job.priority} AND queued_at < ${job.queuedAt}))`;
+    const ahead = aheadRows.length;
+    const workAhead = aheadRows.reduce((sum, r) => sum + renderFor(r.duration), 0);
 
     // Machines already up share the queue; with several, the jobs ahead are
-    // rendered side by side rather than one after another.
+    // rendered side by side rather than one after another — but this job's own
+    // render still takes as long as it takes.
     const upForModel = await prisma.aiGpuWorker.count({
       where: { modelKey: job.modelKey, status: { in: ['ready', 'busy'] } },
     });
-    let seconds = render * Math.ceil((ahead + 1) / Math.max(1, upForModel));
+    let seconds = Math.max(render, (workAhead + render) / Math.max(1, upForModel));
     let includesWarmup = false;
     let warmupRemainingSeconds = 0;
 
