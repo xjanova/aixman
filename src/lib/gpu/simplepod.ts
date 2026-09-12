@@ -533,17 +533,46 @@ function mapStatus(raw: string | undefined, hasErrors: boolean): GpuInstanceStat
   return hasErrors ? 'error' : 'provisioning';
 }
 
+/** A published address that is actually usable, not "closed" / "checking". */
+function liveUrl(entry: Record<string, unknown>): string | null {
+  const protocol = typeof entry.protocol === 'string' ? entry.protocol : '';
+  const url = typeof entry.url === 'string' ? entry.url.trim() : '';
+  if (!/^https?$/.test(protocol) || !/^https?:\/\//.test(url)) return null;
+  return url.replace(/\/+$/, '');
+}
+
 /**
  * Normalise SimplePod's port mapping into `{ internalPort: publicUrl }`.
  *
- * The documented container-side shape is an object keyed by internal port:
- *   { "20000": { protocol, proxyProtocol, proxyUrl, service } }
- * but list/detail responses have been observed carrying an array instead, so
- * both are accepted. A Cloudflare tunnel URL always wins over a bare host:port.
+ * What the instance detail actually returns (seen on the first real rental,
+ * 2026-09-12) is two lists keyed by `srcPort`, the container-side port:
+ *   { direct: [{ srcPort: 8189, protocol: "http",  url: "http://ip:58610" }],
+ *     proxy:  [{ srcPort: 8189, protocol: "https", url: "https://….trycloudflare.com" }] }
+ * `protocol` reads "checking" / "closed" until something listens. The earlier
+ * parser only knew an object keyed by port, so every worker got no endpoint,
+ * sat "warming" until the timeout and was killed — nothing could ever render.
+ *
+ * The documented object shape and a bare array are still accepted. A Cloudflare
+ * tunnel URL always wins over a bare host:port.
  */
 export function parsePorts(raw: unknown): Record<number, string> {
   const out: Record<number, string> = {};
   if (!raw || typeof raw !== 'object') return out;
+
+  const grouped = raw as { direct?: unknown; proxy?: unknown };
+  if (Array.isArray(grouped.direct) || Array.isArray(grouped.proxy)) {
+    // Tunnel first so it takes the slot; direct only fills ports it left empty.
+    for (const list of [grouped.proxy, grouped.direct]) {
+      if (!Array.isArray(list)) continue;
+      for (const item of list) {
+        const entry = (item || {}) as Record<string, unknown>;
+        const port = firstNumber(entry.srcPort);
+        const url = liveUrl(entry);
+        if (port != null && url && !out[port]) out[port] = url;
+      }
+    }
+    return out;
+  }
 
   const entries: Array<[string | undefined, Record<string, unknown>]> = Array.isArray(raw)
     ? raw.map((v) => [undefined, (v || {}) as Record<string, unknown>])
