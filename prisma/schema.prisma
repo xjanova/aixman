@@ -40,6 +40,7 @@ model User {
   // AI relationships
   aiCredits            AiUserCredit?
   aiGenerations        AiGeneration[]
+  aiStoryProjects      AiStoryProject[]
   aiFavorites          AiFavorite[]
   aiCreditTransactions AiCreditTransaction[]
   referralsGiven       AiReferral[]  @relation("referrer")
@@ -322,6 +323,100 @@ model AiGeneration {
   // not been deleted yet.
   @@index([expiresAt, mediaDeletedAt])
   @@map("ai_generations")
+}
+
+// --- Story video production ---
+
+// One end-to-end story video: outline in, finished clip out.
+// Kept separate from ai_generations because a story is a *project* made of many
+// generations (a script pass, a dozen shots, narration, music) that has to
+// survive partial failure — losing shot 9 must not lose shots 1-8.
+model AiStoryProject {
+  id            Int      @id @default(autoincrement())
+  userId        Int      @map("user_id")
+  title         String   @db.VarChar(255)
+  // Genre template key from src/lib/story/templates.ts
+  templateKey   String   @map("template_key") @db.VarChar(50)
+  // What the customer typed: outline, characters, whatever they want.
+  brief         String   @db.Text
+  language      String   @default("th") @db.VarChar(10)
+  // draft | quoted | scripting | rendering | assembling | ready | failed | cancelled
+  status        String   @default("draft") @db.VarChar(30)
+  // The quote the customer accepted, kept verbatim so a later price change
+  // cannot retroactively alter what they agreed to pay.
+  quoteJson     Json?    @map("quote_json")
+  creditsCharged Int     @default(0) @map("credits_charged")
+  // What suppliers actually billed, accumulated as steps complete. Compared
+  // against the quote to catch a price book that has drifted below cost.
+  actualCostUsd Decimal  @default(0) @map("actual_cost_usd") @db.Decimal(12, 6)
+  scriptJson    Json?    @map("script_json")
+  finalVideoUrl String?  @map("final_video_url") @db.MediumText
+  thumbnailUrl  String?  @map("thumbnail_url") @db.MediumText
+  durationSec   Int?     @map("duration_sec")
+  errorMessage  String?  @map("error_message") @db.Text
+  expiresAt     DateTime? @map("expires_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  characters AiStoryCharacter[]
+  shots      AiStoryShot[]
+
+  @@index([userId, status])
+  @@index([status, createdAt])
+  @@map("ai_story_projects")
+}
+
+// A character that must look the same in every shot it appears in.
+// referenceUrl is the anchor: uploaded by the customer or generated once, then
+// passed as a reference to every later shot. Without it each shot invents a new
+// face and the video falls apart.
+model AiStoryCharacter {
+  id           Int      @id @default(autoincrement())
+  projectId    Int      @map("project_id")
+  name         String   @db.VarChar(100)
+  description  String   @db.Text
+  // 'upload' when the customer supplied the face, 'generated' when we made it.
+  origin       String   @default("generated") @db.VarChar(20)
+  referenceUrl String?  @map("reference_url") @db.MediumText
+  voiceId      String?  @map("voice_id") @db.VarChar(100)
+  sortOrder    Int      @default(0) @map("sort_order")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  project AiStoryProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@map("ai_story_characters")
+}
+
+// One shot: a visual, its narration, and the generation that produced each.
+model AiStoryShot {
+  id             Int      @id @default(autoincrement())
+  projectId      Int      @map("project_id")
+  shotNumber     Int      @map("shot_number")
+  // Prompt for the visual, already carrying the template's style direction.
+  visualPrompt   String   @map("visual_prompt") @db.Text
+  // What is spoken over this shot.
+  narration      String?  @db.Text
+  /// Character ids appearing here, so their references get attached.
+  characterIds   Json?    @map("character_ids")
+  durationSec    Decimal  @default(0) @map("duration_sec") @db.Decimal(6, 2)
+  // pending | rendering | done | failed
+  status         String   @default("pending") @db.VarChar(20)
+  mediaUrl       String?  @map("media_url") @db.MediumText
+  audioUrl       String?  @map("audio_url") @db.MediumText
+  // Links back to the generation rows that produced this shot, for cost
+  // attribution and so a retry does not re-bill work already paid for.
+  visualGenerationId Int? @map("visual_generation_id")
+  errorMessage   String?  @map("error_message") @db.Text
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  project AiStoryProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, shotNumber])
+  @@index([projectId, status])
+  @@map("ai_story_shots")
 }
 
 // --- Self-hosted GPU rental (SimplePod &c.) ---
