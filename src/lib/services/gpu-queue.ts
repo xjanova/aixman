@@ -1,5 +1,5 @@
 import { randomBytes } from 'crypto';
-import prisma from '@/lib/db';
+import prisma, { SLOW_DB_TX } from '@/lib/db';
 import { Prisma } from '@/generated/prisma/client';
 import type { AiGpuJob, AiGpuWorker } from '@/generated/prisma/client';
 import { getGpuConfig, getWorkerProfile, type GpuBudgetConfig } from '@/lib/gpu/config';
@@ -25,6 +25,9 @@ import { uploadBuffer, isStorageConfigured } from '@/lib/storage/r2';
 
 /** A job claimed but not yet submitted for longer than this is presumed crashed. */
 const ASSIGN_STALE_MS = 5 * 60_000;
+
+/** Pause before the one retry of recording a render that was just submitted. */
+const RECORD_RETRY_MS = 2_000;
 
 export interface TickReport {
   enabled: boolean;
@@ -270,20 +273,39 @@ export class GpuQueue {
     );
     const { externalJobId } = await client.submit(job.payload as unknown as WorkerJobParams);
 
-    await prisma.$transaction([
-      prisma.aiGpuJob.update({
-        where: { id: job.id },
-        data: { status: 'running', externalJobId },
-      }),
-      prisma.aiGpuWorker.update({
-        where: { id: worker.id },
-        data: { status: 'busy', lastJobAt: new Date() },
-      }),
-      prisma.aiGeneration.update({
-        where: { id: job.generationId },
-        data: { status: 'processing', startedAt: new Date(), providerJobId: externalJobId },
-      }),
-    ]);
+    // From here the GPU is rendering, so recording it must survive a slow
+    // moment of the database. A throw used to put the job back in the queue
+    // while the machine kept rendering it: the next job sat behind that orphan
+    // in ComfyUI's own queue (a 10 min render took 19), and on a last attempt a
+    // render that finished would have been refunded.
+    const record = () =>
+      prisma.$transaction(async (tx) => {
+        await tx.aiGpuJob.update({
+          where: { id: job.id },
+          data: { status: 'running', externalJobId },
+        });
+        await tx.aiGpuWorker.update({
+          where: { id: worker.id },
+          data: { status: 'busy', lastJobAt: new Date() },
+        });
+        await tx.aiGeneration.update({
+          where: { id: job.generationId },
+          data: { status: 'processing', startedAt: new Date(), providerJobId: externalJobId },
+        });
+      }, SLOW_DB_TX);
+    try {
+      await record().catch(async () => {
+        await new Promise((resolve) => setTimeout(resolve, RECORD_RETRY_MS));
+        return record();
+      });
+    } catch (error) {
+      // Still unrecorded: this machine is busy with a render nothing tracks.
+      // Take it out of rotation so no job queues behind it; the caller puts
+      // this one back in the queue for another machine.
+      await GpuWorkerManager.drain(worker.id, `Could not record a submitted render: ${(error as Error).message}`)
+        .catch(() => {});
+      throw error;
+    }
   }
 
   // ----------------------------------------------------------------
@@ -425,8 +447,10 @@ export class GpuQueue {
     const costUsd = (gpuSeconds / 3600) * Number(worker.pricePerHourUsd);
     const processingMs = now.getTime() - startedAt.getTime();
 
-    await prisma.$transaction([
-      prisma.aiGpuJob.update({
+    // If this still fails the job stays 'running' and the next tick finds the
+    // same finished render and settles it again.
+    await prisma.$transaction(async (tx) => {
+      await tx.aiGpuJob.update({
         where: { id: job.id },
         data: {
           status: 'completed',
@@ -436,8 +460,8 @@ export class GpuQueue {
           completedAt: now,
           errorMessage: null,
         },
-      }),
-      prisma.aiGeneration.update({
+      });
+      await tx.aiGeneration.update({
         where: { id: job.generationId },
         data: {
           status: 'completed',
@@ -449,16 +473,16 @@ export class GpuQueue {
           completedAt: now,
           errorMessage: null,
         },
-      }),
-      prisma.aiGpuWorker.update({
+      });
+      await tx.aiGpuWorker.update({
         where: { id: worker.id },
         data: {
           status: worker.status === 'busy' ? 'ready' : worker.status,
           jobsCompleted: { increment: 1 },
           lastJobAt: now,
         },
-      }),
-    ]);
+      });
+    }, SLOW_DB_TX);
 
     // Fix the retention window at delivery time, same as the synchronous path.
     const { RetentionService } = await import('./retention');
@@ -486,7 +510,10 @@ export class GpuQueue {
       await prisma.aiGpuWorker.update({
         where: { id: worker.id },
         data: {
-          status: worker.status === 'busy' ? 'ready' : worker.status,
+          // Free a machine this job was holding, and otherwise leave its status
+          // alone: writing back the one read before the job ran would undo a
+          // drain made since — submitJob drains a machine it could not record.
+          ...(worker.status === 'busy' ? { status: 'ready' } : {}),
           jobsFailed: { increment: 1 },
           lastJobAt: now,
           lastError: message.slice(0, 1000),
