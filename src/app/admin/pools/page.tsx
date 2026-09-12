@@ -9,11 +9,8 @@ import {
   AlertCircle,
   CheckCircle2,
   Clock,
-  Trash2,
-  Edit2,
   ToggleLeft,
   ToggleRight,
-  Server,
 } from "lucide-react";
 
 interface PoolAccount {
