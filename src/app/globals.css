@@ -259,6 +259,10 @@ body {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
 }
+@keyframes xdr-eq {
+  0% { transform: scaleY(0.18); }
+  100% { transform: scaleY(1); }
+}
 @keyframes xdr-bar {
   0% { background-position: 0% 50%; }
   100% { background-position: 200% 50%; }

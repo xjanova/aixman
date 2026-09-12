@@ -7,7 +7,7 @@
  * + sort, masonry grid (4 cols → 3 → 2 responsive), tap-to-detail dialog.
  *
  * Preserves all features from the previous gallery page:
- *   filter (all/image/video/favorites), debounced search,
+ *   filter (all/image/video/audio/favorites), debounced search,
  *   pagination/load-more, favorite toggle, download, upscale, detail modal.
  */
 
@@ -17,7 +17,8 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useToast } from "@/components/ui/toast-provider";
 import { EmptyState } from "@/components/xdreamer/page-hero";
-import { downloadAs, saveFavorite } from "@/lib/client-actions";
+import { downloadAs, extensionOf, saveFavorite } from "@/lib/client-actions";
+import { AudioCover } from "@/components/xdreamer/audio";
 
 const HUE = 70;
 
@@ -76,7 +77,7 @@ export default function GalleryPage() {
   const { data: session } = useSession();
   const router = useRouter();
   const { toast } = useToast();
-  const [filter, setFilter] = useState<"all" | "image" | "video" | "favorites">("all");
+  const [filter, setFilter] = useState<"all" | "image" | "video" | "audio" | "favorites">("all");
   const [sort, setSort] = useState<"trending" | "newest" | "top">("newest");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -142,7 +143,8 @@ export default function GalleryPage() {
   const handleDownload = async (gen: Generation, e?: React.MouseEvent) => {
     e?.stopPropagation();
     if (!gen.resultUrl) return;
-    const ok = await downloadAs(gen.resultUrl, `xdreamer-${gen.id}.${gen.type === "video" ? "mp4" : "webp"}`);
+    const fallback = gen.type === "video" ? "mp4" : gen.type === "audio" ? "flac" : "webp";
+    const ok = await downloadAs(gen.resultUrl, `xdreamer-${gen.id}.${extensionOf(gen.resultUrl, fallback)}`);
     if (ok) toast("success", "ดาวน์โหลดสำเร็จ");
     else toast("error", "ดาวน์โหลดไม่สำเร็จ");
   };
@@ -161,6 +163,7 @@ export default function GalleryPage() {
     { key: "all" as const, label: "ทั้งหมด" },
     { key: "image" as const, label: "Image" },
     { key: "video" as const, label: "Video" },
+    { key: "audio" as const, label: "♫ เพลง" },
     { key: "favorites" as const, label: "♥ โปรด" },
   ];
   const sortOpts = [
@@ -251,13 +254,15 @@ export default function GalleryPage() {
           // should read as "no match", not as a showpiece.
           image={filter === "all" && !debouncedSearch ? "/showcase/gallery-empty.jpg" : undefined}
           emblem={filter === "all" && !debouncedSearch}
-          title={filter === "favorites" ? "ยังไม่มีรายการโปรด" : debouncedSearch ? "ไม่พบผลลัพธ์" : "ปราสาทของคุณยังว่างอยู่"}
+          title={filter === "favorites" ? "ยังไม่มีรายการโปรด" : debouncedSearch ? "ไม่พบผลลัพธ์" : filter === "audio" ? "ยังไม่มีเพลง" : "ปราสาทของคุณยังว่างอยู่"}
           sub={
             filter === "favorites"
               ? "กดหัวใจในผลงานเพื่อบันทึกไว้ที่นี่"
               : debouncedSearch
                 ? "ลองค้นหาด้วยคำอื่น หรือล้างคำค้นเพื่อดูผลงานทั้งหมด"
-                : "ทุกภาพและวิดีโอที่คุณสร้างจะมาเรียงอยู่ที่นี่ — เริ่มทอความฝันแรกของคุณได้เลย"
+                : filter === "audio"
+                  ? "เปิดแท็บ “สร้างเพลง” ในสตูดิโอ แล้วเพลงแรกของคุณจะมาอยู่ที่นี่"
+                  : "ทุกภาพ วิดีโอ และเพลงที่คุณสร้างจะมาเรียงอยู่ที่นี่ — เริ่มทอความฝันแรกของคุณได้เลย"
           }
         >
           <button onClick={() => router.push("/generate")} className="xdr-cta-primary" style={{ border: "none", cursor: "pointer", fontFamily: "inherit" }}>
@@ -285,7 +290,9 @@ export default function GalleryPage() {
                       boxShadow: "0 10px 30px -10px rgba(0,0,0,0.6)",
                     }}>
                     <div style={{ position: "relative" }}>
-                      {gen.type === "video" ? (
+                      {gen.type === "audio" ? (
+                        <AudioCover seed={gen.prompt} bars={9} label={false} style={{ aspectRatio: "1/1" }} />
+                      ) : gen.type === "video" ? (
                         <video src={gen.thumbnailUrl || gen.resultUrl} muted style={{ width: "100%", display: "block", objectFit: "cover" }} />
                       ) : (
                         // eslint-disable-next-line @next/next/no-img-element
@@ -293,7 +300,7 @@ export default function GalleryPage() {
                       )}
                       {gen.type !== "image" && (
                         <span style={{ position: "absolute", top: 10, right: 10, padding: "3px 8px", borderRadius: 999, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", fontSize: 9, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>
-                          {gen.type === "video" ? "▶ video" : "✦ edit"}
+                          {gen.type === "video" ? "▶ video" : gen.type === "audio" ? "♫ เพลง" : "✦ edit"}
                         </span>
                       )}
                       {showFavCount && (
@@ -348,7 +355,9 @@ export default function GalleryPage() {
                       background: `linear-gradient(135deg, hsl(${hue},60%,14%), hsl(${h2},60%,8%))`,
                       border: "1px solid rgba(255,255,255,0.05)",
                     }}>
-                      {gen.type === "video" ? (
+                      {gen.type === "audio" ? (
+                        <AudioCover seed={gen.prompt} bars={7} label={false} style={{ width: "100%", height: "100%" }} />
+                      ) : gen.type === "video" ? (
                         <video src={gen.thumbnailUrl || gen.resultUrl} muted style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                       ) : (
                         // eslint-disable-next-line @next/next/no-img-element
@@ -356,7 +365,7 @@ export default function GalleryPage() {
                       )}
                       {gen.type !== "image" && (
                         <span style={{ position: "absolute", top: 4, right: 4, padding: "2px 6px", borderRadius: 999, background: "rgba(0,0,0,0.6)", fontSize: 8, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>
-                          {gen.type === "video" ? "▶" : "✦"}
+                          {gen.type === "video" ? "▶" : gen.type === "audio" ? "♫" : "✦"}
                         </span>
                       )}
                     </div>
@@ -440,7 +449,13 @@ export default function GalleryPage() {
             </div>
 
             <div style={{ borderRadius: 14, overflow: "hidden", marginBottom: 16, border: "1px solid rgba(255,255,255,0.06)" }}>
-              {selectedItem.type === "video" ? (
+              {selectedItem.type === "audio" ? (
+                // The prompt is printed just below, so the cover goes without a title.
+                <>
+                  <AudioCover seed={selectedItem.prompt} animated style={{ aspectRatio: "16/7" }} />
+                  <audio src={selectedItem.resultUrl} controls autoPlay style={{ width: "100%", display: "block", background: "rgba(2,6,23,0.6)" }} />
+                </>
+              ) : selectedItem.type === "video" ? (
                 <video src={selectedItem.resultUrl} controls autoPlay style={{ width: "100%", display: "block" }} />
               ) : (
                 // eslint-disable-next-line @next/next/no-img-element
@@ -465,7 +480,7 @@ export default function GalleryPage() {
                 style={{ padding: "10px 18px", borderRadius: 10, background: "rgba(255,255,255,0.06)", color: selectedItem.isFavorited ? "#fca5a5" : "#fff", border: "1px solid rgba(255,255,255,0.12)", fontSize: 13, fontWeight: 500, cursor: "pointer" }}>
                 {selectedItem.isFavorited ? "♥ บันทึกแล้ว" : "♡ บันทึก"}
               </button>
-              {selectedItem.type !== "video" && (
+              {selectedItem.type !== "video" && selectedItem.type !== "audio" && (
                 <button onClick={() => handleUpscale(selectedItem)}
                   style={{ padding: "10px 18px", borderRadius: 10, background: "rgba(255,255,255,0.06)", color: "#fff", border: "1px solid rgba(255,255,255,0.12)", fontSize: 13, fontWeight: 500, cursor: "pointer" }}>
                   ⤢ Upscale

@@ -27,6 +27,17 @@ export async function downloadAs(url: string, filename: string): Promise<boolean
 }
 
 /**
+ * Extension to save `url` under, read from its path — a song is FLAC, a render
+ * may be PNG — or `fallback` when the path has none. Guessing from the
+ * generation type alone named songs `.webp`, which no player will open.
+ */
+export function extensionOf(url: string, fallback: string): string {
+  let path = url;
+  try { path = new URL(url, "https://x.invalid").pathname; } catch { /* keep the raw string */ }
+  return /\.([a-z0-9]{2,5})$/i.exec(path)?.[1]?.toLowerCase() ?? fallback;
+}
+
+/**
  * Add (`favorited`) or remove a favourite. Any HTTP answer counts as done,
  * as it always has in both pages — only a failed request does not.
  */

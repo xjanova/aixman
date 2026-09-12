@@ -27,7 +27,7 @@ export async function GET(request: NextRequest) {
   // Build where clause
   const where: Prisma.AiGenerationWhereInput = { userId };
 
-  if (type && ['image', 'video', 'edit'].includes(type)) {
+  if (type && ['image', 'video', 'edit', 'audio'].includes(type)) {
     where.type = type;
   }
 

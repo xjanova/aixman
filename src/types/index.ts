@@ -2,7 +2,7 @@
 // Core Types for AIXMAN AI Generation Platform
 // ============================================================
 
-export type GenerationType = 'image' | 'video' | 'edit';
+export type GenerationType = 'image' | 'video' | 'edit' | 'audio';
 export type GenerationStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
 export type CreditTransactionType = 'purchase' | 'usage' | 'refund' | 'bonus' | 'admin_adjust';
 export type PoolRotationMode = 'round_robin' | 'balanced' | 'quota_first';
@@ -46,6 +46,8 @@ export interface GenerationParams {
   fps?: number;
   aspectRatio?: string;
   numOutputs?: number;
+  /** Song lyrics for music models; omitted for an instrumental. */
+  lyrics?: string;
   [key: string]: unknown;
 }
 

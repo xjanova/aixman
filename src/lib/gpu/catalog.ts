@@ -58,6 +58,8 @@ export interface CatalogJobParams {
   imageFilename?: string;
   /** Filename of an uploaded audio track (lip-sync, audio-driven video). */
   audioFilename?: string;
+  /** Song lyrics (music models). Empty means an instrumental. */
+  lyrics?: string;
 }
 
 export interface CatalogEntry {
@@ -312,8 +314,10 @@ const ACE_STEP: CatalogEntry = {
     // later version renames them the job fails loudly and the model stays in
     // 'tuning' rather than rendering the template's demo K-pop track.
     { nodeId: '94', input: ['tags', 'text', 'prompt', 'caption'], value: p.prompt },
-    // Lyrics are a bonus; a song still renders from the tags alone.
-    { nodeId: '94', input: ['lyrics'], value: p.negativePrompt ?? '', optional: true },
+    // Lyrics come from the studio's own field; older callers put them in
+    // negativePrompt. None at all asks for an instrumental outright — an empty
+    // string leaves the model to hum made-up syllables over the track.
+    { nodeId: '94', input: ['lyrics'], value: (p.lyrics ?? p.negativePrompt ?? '').trim() || '[instrumental]', optional: true },
     // The template feeds one duration and one seed to *two* nodes through
     // editor-only primitives. The text encoder plans the song for its own
     // duration, so binding only the latent would write a 30 s clip of a song

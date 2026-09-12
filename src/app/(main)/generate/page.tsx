@@ -22,11 +22,12 @@ import Image from "next/image";
 import { useAppStore } from "@/lib/store/app-store";
 import { useToast } from "@/components/ui/toast-provider";
 import { creditsForDuration } from "@/lib/pricing";
-import { downloadAs, saveFavorite } from "@/lib/client-actions";
+import { downloadAs, extensionOf, saveFavorite } from "@/lib/client-actions";
+import { AUDIO_EXT, AudioCover, AudioResult } from "@/components/xdreamer/audio";
 
 const HUE = 70;
 
-type TabType = "image" | "video" | "edit" | "lipsync";
+type TabType = "image" | "video" | "edit" | "lipsync" | "audio";
 
 /**
  * Lip-sync models are `category: 'video'` on the server — a clip is what comes
@@ -60,6 +61,23 @@ const VIDEO_ASPECTS = ["16:9", "9:16", "1:1"];
 
 /** Clip lengths, filtered per model against `ai_models.max_duration`. */
 const VIDEO_DURATIONS = [5, 10, 15, 20];
+
+/** Song lengths, filtered the same way against the music model's ceiling. */
+const AUDIO_DURATIONS = [30, 60, 120, 180];
+
+/** Style words a music model understands — the image chips mean nothing to it. */
+const MUSIC_TAG_CHIPS = [
+  "thai pop", "luk thung", "lo-fi", "acoustic guitar", "piano", "female vocal",
+  "male vocal", "upbeat", "chill", "cinematic", "EDM", "rock",
+];
+
+/** One-tap starting points for the music tab, shown before the first song. */
+const MUSIC_STARTERS = [
+  "ป๊อปไทยสดใส เสียงร้องหญิง กีตาร์โปร่ง จังหวะเร็ว",
+  "ลูกทุ่งอีสานสนุกๆ แคน พิณ เสียงร้องชาย",
+  "lo-fi ชิลๆ เปียโน ฝนตก ฟังตอนทำงาน",
+  "ดนตรีประกอบโฆษณา สร้างแรงบันดาลใจ ออร์เคสตรา",
+];
 
 /** Used to warn when a Thai prompt is sent to an English-only model. */
 const THAI_CHARS = /\p{Script=Thai}/u;
@@ -478,6 +496,7 @@ const CREATING_TIPS: Record<string, string[]> = {
   image: ["กำลังเรียงองค์ประกอบภาพ…", "กำลังลงสีและแสงเงา…", "กำลังเก็บรายละเอียดให้คมชัด…"],
   edit: ["กำลังอ่านภาพต้นฉบับ…", "กำลังแก้ไขตามที่สั่ง…", "กำลังเกลี่ยรอยต่อให้เนียน…"],
   lipsync: ["กำลังฟังเสียงพูด…", "กำลังขยับปากให้ตรงจังหวะ…", "กำลังเก็บรายละเอียดใบหน้า…"],
+  audio: ["กำลังแต่งทำนอง…", "กำลังเรียบเรียงดนตรี…", "กำลังใส่เสียงร้อง…", "กำลังมิกซ์เสียง…"],
 };
 
 /** The animated centre of a frame while its result is being made. */
@@ -682,6 +701,9 @@ export default function GeneratePage() {
   /** Clip length in seconds. Was never sent, so every clip came out at the
    *  provider default regardless of what the model could do. */
   const [duration, setDuration] = useState(5);
+  /** Song lyrics for the music tab; empty asks for an instrumental. */
+  const [lyrics, setLyrics] = useState("");
+  const [songTitle, setSongTitle] = useState("");
 
   useEffect(() => { if (session === null) router.push("/login"); }, [session, router]);
   useEffect(() => { fetchModels(); fetchStyles(); fetchTemplates(); fetchCredits(); }, [fetchModels, fetchStyles, fetchTemplates, fetchCredits]);
@@ -785,19 +807,22 @@ export default function GeneratePage() {
 
   /** Lengths this model can actually produce. Always offers at least 5s. */
   const durationChoices = (() => {
-    const max = selectedModel?.maxDuration ?? 10;
-    const fits = VIDEO_DURATIONS.filter((d) => d <= max);
-    return fits.length > 0 ? fits : [VIDEO_DURATIONS[0]];
+    const base = tab === "audio" ? AUDIO_DURATIONS : VIDEO_DURATIONS;
+    const max = selectedModel?.maxDuration ?? (tab === "audio" ? 240 : 10);
+    const fits = base.filter((d) => d <= max);
+    return fits.length > 0 ? fits : [base[0]];
   })();
 
   useEffect(() => {
-    if (tab !== "video") return;
+    if (tab !== "video" && tab !== "audio") return;
     // The image tab's 4:3 and 3:2 mean nothing to a video provider, and the
     // preview used to render 16:9 while the request still carried whatever the
     // image tab had left behind — the frame you saw was not the frame you
     // ordered.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (!VIDEO_ASPECTS.includes(aspectRatio)) setAspectRatio("16:9");
+    if (tab === "video" && !VIDEO_ASPECTS.includes(aspectRatio)) setAspectRatio("16:9");
+    // Song and clip lengths live on different scales: a 5 s song, or a 30 s
+    // clip carried over from the music tab, is never what was meant.
     if (!durationChoices.includes(duration)) setDuration(durationChoices[0]);
   }, [tab, aspectRatio, duration, durationChoices]);
 
@@ -1009,7 +1034,13 @@ export default function GeneratePage() {
     // On video the mode decides: text→video must not smuggle a start frame in,
     // or the provider silently switches endpoint behind the customer's back.
     const imageToSend =
-      tab === "image" ? refImage : tab === "video" && videoMode === "t2v" ? null : inputImage;
+      tab === "image" ? refImage : tab === "audio" || (tab === "video" && videoMode === "t2v") ? null : inputImage;
+    // The music tab hides the picture controls, but their state lives on — an
+    // image tab's negative prompt reaching the music model would be sung as
+    // the lyrics, and its image style appended to the song's description.
+    const music = tab === "audio";
+    // The song keeps the name it was made under, not whatever is typed next.
+    if (music) setSongTitle(prompt.trim());
     const sent = await postGeneration({
       modelId: selectedModelId,
       // Lip-sync has no generation type of its own on the server: what it
@@ -1017,8 +1048,8 @@ export default function GeneratePage() {
       // controls here.
       type: tab === "lipsync" ? "video" : tab,
       prompt: prompt.trim(),
-      negativePrompt: negativePrompt.trim() || undefined,
-      styleId: selectedStyle || undefined,
+      negativePrompt: music ? undefined : negativePrompt.trim() || undefined,
+      styleId: music ? undefined : selectedStyle || undefined,
       inputImage: tab === "lipsync" && lipsyncNeeds === "video" ? undefined : imageToSend || undefined,
       inputAudio: tab === "lipsync" ? inputAudio ?? undefined : undefined,
       inputVideo: tab === "lipsync" ? sourceVideo ?? undefined : undefined,
@@ -1033,10 +1064,12 @@ export default function GeneratePage() {
         // Lip-sync sends none of the three. Its length is set by the voice
         // track, and the adapter derives the frame count from the model
         // row's own ceiling rather than from anything chosen here.
-        duration: tab === "video" ? duration : undefined,
-        steps: tab === "video" || tab === "lipsync" ? undefined : steps,
-        cfgScale: tab === "video" || tab === "lipsync" ? undefined : guidance,
+        duration: tab === "video" || music ? duration : undefined,
+        // The music model is a distilled turbo with its own fixed step count.
+        steps: tab === "video" || tab === "lipsync" || music ? undefined : steps,
+        cfgScale: tab === "video" || tab === "lipsync" || music ? undefined : guidance,
         seed: seed ?? undefined,
+        lyrics: music ? lyrics.trim() || undefined : undefined,
       },
     });
     if (sent.kind === "network") {
@@ -1062,7 +1095,7 @@ export default function GeneratePage() {
   const handleDownload = async (url?: string) => {
     const downloadUrl = url || result?.resultUrl;
     if (!downloadUrl) return;
-    const ok = await downloadAs(downloadUrl, `xdreamer-${result?.id || "gen"}.${downloadUrl.includes(".mp4") ? "mp4" : "webp"}`);
+    const ok = await downloadAs(downloadUrl, `xdreamer-${result?.id || "gen"}.${extensionOf(downloadUrl, "webp")}`);
     if (ok) toast("success", "ดาวน์โหลดสำเร็จ");
     else toast("error", "ดาวน์โหลดไม่สำเร็จ");
   };
@@ -1099,7 +1132,9 @@ export default function GeneratePage() {
     setIsUpscaling(false);
   };
 
-  const totalCredits = creditsFor(tab === "video" ? duration : null) * outputs;
+  const totalCredits = creditsFor(tab === "video" || tab === "audio" ? duration : null) * outputs;
+  /** A song has no picture shape; its in-progress frame is square. */
+  const frameAspect = tab === "audio" ? "1:1" : aspectRatio;
   if (!session) return null;
 
   // ─── RENDER ─────────────────────────────────────────────────────────
@@ -1115,6 +1150,7 @@ export default function GeneratePage() {
             { key: "video" as TabType, label: "สร้างวิดีโอ", icon: "▶" },
             { key: "edit"  as TabType, label: "แก้ไขภาพ", icon: "✦" },
             { key: "lipsync" as TabType, label: "ลิปซิงค์", icon: "♪" },
+            { key: "audio" as TabType, label: "สร้างเพลง", icon: "♫" },
           ]).map(t => {
             const blocked = tabBlockedReason(t.key);
             return (
@@ -1204,7 +1240,7 @@ export default function GeneratePage() {
 
         {/* Prompt — the only element allowed to grow, so it absorbs whatever
             height the viewport has spare and the rail still fits one screen. */}
-        <Section label={tab === "lipsync" ? "Prompt (ไม่บังคับ)" : "Prompt"} grow>
+        <Section label={tab === "lipsync" ? "Prompt (ไม่บังคับ)" : tab === "audio" ? "สไตล์เพลง" : "Prompt"} grow>
           <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)}
             placeholder={
               tab === "lipsync"
@@ -1213,9 +1249,19 @@ export default function GeneratePage() {
                   : "ไม่ต้องใส่ก็ได้ — เสียงที่อัปโหลดเป็นตัวกำหนดผลลัพธ์"
                 : tab === "video"
                   ? "อธิบายวิดีโอที่ต้องการ..."
-                  : "อธิบายภาพที่ต้องการ..."
+                  : tab === "audio"
+                    ? "แนวเพลง อารมณ์ เครื่องดนตรี เสียงร้อง เช่น ป๊อปไทยสดใส เสียงร้องหญิง กีตาร์โปร่ง จังหวะเร็ว"
+                    : "อธิบายภาพที่ต้องการ..."
             }
-            style={{ ...xdrInputStyle, padding: 14, fontSize: 14, lineHeight: 1.5, resize: "none", flex: 1, minHeight: 96 }} />
+            style={{ ...xdrInputStyle, padding: 14, fontSize: 14, lineHeight: 1.5, resize: "none", flex: 1, minHeight: tab === "audio" ? 72 : 96 }} />
+          {/* Lyrics are their own field: the music model sings exactly this.
+              Left empty, the song is an instrumental — asking for one outright
+              beats a voice humming invented syllables. */}
+          {tab === "audio" && (
+            <textarea value={lyrics} onChange={(e) => setLyrics(e.target.value.slice(0, 3000))}
+              placeholder={"เนื้อเพลง (ไม่บังคับ) — เว้นว่างได้เพลงบรรเลง\n[verse]\n...\n[chorus]\n..."}
+              style={{ ...xdrInputStyle, marginTop: 8, padding: 12, fontSize: 13, lineHeight: 1.5, resize: "none", height: 110 }} />
+          )}
           {/* The free Pollinations model does not understand Thai — it renders an
               unrelated image instead of failing, so warn before credits are spent. */}
           {selectedModel?.provider.slug === "pollinations" && THAI_CHARS.test(prompt) && (
@@ -1241,7 +1287,7 @@ export default function GeneratePage() {
         <div style={{ display: "flex", gap: 6 }}>
           <Popover id="tags" open={openPanel} onToggle={setOpenPanel} label="+ แท็ก" width={286}>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {PROMPT_TAG_CHIPS.map((t) => {
+              {(tab === "audio" ? MUSIC_TAG_CHIPS : PROMPT_TAG_CHIPS).map((t) => {
                 const already = prompt.toLowerCase().includes(t.toLowerCase());
                 return (
                   <button key={t} type="button" onClick={() => addPromptTag(t)}
@@ -1256,7 +1302,10 @@ export default function GeneratePage() {
             </div>
           </Popover>
 
-          {templates.length > 0 && tab !== "edit" && (
+          {/* The templates, the negative prompt, the image styles, the aspect
+              and the reference image are all about pictures — none of them
+              reaches a music model, so the music tab does not offer them. */}
+          {templates.length > 0 && tab !== "edit" && tab !== "audio" && (
             <Popover id="templates" open={openPanel} onToggle={setOpenPanel} label="เทมเพลต" width={286}>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 {templates.slice(0, 10).map(t => (
@@ -1276,7 +1325,7 @@ export default function GeneratePage() {
         </div>
 
         {/* Negative Prompt */}
-        {tab !== "edit" && (
+        {tab !== "edit" && tab !== "audio" && (
           <input value={negativePrompt} onChange={(e) => setNegativePrompt(e.target.value)}
             placeholder="Negative prompt — blurry, low quality, text..."
             style={{ ...xdrInputStyle, fontSize: 12, padding: "9px 12px" }} />
@@ -1284,7 +1333,7 @@ export default function GeneratePage() {
 
         {/* Style + aspect on one row */}
         <div style={{ display: "flex", gap: 6 }}>
-          {stylesLoaded && styles.length > 0 && tab !== "edit" && (
+          {stylesLoaded && styles.length > 0 && tab !== "edit" && tab !== "audio" && (
             <Popover id="style" open={openPanel} onToggle={setOpenPanel} label="สไตล์"
               value={selectedStyle ? (styles.find(s => s.id === selectedStyle)?.name ?? "") : "—"} width={286}>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6 }}>
@@ -1303,7 +1352,7 @@ export default function GeneratePage() {
 
           {/* Lip-sync has no aspect to choose: the result keeps the shape of the
               clip or the portrait it was given. */}
-          {tab !== "edit" && tab !== "lipsync" && (
+          {tab !== "edit" && tab !== "lipsync" && tab !== "audio" && (
             <Popover id="aspect" open={openPanel} onToggle={setOpenPanel} label="สัดส่วน" value={aspectRatio} width={220} align="right">
               <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6 }}>
                 {aspectRatios
@@ -1323,7 +1372,7 @@ export default function GeneratePage() {
 
           {/* Clip length. `ai_models.max_duration` is the ceiling — offering a
               20s option on a model that tops out at 5 just buys a failed job. */}
-          {tab === "video" && (
+          {(tab === "video" || tab === "audio") && (
             <Popover id="duration" open={openPanel} onToggle={setOpenPanel} label="ความยาว"
               value={`${duration}s`} width={200} align="right">
               <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(durationChoices.length, 4)},1fr)`, gap: 6 }}>
@@ -1375,7 +1424,7 @@ export default function GeneratePage() {
               accepted, press generate, and get a text-only clip — the upload was
               discarded without a word. The video start frame is its own control
               below, wired to the mode selector. */}
-          {tab !== "video" && (
+          {tab !== "video" && tab !== "audio" && (
           <Popover id="ref" open={openPanel} onToggle={setOpenPanel} label="ภาพอ้างอิง"
             value={refImagePreview ? "1" : "—"} width={286} align="right">
             {refImagePreview ? (
@@ -1506,7 +1555,9 @@ export default function GeneratePage() {
               took reproducible clips with it. */}
           <Popover id="advanced" open={openPanel} onToggle={setOpenPanel} label="⚙ ขั้นสูง" width={286}>
               <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                {tab !== "video" && (
+                {/* The music model is a distilled turbo: its step count is
+                    fixed server-side, and more steps only slow it and smear it. */}
+                {tab !== "video" && tab !== "audio" && (
                 <>
                 <div>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", marginBottom: 6 }}>
@@ -1540,12 +1591,17 @@ export default function GeneratePage() {
 
           <Popover id="tips" open={openPanel} onToggle={setOpenPanel} label="? คำแนะนำ" width={300} align="right">
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {[
+              {(tab === "audio" ? [
+                "บอกแนวเพลง อารมณ์ และเครื่องดนตรี เช่น 'ลูกทุ่งอีสานสนุกๆ แคน พิณ เสียงร้องชาย'",
+                "ใส่จังหวะช่วยได้มาก เช่น 90 BPM (ช้าๆ) หรือ 128 BPM (เต้นได้)",
+                "เนื้อเพลงแบ่งท่อนด้วย [verse] [chorus] [bridge] — ประโยคสั้นร้องชัดกว่า",
+                "เว้นเนื้อเพลงว่างไว้ = เพลงบรรเลง เหมาะกับดนตรีประกอบคลิป",
+              ] : [
                 "ระบุ subject และอารมณ์ให้ชัด เช่น 'หญิงสาวยืนกลางทุ่งดอกไม้ โทนสีพาสเทล'",
                 "เพิ่ม style keywords เช่น cinematic, hyperreal, jade tones, volumetric",
                 "ใช้ aspect 16:9 สำหรับ wallpaper, 9:16 สำหรับโซเชียล",
                 "img2img: ความเข้ม 0.5–0.7 = balance, > 0.8 = ตามภาพอ้างอิงมาก",
-              ].map((tip, i) => (
+              ]).map((tip, i) => (
                 <div key={i} style={{ display: "flex", gap: 8 }}>
                   <span style={{ color: `hsl(${(160 + i * 30 + HUE) % 360},70%,70%)`, flexShrink: 0 }}>✦</span>
                   <span style={{ fontSize: 12, color: "rgba(203,213,225,0.78)", lineHeight: 1.5 }}>{tip}</span>
@@ -1622,7 +1678,7 @@ export default function GeneratePage() {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Pill active>
-              {tab === "image" ? `ภาพ ${outputs} ใบ` : tab === "video" ? "วิดีโอ" : tab === "lipsync" ? "ลิปซิงค์" : "แก้ไขภาพ"}
+              {tab === "image" ? `ภาพ ${outputs} ใบ` : tab === "video" ? "วิดีโอ" : tab === "lipsync" ? "ลิปซิงค์" : tab === "audio" ? "เพลง" : "แก้ไขภาพ"}
             </Pill>
             {/* Variations is just another order, so it follows the button's rule. */}
             <Pill disabled={cannotSubmit}
@@ -1653,15 +1709,15 @@ export default function GeneratePage() {
               {/* Width follows the height cap, so the frame keeps its shape and
                   always fits: one frame per output that is actually coming —
                   a 2×2 grid fills the same box as a single frame. */}
-              <div style={{ width: `min(100%, calc(${GENERATING_FRAME_MAX_H} * ${aspectNumber(aspectRatio)}))`, margin: "0 auto" }}>
+              <div style={{ width: `min(100%, calc(${GENERATING_FRAME_MAX_H} * ${aspectNumber(frameAspect)}))`, margin: "0 auto" }}>
                 {tab === "image" && outputs > 1 ? (
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 10 }}>
                     {Array.from({ length: outputs }).map((_, i) => (
-                      <StudioFrame key={i} index={i} seed={(i + 1) * 0.137} aspect={aspectRatio} generating={true} progress={progress} />
+                      <StudioFrame key={i} index={i} seed={(i + 1) * 0.137} aspect={frameAspect} generating={true} progress={progress} />
                     ))}
                   </div>
                 ) : (
-                  <StudioFrame index={0} seed={0.42} aspect={aspectRatio} generating={true} progress={progress} />
+                  <StudioFrame index={0} seed={0.42} aspect={frameAspect} generating={true} progress={progress} />
                 )}
               </div>
               <GeneratingStatus progress={progress} tab={tab} startedAt={genStartedAt} />
@@ -1694,6 +1750,8 @@ export default function GeneratePage() {
                         <img src={result.resultUrl} alt={prompt} style={{ width: "100%", borderRadius: 12, objectFit: "contain" }} />
                       </div>
                     </div>
+                  ) : AUDIO_EXT.test(result.resultUrl) ? (
+                    <AudioResult src={result.resultUrl} title={songTitle || "เพลงของคุณ"} />
                   ) : tab === "video" || result.resultUrl.endsWith(".mp4") ? (
                     <video src={result.resultUrl} controls autoPlay loop style={{ width: "100%", borderRadius: 12, maxHeight: 600, margin: "0 auto", display: "block" }} />
                   ) : (
@@ -1709,7 +1767,7 @@ export default function GeneratePage() {
                   <Pill onClick={() => handleDownload()}>↓ ดาวน์โหลด</Pill>
                   <Pill active={isFavorited} onClick={handleFavorite}>{isFavorited ? "♥ บันทึกแล้ว" : "♡ บันทึก"}</Pill>
                   <Pill onClick={handleShare}>⎋ แชร์</Pill>
-                  {tab !== "video" && !result.resultUrl.endsWith(".mp4") && (
+                  {tab !== "video" && !result.resultUrl.endsWith(".mp4") && !AUDIO_EXT.test(result.resultUrl) && (
                     <Pill onClick={handleUpscale}>{isUpscaling ? "⟳ Upscaling..." : "⤢ Upscale"}</Pill>
                   )}
                 </div>
@@ -1758,7 +1816,25 @@ export default function GeneratePage() {
             </div>
           ) : (
             <div style={{ width: "100%" }}>
-              {tab === "image" ? (
+              {tab === "audio" ? (
+                // No sample songs to show yet — offer starting points instead,
+                // one tap to put a description in the prompt.
+                <div style={{ maxWidth: 560, margin: "0 auto", textAlign: "center" }}>
+                  <div style={{ fontSize: 44, marginBottom: 8, color: "#c4b5fd" }}>♫</div>
+                  <h3 style={{ fontSize: 22, fontWeight: 300, color: "#fff", margin: "0 0 6px" }}>สร้างเพลงของคุณเอง</h3>
+                  <p style={{ fontSize: 13, color: "rgba(203,213,225,0.7)", margin: "0 0 18px" }}>
+                    บอกแนวเพลงกับอารมณ์ ใส่เนื้อเพลงเองได้ หรือเว้นว่างไว้เป็นเพลงบรรเลง
+                  </p>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
+                    {MUSIC_STARTERS.map((s) => (
+                      <button key={s} type="button" onClick={() => setPrompt(s)}
+                        style={{ padding: "8px 14px", borderRadius: 999, fontSize: 12, cursor: "pointer", background: "rgba(255,255,255,0.05)", color: "#cbd5e1", border: "1px solid rgba(255,255,255,0.12)" }}>
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : tab === "image" ? (
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 16 }}>
                   {STUDIO_SAMPLES.image.map((s) => (
                     <SampleFrame key={s.src} src={s.src} label={s.label} aspect={aspectRatio} />
@@ -1772,7 +1848,7 @@ export default function GeneratePage() {
                 </div>
               )}
               <p style={{ fontSize: 13, color: "rgba(203,213,225,0.55)", marginTop: 20, textAlign: "center" }}>
-                ตัวอย่างผลงานที่สร้างบนแพลตฟอร์มนี้ — เลือกโมเดล พิมพ์ prompt แล้วกด <span style={{ color: "#a5f3fc" }}>ทอ</span> เพื่อเริ่มสร้าง{tab === "video" ? "วิดีโอ" : tab === "edit" ? "การแก้ไข" : "ภาพ"}ของคุณเอง
+                {tab === "audio" ? "" : "ตัวอย่างผลงานที่สร้างบนแพลตฟอร์มนี้ — "}เลือกโมเดล พิมพ์ prompt แล้วกด <span style={{ color: "#a5f3fc" }}>ทอ</span> เพื่อเริ่มสร้าง{tab === "video" ? "วิดีโอ" : tab === "edit" ? "การแก้ไข" : tab === "audio" ? "เพลง" : "ภาพ"}ของคุณเอง
               </p>
             </div>
           )}
@@ -1794,6 +1870,8 @@ export default function GeneratePage() {
                 const isVideo = g.type === "video" || g.resultUrl?.endsWith(".mp4");
                 // A provider that hands back a real poster image keeps <img>.
                 const srcIsVideo = isVideo && !/\.(png|jpe?g|webp|gif|avif)(\?|$)/i.test(src ?? "");
+                // A song has nothing to draw; it gets a note on its own colour.
+                const isAudio = g.type === "audio" || AUDIO_EXT.test(src ?? "");
                 return (
                   <button key={g.id} type="button" title={g.prompt}
                     onClick={() => {
@@ -1814,11 +1892,14 @@ export default function GeneratePage() {
                     {/* A video's thumbnail is the video itself (rented-GPU jobs
                         store the mp4 there), and <img> draws that as a broken
                         icon. #t=0.1 makes the browser paint the first frame. */}
-                    {src && srcIsVideo && (
+                    {isAudio && (
+                      <AudioCover seed={g.prompt} bars={6} label={false} style={{ position: "absolute", inset: 0 }} />
+                    )}
+                    {src && !isAudio && srcIsVideo && (
                       <video src={`${src}#t=0.1`} muted playsInline preload="metadata"
                         style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", pointerEvents: "none" }} />
                     )}
-                    {src && !srcIsVideo && (
+                    {src && !isAudio && !srcIsVideo && (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={src} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
                     )}

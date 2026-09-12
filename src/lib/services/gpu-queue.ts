@@ -685,6 +685,15 @@ function extensionFor(contentType: string, url: string): string {
     'image/webp': 'webp',
     'image/png': 'png',
     'image/jpeg': 'jpg',
+    // Music models (ACE-Step saves FLAC).
+    'audio/flac': 'flac',
+    'audio/x-flac': 'flac',
+    'audio/mpeg': 'mp3',
+    'audio/wav': 'wav',
+    'audio/x-wav': 'wav',
+    'audio/ogg': 'ogg',
+    'audio/opus': 'opus',
+    'audio/mp4': 'm4a',
   };
   const hit = byType[contentType.split(';')[0].trim().toLowerCase()];
   if (hit) return hit;
