@@ -283,8 +283,12 @@ export function buildComfyUiStartScript(opts: ProvisionOptions): string {
 # NOTE: -e is deliberately omitted. A failed apt mirror or an optional step must
 # not abort the boot and strand a machine that is already being billed.
 set -uo pipefail
+# The vendor's start-script runner need not carry the image's PATH, and in the
+# stock PyTorch image python3, pip and hf live only under /opt/conda/bin.
+export PATH="/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\${PATH:+:\$PATH}"
 mkdir -p ${ROOT}/models ${ROOT}/dl
 exec > >(tee -a ${ROOT}/boot.log) 2>&1
+echo "[aixman] boot script started $(date -u +%FT%TZ) as $(id -un) with python $(command -v python3 || echo MISSING)"
 
 export DEBIAN_FRONTEND=noninteractive
 export AIXMAN_PROXY_PORT=${opts.publicPort}
