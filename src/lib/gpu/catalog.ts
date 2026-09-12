@@ -1,4 +1,5 @@
 import type { ParameterBinding, UiWorkflow } from './comfy-convert';
+import type { DurationCurve } from '@/lib/pricing';
 import minimaxH3Template from './workflows/templates/minimax_h3_t2v.json';
 import aceStepTemplate from './workflows/templates/ace_step_1_5.json';
 import qwenImageTemplate from './workflows/templates/qwen_image.json';
@@ -97,7 +98,7 @@ export interface CatalogEntry {
    * the single source of truth: the setup route creates the `ai_models` rows
    * from this, rather than a second hand-maintained list that can drift.
    */
-  pricing: { creditsPerUnit: number; costPerUnit: number };
+  pricing: { creditsPerUnit: number; costPerUnit: number; durationCurve?: DurationCurve };
   limits?: { maxWidth?: number; maxHeight?: number; maxDuration?: number };
 }
 
@@ -109,22 +110,45 @@ const GB = 1024 ** 3;
 // Template: video_minimax_h3_t2v.json. Everything lives inside one subgraph
 // (outer node 105), so converted ids are prefixed `105_`.
 /**
- * Turbo LoRA from lightx2v / ModelTC, repackaged by Comfy-Org (Apache-2.0 —
- * unlike the base weights, which carry the MiniMax community licence).
+ * Turbo LoRAs from lightx2v / ModelTC, repackaged by Comfy-Org (Apache-2.0 —
+ * unlike the base weights, which carry the MiniMax community licence). Each is
+ * distilled for one resolution family, step count and sigma shift, and mixing
+ * those up costs quality in a way nothing in the pipeline would flag. From
+ * ModelTC's spec table:
  *
- * The 768p variant is the one used because it is distilled at exactly the
- * 1344x768 this entry renders at. The 544p variants exist too but want a
- * different sigma shift (12/3 rather than 6/3), so mixing them up costs quality
- * in a way nothing in the pipeline would flag.
+ *   4-step v1.0 768p   1344x768 only        shift 6/3    4 steps
+ *   8-step v1.0        544p, mixed aspect   shift 12/3   8 steps
+ *
+ * Landscape uses the 768p one: sharpest, and the first one proven here. Other
+ * shapes must not. On the first real 9:16 render it drew a second dancer lying
+ * sideways across the frame and turned the temple behind her through 90
+ * degrees — it was trained on landscape only. The mixed-aspect LoRA was
+ * trained for exactly those shapes.
  */
-const MINIMAX_H3_TURBO_LORA = 'minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors';
+interface H3Turbo {
+  lora: string;
+  /** Distilled to this count; any other value degrades it. */
+  steps: number;
+  shiftVideo: number;
+  shiftAudio: number;
+}
 
-/** The LoRA is distilled to this step count. Other values degrade it. */
-const MINIMAX_H3_TURBO_STEPS = 4;
+const H3_TURBO_768P: H3Turbo = {
+  lora: 'minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors',
+  steps: 4,
+  shiftVideo: 6,
+  shiftAudio: 3,
+};
 
-/** Training shifts published for the 768p variant (544p ones use 12 / 3). */
-const MINIMAX_H3_SHIFT_VIDEO = 6;
-const MINIMAX_H3_SHIFT_AUDIO = 3;
+const H3_TURBO_MIXED: H3Turbo = {
+  lora: 'minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors',
+  steps: 8,
+  shiftVideo: 12,
+  shiftAudio: 3,
+};
+
+/** 960x544: the pixel count the mixed-aspect LoRA was trained at. */
+const H3_MIXED_PIXELS = 960 * 544;
 
 /** The turbo workflow swaps the base template's res_multistep for euler. */
 const MINIMAX_H3_TURBO_SAMPLER = 'euler';
@@ -136,6 +160,24 @@ const MINIMAX_H3_FPS = 24;
 function snap(value: number, step: number, fallback: number): number {
   const n = Number.isFinite(value) && value > 0 ? value : fallback;
   return Math.max(step, Math.round(n / step) * step);
+}
+
+/**
+ * Which turbo LoRA a frame gets, and the size to render it at.
+ *
+ * 16:9 is 1.78, so the 1.6 cut keeps every landscape preset on the 768p LoRA
+ * and sends 3:2 and anything squarer to the mixed-aspect one, rescaled to the
+ * pixel count it was trained at — 9:16 renders at 544x960, 1:1 at 736x736.
+ * Eight steps at 544p costs about what four at 768p do, so one price holds.
+ */
+export function h3RenderPlan(width: number, height: number): { turbo: H3Turbo; width: number; height: number } {
+  const w = Number.isFinite(width) && width > 0 ? width : 1344;
+  const h = Number.isFinite(height) && height > 0 ? height : 768;
+  if (w / h >= 1.6) {
+    return { turbo: H3_TURBO_768P, width: snap(w, 32, 1344), height: snap(h, 32, 768) };
+  }
+  const scale = Math.sqrt(H3_MIXED_PIXELS / (w * h));
+  return { turbo: H3_TURBO_MIXED, width: snap(w * scale, 32, 544), height: snap(h * scale, 32, 960) };
 }
 
 const MINIMAX_H3: CatalogEntry = {
@@ -154,6 +196,8 @@ const MINIMAX_H3: CatalogEntry = {
     // 1.9 GB against 42.5 GB of base weights — it barely moves warmup, and it
     // is what turns a 20-step render into a 4-step one.
     { repo: 'Comfy-Org/MiniMax-H3', file: 'loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors', dest: 'loras', bytes: 1_956_192_992 },
+    // Portrait and square — the 768p LoRA only knows landscape (H3_TURBO_MIXED).
+    { repo: 'Comfy-Org/MiniMax-H3', file: 'loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors', dest: 'loras', bytes: 1_956_193_000 },
   ],
   // A100 40 GB is on the list because on SimplePod it was the cheapest card
   // with room for these weights ($0.48/hr against $0.72 for a 5090, measured
@@ -171,56 +215,64 @@ const MINIMAX_H3: CatalogEntry = {
    * worker too old to have `MiniMaxH3SigmaShift` fails validation loudly rather
    * than rendering at the wrong shift.
    */
-  inject: () => ({
-    '105_119': {
-      class_type: 'LoraLoaderModelOnly',
-      inputs: {
-        model: ['105_6', 0],
-        lora_name: MINIMAX_H3_TURBO_LORA,
-        strength_model: 1,
+  inject: (p) => {
+    const { turbo } = h3RenderPlan(p.width, p.height);
+    return {
+      '105_119': {
+        class_type: 'LoraLoaderModelOnly',
+        inputs: {
+          model: ['105_6', 0],
+          lora_name: turbo.lora,
+          strength_model: 1,
+        },
       },
-    },
-    '105_120': {
-      class_type: 'MiniMaxH3SigmaShift',
-      inputs: {
-        model: ['105_119', 0],
-        shift_video: MINIMAX_H3_SHIFT_VIDEO,
-        shift_audio: MINIMAX_H3_SHIFT_AUDIO,
+      '105_120': {
+        class_type: 'MiniMaxH3SigmaShift',
+        inputs: {
+          model: ['105_119', 0],
+          shift_video: turbo.shiftVideo,
+          shift_audio: turbo.shiftAudio,
+        },
       },
-    },
-  }),
-  bind: (p) => [
-    { nodeId: '105_104', input: 'prompt', value: p.prompt },
-    // The node steps in 32s; ComfyUI does not enforce step, the model does.
-    { nodeId: '105_104', input: 'width', value: snap(p.width, 32, 1344) },
-    { nodeId: '105_104', input: 'height', value: snap(p.height, 32, 768) },
-    // MiniMax H3's latent temporal compression only accepts length % 17 === 5,
-    // counted at its native 24 fps — a caller's fps must not change the maths.
-    { nodeId: '105_104', input: 'length', value: minimaxFrameLength(p.durationSeconds, MINIMAX_H3_FPS) },
-    { nodeId: '105_15', input: 'noise_seed', value: p.seed },
+    };
+  },
+  bind: (p) => {
+    const plan = h3RenderPlan(p.width, p.height);
+    return [
+      { nodeId: '105_104', input: 'prompt', value: p.prompt },
+      // Sized for the chosen LoRA, in the node's 32 px steps (ComfyUI does not
+      // enforce step, the model does).
+      { nodeId: '105_104', input: 'width', value: plan.width },
+      { nodeId: '105_104', input: 'height', value: plan.height },
+      // MiniMax H3's latent temporal compression only accepts length % 17 === 5,
+      // counted at its native 24 fps — a caller's fps must not change the maths.
+      { nodeId: '105_104', input: 'length', value: minimaxFrameLength(p.durationSeconds, MINIMAX_H3_FPS) },
+      { nodeId: '105_15', input: 'noise_seed', value: p.seed },
 
-    // Move BOTH model consumers onto the turbo chain. Leaving BasicScheduler on
-    // the raw UNET would build a 20-step sigma curve and hand it to a model
-    // distilled for 4 — which still renders, so nothing would catch it except
-    // the output looking wrong.
-    { nodeId: '105_16', input: 'model', value: ['105_120', 0] },
-    { nodeId: '105_9', input: 'model', value: ['105_120', 0] },
-    // Fixed, not taken from `p.steps`: the LoRA is distilled to this count and
-    // any other value degrades it.
-    { nodeId: '105_9', input: 'steps', value: MINIMAX_H3_TURBO_STEPS },
-    { nodeId: '105_17', input: 'sampler_name', value: MINIMAX_H3_TURBO_SAMPLER },
+      // Move BOTH model consumers onto the turbo chain. Leaving BasicScheduler on
+      // the raw UNET would build a 20-step sigma curve and hand it to a model
+      // distilled for 4 — which still renders, so nothing would catch it except
+      // the output looking wrong.
+      { nodeId: '105_16', input: 'model', value: ['105_120', 0] },
+      { nodeId: '105_9', input: 'model', value: ['105_120', 0] },
+      // Fixed per LoRA, not taken from `p.steps`.
+      { nodeId: '105_9', input: 'steps', value: plan.turbo.steps },
+      { nodeId: '105_17', input: 'sampler_name', value: MINIMAX_H3_TURBO_SAMPLER },
 
-    // Cosmetic: the template's own defaults are fine if these ever move.
-    { nodeId: '105_91', input: 'fps', value: MINIMAX_H3_FPS, optional: true },
-    { nodeId: '92', input: 'filename_prefix', value: 'video/aixman', optional: true },
-  ],
+      // Cosmetic: the template's own defaults are fine if these ever move.
+      { nodeId: '105_91', input: 'fps', value: MINIMAX_H3_FPS, optional: true },
+      { nodeId: '92', input: 'filename_prefix', value: 'video/aixman', optional: true },
+    ];
+  },
   // Estimate, and only used until this deployment has real history. Derived
   // from the one public 1344x768 measurement on a 5090-class card (5s at ~10
   // steps = 335s) scaled to 4 steps, with headroom left because VAE decode and
   // model load do not shrink with step count. The previous value of 48 was a
   // guess that never matched the 20-step config it described (~126 measured).
   baselineSecondsPerUnit: 36,
-  pricing: { creditsPerUnit: 12, costPerUnit: 0.05 },
+  // The base price covers 5 s; longer clips follow the render's measured cost
+  // growth (lib/pricing.ts) — at 12 credits, 10 s is 34 and 15 s is 63.
+  pricing: { creditsPerUnit: 12, costPerUnit: 0.05, durationCurve: { unitSeconds: 5, exponent: 1.5 } },
   limits: { maxWidth: 1344, maxHeight: 768, maxDuration: 15 },
 };
 

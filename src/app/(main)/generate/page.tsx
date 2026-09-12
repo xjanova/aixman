@@ -21,6 +21,7 @@ import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { useAppStore } from "@/lib/store/app-store";
 import { useToast } from "@/components/ui/toast-provider";
+import { creditsForDuration } from "@/lib/pricing";
 
 const HUE = 70;
 
@@ -491,6 +492,15 @@ export default function GeneratePage() {
 
   const selectedModel = models.find((m) => m.id === selectedModelId);
 
+  /**
+   * Outputs this order will actually yield. A rented-GPU model renders one per
+   * job, and the count only ever reaches the server from the image tab.
+   */
+  const outputs = tab === "image" ? Math.min(numOutputs, selectedModel?.maxOutputs ?? numOutputs) : 1;
+  /** One output's price — the same formula GenerationService charges with. */
+  const creditsFor = (seconds: number | null) =>
+    selectedModel ? creditsForDuration(selectedModel.creditsPerUnit, selectedModel.durationCurve, seconds) : 0;
+
   /** Which second file the chosen lip-sync model animates — a clip, or a still. */
   const lipsyncNeeds: "image" | "video" =
     selectedModel?.subcategory === LIPSYNC_PORTRAIT ? "image" : "video";
@@ -731,7 +741,7 @@ export default function GeneratePage() {
           params: {
             width: ar?.w || 1024, height: ar?.h || 1024, aspectRatio,
             strength: refImage && tab === "image" ? strength : undefined,
-            numOutputs: tab === "image" ? numOutputs : undefined,
+            numOutputs: tab === "image" ? outputs : undefined,
             // Every video adapter reads `duration`; none of them read steps or
             // cfgScale. Sending diffusion knobs to a video endpoint is noise at
             // best and a rejected request at worst.
@@ -833,7 +843,7 @@ export default function GeneratePage() {
     setIsUpscaling(false);
   };
 
-  const totalCredits = selectedModel ? selectedModel.creditsPerUnit * numOutputs : 0;
+  const totalCredits = creditsFor(tab === "video" ? duration : null) * outputs;
   if (!session) return null;
 
   // ─── RENDER ─────────────────────────────────────────────────────────
@@ -1053,7 +1063,13 @@ export default function GeneratePage() {
                       background: duration === d ? `hsla(${220 + HUE},60%,50%,0.25)` : "rgba(255,255,255,0.04)",
                       color: duration === d ? "#fff" : "#94a3b8",
                       border: duration === d ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
-                    }}>{d}s</button>
+                    }}>
+                    {d}s
+                    {/* Priced by length: say so before the order, not on the receipt. */}
+                    {selectedModel?.durationCurve && (
+                      <span style={{ display: "block", fontSize: 10, fontWeight: 500, color: "#fbbf24", marginTop: 2 }}>✦ {creditsFor(d)}</span>
+                    )}
+                  </button>
                 ))}
               </div>
             </Popover>
@@ -1062,7 +1078,9 @@ export default function GeneratePage() {
 
         {/* Count + advanced + reference on one row */}
         <div style={{ display: "flex", gap: 6 }}>
-          {tab === "image" && (
+          {/* Hidden when the model yields one output per order — offering 4
+              would take payment for images it never renders. */}
+          {tab === "image" && selectedModel?.maxOutputs !== 1 && (
             <Popover id="count" open={openPanel} onToggle={setOpenPanel} label="จำนวน" value={String(numOutputs)} width={200}>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 6 }}>
                 {[1, 2, 3, 4].map(n => (
@@ -1315,7 +1333,7 @@ export default function GeneratePage() {
             boxShadow: `0 10px 24px -8px hsla(${270 + HUE},70%,50%,0.55)`,
           }}>
           {isGenerating ? "⟳ กำลังทอ..." : (
-            <>ทอ ✦ {tab === "image" && numOutputs > 1 ? `${numOutputs} ภาพ · ` : ""}{totalCredits || "—"} credits</>
+            <>ทอ ✦ {outputs > 1 ? `${outputs} ภาพ · ` : ""}{totalCredits || "—"} credits</>
           )}
         </button>
 
@@ -1333,7 +1351,7 @@ export default function GeneratePage() {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Pill active>
-              {tab === "image" ? `ภาพ ${numOutputs} ใบ` : tab === "video" ? "วิดีโอ" : tab === "lipsync" ? "ลิปซิงค์" : "แก้ไขภาพ"}
+              {tab === "image" ? `ภาพ ${outputs} ใบ` : tab === "video" ? "วิดีโอ" : tab === "lipsync" ? "ลิปซิงค์" : "แก้ไขภาพ"}
             </Pill>
             <Pill onClick={() => { setSeed(Math.floor(Math.random() * 99999)); if (prompt.trim() && selectedModelId) handleGenerate(); }}>Variations</Pill>
             {tab === "image" && (
@@ -1358,11 +1376,11 @@ export default function GeneratePage() {
             <div style={{ width: "100%" }}>
               {tab === "image" ? (
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 16 }}>
-                  {Array.from({ length: Math.max(numOutputs, 1) }).map((_, i) => (
+                  {Array.from({ length: Math.max(outputs, 1) }).map((_, i) => (
                     <StudioFrame key={i} index={i} seed={(i + 1) * 0.137} aspect={aspectRatio} generating={true} />
                   ))}
-                  {numOutputs < 4 && Array.from({ length: 4 - numOutputs }).map((_, i) => (
-                    <StudioFrame key={`pad${i}`} index={numOutputs + i} seed={(numOutputs + i + 1) * 0.137} aspect={aspectRatio} generating={false} />
+                  {outputs < 4 && Array.from({ length: 4 - outputs }).map((_, i) => (
+                    <StudioFrame key={`pad${i}`} index={outputs + i} seed={(outputs + i + 1) * 0.137} aspect={aspectRatio} generating={false} />
                   ))}
                 </div>
               ) : (

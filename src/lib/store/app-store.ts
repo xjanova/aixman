@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { DurationCurve } from '@/lib/pricing';
 
 interface AIModel {
   id: number;
@@ -20,6 +21,10 @@ interface AIModel {
   canOrder?: boolean;
   tuningMessage?: string | null;
   readiness?: string;
+  /** Set when one order yields at most this many outputs (rented-GPU models: 1). */
+  maxOutputs?: number | null;
+  /** Set when the price grows with clip length; see lib/pricing.ts. */
+  durationCurve?: DurationCurve | null;
 }
 
 interface AIStyle {
