@@ -77,6 +77,34 @@ export class GpuEta {
     return samples.length >= MIN_SAMPLES ? median(samples) : null;
   }
 
+  /**
+   * Median render seconds per GPU model for one model, where a GPU has enough
+   * history — so the offer picker can price a card by how fast it really is.
+   */
+  static async medianRenderSecondsByGpu(modelKey: string): Promise<Map<string, number>> {
+    const since = new Date(Date.now() - HISTORY_WINDOW_DAYS * 86_400_000);
+    const jobs = await prisma.aiGpuJob.findMany({
+      where: { modelKey, status: 'completed', gpuSeconds: { gt: 0 }, queuedAt: { gte: since }, workerId: { not: null } },
+      select: { gpuSeconds: true, worker: { select: { gpuModel: true } } },
+      take: 200,
+      orderBy: { completedAt: 'desc' },
+    });
+    const byGpu = new Map<string, number[]>();
+    for (const j of jobs) {
+      const gpu = j.worker?.gpuModel;
+      if (!gpu) continue;
+      const list = byGpu.get(gpu) ?? [];
+      list.push(j.gpuSeconds);
+      byGpu.set(gpu, list);
+    }
+    const out = new Map<string, number>();
+    for (const [gpu, samples] of byGpu) {
+      const m = samples.length >= MIN_SAMPLES ? median(samples) : null;
+      if (m !== null) out.set(gpu, m);
+    }
+    return out;
+  }
+
   /** Render seconds for a typical job (a 5 s clip, one image) — history first. */
   static async typicalRenderSeconds(modelKey: string): Promise<number> {
     return (await this.medianRenderSeconds(modelKey)) ?? this.baselineRenderSeconds(modelKey, { duration: 5 });

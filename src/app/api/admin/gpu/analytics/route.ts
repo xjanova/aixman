@@ -186,6 +186,26 @@ export async function GET() {
   for (const key of new Set(liveWorkers.map((w) => w.modelKey))) {
     present.set(key, await isStudioPresent(key, now.getTime()));
   }
+  // The reaper gives that grace only to the most recently used ready machine
+  // of the model (GpuWorkerManager.isWarmestIdle); mirror it so the countdown
+  // for an extra machine does not promise a wait it will not get.
+  const warmest = new Map<string, number>();
+  for (const w of liveWorkers) {
+    if (w.status !== 'ready') continue;
+    const best = liveWorkers.find((x) => x.id === warmest.get(w.modelKey));
+    if (!best || (w.lastJobAt?.getTime() ?? 0) > (best.lastJobAt?.getTime() ?? 0)) warmest.set(w.modelKey, w.id);
+  }
+  const graced = (w: { id: number; modelKey: string }) =>
+    (present.get(w.modelKey) ?? false) && warmest.get(w.modelKey) === w.id;
+  /** Why the offer behind a rental was chosen, from what rentWorker recorded. */
+  const pickNote = (metadata: unknown): string | null => {
+    const p = (metadata as { pick?: Record<string, unknown> } | null)?.pick;
+    if (!p || typeof p.costUsd !== 'number') return null;
+    return (
+      `เลือกจาก ${p.candidates} ข้อเสนอ • ต้นทุนงานโดยประมาณ $${p.costUsd.toFixed(3)} ` +
+      `(บูต ~${p.bootSeconds} วิ + เรนเดอร์ ~${p.renderSeconds} วิ${p.renderBasis === 'history' ? ' จากประวัติการ์ดรุ่นนี้' : ' ค่ากลางของโมเดล'})`
+    );
+  };
 
   return NextResponse.json({
     config: cfg,
@@ -258,13 +278,13 @@ export async function GET() {
       // When the idle reaper will shut it down — the same rule as
       // GpuWorkerManager.reconcile (including the grace for a customer still
       // on the studio), so the countdown matches what happens.
-      customerPresent: present.get(w.modelKey) ?? false,
+      customerPresent: graced(w),
       idleOffInMinutes:
         w.status === 'ready' && !renderingOn.has(w.id)
           ? Math.max(
               0,
               Math.ceil(
-                ((cfg.idleTimeoutMinutes + (present.get(w.modelKey) ? cfg.presenceExtensionMinutes : 0)) * 60_000 -
+                ((cfg.idleTimeoutMinutes + (graced(w) ? cfg.presenceExtensionMinutes : 0)) * 60_000 -
                   (now.getTime() - (w.lastJobAt ?? w.readyAt ?? w.rentedAt).getTime())) /
                   60_000
               )
@@ -313,6 +333,7 @@ export async function GET() {
         jobsFailed: w.jobsFailed,
         // lastError doubles as the close reason once a worker is terminated.
         endReason: w.terminatedAt ? w.lastError : null,
+        pickNote: pickNote(w.metadata),
       };
     }),
     rentalSummary: {

@@ -87,6 +87,8 @@ interface RentalRow {
   jobsCompleted: number;
   jobsFailed: number;
   endReason: string | null;
+  /** Why this offer was rented (estimated cost of the work), when recorded. */
+  pickNote: string | null;
 }
 
 interface JobRow {
@@ -1133,9 +1135,11 @@ export default function GpuAdminPage() {
                       {r.supportId && <div className="text-[10px]" title="รหัสเครื่องฝั่ง SimplePod">{r.supportId}</div>}
                     </td>
                     <td className="py-2 pr-3 whitespace-nowrap">{r.modelName}</td>
-                    <td className="py-2 pr-3 whitespace-nowrap">
+                    <td className="py-2 pr-3 whitespace-nowrap" title={r.pickNote ?? undefined}>
                       {r.gpuModel ?? "–"}{r.gpuCount > 1 ? ` ×${r.gpuCount}` : ""}
-                      <div className="text-[11px] text-muted">{usd(r.pricePerHourUsd)}/ชม.</div>
+                      <div className="text-[11px] text-muted">
+                        {usd(r.pricePerHourUsd)}/ชม.{r.pickNote ? " • ⓘ เหตุผลที่เลือก" : ""}
+                      </div>
                     </td>
                     <td className="py-2 pr-3 whitespace-nowrap">{dateTime(r.rentedAt)}</td>
                     <td className="py-2 pr-3 whitespace-nowrap">
