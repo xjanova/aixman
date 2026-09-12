@@ -631,17 +631,19 @@ function userFacingError(technical: string): string {
 
   // Checked first: it quotes the last vendor reason, which can itself contain
   // "timeout" or "budget" and would otherwise be misread by the rules below.
+  // How the work is run is not the customer's concern (and is a trade
+  // secret): no message here names machines, GPUs, renting or providers.
   if (/^No suitable GPU available within/i.test(technical)) {
-    return 'ยังหาเครื่อง GPU ว่างไม่ได้ในเวลาที่กำหนด กรุณาลองใหม่ภายหลัง' + REFUNDED;
+    return 'คิวหนาแน่นเกินเวลาที่กำหนด กรุณาลองใหม่ภายหลัง' + REFUNDED;
   }
   if (/^Stopped by admin/i.test(technical)) {
-    return 'ผู้ดูแลระบบหยุดระบบสร้างวิดีโอชั่วคราว กรุณาลองใหม่ภายหลัง' + REFUNDED;
+    return 'ผู้ดูแลระบบหยุดระบบสร้างงานชั่วคราว กรุณาลองใหม่ภายหลัง' + REFUNDED;
   }
   if (/terminated mid-render|worker was terminated|no longer exists/i.test(technical)) {
-    return 'เครื่อง GPU หยุดทำงานระหว่างเรนเดอร์ กรุณาลองใหม่อีกครั้ง' + REFUNDED;
+    return 'ระบบขัดข้องระหว่างสร้างงาน กรุณาลองใหม่อีกครั้ง' + REFUNDED;
   }
   if (/exceeded \d+ min|timed out|timeout/i.test(technical)) {
-    return 'ใช้เวลาเรนเดอร์นานเกินกำหนด กรุณาลองใหม่หรือลดความยาวคลิป' + REFUNDED;
+    return 'ใช้เวลาสร้างนานเกินกำหนด กรุณาลองใหม่หรือลดความยาวคลิป' + REFUNDED;
   }
   if (/no container image|workflow|invalid nodes|profile|R2 storage is not configured|No active API key/i.test(technical)) {
     return 'โมเดลนี้ยังตั้งค่าไม่เสร็จ กรุณาติดต่อผู้ดูแลระบบ' + REFUNDED;
@@ -650,12 +652,12 @@ function userFacingError(technical: string): string {
     return 'บันทึกไฟล์ผลลัพธ์ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง' + REFUNDED;
   }
   if (/budget|capacity|balance too low/i.test(technical)) {
-    return 'ระบบ GPU ไม่ว่างอยู่ในขณะนี้ กรุณาลองใหม่ภายหลัง' + REFUNDED;
+    return 'ระบบไม่ว่างอยู่ในขณะนี้ กรุณาลองใหม่ภายหลัง' + REFUNDED;
   }
   if (/no .* GPU available|No available/i.test(technical)) {
-    return 'ไม่มีเครื่อง GPU ว่างในขณะนี้ กรุณาลองใหม่ภายหลัง' + REFUNDED;
+    return 'คิวเต็มอยู่ในขณะนี้ กรุณาลองใหม่ภายหลัง' + REFUNDED;
   }
-  return 'สร้างวิดีโอไม่สำเร็จ กรุณาลองใหม่อีกครั้ง' + REFUNDED;
+  return 'สร้างผลงานไม่สำเร็จ กรุณาลองใหม่อีกครั้ง' + REFUNDED;
 }
 
 /**

@@ -185,7 +185,7 @@ const MINIMAX_H3: CatalogEntry = {
   name: 'MiniMax H3 (Hailuo 3.0)',
   kind: 'video',
   outputKind: 'video',
-  description: 'วิดีโอพร้อมเสียงในตัว คุณภาพสูงสุดในกลุ่ม • ใช้เวลานานและกินการ์ดใหญ่',
+  description: 'วิดีโอพร้อมเสียงในตัว คุณภาพสูงสุดในกลุ่ม • ใช้เวลาสร้างนานกว่าโมเดลอื่น',
   template: minimaxH3Template as UiWorkflow,
   downloads: [
     // Pruned INT8 — the bf16 original is 66 GB and needs 4× H100.

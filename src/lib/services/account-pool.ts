@@ -1,6 +1,30 @@
 import prisma from '@/lib/db';
 import { decrypt } from '@/lib/utils/encryption';
 import type { ProviderAccount, PoolRotationMode } from '@/types';
+import type { AiAccountPool } from '@/generated/prisma/client';
+
+/** Auto-disable threshold: this many errors in a row and an account is skipped. */
+const MAX_CONSECUTIVE_ERRORS = 5;
+
+export type AccountBlock = 'inactive' | 'cooldown' | 'quota' | 'errors';
+
+/**
+ * Why an account cannot take a request right now, or null if it can.
+ *
+ * The single rule both `selectAccount` and the public model list use, so the
+ * studio never offers a model the order path would then refuse.
+ */
+export function accountBlock(
+  acc: Pick<AiAccountPool, 'isActive' | 'cooldownUntil' | 'dailyQuota' | 'usageToday' | 'monthlyQuota' | 'usageThisMonth' | 'consecutiveErrors'>,
+  now: Date = new Date()
+): AccountBlock | null {
+  if (!acc.isActive) return 'inactive';
+  if (acc.cooldownUntil && acc.cooldownUntil >= now) return 'cooldown';
+  if (acc.dailyQuota > 0 && acc.usageToday >= acc.dailyQuota) return 'quota';
+  if (acc.monthlyQuota > 0 && acc.usageThisMonth >= acc.monthlyQuota) return 'quota';
+  if (acc.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) return 'errors';
+  return null;
+}
 
 /**
  * Account Pool Manager
@@ -34,13 +58,8 @@ export class AccountPoolManager {
 
     if (accounts.length === 0) return null;
 
-    // Filter accounts with remaining quota
-    const available = accounts.filter((acc) => {
-      if (acc.dailyQuota > 0 && acc.usageToday >= acc.dailyQuota) return false;
-      if (acc.monthlyQuota > 0 && acc.usageThisMonth >= acc.monthlyQuota) return false;
-      if (acc.consecutiveErrors >= 5) return false; // Auto-disable after 5 consecutive errors
-      return true;
-    });
+    // Remaining quota, and not auto-disabled by consecutive errors.
+    const available = accounts.filter((acc) => accountBlock(acc, now) === null);
 
     if (available.length === 0) return null;
 
