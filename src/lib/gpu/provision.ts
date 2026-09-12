@@ -324,6 +324,26 @@ if ! python3 -c "import sys, torch; sys.exit(0 if torch.cuda.is_available() else
   fail_boot "CUDA is unavailable in the container: the host driver is older than the image's CUDA, or no GPU was attached"
 fi
 
+# The PyTorch image's Python comes from Ubuntu 24.04's apt, which marks it
+# "externally managed" (PEP 668): every plain \`pip install\` is refused. Found on
+# the first real rental — nothing installed, ComfyUI died on \`import sqlalchemy\`
+# and no weights downloaded. This container exists only to run this job, so
+# installing into the system interpreter is exactly what is wanted.
+export PIP_BREAK_SYSTEM_PACKAGES=1
+export PIP_ROOT_USER_ACTION=ignore
+export PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# pip with its error kept: a failed install says why, instead of surfacing
+# minutes later as a missing module somewhere else.
+pip_install() {
+  local label="$1"; shift
+  if ! python3 -m pip install --no-cache-dir -q "$@" > ${ROOT}/pip.log 2>&1; then
+    cat ${ROOT}/pip.log
+    fail_boot "$label failed to install: $(grep -iE 'error|conflict|no matching' ${ROOT}/pip.log | tail -n 3 | tr '\\n' ' ' | cut -c1-400)"
+    return 1
+  fi
+}
+
 # Freeze the image's torch stack. A dependency that asks for a different torch
 # would otherwise pull gigabytes of CUDA wheels over a build that works; with
 # the constraint it fails loudly instead.
@@ -333,7 +353,7 @@ export PIP_CONSTRAINT=${ROOT}/constraints.txt
 
 # hf_xet is the transfer backend HF serves large files through now;
 # hf_transfer is deprecated and must not be enabled.
-pip install --no-cache-dir -q -U "huggingface_hub>=0.34" hf_xet
+pip_install "huggingface_hub" -U "huggingface_hub>=0.34" hf_xet
 
 fetch_model() {
   local repo="$1" path="$2" dest="$3" rename="$4"
@@ -399,8 +419,7 @@ if [ -d ${ROOT}/ComfyUI ]; then
   # existed); point ComfyUI's model folders at them.
   rm -rf ${ROOT}/ComfyUI/models
   ln -sfn ${ROOT}/models ${ROOT}/ComfyUI/models
-  pip install --no-cache-dir -q -r ${ROOT}/ComfyUI/requirements.txt \\
-    || echo "[aixman] WARNING: some ComfyUI requirements failed to install"
+  pip_install "ComfyUI requirements" -r ${ROOT}/ComfyUI/requirements.txt
 fi
 
 # Community node packs some official templates depend on. Pinned by ref where
@@ -416,7 +435,7 @@ install_custom_node() {
   if [ -n "$ref" ]; then
     (cd "$dir" && git fetch --depth 1 origin "$ref" && git checkout -q FETCH_HEAD) || true
   fi
-  [ -f "$dir/requirements.txt" ] && pip install --no-cache-dir -q -r "$dir/requirements.txt"
+  [ -f "$dir/requirements.txt" ] && pip_install "$name requirements" -r "$dir/requirements.txt"
   echo "[aixman] custom node ready: $name"
 }
 ${customNodes.join('\n')}

@@ -220,6 +220,31 @@ export class GpuWorkerManager {
     }
   }
 
+  /**
+   * Copy the tail of a failing worker's logs onto its row (`metadata.bootLog`)
+   * and into the server log, before it is terminated. Best effort: a worker too
+   * broken to answer is still terminated.
+   */
+  private static async preserveBootLog(worker: AiGpuWorker): Promise<void> {
+    try {
+      const logs = await this.fetchLogs(worker.id);
+      const tail = (name: string, chars: number) => (logs[name] ?? '').slice(-chars);
+      const bootLog = {
+        at: new Date().toISOString(),
+        boot: tail('boot.log', 8000),
+        comfyui: tail('comfyui.log', 3000),
+      };
+      const metadata = (worker.metadata && typeof worker.metadata === 'object' ? worker.metadata : {}) as Record<string, unknown>;
+      await prisma.aiGpuWorker.update({
+        where: { id: worker.id },
+        data: { metadata: { ...metadata, bootLog } },
+      });
+      console.error(`[gpu] worker ${worker.id} boot failed — last boot.log lines:\n${bootLog.boot.split('\n').slice(-25).join('\n')}`);
+    } catch (error) {
+      console.error(`[gpu] could not read logs of failing worker ${worker.id}:`, (error as Error).message);
+    }
+  }
+
   /** Decrypt a worker's bearer token. Returns undefined for pre-token workers. */
   static readAuthToken(worker: Pick<AiGpuWorker, 'authToken'>): string | undefined {
     if (!worker.authToken) return undefined;
@@ -368,6 +393,10 @@ export class GpuWorkerManager {
 
       const probe = await this.probe(endpoint, profile, this.readAuthToken(worker));
       if (probe.state === 'failed') {
+        // The disk goes with the machine; keep the evidence first. Found on
+        // the first real rental: the one-line failure said "No module named
+        // sqlalchemy", and the pip error that explained it died with the box.
+        await this.preserveBootLog(worker);
         await this.terminate(worker.id, `${BOOT_FAILURE_PREFIX}: ${probe.detail ?? 'unknown'}`);
         return;
       }
