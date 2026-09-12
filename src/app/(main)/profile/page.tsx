@@ -168,7 +168,12 @@ export default function ProfilePage() {
                     border: "1px solid rgba(255,255,255,0.06)",
                     cursor: "pointer", display: "block", textDecoration: "none",
                   }}>
-                    {gen.resultUrl || gen.thumbnailUrl ? (
+                    {(gen.resultUrl || gen.thumbnailUrl) && (gen.type === "video" || gen.resultUrl?.endsWith(".mp4"))
+                      && !/\.(png|jpe?g|webp|gif|avif)(\?|$)/i.test(gen.thumbnailUrl || gen.resultUrl || "") ? (
+                      // <img> cannot draw an mp4; #t=0.1 paints the first frame.
+                      <video src={`${gen.thumbnailUrl || gen.resultUrl}#t=0.1`} muted playsInline preload="metadata"
+                        style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", opacity: 0.85 }} />
+                    ) : gen.resultUrl || gen.thumbnailUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={gen.thumbnailUrl || gen.resultUrl || ""} alt={gen.prompt}
                         style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", opacity: 0.85 }} />
