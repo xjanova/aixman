@@ -526,7 +526,14 @@ export class GpuWorkerManager {
         };
       }
 
-      return { worker: await this.rentWorker(offers[0], modelKey, profile, provider, apiKey, cfg) };
+      const rented = await this.rentWorker(offers[0], modelKey, profile, provider, apiKey, cfg);
+      // A machine rented this tick has not booted — it has no endpoint yet.
+      // Handing it back as usable made the queue submit to it at once, fail,
+      // and spend one of the job's two attempts on every first rental.
+      return {
+        worker: null,
+        reason: `Rented worker #${rented.id} (${rented.gpuModel ?? 'GPU'}); waiting for it to boot`,
+      };
     } catch (error) {
       if (error instanceof RentUnconfirmedError) {
         // Possibly billing with nothing tracking it. Remember the order so the

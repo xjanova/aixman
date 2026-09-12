@@ -195,6 +195,10 @@ export class GpuQueue {
         continue;
       }
 
+      // Only a booted worker can take a job; submitting to one still starting
+      // fails and costs the job an attempt for nothing.
+      if (worker.status !== 'ready' || !worker.endpoint) continue;
+
       // One GPU renders one video at a time.
       const busy = await prisma.aiGpuJob.count({
         where: { workerId: worker.id, status: { in: ['assigned', 'running'] } },
