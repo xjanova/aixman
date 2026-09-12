@@ -13,8 +13,6 @@ import {
   StarOff,
   Coins,
   Gift,
-  Tag,
-  BadgePercent,
 } from "lucide-react";
 
 interface CreditPackage {

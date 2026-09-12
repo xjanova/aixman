@@ -7,7 +7,6 @@ import {
   Sparkles,
   Server,
   Key,
-  Package,
   CheckCircle2,
   ArrowRight,
   ArrowLeft,
