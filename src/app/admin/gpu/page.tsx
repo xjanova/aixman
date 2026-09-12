@@ -371,12 +371,18 @@ function KpiCard({
 }
 
 /*
- * The three helpers below own the try/catch that their callers inside
- * `GpuAdminPage` cannot have, and hand back errors as values. They live outside
- * the component on purpose: React Compiler cannot compile a function containing
- * `finally` and responds by silently giving up on the **whole** component —
- * this page would lose its auto-memoization and every compiler-based lint rule
- * would stop running on the file, with no diagnostic to say so.
+ * The helpers below own the try/catch that their callers inside `GpuAdminPage`
+ * cannot have, and hand back errors as values. They live outside the component
+ * on purpose: React Compiler cannot compile a component containing `finally`,
+ * or a `throw` inside `try`, and responds by silently giving up on the
+ * **whole** component — this page loses its auto-memoization and every
+ * compiler-based lint rule stops running on the file, with no diagnostic.
+ *
+ * The one visible symptom is a suppression going stale: the `useEffect` below
+ * carries `react-hooks/set-state-in-effect`, and ESLint calling it "unused" is
+ * how the log viewer's `throw` was found. To check directly, run ESLint with
+ * the compiler's bail-out rule on (it is off in eslint-config-next):
+ *   npx eslint --rule '{"react-hooks/todo":"error"}' src/app/admin/gpu/page.tsx
  */
 
 type LoadResult =
@@ -435,6 +441,24 @@ async function postApiKey(
   }
 }
 
+/** Boot/ComfyUI logs of one worker, read through its proxy. */
+async function fetchWorkerLogs(
+  workerId: number,
+): Promise<{ ok: true; logs: Record<string, string> } | { ok: false; error: string }> {
+  try {
+    const res = await fetch("/api/admin/gpu", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "worker-log", workerId }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: body.error || `HTTP ${res.status}` };
+    return { ok: true, logs: body.logs ?? {} };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
 export default function GpuAdminPage() {
   const [data, setData] = useState<Analytics | null>(null);
   const [loading, setLoading] = useState(true);
@@ -448,18 +472,8 @@ export default function GpuAdminPage() {
 
   const showLogs = async (workerId: number) => {
     setLogs({ workerId, text: null });
-    try {
-      const res = await fetch("/api/admin/gpu", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "worker-log", workerId }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-      setLogs({ workerId, text: body.logs ?? {} });
-    } catch (error) {
-      setLogs({ workerId, text: null, error: (error as Error).message });
-    }
+    const result = await fetchWorkerLogs(workerId);
+    setLogs(result.ok ? { workerId, text: result.logs } : { workerId, text: null, error: result.error });
   };
 
   const load = useCallback(async () => {
