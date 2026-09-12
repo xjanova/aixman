@@ -5,6 +5,7 @@ import { getGpuConfig } from '@/lib/gpu/config';
 import { getGpuProvider } from '@/lib/gpu';
 import { GpuWorkerManager } from '@/lib/services/gpu-worker';
 import { isStorageConfigured } from '@/lib/storage/r2';
+import { getCatalogEntry } from '@/lib/gpu/catalog';
 
 /**
  * Profit and usage analytics for rented GPUs.
@@ -168,6 +169,18 @@ export async function GET() {
   const spentToday = await GpuWorkerManager.todaySpendUsd();
   const burnRateUsdPerHour = liveWorkers.reduce((s, w) => s + Number(w.pricePerHourUsd), 0);
 
+  // ---- Per-machine detail -------------------------------------------
+  const minutes = (ms: number) => Number((ms / 60_000).toFixed(1));
+  const modelName = (key: string) => getCatalogEntry(key)?.name ?? key;
+  const bootMinutes = (w: { rentedAt: Date; readyAt: Date | null }) =>
+    w.readyAt ? minutes(w.readyAt.getTime() - w.rentedAt.getTime()) : null;
+  // Which generation each machine is rendering right now.
+  const renderingOn = new Map<number, number>();
+  for (const j of jobs) {
+    if (j.workerId && (j.status === 'assigned' || j.status === 'running')) renderingOn.set(j.workerId, j.generationId);
+  }
+  const booted = workers.filter((w) => w.readyAt);
+
   return NextResponse.json({
     config: cfg,
     pricing: {
@@ -232,6 +245,28 @@ export async function GET() {
       id: w.id,
       status: w.status,
       modelKey: w.modelKey,
+      modelName: modelName(w.modelKey),
+      currentGenerationId: renderingOn.get(w.id) ?? null,
+      bootMinutes: bootMinutes(w),
+      lastJobAt: w.lastJobAt?.toISOString() ?? null,
+      // When the idle reaper will shut it down — the same rule as
+      // GpuWorkerManager.reconcile, so the countdown matches what happens.
+      idleOffInMinutes:
+        w.status === 'ready' && !renderingOn.has(w.id)
+          ? Math.max(
+              0,
+              Math.ceil(
+                (cfg.idleTimeoutMinutes * 60_000 -
+                  (now.getTime() - (w.lastJobAt ?? w.readyAt ?? w.rentedAt).getTime())) /
+                  60_000
+              )
+            )
+          : null,
+      // The absolute kill switch, whatever the machine is doing.
+      lifetimeLeftMinutes: Math.max(
+        0,
+        Math.round(cfg.maxWorkerLifetimeMinutes - (now.getTime() - w.rentedAt.getTime()) / 60_000)
+      ),
       gpuModel: w.gpuModel,
       gpuCount: w.gpuCount,
       supportId: w.supportId,
@@ -247,6 +282,42 @@ export async function GET() {
       // itself is a live tunnel into the machine and stays server-side.
       hasEndpoint: Boolean(w.endpoint),
     })),
+    // Every rental in the window, live ones included: when it was opened, how
+    // long it took to boot, when and why it was closed, and what it cost.
+    rentals: workers.slice(0, 50).map((w) => {
+      const end = w.terminatedAt && w.terminatedAt < now ? w.terminatedAt : now;
+      return {
+        id: w.id,
+        status: w.status,
+        modelKey: w.modelKey,
+        modelName: modelName(w.modelKey),
+        gpuModel: w.gpuModel,
+        gpuCount: w.gpuCount,
+        supportId: w.supportId,
+        pricePerHourUsd: Number(w.pricePerHourUsd),
+        rentedAt: w.rentedAt.toISOString(),
+        readyAt: w.readyAt?.toISOString() ?? null,
+        terminatedAt: w.terminatedAt?.toISOString() ?? null,
+        bootMinutes: bootMinutes(w),
+        uptimeMinutes: minutes(end.getTime() - w.rentedAt.getTime()),
+        costUsd: Number(GpuWorkerManager.accruedCostUsd(w, now).toFixed(4)),
+        jobsCompleted: w.jobsCompleted,
+        jobsFailed: w.jobsFailed,
+        // lastError doubles as the close reason once a worker is terminated.
+        endReason: w.terminatedAt ? w.lastError : null,
+      };
+    }),
+    rentalSummary: {
+      count: workers.length,
+      hours: Number((rentedSeconds / 3600).toFixed(2)),
+      costUsd: Number(totalSpendUsd.toFixed(4)),
+      avgBootMinutes:
+        booted.length > 0
+          ? Number((booted.reduce((s, w) => s + (bootMinutes(w) ?? 0), 0) / booted.length).toFixed(1))
+          : null,
+      // Closed before ever serving: failed boots, warmup timeouts, stops.
+      neverReady: workers.filter((w) => !w.readyAt && w.terminatedAt).length,
+    },
     recentJobs: jobs.slice(0, 25).map((j) => ({
       id: j.id,
       generationId: j.generationId,

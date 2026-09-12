@@ -44,6 +44,14 @@ interface WorkerRow {
   id: number;
   status: string;
   modelKey: string;
+  modelName: string;
+  /** Generation being rendered right now, if any. */
+  currentGenerationId: number | null;
+  bootMinutes: number | null;
+  lastJobAt: string | null;
+  /** Minutes until the idle reaper shuts it down; null unless idle. */
+  idleOffInMinutes: number | null;
+  lifetimeLeftMinutes: number;
   gpuModel: string | null;
   gpuCount: number;
   supportId: string | null;
@@ -56,6 +64,27 @@ interface WorkerRow {
   rentedAt: string;
   readyAt: string | null;
   hasEndpoint: boolean;
+}
+
+/** One rental, live or closed — the history table. */
+interface RentalRow {
+  id: number;
+  status: string;
+  modelKey: string;
+  modelName: string;
+  gpuModel: string | null;
+  gpuCount: number;
+  supportId: string | null;
+  pricePerHourUsd: number;
+  rentedAt: string;
+  readyAt: string | null;
+  terminatedAt: string | null;
+  bootMinutes: number | null;
+  uptimeMinutes: number;
+  costUsd: number;
+  jobsCompleted: number;
+  jobsFailed: number;
+  endReason: string | null;
 }
 
 interface JobRow {
@@ -115,6 +144,8 @@ interface Analytics {
   utilisation: { rentedHours: number; renderHours: number; pct: number | null };
   daily: DailyPoint[];
   workers: WorkerRow[];
+  rentals: RentalRow[];
+  rentalSummary: { count: number; hours: number; costUsd: number; avgBootMinutes: number | null; neverReady: number };
   recentJobs: JobRow[];
   queue: { queued: number; running: number };
 }
@@ -136,6 +167,33 @@ const usd = (n: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(n);
 const shortDate = (s: string) =>
   new Date(`${s}T00:00:00`).toLocaleDateString("th-TH", { day: "numeric", month: "short" });
+const dateTime = (iso: string) =>
+  new Date(iso).toLocaleString("th-TH", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+const clock = (iso: string) =>
+  new Date(iso).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" });
+const duration = (min: number) =>
+  min < 60 ? `${Math.round(min)} นาที` : `${Math.floor(min / 60)} ชม. ${Math.round(min % 60)} นาที`;
+
+/**
+ * Why a rental ended, in Thai. The raw reason stays in the cell's tooltip;
+ * these are the strings GpuWorkerManager and the admin route write.
+ */
+function endReasonText(raw: string | null): string {
+  if (!raw) return "–";
+  let m: RegExpMatchArray | null;
+  if ((m = raw.match(/^Idle for more than (\d+) min/))) return `ว่างเกิน ${m[1]} นาที — ปิดอัตโนมัติ`;
+  if ((m = raw.match(/^Released to make room for (.+)$/))) return `สลับไปโหลดโมเดล ${m[1]}`;
+  if ((m = raw.match(/^Reached maximum lifetime of (\d+) min/))) return `ครบอายุสูงสุด ${m[1]} นาที`;
+  if ((m = raw.match(/^Inference server never became healthy within (\d+) min/))) return `บูตไม่เสร็จใน ${m[1]} นาที`;
+  if (raw.startsWith("Terminated manually by admin")) return "แอดมินสั่งปิด";
+  if (raw.startsWith("Emergency stop by admin")) return "หยุดทั้งหมดโดยแอดมิน";
+  if (raw.startsWith("Daily GPU budget exhausted")) return "งบรายวันหมด";
+  if (raw.startsWith("Worker failed to provision")) return "บูตไม่สำเร็จ (ดู log)";
+  if (raw.startsWith("Instance no longer exists") || raw.startsWith("Instance stopped")) return "เครื่องหายไปจากฝั่ง SimplePod";
+  if (raw.startsWith("Provider reported an error")) return "SimplePod แจ้งข้อผิดพลาด";
+  if (raw === "Drained") return "ปิดหลังงานค้างหมดเวลา";
+  return raw.length > 60 ? `${raw.slice(0, 60)}…` : raw;
+}
 
 const STATUS_LABEL: Record<string, string> = {
   provisioning: "กำลังเช่าเครื่อง",
@@ -345,7 +403,7 @@ async function fetchAnalytics(): Promise<LoadResult> {
 
 async function postAction(
   payload: Record<string, unknown>,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; error: string }> {
   try {
     const res = await fetch("/api/admin/gpu", {
       method: "POST",
@@ -354,7 +412,7 @@ async function postAction(
     });
     const body = await res.json();
     if (!res.ok) return { ok: false, error: body.error || "ทำรายการไม่สำเร็จ" };
-    return { ok: true };
+    return { ok: true, body };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
@@ -430,11 +488,16 @@ export default function GpuAdminPage() {
     // React Compiler was bailing on the component, no compiler rule ran at all.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
-    const t = setInterval(() => void load(), 30_000);
+    // Often enough to watch a machine boot, render and get reaped.
+    const t = setInterval(() => void load(), 15_000);
     return () => clearInterval(t);
   }, [load]);
 
-  const post = async (payload: Record<string, unknown>, label: string) => {
+  const post = async (
+    payload: Record<string, unknown>,
+    label: string,
+    done?: (body: Record<string, unknown>) => string,
+  ) => {
     setBusy(label);
     setMessage(null);
 
@@ -444,7 +507,14 @@ export default function GpuAdminPage() {
       setBusy(null);
       return;
     }
-    setMessage({ kind: "ok", text: "เรียบร้อย" });
+    // The form is seeded once and not refreshed, so a switch flipped by an
+    // action must be mirrored here — otherwise the next "บันทึก" would quietly
+    // turn rental back on after an emergency stop.
+    if (typeof result.body.rentalEnabled === "boolean") {
+      const enabled = result.body.rentalEnabled;
+      setForm((f) => (f ? { ...f, enabled } : f));
+    }
+    setMessage({ kind: "ok", text: done ? done(result.body) : "เรียบร้อย" });
     // `busy` stays set across the reload, so the control the admin just used
     // keeps its spinner until the fresh numbers are actually on screen.
     await load();
@@ -540,13 +610,21 @@ export default function GpuAdminPage() {
           </button>
           <button
             onClick={() => {
-              if (confirm("ปิดเครื่อง GPU ที่กำลังเช่าทั้งหมดทันที?\nงานที่กำลังเรนเดอร์จะถูกยกเลิกและคืนเครดิตให้ผู้ใช้"))
-                void post({ action: "terminate-all" }, "stop");
+              if (confirm(
+                "หยุดระบบ GPU ทั้งหมดทันที?\n\n" +
+                "• ปิดเครื่องที่เช่าอยู่ทุกเครื่อง\n" +
+                "• ปิดการเช่าใหม่ (โมเดล GPU จะถูกซ่อนจากลูกค้า)\n" +
+                "• งานที่ยังไม่เสร็จจะถูกยกเลิกและคืนเครดิตทันที\n\n" +
+                "เปิดใหม่ได้ด้วยปุ่ม \"เปิดการเช่าอีกครั้ง\""
+              ))
+                void post({ action: "terminate-all" }, "stop", (r) =>
+                  `หยุดแล้ว — ปิด ${Number(r.terminated ?? 0)} เครื่อง • คืนเครดิต ${Number(r.refunded ?? 0)} งาน • ปิดการเช่าใหม่แล้ว`);
             }}
-            disabled={busy !== null || (b?.liveWorkers ?? 0) === 0}
+            disabled={busy !== null}
+            title="ปิดทุกเครื่อง หยุดเช่าใหม่ และคืนเครดิตงานที่ค้าง"
             className="px-3 py-2 rounded-lg bg-error/15 text-error hover:bg-error/25 transition-all text-sm flex items-center gap-2 disabled:opacity-40"
           >
-            <Ban className="w-4 h-4" /> หยุดทั้งหมด
+            <Ban className="w-4 h-4" /> {busy === "stop" ? "กำลังหยุด..." : "หยุดทั้งหมด"}
           </button>
         </div>
       </div>
@@ -554,6 +632,27 @@ export default function GpuAdminPage() {
       {message && (
         <div className={`mb-4 rounded-xl p-3 text-sm ${message.kind === "ok" ? "bg-success/10 text-success" : "bg-error/10 text-error"}`}>
           {message.text}
+        </div>
+      )}
+
+      {/* Rental switched off (by an emergency stop or the settings) — say so
+          at the top, because from here it otherwise looks like a quiet day. */}
+      {data.config.enabled === false && !needsKey && (
+        <div className="glass rounded-xl p-4 mb-6 border border-warning/30 flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2 text-sm">
+            <AlertTriangle className="w-5 h-5 text-warning shrink-0" />
+            <span>
+              <b>ปิดการเช่า GPU อยู่</b>
+              <span className="text-muted"> — ระบบจะไม่เช่าเครื่องใหม่ และลูกค้าจะไม่เห็นโมเดลที่ใช้ GPU เช่า</span>
+            </span>
+          </div>
+          <button
+            onClick={() => void post({ action: "save-config", config: { enabled: true } }, "enable", () => "เปิดการเช่าแล้ว — โมเดล GPU กลับมาให้ลูกค้าสั่งได้")}
+            disabled={busy !== null}
+            className="px-3 py-2 rounded-lg bg-success/15 text-success hover:bg-success/25 text-sm font-medium disabled:opacity-40"
+          >
+            {busy === "enable" ? "กำลังเปิด..." : "เปิดการเช่าอีกครั้ง"}
+          </button>
         </div>
       )}
 
@@ -851,6 +950,7 @@ export default function GpuAdminPage() {
               <thead>
                 <tr className="text-xs text-muted text-left border-b border-white/5">
                   <th className="pb-2 pr-3">สถานะ</th>
+                  <th className="pb-2 pr-3">โมเดล</th>
                   <th className="pb-2 pr-3">GPU</th>
                   <th className="pb-2 pr-3">ราคา/ชม.</th>
                   <th className="pb-2 pr-3">เปิดมาแล้ว</th>
@@ -861,20 +961,40 @@ export default function GpuAdminPage() {
               </thead>
               <tbody>
                 {data.workers.map((w) => (
-                  <tr key={w.id} className="border-b border-white/5 last:border-0">
+                  <tr key={w.id} className="border-b border-white/5 last:border-0 align-top">
                     <td className="py-2 pr-3">
                       <span style={{ color: STATUS_COLOR[w.status] ?? "#94a3b8" }}>
                         ● {STATUS_LABEL[w.status] ?? w.status}
                       </span>
-                      {w.lastError && (
-                        <div className="text-[11px] text-muted max-w-[220px] truncate" title={w.lastError}>
+                      <span className="text-muted text-xs"> #{w.id}</span>
+                      {/* What it is doing, and when it will stop billing by itself. */}
+                      <div className="text-[11px] text-muted max-w-[240px]">
+                        {w.status === "busy" && w.currentGenerationId
+                          ? `เรนเดอร์งาน #${w.currentGenerationId}`
+                          : w.status === "ready" && w.idleOffInMinutes !== null
+                            ? `ว่าง — ปิดเองใน ${w.idleOffInMinutes} นาทีถ้าไม่มีงาน`
+                            : w.status === "provisioning" || w.status === "warming"
+                              ? `บูตมาแล้ว ${w.uptimeMinutes} นาที (โหลดโมเดล)`
+                              : null}
+                      </div>
+                      {w.lastError && (w.status === "warming" || w.status === "draining") && (
+                        <div className="text-[11px] text-muted max-w-[240px] truncate" title={w.lastError}>
                           {w.lastError}
                         </div>
                       )}
                     </td>
-                    <td className="py-2 pr-3">{w.gpuModel ?? "–"}{w.gpuCount > 1 ? ` ×${w.gpuCount}` : ""}</td>
+                    <td className="py-2 pr-3">{w.modelName}</td>
+                    <td className="py-2 pr-3">
+                      {w.gpuModel ?? "–"}{w.gpuCount > 1 ? ` ×${w.gpuCount}` : ""}
+                      {w.supportId && <div className="text-[11px] text-muted" title="รหัสเครื่องฝั่ง SimplePod">{w.supportId}</div>}
+                    </td>
                     <td className="py-2 pr-3">{usd(w.pricePerHourUsd)}</td>
-                    <td className="py-2 pr-3">{w.uptimeMinutes} นาที</td>
+                    <td className="py-2 pr-3" title={`ปิดแน่นอนใน ${w.lifetimeLeftMinutes} นาที (อายุเครื่องสูงสุด)`}>
+                      {duration(w.uptimeMinutes)}
+                      <div className="text-[11px] text-muted">
+                        เปิด {clock(w.rentedAt)}{w.bootMinutes !== null ? ` • พร้อมใน ${w.bootMinutes} นาที` : ""}
+                      </div>
+                    </td>
                     <td className="py-2 pr-3 text-warning">{usd(w.accruedCostUsd)}</td>
                     <td className="py-2 pr-3">
                       {w.jobsCompleted} <span className="text-error">/ {w.jobsFailed}</span>
@@ -890,12 +1010,24 @@ export default function GpuAdminPage() {
                       </button>
                       <button
                         onClick={() => {
-                          if (confirm("ปิดเครื่องนี้ทันที?")) void post({ action: "terminate", workerId: w.id }, `t${w.id}`);
+                          // Say what happens to the work, not just the machine:
+                          // an interrupted render is retried on a new rental,
+                          // which is right for a stuck box and a surprise
+                          // otherwise.
+                          const lines = [`ปิดเครื่อง #${w.id} (${w.modelName}) ทันที?`];
+                          if (w.currentGenerationId) {
+                            lines.push(`\nกำลังเรนเดอร์งาน #${w.currentGenerationId} — งานนี้จะถูกส่งไปทำบนเครื่องใหม่ (หรือคืนเครดิตถ้าลองครบแล้ว)`);
+                          }
+                          if (data.queue.queued > 0) {
+                            lines.push(`\nยังมีงานรอคิว ${data.queue.queued} งาน ระบบจะเช่าเครื่องใหม่ให้เอง — ถ้าต้องการหยุดจริงให้ใช้ "หยุดทั้งหมด"`);
+                          }
+                          if (confirm(lines.join("\n")))
+                            void post({ action: "terminate", workerId: w.id }, `t${w.id}`, () => `ปิดเครื่อง #${w.id} แล้ว — หยุดคิดเงินเครื่องนี้`);
                         }}
                         disabled={busy !== null}
                         className="px-2 py-1 rounded bg-error/15 text-error hover:bg-error/25 text-xs disabled:opacity-40"
                       >
-                        ปิด
+                        {busy === `t${w.id}` ? "กำลังปิด..." : "ปิด"}
                       </button>
                     </td>
                   </tr>
@@ -932,6 +1064,83 @@ export default function GpuAdminPage() {
           <p className="text-sm text-muted py-6 text-center">
             ไม่มีเครื่องเปิดอยู่ — ไม่มีค่าใช้จ่ายตอนนี้ ระบบจะเช่าให้อัตโนมัติเมื่อมีคนสั่งสร้างวิดีโอ
           </p>
+        )}
+      </div>
+
+      {/* Rental history — every machine, open and closed, in the window. */}
+      <div className="glass rounded-xl p-5 mb-6">
+        <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+          <h2 className="font-bold flex items-center gap-2">
+            <Server className="w-4 h-4 text-primary-light" /> ประวัติการเช่าเครื่อง
+            <span className="text-xs text-muted font-normal">({p?.windowDays ?? 30} วันล่าสุด)</span>
+          </h2>
+          {data.rentalSummary.count > 0 && (
+            <div className="text-xs text-muted flex flex-wrap gap-x-4 gap-y-1">
+              <span>เช่า <b className="text-foreground">{data.rentalSummary.count}</b> ครั้ง</span>
+              <span>รวม <b className="text-foreground">{data.rentalSummary.hours.toFixed(1)}</b> ชม.</span>
+              <span>ค่าเช่า <b className="text-warning">{usd(data.rentalSummary.costUsd)}</b></span>
+              {data.rentalSummary.avgBootMinutes !== null && (
+                <span>บูตเฉลี่ย <b className="text-foreground">{data.rentalSummary.avgBootMinutes}</b> นาที</span>
+              )}
+              {data.rentalSummary.neverReady > 0 && (
+                <span className="text-error">ปิดก่อนพร้อมใช้ {data.rentalSummary.neverReady} ครั้ง</span>
+              )}
+            </div>
+          )}
+        </div>
+        {data.rentals.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-muted text-left border-b border-white/5">
+                  <th className="pb-2 pr-3">#</th>
+                  <th className="pb-2 pr-3">โมเดล</th>
+                  <th className="pb-2 pr-3">GPU</th>
+                  <th className="pb-2 pr-3">เปิด</th>
+                  <th className="pb-2 pr-3">พร้อมใช้</th>
+                  <th className="pb-2 pr-3">ปิด</th>
+                  <th className="pb-2 pr-3">ใช้เวลา</th>
+                  <th className="pb-2 pr-3">ค่าเช่า</th>
+                  <th className="pb-2 pr-3">งาน</th>
+                  <th className="pb-2">สาเหตุที่ปิด</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.rentals.map((r) => (
+                  <tr key={r.id} className="border-b border-white/5 last:border-0 align-top">
+                    <td className="py-2 pr-3 text-muted">
+                      {r.id}
+                      {r.supportId && <div className="text-[10px]" title="รหัสเครื่องฝั่ง SimplePod">{r.supportId}</div>}
+                    </td>
+                    <td className="py-2 pr-3 whitespace-nowrap">{r.modelName}</td>
+                    <td className="py-2 pr-3 whitespace-nowrap">
+                      {r.gpuModel ?? "–"}{r.gpuCount > 1 ? ` ×${r.gpuCount}` : ""}
+                      <div className="text-[11px] text-muted">{usd(r.pricePerHourUsd)}/ชม.</div>
+                    </td>
+                    <td className="py-2 pr-3 whitespace-nowrap">{dateTime(r.rentedAt)}</td>
+                    <td className="py-2 pr-3 whitespace-nowrap">
+                      {r.bootMinutes !== null ? `${r.bootMinutes} นาที` : <span className="text-muted">ไม่ได้บูตเสร็จ</span>}
+                    </td>
+                    <td className="py-2 pr-3 whitespace-nowrap">
+                      {r.terminatedAt ? clock(r.terminatedAt) : (
+                        <span style={{ color: STATUS_COLOR[r.status] ?? "#34d399" }}>● ยังเปิดอยู่</span>
+                      )}
+                    </td>
+                    <td className="py-2 pr-3 whitespace-nowrap">{duration(r.uptimeMinutes)}</td>
+                    <td className="py-2 pr-3 text-warning">{usd(r.costUsd)}</td>
+                    <td className="py-2 pr-3 whitespace-nowrap">
+                      {r.jobsCompleted}{r.jobsFailed > 0 && <span className="text-error"> / {r.jobsFailed}</span>}
+                    </td>
+                    <td className="py-2 text-xs" title={r.endReason ?? undefined}>
+                      {r.terminatedAt ? endReasonText(r.endReason) : "–"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-sm text-muted py-6 text-center">ยังไม่เคยเช่าเครื่องในช่วงนี้</p>
         )}
       </div>
 
