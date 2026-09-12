@@ -333,6 +333,21 @@ const ASPECT_RATIO_CSS: Record<string, string> = {
   "1:1": "1/1", "16:9": "16/9", "9:16": "9/16", "4:3": "4/3", "3:2": "3/2",
 };
 
+/** "16:9" → 1.78; anything unparseable is square. */
+function aspectNumber(aspect: string): number {
+  const [w, h] = aspect.split(":").map(Number);
+  return w > 0 && h > 0 ? w / h : 1;
+}
+
+/**
+ * Tallest the in-progress frame may be. The canvas shares one screen with the
+ * header and the history strip, and a 2×2 grid of full-width squares (what the
+ * image tab used to draw, three of them empty) was ~1,500 px tall: the canvas
+ * clipped it top and bottom, so the queue animation at the frame's centre and
+ * the status under it were never on screen.
+ */
+const GENERATING_FRAME_MAX_H = "min(460px, 44vh)";
+
 /**
  * Compact control that opens its contents in a floating panel.
  *
@@ -1633,20 +1648,20 @@ export default function GeneratePage() {
         }}>
           {isGenerating ? (
             <div style={{ width: "100%" }}>
-              {tab === "image" ? (
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 16 }}>
-                  {Array.from({ length: Math.max(outputs, 1) }).map((_, i) => (
-                    <StudioFrame key={i} index={i} seed={(i + 1) * 0.137} aspect={aspectRatio} generating={true} progress={progress} />
-                  ))}
-                  {outputs < 4 && Array.from({ length: 4 - outputs }).map((_, i) => (
-                    <StudioFrame key={`pad${i}`} index={outputs + i} seed={(outputs + i + 1) * 0.137} aspect={aspectRatio} generating={false} />
-                  ))}
-                </div>
-              ) : (
-                <div style={{ aspectRatio: ASPECT_RATIO_CSS[aspectRatio] || "1/1", maxHeight: 520, margin: "0 auto" }}>
+              {/* Width follows the height cap, so the frame keeps its shape and
+                  always fits: one frame per output that is actually coming —
+                  a 2×2 grid fills the same box as a single frame. */}
+              <div style={{ width: `min(100%, calc(${GENERATING_FRAME_MAX_H} * ${aspectNumber(aspectRatio)}))`, margin: "0 auto" }}>
+                {tab === "image" && outputs > 1 ? (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 10 }}>
+                    {Array.from({ length: outputs }).map((_, i) => (
+                      <StudioFrame key={i} index={i} seed={(i + 1) * 0.137} aspect={aspectRatio} generating={true} progress={progress} />
+                    ))}
+                  </div>
+                ) : (
                   <StudioFrame index={0} seed={0.42} aspect={aspectRatio} generating={true} progress={progress} />
-                </div>
-              )}
+                )}
+              </div>
               <GeneratingStatus progress={progress} tab={tab} startedAt={genStartedAt} />
             </div>
           ) : result?.status === "completed" && result.resultUrl ? (
@@ -1867,9 +1882,14 @@ export default function GeneratePage() {
           flex: 1;
           min-height: 0;
           display: flex;
-          align-items: center;
-          justify-content: center;
-          overflow: hidden;
+          /* "safe": content taller than the canvas starts at the top instead
+             of being centred past both edges. With plain center + hidden,
+             anything too tall lost its top and bottom with no way to reach
+             them — which is how the queue animation went missing. */
+          align-items: safe center;
+          justify-content: safe center;
+          overflow-x: hidden;
+          overflow-y: auto;
         }
         @media (max-width: 1180px) {
           .rp-studio { grid-template-columns: 300px 1fr; }
