@@ -92,10 +92,12 @@ interface HistoryItem {
 }
 
 // ─── X-DREAMER UI primitives (local helpers) ───────────────────────────
-function Pill({ active, children, onClick }: { active?: boolean; children: React.ReactNode; onClick?: () => void }) {
+function Pill({ active, children, onClick, disabled, title }: { active?: boolean; children: React.ReactNode; onClick?: () => void; disabled?: boolean; title?: string }) {
   return (
-    <button onClick={onClick} style={{
-      padding: "8px 14px", borderRadius: 999, fontSize: 13, cursor: "pointer",
+    <button onClick={onClick} disabled={disabled} title={title} style={{
+      padding: "8px 14px", borderRadius: 999, fontSize: 13, cursor: disabled ? "not-allowed" : "pointer",
+      // Dimmed rather than hidden, with the reason in the tooltip.
+      opacity: disabled ? 0.38 : 1,
       background: active ? `linear-gradient(135deg, hsla(${160 + HUE},70%,55%,0.25), hsla(${270 + HUE},70%,60%,0.25))` : "rgba(255,255,255,0.04)",
       color: active ? "#fff" : "rgba(226,232,240,0.65)",
       border: active ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
@@ -697,6 +699,15 @@ export default function GeneratePage() {
     (tab !== "lipsync" && !prompt.trim()) ||
     missingStartFrame ||
     missingLipsyncInput;
+
+  /**
+   * Whether /api/upscale would find a model it can run — the same match it
+   * auto-selects with, restricted to models that can be ordered right now.
+   */
+  const upscaleAvailable = models.some((m) =>
+    m.canOrder !== false &&
+    (m.subcategory === "upscale" || /upscale|esrgan/i.test(m.name) || /upscale|esrgan/i.test(m.modelId))
+  );
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -1524,9 +1535,14 @@ export default function GeneratePage() {
             <Pill active>
               {tab === "image" ? `ภาพ ${outputs} ใบ` : tab === "video" ? "วิดีโอ" : tab === "lipsync" ? "ลิปซิงค์" : "แก้ไขภาพ"}
             </Pill>
-            <Pill onClick={() => { setSeed(Math.floor(Math.random() * 99999)); if (prompt.trim() && selectedModelId) handleGenerate(); }}>Variations</Pill>
+            {/* Variations is just another order, so it follows the button's rule. */}
+            <Pill disabled={cannotSubmit}
+              title={cannotSubmit && selectedModel?.canOrder === false ? (selectedModel.unavailableReason ?? undefined) : undefined}
+              onClick={() => { if (cannotSubmit) return; setSeed(Math.floor(Math.random() * 99999)); handleGenerate(); }}>Variations</Pill>
             {tab === "image" && (
-              <Pill onClick={() => result?.id && handleUpscale()}>{isUpscaling ? "⟳ Upscale" : "Upscale"}</Pill>
+              <Pill disabled={!upscaleAvailable}
+                title={upscaleAvailable ? undefined : "Upscale ยังไม่เปิดให้บริการ"}
+                onClick={() => upscaleAvailable && result?.id && handleUpscale()}>{isUpscaling ? "⟳ Upscale" : "Upscale"}</Pill>
             )}
             <Pill onClick={() => { window.location.href = "/gallery"; }}>History</Pill>
           </div>
