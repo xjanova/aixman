@@ -13,6 +13,8 @@
 export async function downloadAs(url: string, filename: string): Promise<boolean> {
   try {
     const res = await fetch(url);
+    // An error page saved under the file's name is worse than no download.
+    if (!res.ok) return false;
     const blob = await res.blob();
     const href = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -24,6 +26,22 @@ export async function downloadAs(url: string, filename: string): Promise<boolean
   } catch {
     return false;
   }
+}
+
+/**
+ * Save one of a generation's results. A file on another origin — our R2
+ * bucket, a provider's CDN — cannot be read by the page (R2 sends no CORS
+ * headers), so it is fetched through our own `/api/generate/[id]/download`.
+ * `index` picks an entry of `resultUrls` when there are several.
+ */
+export async function downloadGeneration(generationId: number, url: string, filename: string, index = -1): Promise<boolean> {
+  const href = pageCanRead(url) ? url : `/api/generate/${generationId}/download${index >= 0 ? `?i=${index}` : ""}`;
+  return downloadAs(href, filename);
+}
+
+function pageCanRead(url: string): boolean {
+  if (/^(data|blob):/i.test(url)) return true;
+  try { return new URL(url, location.href).origin === location.origin; } catch { return false; }
 }
 
 /**
