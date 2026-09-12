@@ -104,6 +104,7 @@ const EDITABLE_SETTINGS: Record<string, { key: string; min: number; max: number;
   maxPricePerHourUsd: { key: 'gpu_max_price_per_hour_usd', min: 0.01, max: 20 },
   dailyBudgetUsd: { key: 'gpu_daily_budget_usd', min: 0, max: 10_000 },
   idleTimeoutMinutes: { key: 'gpu_idle_timeout_minutes', min: 1, max: 240, integer: true },
+  presenceExtensionMinutes: { key: 'gpu_presence_extension_minutes', min: 0, max: 30, integer: true },
   maxWorkerLifetimeMinutes: { key: 'gpu_max_worker_lifetime_minutes', min: 10, max: 1440, integer: true },
   warmupTimeoutMinutes: { key: 'gpu_warmup_timeout_minutes', min: 5, max: 180, integer: true },
   jobTimeoutMinutes: { key: 'gpu_job_timeout_minutes', min: 2, max: 240, integer: true },

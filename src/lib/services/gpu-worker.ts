@@ -13,6 +13,7 @@ import type { AiGpuWorker } from '@/generated/prisma/client';
 import { buildComfyUiStartScript, LOG_PATH, renderEnvExports } from '@/lib/gpu/provision';
 import { RentUnconfirmedError, type GpuOffer, type GpuRentalProvider, type PendingRental } from '@/lib/gpu/types';
 import { isStorageConfigured } from '@/lib/storage/r2';
+import { isStudioPresent } from './studio-presence';
 
 /**
  * Reserved prefix for instance names we own. The orphan sweep terminates any
@@ -424,8 +425,20 @@ export class GpuWorkerManager {
       }
 
       const since = worker.lastJobAt ?? worker.readyAt ?? worker.rentedAt;
-      if (now.getTime() - since.getTime() > cfg.idleTimeoutMinutes * 60_000) {
-        await this.terminate(worker.id, `Idle for more than ${cfg.idleTimeoutMinutes} min`);
+      const idleMs = now.getTime() - since.getTime();
+      if (idleMs > cfg.idleTimeoutMinutes * 60_000) {
+        // A customer still on the studio with this model selected is likely
+        // about to order again — a few minutes' grace beats making them wait
+        // for a fresh boot. Bounded, so an open tab cannot keep a machine up.
+        const graceMs = (cfg.idleTimeoutMinutes + cfg.presenceExtensionMinutes) * 60_000;
+        if (
+          cfg.presenceExtensionMinutes > 0 &&
+          idleMs <= graceMs &&
+          (await isStudioPresent(worker.modelKey, now.getTime()))
+        ) {
+          return;
+        }
+        await this.terminate(worker.id, `Idle for more than ${Math.floor(idleMs / 60_000)} min`);
       }
       return;
     }

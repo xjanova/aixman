@@ -6,6 +6,7 @@ import { getGpuProvider } from '@/lib/gpu';
 import { GpuWorkerManager } from '@/lib/services/gpu-worker';
 import { isStorageConfigured } from '@/lib/storage/r2';
 import { getCatalogEntry } from '@/lib/gpu/catalog';
+import { isStudioPresent } from '@/lib/services/studio-presence';
 
 /**
  * Profit and usage analytics for rented GPUs.
@@ -180,6 +181,11 @@ export async function GET() {
     if (j.workerId && (j.status === 'assigned' || j.status === 'running')) renderingOn.set(j.workerId, j.generationId);
   }
   const booted = workers.filter((w) => w.readyAt);
+  // Whether a customer is on the studio with each live machine's model selected.
+  const present = new Map<string, boolean>();
+  for (const key of new Set(liveWorkers.map((w) => w.modelKey))) {
+    present.set(key, await isStudioPresent(key, now.getTime()));
+  }
 
   return NextResponse.json({
     config: cfg,
@@ -250,13 +256,15 @@ export async function GET() {
       bootMinutes: bootMinutes(w),
       lastJobAt: w.lastJobAt?.toISOString() ?? null,
       // When the idle reaper will shut it down — the same rule as
-      // GpuWorkerManager.reconcile, so the countdown matches what happens.
+      // GpuWorkerManager.reconcile (including the grace for a customer still
+      // on the studio), so the countdown matches what happens.
+      customerPresent: present.get(w.modelKey) ?? false,
       idleOffInMinutes:
         w.status === 'ready' && !renderingOn.has(w.id)
           ? Math.max(
               0,
               Math.ceil(
-                (cfg.idleTimeoutMinutes * 60_000 -
+                ((cfg.idleTimeoutMinutes + (present.get(w.modelKey) ? cfg.presenceExtensionMinutes : 0)) * 60_000 -
                   (now.getTime() - (w.lastJobAt ?? w.readyAt ?? w.rentedAt).getTime())) /
                   60_000
               )

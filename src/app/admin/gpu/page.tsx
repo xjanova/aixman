@@ -51,6 +51,8 @@ interface WorkerRow {
   lastJobAt: string | null;
   /** Minutes until the idle reaper shuts it down; null unless idle. */
   idleOffInMinutes: number | null;
+  /** A customer is on the studio with this model selected (idle grace applies). */
+  customerPresent: boolean;
   lifetimeLeftMinutes: number;
   gpuModel: string | null;
   gpuCount: number;
@@ -106,6 +108,7 @@ interface GpuConfig {
   maxPricePerHourUsd: number;
   dailyBudgetUsd: number;
   idleTimeoutMinutes: number;
+  presenceExtensionMinutes: number;
   maxWorkerLifetimeMinutes: number;
   warmupTimeoutMinutes: number;
   jobTimeoutMinutes: number;
@@ -915,6 +918,7 @@ export default function GpuAdminPage() {
               ["maxPricePerHourUsd", "ราคาสูงสุด/ชม. (USD)", "ไม่เช่าเครื่องที่แพงกว่านี้"],
               ["maxConcurrentWorkers", "เครื่องพร้อมกันสูงสุด", "1 เครื่อง = 1 คลิปต่อครั้ง"],
               ["idleTimeoutMinutes", "ปิดเครื่องเมื่อว่างเกิน (นาที)", "สั้น = ประหยัด แต่บูตใหม่บ่อย"],
+              ["presenceExtensionMinutes", "รอเพิ่มถ้าลูกค้ายังเปิดสตูดิโอ (นาที)", "ต่อจากเวลาว่าง เฉพาะตอนมีคนอยู่หน้าสร้างงาน • 0 = ปิด"],
               ["maxWorkerLifetimeMinutes", "อายุเครื่องสูงสุด (นาที)", "กันเครื่องหลุดค้าง"],
               ["warmupTimeoutMinutes", "รอเครื่องพร้อมสูงสุด (นาที)", "ต้องเผื่อโหลดโมเดล ~42GB"],
               ["jobTimeoutMinutes", "เรนเดอร์นานสุด (นาที)", "เกินแล้วยกเลิกและคืนเครดิต"],
@@ -986,7 +990,9 @@ export default function GpuAdminPage() {
                         {w.status === "busy" && w.currentGenerationId
                           ? `เรนเดอร์งาน #${w.currentGenerationId}`
                           : w.status === "ready" && w.idleOffInMinutes !== null
-                            ? `ว่าง — ปิดเองใน ${w.idleOffInMinutes} นาทีถ้าไม่มีงาน`
+                            ? w.customerPresent
+                              ? `ว่าง — มีลูกค้าเปิดสตูดิโออยู่ รอได้อีก ${w.idleOffInMinutes} นาที`
+                              : `ว่าง — ปิดเองใน ${w.idleOffInMinutes} นาทีถ้าไม่มีงาน`
                             : w.status === "provisioning" || w.status === "warming"
                               ? `บูตมาแล้ว ${w.uptimeMinutes} นาที (โหลดโมเดล)`
                               : null}

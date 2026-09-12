@@ -492,6 +492,30 @@ export default function GeneratePage() {
 
   const selectedModel = models.find((m) => m.id === selectedModelId);
 
+  // Tell the server someone is here with this model selected, so a machine
+  // that just finished a render waits a little instead of closing under a
+  // customer about to order again. Sent for any model and only while the tab
+  // is visible; the server ignores models it has nothing to keep warm for.
+  useEffect(() => {
+    if (!session || !selectedModelId) return;
+    const ping = () => {
+      if (document.visibilityState !== "visible") return;
+      fetch("/api/studio/presence", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modelId: selectedModelId }),
+      }).catch(() => undefined);
+    };
+    ping();
+    const t = setInterval(ping, 30_000);
+    // Coming back to the tab counts at once, not up to 30 s later.
+    document.addEventListener("visibilitychange", ping);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", ping);
+    };
+  }, [session, selectedModelId]);
+
   /**
    * Outputs this order will actually yield. A rented-GPU model renders one per
    * job, and the count only ever reaches the server from the image tab.
