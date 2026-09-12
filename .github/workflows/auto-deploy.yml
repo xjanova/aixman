@@ -110,6 +110,11 @@ jobs:
               fi
             fi
 
+            # .env and every backup of it hold the DB password, AUTH_SECRET and
+            # the R2 keys. cp and the template path create them group-readable;
+            # only the deploy user (who also runs PM2) needs them.
+            chmod 600 .env .env.backup.* 2>/dev/null || true
+
             # Install dependencies
             echo "Installing dependencies..."
             npm ci 2>&1 || {

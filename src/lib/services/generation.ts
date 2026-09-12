@@ -8,6 +8,8 @@ import { ModelReadiness, TUNING_MESSAGE } from './model-readiness';
 import { persistAssetSafe, isStorageConfigured } from '@/lib/storage/r2';
 import type { GenerationRequest, GenerationResult, ProviderSlug } from '@/types';
 import { fitFrame } from '@/lib/gpu/frame';
+import { getCatalogEntry } from '@/lib/gpu/catalog';
+import { creditsForDuration } from '@/lib/pricing';
 
 /**
  * Generation Service
@@ -46,12 +48,29 @@ export class GenerationService {
     // A rented-GPU render has to be copied to R2 before the machine goes, and
     // the queue will not rent without it. Refuse here, before credits move,
     // instead of charging and refunding a tick later.
-    if (getGpuProvider(model.provider.slug) && !isStorageConfigured()) {
+    const gpuModel = getGpuProvider(model.provider.slug) !== null;
+    if (gpuModel && !isStorageConfigured()) {
       throw new Error('โมเดลนี้ยังตั้งค่าไม่เสร็จ กรุณาติดต่อผู้ดูแลระบบ');
     }
 
-    const numOutputs = request.params?.numOutputs || 1;
-    const requiredCredits = model.creditsPerUnit * numOutputs;
+    // The model's limits are what its price was set against and what a rented
+    // card can hold. The API (and the mobile app) can send anything — an
+    // unclamped 60 s request would cost far more than it paid for, or not fit.
+    const bounded = (value: unknown, fallback: number, max: number | null | undefined) => {
+      const n = Number(value);
+      const v = Number.isFinite(n) && n > 0 ? n : fallback;
+      return max && max > 0 ? Math.min(v, max) : v;
+    };
+    // Default to a short clip, not the longest the model allows.
+    const gpuDuration = bounded(request.params?.duration, 5, model.maxDuration);
+
+    // A rented-GPU job is one render with one output, whatever count was asked
+    // for — charging per requested output sold four images and delivered one.
+    const numOutputs = gpuModel ? 1 : request.params?.numOutputs || 1;
+    const curve = gpuModel && request.type === 'video'
+      ? getCatalogEntry(model.modelId)?.pricing.durationCurve
+      : undefined;
+    const requiredCredits = creditsForDuration(model.creditsPerUnit, curve, gpuDuration) * numOutputs;
 
     // Uploaded inputs are folded into params so they are persisted with the
     // row. `ai_generations` has an `inputImage` column but no audio or video
@@ -120,21 +139,12 @@ export class GenerationService {
     // 5b. GPU-backed providers have no inference API to call — they rent a
     // machine and run the model on it. Queue the job and return immediately;
     // GpuQueue rents, dispatches, and settles the generation asynchronously.
-    if (getGpuProvider(model.provider.slug)) {
+    if (gpuModel) {
       const styleSuffix = request.styleId ? await this.getStyleSuffix(request.styleId) : '';
       // Imported lazily: GpuQueue imports this class back for refunds, and a
       // static cycle would leave one of the two undefined at module init.
       const { GpuQueue } = await import('./gpu-queue');
 
-      // The model's limits are what its price was set against and what the
-      // rented card can hold. The API (and the mobile app) can send anything,
-      // and credits here are flat per generation — an unclamped 60 s request
-      // would cost four times the render the price assumes, or not fit at all.
-      const bounded = (value: unknown, fallback: number, max: number | null | undefined) => {
-        const n = Number(value);
-        const v = Number.isFinite(n) && n > 0 ? n : fallback;
-        return max && max > 0 ? Math.min(v, max) : v;
-      };
       const size = fitFrame(request.params?.width, request.params?.height, model.maxWidth, model.maxHeight);
 
       await GpuQueue.enqueue({
@@ -145,8 +155,9 @@ export class GenerationService {
           negativePrompt: request.negativePrompt,
           width: size.width,
           height: size.height,
-          // Default to a short clip, not the longest the model allows.
-          duration: bounded(request.params?.duration, 5, model.maxDuration),
+          // The length that was priced above — never re-derived, or the two
+          // could disagree.
+          duration: gpuDuration,
           fps: request.params?.fps || 24,
           seed: request.params?.seed ?? Math.floor(Math.random() * 2_147_483_647),
           inputImage: request.inputImage,
