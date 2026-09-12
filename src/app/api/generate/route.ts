@@ -109,6 +109,11 @@ export async function POST(request: NextRequest) {
     if (message.includes('กำลังปรับแต่ง') || message.includes('ยังตั้งค่าไม่เสร็จ')) {
       return NextResponse.json({ error: message }, { status: 409 });
     }
+    // A frame still the rented worker could not read (frame-input.ts) — the
+    // customer can fix it by uploading again, so say so instead of "failed".
+    if (message.includes('ไฟล์ภาพที่แนบไม่ถูกต้อง')) {
+      return NextResponse.json({ error: message }, { status: 400 });
+    }
 
     console.error('Generation error:', error);
     return NextResponse.json({ error: 'Generation failed. Please try again.' }, { status: 500 });
