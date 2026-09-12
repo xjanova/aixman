@@ -215,6 +215,18 @@ function snap(value: number, step: number, fallback: number): number {
  * measure what that costs and how it looks, not to sell. It is priced like 768p
  * while taking roughly three times the GPU, and a 15 s clip may not finish
  * inside the job timeout, so customers never see it.
+ *
+ * Measured on prod 2026-09-13, A100-SXM4-40GB, first-frame mode:
+ *
+ *   720p   5 s   122 s          15 s   587–669 s
+ *   1080p  5 s   350 s (2.87x)  15 s   not run — about 34–37 min expected
+ *
+ * The 1080p output held up (no duplicated limbs or tiling) and is visibly
+ * sharper. The 15 s figure comes from cost ∝ tokens + tokens², which predicted
+ * both measured ratios (2.9x for 1080p at 5 s, 5.45x for 15 s over 5 s at 768p)
+ * — past the 30 min job timeout, with twice the tokens of a 15 s 768p render
+ * that 40 GB has not yet been shown to hold. Selling it would take a price
+ * that grows with resolution as well as length.
  */
 export const H3_RESOLUTIONS: VideoResolutionOption[] = [
   { id: '768p', label: '768p · 1344×768', aspects: ['16:9'], isDefault: true },
