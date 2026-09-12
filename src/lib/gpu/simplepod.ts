@@ -237,7 +237,7 @@ export class SimplePodProvider implements GpuRentalProvider {
       categoryName: 'aixman',
       diskSize: spec.diskGb,
       exposePorts: spec.exposePorts.join(','),
-      startScript: script,
+      startScript: asSingleLine(script),
       notes: 'Managed by AIXMAN. Deleting this template does not stop running instances.',
       isPasswordProtected: Boolean(spec.registry),
       isRunSshServerOn: false,
@@ -290,7 +290,7 @@ export class SimplePodProvider implements GpuRentalProvider {
       gpuCount: spec.gpuCount,
       instanceMarket: spec.offer.marketRef,
       instanceTemplate,
-      startScript: spec.startScript || '',
+      startScript: asSingleLine(spec.startScript || ''),
     };
     if (spec.env && Object.keys(spec.env).length > 0) {
       body.envVariables = Object.entries(spec.env).map(([k, v]) => ({ name: k, value: v }));
@@ -459,6 +459,35 @@ export class SimplePodProvider implements GpuRentalProvider {
 // --------------------------------------------------------------------
 // Helpers
 // --------------------------------------------------------------------
+
+/**
+ * Where the boot script is written inside the container. The script creates
+ * its own working directory; this only needs a location that exists before
+ * anything has run, so it sits at the top of the image's workspace.
+ */
+const BOOT_SCRIPT_PATH = '/workspace/aixman-boot.sh';
+
+/**
+ * Turn a multi-line script into the single command SimplePod can run.
+ *
+ * SimplePod runs a start script one line at a time, not as a script: its own
+ * Ollama template is `ollama serve` then `ollama run …`, which only works if
+ * line one is not blocking line two. Found on the first real rental — our
+ * 13 KB bash script arrived as hundreds of unrelated commands (functions,
+ * heredocs and the supervisor loop all broken), nothing started, and the
+ * machine sat idle while billing.
+ *
+ * So the script travels base64-encoded in one line that writes it to a file
+ * and runs it with bash. base64 needs no quoting in any POSIX shell.
+ */
+export function asSingleLine(script: string): string {
+  if (!script.includes('\n')) return script;
+  const encoded = Buffer.from(script, 'utf8').toString('base64');
+  return (
+    `mkdir -p /workspace && echo ${encoded} | base64 -d > ${BOOT_SCRIPT_PATH} ` +
+    `&& exec bash ${BOOT_SCRIPT_PATH}`
+  );
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
