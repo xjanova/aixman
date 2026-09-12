@@ -16,6 +16,7 @@ import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
+import { AudioCover } from "@/components/xdreamer/audio";
 
 const HUE = 70;
 
@@ -168,7 +169,9 @@ export default function ProfilePage() {
                     border: "1px solid rgba(255,255,255,0.06)",
                     cursor: "pointer", display: "block", textDecoration: "none",
                   }}>
-                    {(gen.resultUrl || gen.thumbnailUrl) && (gen.type === "video" || gen.resultUrl?.endsWith(".mp4"))
+                    {gen.type === "audio" ? (
+                      <AudioCover seed={gen.prompt || ""} bars={7} label={false} style={{ width: "100%", height: "100%", opacity: 0.85 }} />
+                    ) : (gen.resultUrl || gen.thumbnailUrl) && (gen.type === "video" || gen.resultUrl?.endsWith(".mp4"))
                       && !/\.(png|jpe?g|webp|gif|avif)(\?|$)/i.test(gen.thumbnailUrl || gen.resultUrl || "") ? (
                       // <img> cannot draw an mp4; #t=0.1 paints the first frame.
                       <video src={`${gen.thumbnailUrl || gen.resultUrl}#t=0.1`} muted playsInline preload="metadata"

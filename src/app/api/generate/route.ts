@@ -6,7 +6,9 @@ import type { GenerationRequest } from '@/types';
 
 const MAX_PROMPT_LENGTH = 10000;
 const MAX_NUM_OUTPUTS = 4;
-const VALID_TYPES = ['image', 'video', 'edit'];
+const VALID_TYPES = ['image', 'video', 'edit', 'audio'];
+/** ACE-Step reads a few verses and a chorus; this is several songs' worth. */
+const MAX_LYRICS_LENGTH = 3000;
 
 export async function POST(request: NextRequest) {
   const userId = await getCurrentUserId();
@@ -67,6 +69,11 @@ export async function POST(request: NextRequest) {
 
     if (!VALID_TYPES.includes(genRequest.type)) {
       return NextResponse.json({ error: 'Invalid generation type' }, { status: 400 });
+    }
+
+    const lyrics = genRequest.params?.lyrics;
+    if (lyrics !== undefined && (typeof lyrics !== 'string' || lyrics.length > MAX_LYRICS_LENGTH)) {
+      return NextResponse.json({ error: `เนื้อเพลงยาวได้ไม่เกิน ${MAX_LYRICS_LENGTH} ตัวอักษร` }, { status: 400 });
     }
 
     // Cap numOutputs

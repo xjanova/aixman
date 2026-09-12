@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { ImageIcon, Search, RefreshCw, Trash2, ChevronLeft, ChevronRight } from "lucide-react";
+import { AudioCover } from "@/components/xdreamer/audio";
 
 interface AdminGen {
   id: number;
@@ -75,6 +76,7 @@ export default function AdminGenerationsPage() {
             <option value="image">Image</option>
             <option value="video">Video</option>
             <option value="edit">Edit</option>
+            <option value="audio">เพลง</option>
           </select>
           <form onSubmit={onSearch} className="relative">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
@@ -95,7 +97,12 @@ export default function AdminGenerationsPage() {
             <div key={g.id} className="glass rounded-xl overflow-hidden group relative">
               <div className="aspect-square bg-surface-light relative">
                 {g.thumbnailUrl || g.resultUrl ? (
-                  g.type === "video" ? (
+                  g.type === "audio" ? (
+                    <>
+                      <AudioCover seed={g.prompt || ""} bars={9} label={false} style={{ width: "100%", height: "100%" }} />
+                      <audio src={g.resultUrl || g.thumbnailUrl || ""} controls preload="none" className="absolute left-2 right-2 bottom-9 h-8 w-[calc(100%-1rem)]" />
+                    </>
+                  ) : g.type === "video" ? (
                     <video src={g.thumbnailUrl || g.resultUrl || ""} muted className="w-full h-full object-cover" />
                   ) : (
                     // eslint-disable-next-line @next/next/no-img-element

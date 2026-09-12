@@ -204,6 +204,7 @@ export class WorkerClient {
         steps: typeof params.extra?.steps === 'number' ? params.extra.steps : undefined,
         imageFilename: params.inputImage,
         audioFilename: typeof params.extra?.audioFilename === 'string' ? params.extra.audioFilename : undefined,
+        lyrics: typeof params.extra?.lyrics === 'string' ? params.extra.lyrics : undefined,
       };
 
       let graph = convertUiWorkflowToApi(entry.template, objectInfo);

@@ -20,7 +20,7 @@ export async function GET(request: NextRequest) {
 
     const where: Prisma.AiGenerationWhereInput = {};
     if (status && ['pending', 'processing', 'completed', 'failed', 'cancelled'].includes(status)) where.status = status;
-    if (type && ['image', 'video', 'edit'].includes(type)) where.type = type;
+    if (type && ['image', 'video', 'edit', 'audio'].includes(type)) where.type = type;
     if (Number.isInteger(userId) && userId > 0) where.userId = userId;
     if (search) where.prompt = { contains: search };
 
