@@ -27,6 +27,11 @@ export interface GpuBudgetConfig {
   dailyBudgetUsd: number;
   /** Terminate a worker with no jobs for this long. */
   idleTimeoutMinutes: number;
+  /**
+   * Extra idle time allowed while a customer still has the studio open with
+   * this model selected (see studio-presence.ts). 0 turns it off.
+   */
+  presenceExtensionMinutes: number;
   /** Absolute kill switch — a worker is never allowed to outlive this. */
   maxWorkerLifetimeMinutes: number;
   /** Give up (and reap) if the inference server never becomes healthy. */
@@ -86,6 +91,9 @@ export const GPU_DEFAULTS: GpuBudgetConfig = {
   maxPricePerHourUsd: 1.0,
   dailyBudgetUsd: 10,
   idleTimeoutMinutes: 10,
+  // A machine boots in ~2 min, so a short idle timeout plus this grace for a
+  // customer who is still on the page beats a long flat timeout.
+  presenceExtensionMinutes: 5,
   maxWorkerLifetimeMinutes: 240,
   // A fresh machine installs ComfyUI and pulls ~42.5 GB of weights. At the
   // 500 Mbps floor we require, that is ~12 minutes of download alone, plus
@@ -147,6 +155,10 @@ export async function getGpuConfig(): Promise<GpuBudgetConfig> {
     maxPricePerHourUsd: parseNumber(map.get('gpu_max_price_per_hour_usd'), GPU_DEFAULTS.maxPricePerHourUsd),
     dailyBudgetUsd: parseNumber(map.get('gpu_daily_budget_usd'), GPU_DEFAULTS.dailyBudgetUsd),
     idleTimeoutMinutes: parseNumber(map.get('gpu_idle_timeout_minutes'), GPU_DEFAULTS.idleTimeoutMinutes),
+    presenceExtensionMinutes: Math.min(
+      30,
+      parseNumber(map.get('gpu_presence_extension_minutes'), GPU_DEFAULTS.presenceExtensionMinutes)
+    ),
     maxWorkerLifetimeMinutes: parseNumber(
       map.get('gpu_max_worker_lifetime_minutes'),
       GPU_DEFAULTS.maxWorkerLifetimeMinutes
