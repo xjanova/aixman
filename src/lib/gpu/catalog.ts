@@ -75,6 +75,11 @@ export interface VideoResolutionOption {
   aspects: string[];
   /** The one a request without a `resolution` gets. */
   isDefault?: boolean;
+  /**
+   * Only admins see it and can order it: an experiment whose GPU time the
+   * price does not cover yet. Anyone else asking for it gets the default.
+   */
+  adminOnly?: boolean;
 }
 
 export interface CatalogEntry {
@@ -193,20 +198,45 @@ function snap(value: number, step: number, fallback: number): number {
  * Landscape resolution presets for H3. Only 16:9 has a choice: portrait and
  * square exist only at the mixed-aspect LoRA's own size.
  *
- *   768p  render 1344x768 on the 768p LoRA, keep it
- *   720p  render 1344x768 on the 768p LoRA, resize the decoded frames to
- *         1280x720 (whole frame scaled, nothing cropped)
- *   544p  render 960x544 on the mixed-aspect LoRA — about the same cost
+ *   768p   render 1344x768 on the 768p LoRA, keep it
+ *   720p   render 1344x768 on the 768p LoRA, resize the decoded frames to
+ *          1280x720 (whole frame scaled, nothing cropped)
+ *   544p   render 960x544 on the mixed-aspect LoRA — about the same cost
+ *   1080p  admins only, an experiment: render 1920x1088 on the 768p LoRA,
+ *          resize to 1920x1080
  *
  * 720 is not a size H3 can render natively (dimensions go in steps of 32), and
  * the 768p LoRA is distilled for 1344x768 only, so 720p is produced by scaling
  * a native render rather than by asking the model for a size it never saw.
+ *
+ * 1080p does ask for one. H3-Base is trained for a 768 px short side; the
+ * official 2K comes from H3-Regenerate-2K, which is not open-source. So this is
+ * the base model and the 768p LoRA pushed to twice the tokens per frame — to
+ * measure what that costs and how it looks, not to sell. It is priced like 768p
+ * while taking roughly three times the GPU, and a 15 s clip may not finish
+ * inside the job timeout, so customers never see it.
  */
 export const H3_RESOLUTIONS: VideoResolutionOption[] = [
   { id: '768p', label: '768p · 1344×768', aspects: ['16:9'], isDefault: true },
   { id: '720p', label: '720p · 1280×720', aspects: ['16:9'] },
   { id: '544p', label: '544p · 960×544', aspects: ['16:9'] },
+  { id: '1080p', label: '1080p · 1920×1080 (ทดลอง · แอดมิน)', aspects: ['16:9'], adminOnly: true },
 ];
+
+/** Whether `resolution` names one of this model's admin-only presets. */
+export function isAdminOnlyPreset(modelKey: string, resolution: unknown): boolean {
+  return getCatalogEntry(modelKey)?.video?.resolutions?.some((r) => r.adminOnly && r.id === resolution) === true;
+}
+
+/**
+ * The video controls one caller may see: admin-only presets are left out for
+ * everyone else. Null for a model without any.
+ */
+export function visibleVideoOptions(entry: CatalogEntry | undefined, admin: boolean): CatalogEntry['video'] | null {
+  if (!entry?.video) return null;
+  const { resolutions } = entry.video;
+  return resolutions ? { ...entry.video, resolutions: resolutions.filter((r) => admin || !r.adminOnly) } : entry.video;
+}
 
 export interface H3RenderPlan {
   turbo: H3Turbo;
@@ -231,6 +261,10 @@ export function h3RenderPlan(width: number, height: number, resolution?: string)
   const h = Number.isFinite(height) && height > 0 ? height : 768;
   if (w / h >= 1.6) {
     if (resolution === '544p') return { turbo: H3_TURBO_MIXED, width: 960, height: 544 };
+    // Admin-only experiment — see H3_RESOLUTIONS. 1088 is the nearest 32 px step.
+    if (resolution === '1080p') {
+      return { turbo: H3_TURBO_768P, width: 1920, height: 1088, output: { width: 1920, height: 1080 } };
+    }
     return {
       turbo: H3_TURBO_768P,
       width: 1344,
@@ -314,7 +348,7 @@ const MINIMAX_H3: CatalogEntry = {
     if (p.lastImageFilename) {
       nodes[H3_LAST_FRAME_NODE] = { class_type: 'LoadImage', inputs: { image: p.lastImageFilename } };
     }
-    // 720p: scale the decoded frames (whole frame, no crop) before CreateVideo.
+    // 720p / 1080p: scale the decoded frames (whole frame, no crop) before CreateVideo.
     if (plan.output) {
       nodes[H3_RESIZE_NODE] = {
         class_type: 'ImageScale',

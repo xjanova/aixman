@@ -3,6 +3,7 @@ import prisma from '@/lib/db';
 import { Prisma } from '@/generated/prisma/client';
 import type { AiGpuJob, AiGpuWorker } from '@/generated/prisma/client';
 import { getGpuConfig, getWorkerProfile, type GpuBudgetConfig } from '@/lib/gpu/config';
+import { isAdminOnlyPreset } from '@/lib/gpu/catalog';
 import { WorkerClient, type WorkerJobParams } from '@/lib/gpu/worker-client';
 import { GpuWorkerManager } from './gpu-worker';
 import { GenerationService } from './generation';
@@ -530,7 +531,11 @@ export class GpuQueue {
 
     // A model failing repeatedly stops taking orders rather than quietly
     // burning credits — one failure is not enough, a spot host can vanish.
-    if (countAgainstModel && generation?.modelId) {
+    // An admin experiment (a preset customers cannot order, e.g. H3 at 1080p
+    // running out of memory) says nothing about the model they do order.
+    const extra = (job.payload as { extra?: { resolution?: unknown } } | null)?.extra;
+    const experiment = isAdminOnlyPreset(job.modelKey, extra?.resolution);
+    if (countAgainstModel && !experiment && generation?.modelId) {
       await ModelReadiness.recordFailure(generation.modelId, message);
     }
   }
