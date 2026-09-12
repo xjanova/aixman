@@ -36,6 +36,37 @@ interface ReferralStats {
   }[];
 }
 
+/*
+ * Network calls live outside the component and return failures as values:
+ * React Compiler gives up on a whole component whose try/catch contains a
+ * value block (`||`, `??`, `?.`, a ternary), silently — see the note above
+ * `fetchAnalytics` in admin/gpu/page.tsx and `react-hooks/todo` in
+ * eslint.config.mjs.
+ */
+
+async function postReferralCode(
+  code: string,
+): Promise<{ status: "applied" | "rejected"; message: string } | { status: "error" }> {
+  try {
+    const res = await fetch("/api/referral", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
+    const data = await res.json();
+    return res.ok
+      ? { status: "applied", message: data.message || "ใช้รหัสสำเร็จ!" }
+      : { status: "rejected", message: data.error || "ไม่สามารถใช้รหัสได้" };
+  } catch {
+    return { status: "error" };
+  }
+}
+
+async function fetchReferralStats(): Promise<{ ok: true; stats: ReferralStats } | { ok: false }> {
+  try {
+    const res = await fetch("/api/referral");
+    return { ok: true, stats: (await res.json()) as ReferralStats };
+  } catch {
+    return { ok: false };
+  }
+}
+
 export default function ReferralPage() {
   const { data: session } = useSession();
   const router = useRouter();
@@ -75,18 +106,16 @@ export default function ReferralPage() {
   const handleApplyCode = async () => {
     if (!applyCode.trim()) return;
     setApplying(true);
-    try {
-      const res = await fetch("/api/referral", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: applyCode.trim() }) });
-      const data = await res.json();
-      if (!res.ok) toast("error", data.error || "ไม่สามารถใช้รหัสได้");
-      else {
-        toast("success", data.message || "ใช้รหัสสำเร็จ!");
-        setApplyCode("");
-        const statsRes = await fetch("/api/referral");
-        const newStats = await statsRes.json();
-        setStats(newStats);
-      }
-    } catch { toast("error", "เกิดข้อผิดพลาด"); }
+    const result = await postReferralCode(applyCode.trim());
+    if (result.status === "error") toast("error", "เกิดข้อผิดพลาด");
+    else if (result.status === "rejected") toast("error", result.message);
+    else {
+      toast("success", result.message);
+      setApplyCode("");
+      const refreshed = await fetchReferralStats();
+      if (refreshed.ok) setStats(refreshed.stats);
+      else toast("error", "เกิดข้อผิดพลาด");
+    }
     setApplying(false);
   };
 

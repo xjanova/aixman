@@ -28,6 +28,25 @@ interface Stats {
   errorRate: number;
 }
 
+/**
+ * POST the seed and turn the answer into the banner text. Outside the
+ * component because React Compiler gives up on a whole component whose
+ * try/catch contains a value block (`||` here) — silently; see
+ * `react-hooks/todo` in eslint.config.mjs.
+ */
+async function requestSeed(): Promise<{ ok: boolean; msg: string }> {
+  try {
+    const res = await fetch("/api/admin/seed", { method: "POST" });
+    const data = await res.json();
+    if (data.success) {
+      return { ok: true, msg: `สำเร็จ · ${data.results.providers} providers · ${data.results.models} models · ${data.results.packages} packages · ${data.results.styles} styles · ${data.results.settings} settings` };
+    }
+    return { ok: false, msg: data.error || "ผิดพลาด" };
+  } catch {
+    return { ok: false, msg: "ไม่สามารถเชื่อมต่อ API ได้" };
+  }
+}
+
 export default function AdminDashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [seeding, setSeeding] = useState(false);
@@ -39,18 +58,9 @@ export default function AdminDashboard() {
 
   const runSeed = async () => {
     setSeeding(true); setSeedResult(null);
-    try {
-      const res = await fetch("/api/admin/seed", { method: "POST" });
-      const data = await res.json();
-      if (data.success) {
-        setSeedResult({ ok: true, msg: `สำเร็จ · ${data.results.providers} providers · ${data.results.models} models · ${data.results.packages} packages · ${data.results.styles} styles · ${data.results.settings} settings` });
-        fetch("/api/admin/stats").then(r => r.json()).then(setStats).catch(() => {});
-      } else {
-        setSeedResult({ ok: false, msg: data.error || "ผิดพลาด" });
-      }
-    } catch {
-      setSeedResult({ ok: false, msg: "ไม่สามารถเชื่อมต่อ API ได้" });
-    }
+    const result = await requestSeed();
+    setSeedResult(result);
+    if (result.ok) fetch("/api/admin/stats").then(r => r.json()).then(setStats).catch(() => {});
     setSeeding(false);
   };
 
