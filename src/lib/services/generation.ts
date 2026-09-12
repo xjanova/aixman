@@ -8,7 +8,7 @@ import { ModelReadiness, TUNING_MESSAGE } from './model-readiness';
 import { persistAssetSafe, isStorageConfigured } from '@/lib/storage/r2';
 import type { GenerationRequest, GenerationResult, ProviderSlug } from '@/types';
 import { fitFrame } from '@/lib/gpu/frame';
-import { getCatalogEntry } from '@/lib/gpu/catalog';
+import { getCatalogEntry, isAdminOnlyPreset } from '@/lib/gpu/catalog';
 import { isAcceptedFrameSource } from '@/lib/gpu/frame-input';
 import { creditsForDuration } from '@/lib/pricing';
 
@@ -90,8 +90,15 @@ export class GenerationService {
     // retention sweep, the gallery and Laravel all read — params is already
     // JSON and already stored, so it carries them instead. RetentionService
     // knows to look here; see INPUT_URL_PARAMS there.
+    const baseParams: Record<string, unknown> = { ...(request.params ?? {}) };
+    // An admin-only preset (an experiment the price does not cover yet) is
+    // dropped for anyone else — only reachable by hand, since /api/models
+    // never lists it for them — and the model's default renders instead.
+    if (gpuModel && options.isAdmin !== true && isAdminOnlyPreset(model.modelId, baseParams.resolution)) {
+      delete baseParams.resolution;
+    }
     const storedParams: Record<string, unknown> = {
-      ...(request.params ?? {}),
+      ...baseParams,
       ...(request.inputAudio ? { inputAudio: request.inputAudio } : {}),
       ...(request.inputVideo ? { inputVideo: request.inputVideo } : {}),
       ...(request.inputImageEnd ? { inputImageEnd: request.inputImageEnd } : {}),

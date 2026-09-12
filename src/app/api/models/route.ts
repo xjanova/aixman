@@ -3,7 +3,7 @@ import prisma from '@/lib/db';
 import { isAdmin } from '@/lib/auth';
 import { ModelReadiness, TUNING_MESSAGE } from '@/lib/services/model-readiness';
 import { accountBlock, type AccountBlock } from '@/lib/services/account-pool';
-import { getCatalogEntry } from '@/lib/gpu/catalog';
+import { getCatalogEntry, visibleVideoOptions } from '@/lib/gpu/catalog';
 import { getGpuConfig } from '@/lib/gpu/config';
 import { isStorageConfigured } from '@/lib/storage/r2';
 import { isInHouse, publicProvider } from '@/lib/public-provider';
@@ -120,8 +120,9 @@ export async function GET() {
         maxOutputs: inHouse ? 1 : null,
         durationCurve: inHouse ? getCatalogEntry(m.modelId)?.pricing.durationCurve ?? null : null,
         // First/last frame and resolution presets the studio may offer. Null for
-        // models that have none, so older clients see nothing new.
-        video: inHouse ? getCatalogEntry(m.modelId)?.video ?? null : null,
+        // models that have none, so older clients see nothing new. Admin-only
+        // presets reach admins only.
+        video: inHouse ? visibleVideoOptions(getCatalogEntry(m.modelId), admin) : null,
         // 'tuning' stays orderable for admins — running it is how it gets
         // proven. 'unavailable' is not orderable by anyone: it would fail.
         status,
