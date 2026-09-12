@@ -9,7 +9,9 @@ import {
   type GpuBudgetConfig,
   type WorkerProfile,
 } from '@/lib/gpu/config';
-import type { AiGpuWorker } from '@/generated/prisma/client';
+import type { AiGpuWorker, Prisma } from '@/generated/prisma/client';
+import { getCatalogEntry, downloadBytes } from '@/lib/gpu/catalog';
+import { rankOffers, type RankedOffer } from '@/lib/gpu/offer-picker';
 import { buildComfyUiStartScript, LOG_PATH, renderEnvExports } from '@/lib/gpu/provision';
 import { RentUnconfirmedError, type GpuOffer, type GpuRentalProvider, type PendingRental } from '@/lib/gpu/types';
 import { isStorageConfigured } from '@/lib/storage/r2';
@@ -601,7 +603,23 @@ export class GpuWorkerManager {
         };
       }
 
-      const rented = await this.rentWorker(offers[0], modelKey, profile, provider, apiKey, cfg);
+      // The cheapest *work*, not the cheapest hour: boot at that host's speed
+      // (shared with any of our machines already downloading there) plus the
+      // jobs it is expected to take at that GPU's speed (offer-picker.ts).
+      const pick = await this.pickOffer(offers, modelKey, backlog.queued, serving);
+      console.log(
+        `[gpu] ${modelKey}: renting ${pick.offer.gpuModel} (offer ${pick.offer.id}, $${pick.offer.pricePerHourUsd}/hr) ` +
+          `≈ $${pick.costUsd.toFixed(3)} for boot ${pick.bootSeconds}s + render ${pick.renderSeconds}s (${pick.renderBasis}), ` +
+          `best of ${offers.length}`
+      );
+      const rented = await this.rentWorker(pick.offer, modelKey, profile, provider, apiKey, cfg, {
+        costUsd: Number(pick.costUsd.toFixed(4)),
+        bootSeconds: pick.bootSeconds,
+        renderSeconds: pick.renderSeconds,
+        renderBasis: pick.renderBasis,
+        candidates: offers.length,
+        cheapestHourly: Math.min(...offers.map((o) => o.pricePerHourUsd)),
+      });
       // A machine rented this tick has not booted — it has no endpoint yet, and
       // the queue only hands jobs to booted machines (submitting to one still
       // starting fails and spends one of the job's two attempts).
@@ -678,13 +696,46 @@ export class GpuWorkerManager {
     return false;
   }
 
+  /** Rank offers by the estimated cost of this model's work on each (offer-picker.ts). */
+  private static async pickOffer(
+    offers: GpuOffer[],
+    modelKey: string,
+    queued: number,
+    serving: number
+  ): Promise<RankedOffer> {
+    const entry = getCatalogEntry(modelKey);
+    const [renderSecondsByGpu, defaultRenderSeconds, booting] = await Promise.all([
+      GpuEta.medianRenderSecondsByGpu(modelKey),
+      GpuEta.typicalRenderSeconds(modelKey),
+      prisma.aiGpuWorker.findMany({
+        where: { status: { in: ['provisioning', 'warming'] } },
+        select: { metadata: true },
+      }),
+    ]);
+    const bootingOnOffer = new Map<string, number>();
+    for (const w of booting) {
+      const offerId = (w.metadata as { offerId?: unknown } | null)?.offerId;
+      if (typeof offerId === 'string') bootingOnOffer.set(offerId, (bootingOnOffer.get(offerId) ?? 0) + 1);
+    }
+    const ranked = rankOffers(offers, {
+      weightsGb: entry ? downloadBytes(entry) / 1e9 : 40,
+      renderSecondsByGpu,
+      defaultRenderSeconds,
+      // Its share of what is waiting, counting itself among the machines.
+      jobsExpected: Math.max(1, Math.ceil(queued / (serving + 1))),
+      bootingOnOffer,
+    });
+    return ranked[0];
+  }
+
   private static async rentWorker(
     offer: GpuOffer,
     modelKey: string,
     profile: WorkerProfile,
     provider: GpuRentalProvider,
     apiKey: string,
-    cfg: GpuBudgetConfig
+    cfg: GpuBudgetConfig,
+    pick?: Record<string, unknown>
   ): Promise<AiGpuWorker> {
     const nameTag = `${NAME_PREFIX}${modelKey}`;
     // Fresh per worker: the container's port lands on a public tunnel, so the
@@ -759,7 +810,14 @@ export class GpuWorkerManager {
           pricePerHourUsd:
             offer.pricePerHourUsd * profile.gpuCount +
             ((offer.diskPricePerGbMonthUsd ?? 0) * profile.diskGb) / HOURS_PER_MONTH,
-          metadata: { offerId: offer.id, region: offer.region ?? null, image: `${profile.image}:${profile.tag}` },
+          // offerId also tells the picker which host's uplink this machine
+          // shares while it downloads; `pick` records why this offer won.
+          metadata: {
+            offerId: offer.id,
+            region: offer.region ?? null,
+            image: `${profile.image}:${profile.tag}`,
+            ...(pick ? { pick: pick as Prisma.InputJsonValue } : {}),
+          },
         },
       });
     } catch (error) {
