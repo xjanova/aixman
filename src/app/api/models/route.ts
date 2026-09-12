@@ -119,6 +119,9 @@ export async function GET() {
         // number: an in-house job renders one output and may price by length.
         maxOutputs: inHouse ? 1 : null,
         durationCurve: inHouse ? getCatalogEntry(m.modelId)?.pricing.durationCurve ?? null : null,
+        // First/last frame and resolution presets the studio may offer. Null for
+        // models that have none, so older clients see nothing new.
+        video: inHouse ? getCatalogEntry(m.modelId)?.video ?? null : null,
         // 'tuning' stays orderable for admins — running it is how it gets
         // proven. 'unavailable' is not orderable by anyone: it would fail.
         status,

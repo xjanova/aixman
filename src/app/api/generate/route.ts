@@ -32,6 +32,7 @@ export async function POST(request: NextRequest) {
       inputImage: body.inputImage,
       inputAudio: body.inputAudio,
       inputVideo: body.inputVideo,
+      inputImageEnd: body.inputImageEnd,
       styleId: body.styleId,
     };
 
@@ -41,7 +42,9 @@ export async function POST(request: NextRequest) {
     // any host they like on our account, so only URLs we minted in
     // /api/uploads are allowed through. keyFromPublicUrl answers null for
     // anything outside our own bucket, which is exactly the test we need.
-    for (const field of ['inputAudio', 'inputVideo'] as const) {
+    // A last frame is read by our own server for the rented worker, so the same
+    // rule applies to it.
+    for (const field of ['inputAudio', 'inputVideo', 'inputImageEnd'] as const) {
       const value = genRequest[field];
       if (value !== undefined && (typeof value !== 'string' || !keyFromPublicUrl(value))) {
         return NextResponse.json(

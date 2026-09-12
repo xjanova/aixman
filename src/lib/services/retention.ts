@@ -29,7 +29,7 @@ const SETTING_KEY = 'media_retention_days';
  * is that the sweep has to know their names — so they are listed here once, and
  * anything added to `/api/uploads` must be added here too or it leaks.
  */
-const INPUT_URL_PARAMS = ['inputAudio', 'inputVideo'] as const;
+const INPUT_URL_PARAMS = ['inputAudio', 'inputVideo', 'inputImageEnd'] as const;
 
 export interface SweepResult {
   scanned: number;

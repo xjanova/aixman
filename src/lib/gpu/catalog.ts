@@ -56,10 +56,25 @@ export interface CatalogJobParams {
   steps?: number;
   /** Filename of an image the customer uploaded into ComfyUI's input dir. */
   imageFilename?: string;
+  /** Same, for the frame a video must end on (first-and-last-frame mode). */
+  lastImageFilename?: string;
   /** Filename of an uploaded audio track (lip-sync, audio-driven video). */
   audioFilename?: string;
   /** Song lyrics (music models). Empty means an instrumental. */
   lyrics?: string;
+  /** Output resolution preset id from `CatalogEntry.video.resolutions`. */
+  resolution?: string;
+}
+
+/** A resolution the studio may offer for a video model, per aspect ratio. */
+export interface VideoResolutionOption {
+  id: string;
+  /** Thai/number label shown in the studio. */
+  label: string;
+  /** Aspect ratios (studio values, e.g. "16:9") this preset applies to. */
+  aspects: string[];
+  /** The one a request without a `resolution` gets. */
+  isDefault?: boolean;
 }
 
 export interface CatalogEntry {
@@ -93,6 +108,16 @@ export interface CatalogEntry {
   bind: (p: CatalogJobParams) => ParameterBinding[];
   /** Uploads the customer must supply before this model can run. */
   needs?: { image?: boolean; audio?: boolean };
+  /**
+   * Optional video controls the studio can offer for this model: a first
+   * frame, a last frame, and resolution presets. Sent to the client by
+   * `/api/models`; the job honours them through `inject`/`bind`.
+   */
+  video?: {
+    firstFrame?: boolean;
+    lastFrame?: boolean;
+    resolutions?: VideoResolutionOption[];
+  };
   /** Rough seconds of render per output second, for the first ETA before history exists. */
   baselineSecondsPerUnit: number;
   /**
@@ -165,22 +190,65 @@ function snap(value: number, step: number, fallback: number): number {
 }
 
 /**
- * Which turbo LoRA a frame gets, and the size to render it at.
+ * Landscape resolution presets for H3. Only 16:9 has a choice: portrait and
+ * square exist only at the mixed-aspect LoRA's own size.
+ *
+ *   768p  render 1344x768 on the 768p LoRA, keep it
+ *   720p  render 1344x768 on the 768p LoRA, resize the decoded frames to
+ *         1280x720 (whole frame scaled, nothing cropped)
+ *   544p  render 960x544 on the mixed-aspect LoRA — about the same cost
+ *
+ * 720 is not a size H3 can render natively (dimensions go in steps of 32), and
+ * the 768p LoRA is distilled for 1344x768 only, so 720p is produced by scaling
+ * a native render rather than by asking the model for a size it never saw.
+ */
+export const H3_RESOLUTIONS: VideoResolutionOption[] = [
+  { id: '768p', label: '768p · 1344×768', aspects: ['16:9'], isDefault: true },
+  { id: '720p', label: '720p · 1280×720', aspects: ['16:9'] },
+  { id: '544p', label: '544p · 960×544', aspects: ['16:9'] },
+];
+
+export interface H3RenderPlan {
+  turbo: H3Turbo;
+  width: number;
+  height: number;
+  /** Resize decoded frames to this before encoding, when the preset asks. */
+  output?: { width: number; height: number };
+}
+
+/**
+ * Which turbo LoRA a frame gets, the size to render it at, and any resize after
+ * decode.
  *
  * 16:9 is 1.78, so the 1.6 cut keeps every landscape preset on the 768p LoRA
- * and sends 3:2 and anything squarer to the mixed-aspect one, rescaled to the
- * pixel count it was trained at — 9:16 renders at 544x960, 1:1 at 736x736.
- * Eight steps at 544p costs about what four at 768p do, so one price holds.
+ * (always at exactly 1344x768 — "1344x768 only" in ModelTC's table) and sends
+ * 3:2 and anything squarer to the mixed-aspect one, rescaled to the pixel count
+ * it was trained at — 9:16 renders at 544x960, 1:1 at 736x736. Eight steps at
+ * 544p costs about what four at 768p do, so one price holds.
  */
-export function h3RenderPlan(width: number, height: number): { turbo: H3Turbo; width: number; height: number } {
+export function h3RenderPlan(width: number, height: number, resolution?: string): H3RenderPlan {
   const w = Number.isFinite(width) && width > 0 ? width : 1344;
   const h = Number.isFinite(height) && height > 0 ? height : 768;
   if (w / h >= 1.6) {
-    return { turbo: H3_TURBO_768P, width: snap(w, 32, 1344), height: snap(h, 32, 768) };
+    if (resolution === '544p') return { turbo: H3_TURBO_MIXED, width: 960, height: 544 };
+    return {
+      turbo: H3_TURBO_768P,
+      width: 1344,
+      height: 768,
+      output: resolution === '720p' ? { width: 1280, height: 720 } : undefined,
+    };
   }
   const scale = Math.sqrt(H3_MIXED_PIXELS / (w * h));
   return { turbo: H3_TURBO_MIXED, width: snap(w * scale, 32, 544), height: snap(h * scale, 32, 960) };
 }
+
+/**
+ * Node ids added to the converted H3 graph. Prefixed like the template's own
+ * flattened subgraph nodes so they read as part of the same pipeline.
+ */
+const H3_FIRST_FRAME_NODE = '105_300';
+const H3_LAST_FRAME_NODE = '105_301';
+const H3_RESIZE_NODE = '105_310';
 
 const MINIMAX_H3: CatalogEntry = {
   key: 'minimax-h3',
@@ -218,8 +286,9 @@ const MINIMAX_H3: CatalogEntry = {
    * than rendering at the wrong shift.
    */
   inject: (p) => {
-    const { turbo } = h3RenderPlan(p.width, p.height);
-    return {
+    const plan = h3RenderPlan(p.width, p.height, p.resolution);
+    const { turbo } = plan;
+    const nodes: Record<string, { class_type: string; inputs: Record<string, unknown> }> = {
       '105_119': {
         class_type: 'LoraLoaderModelOnly',
         inputs: {
@@ -237,10 +306,43 @@ const MINIMAX_H3: CatalogEntry = {
         },
       },
     };
+    // First-and-last-frame mode: the template is text-to-video and leaves both
+    // sockets unwired, so the uploaded stills need loaders of their own.
+    if (p.imageFilename) {
+      nodes[H3_FIRST_FRAME_NODE] = { class_type: 'LoadImage', inputs: { image: p.imageFilename } };
+    }
+    if (p.lastImageFilename) {
+      nodes[H3_LAST_FRAME_NODE] = { class_type: 'LoadImage', inputs: { image: p.lastImageFilename } };
+    }
+    // 720p: scale the decoded frames (whole frame, no crop) before CreateVideo.
+    if (plan.output) {
+      nodes[H3_RESIZE_NODE] = {
+        class_type: 'ImageScale',
+        inputs: {
+          image: ['105_10', 0],
+          upscale_method: 'lanczos',
+          width: plan.output.width,
+          height: plan.output.height,
+          crop: 'disabled',
+        },
+      };
+    }
+    return nodes;
   },
   bind: (p) => {
-    const plan = h3RenderPlan(p.width, p.height);
+    const plan = h3RenderPlan(p.width, p.height, p.resolution);
+    const frames: ParameterBinding[] = [
+      ...(p.imageFilename
+        ? [{ nodeId: '105_104', input: 'first_frame', value: [H3_FIRST_FRAME_NODE, 0], connect: true }]
+        : []),
+      ...(p.lastImageFilename
+        ? [{ nodeId: '105_104', input: 'last_frame', value: [H3_LAST_FRAME_NODE, 0], connect: true }]
+        : []),
+      // Re-point CreateVideo's frames at the resize; the VAEDecode stays its input.
+      ...(plan.output ? [{ nodeId: '105_91', input: 'images', value: [H3_RESIZE_NODE, 0] }] : []),
+    ];
     return [
+      ...frames,
       { nodeId: '105_104', input: 'prompt', value: p.prompt },
       // Sized for the chosen LoRA, in the node's 32 px steps (ComfyUI does not
       // enforce step, the model does).
@@ -276,6 +378,9 @@ const MINIMAX_H3: CatalogEntry = {
   // growth (lib/pricing.ts) — at 12 credits, 10 s is 34 and 15 s is 63.
   pricing: { creditsPerUnit: 12, costPerUnit: 0.05, durationCurve: { unitSeconds: 5, exponent: 1.5 } },
   limits: { maxWidth: 1344, maxHeight: 768, maxDuration: 15 },
+  // H3-Base-FL2VA takes zero, one or two stills: text-to-video, first-frame,
+  // or first-and-last-frame (model card, "Model Variants").
+  video: { firstFrame: true, lastFrame: true, resolutions: H3_RESOLUTIONS },
 };
 
 /** length % 17 === 5, with Python modulo semantics — JS `%` would go negative. */

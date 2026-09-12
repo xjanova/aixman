@@ -556,6 +556,14 @@ export interface ParameterBinding {
    * job loudly and refund.
    */
   optional?: boolean;
+  /**
+   * Write the input even though the converted node has no key for it — for an
+   * optional socket the template leaves unwired (MiniMax H3's `first_frame` in
+   * a text-to-video template). Only lands when the live schema passed to
+   * `bindParameters` declares the name for that node class, so a typo still
+   * fails loudly instead of being silently ignored by ComfyUI.
+   */
+  connect?: boolean;
 }
 
 export interface BindResult {
@@ -575,8 +583,15 @@ export interface BindResult {
  *
  * Returns a new graph; the input is left untouched so a cached conversion can
  * be reused across jobs.
+ *
+ * `schema` is the worker's `/object_info`; it is only consulted for bindings
+ * marked `connect`.
  */
-export function bindParameters(graph: ComfyGraph, bindings: ParameterBinding[]): BindResult {
+export function bindParameters(
+  graph: ComfyGraph,
+  bindings: ParameterBinding[],
+  schema?: ComfyObjectInfo
+): BindResult {
   const out: ComfyGraph = {};
   for (const [id, node] of Object.entries(graph)) {
     out[id] = { class_type: node.class_type, inputs: { ...node.inputs } };
@@ -585,12 +600,23 @@ export function bindParameters(graph: ComfyGraph, bindings: ParameterBinding[]):
   const orderedIds = Object.keys(out);
   const unmatched: ParameterBinding[] = [];
 
+  /** Does the live schema declare `name` on this node class (required or optional)? */
+  const schemaDeclares = (classType: string, name: string): boolean => {
+    const groups = schema?.[classType]?.input;
+    return !!groups && (name in (groups.required ?? {}) || name in (groups.optional ?? {}));
+  };
+
   /** Write to the first candidate name the node declares. Reports whether it landed. */
-  const assign = (node: ComfyGraph[string], input: string | string[], value: unknown): boolean => {
+  const assign = (
+    node: ComfyGraph[string],
+    input: string | string[],
+    value: unknown,
+    connect = false
+  ): boolean => {
     for (const name of Array.isArray(input) ? input : [input]) {
       // Only bind inputs the node declares, so a stale binding after a template
       // change is inert rather than injecting a bogus input ComfyUI rejects.
-      if (name in node.inputs) {
+      if (name in node.inputs || (connect && schemaDeclares(node.class_type, name))) {
         node.inputs[name] = value;
         return true;
       }
@@ -604,7 +630,7 @@ export function bindParameters(graph: ComfyGraph, bindings: ParameterBinding[]):
 
     if (binding.nodeId) {
       const node = out[binding.nodeId];
-      if (node) landed = assign(node, binding.input, binding.value);
+      if (node) landed = assign(node, binding.input, binding.value, binding.connect);
     } else {
       let matchIndex = 0;
       for (const id of orderedIds) {
@@ -612,7 +638,7 @@ export function bindParameters(graph: ComfyGraph, bindings: ParameterBinding[]):
         if (node.class_type !== binding.nodeType) continue;
         const thisIndex = matchIndex++;
         if (binding.index !== undefined && binding.index !== thisIndex) continue;
-        if (assign(node, binding.input, binding.value)) landed = true;
+        if (assign(node, binding.input, binding.value, binding.connect)) landed = true;
       }
     }
 
