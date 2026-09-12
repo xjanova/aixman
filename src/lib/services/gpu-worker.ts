@@ -14,6 +14,8 @@ import { buildComfyUiStartScript, LOG_PATH, renderEnvExports } from '@/lib/gpu/p
 import { RentUnconfirmedError, type GpuOffer, type GpuRentalProvider, type PendingRental } from '@/lib/gpu/types';
 import { isStorageConfigured } from '@/lib/storage/r2';
 import { isStudioPresent } from './studio-presence';
+import { GpuEta } from './gpu-eta';
+import { shouldAddMachine } from './gpu-scaler';
 
 /**
  * Reserved prefix for instance names we own. The orphan sweep terminates any
@@ -61,11 +63,20 @@ export type WorkerStatus =
 /** Statuses where the machine still exists at the vendor and still costs money. */
 const LIVE_STATUSES: WorkerStatus[] = ['provisioning', 'warming', 'ready', 'busy', 'draining'];
 
-export interface EnsureWorkerResult {
-  worker: AiGpuWorker | null;
-  /** Why no worker is usable yet — surfaced to admins and job error messages. */
+export interface CapacityResult {
+  /** A machine was rented this tick (it takes jobs once booted). */
+  rented?: boolean;
+  /** What was decided and why — surfaced to admins and job error messages. */
   reason?: string;
 }
+
+/**
+ * How long a model must have waited before its jobs may take the slot of an
+ * idle machine a customer is still using (studio open on it, or a job within
+ * the last minute). Without it two customers on different models at the cap
+ * evict each other's machine on every order — two minutes of boot each time.
+ */
+const PING_PONG_GRACE_MS = 90_000;
 
 export class GpuWorkerManager {
   // ----------------------------------------------------------------
@@ -430,11 +441,15 @@ export class GpuWorkerManager {
         // A customer still on the studio with this model selected is likely
         // about to order again — a few minutes' grace beats making them wait
         // for a fresh boot. Bounded, so an open tab cannot keep a machine up.
+        // Only the machine that customer would be served by next — the most
+        // recently used one of its model — waits; extra machines rented for a
+        // burst close on the plain idle timeout once the burst is over.
         const graceMs = (cfg.idleTimeoutMinutes + cfg.presenceExtensionMinutes) * 60_000;
         if (
           cfg.presenceExtensionMinutes > 0 &&
           idleMs <= graceMs &&
-          (await isStudioPresent(worker.modelKey, now.getTime()))
+          (await isStudioPresent(worker.modelKey, now.getTime())) &&
+          (await this.isWarmestIdle(worker))
         ) {
           return;
         }
@@ -452,37 +467,59 @@ export class GpuWorkerManager {
   // ----------------------------------------------------------------
 
   /**
-   * Returns a worker able to serve `modelKey`, renting one if permitted.
+   * Rent one more machine for `modelKey` when its backlog warrants it.
    *
-   * Never rents a second machine while one is still warming — a cold start can
-   * take many minutes and impatience here doubles the bill.
+   * The queue calls this after handing a job to every idle, booted machine
+   * for the model, with what is still waiting. In order:
+   *   - rental switched off → nothing;
+   *   - the model already has machines (up or booting) → only if a new one
+   *     would finish the backlog sooner (shouldAddMachine, gpu-scaler.ts);
+   *   - at the concurrency cap → a model with no machine at all may take the
+   *     slot of an idle machine serving another model — never a busy one,
+   *     and not one a customer is using unless this model has waited a while;
+   *   - otherwise budget, config, boot-failure, balance and market checks,
+   *     then rent. The new machine takes jobs once it has booted.
+   *
+   * Different models get their own machines side by side up to the cap, so a
+   * customer switching models no longer evicts everyone else's.
    */
-  static async ensureWorker(modelKey: string, cfg: GpuBudgetConfig): Promise<EnsureWorkerResult> {
+  static async addCapacity(
+    modelKey: string,
+    cfg: GpuBudgetConfig,
+    backlog: { queued: number; oldestQueuedAt: Date | null }
+  ): Promise<CapacityResult> {
     if (!cfg.enabled) {
-      return { worker: null, reason: 'GPU rental is disabled (gpu_enabled = false)' };
+      return { reason: 'GPU rental is disabled (gpu_enabled = false)' };
     }
 
-    const existing = await prisma.aiGpuWorker.findFirst({
+    const serving = await prisma.aiGpuWorker.count({
       where: { modelKey, status: { in: ['ready', 'busy', 'warming', 'provisioning'] } },
-      orderBy: [{ status: 'asc' }, { rentedAt: 'asc' }],
     });
-    if (existing) {
-      return existing.status === 'ready'
-        ? { worker: existing }
-        : { worker: null, reason: `Worker is starting up (${existing.status})` };
+    if (serving > 0) {
+      const [renderSeconds, bootSeconds] = await Promise.all([
+        GpuEta.typicalRenderSeconds(modelKey),
+        GpuEta.typicalBootSeconds(),
+      ]);
+      const decision = shouldAddMachine({ queued: backlog.queued, machines: serving, renderSeconds, bootSeconds });
+      if (!decision.add) return { reason: decision.reason };
     }
 
     const liveCount = await prisma.aiGpuWorker.count({ where: { status: { in: LIVE_STATUSES } } });
     if (liveCount >= cfg.maxConcurrentWorkers) {
-      // Every model needs its own weights, so a worker serving model A cannot
-      // take a job for model B. With one concurrent worker allowed, a customer
-      // switching models would otherwise wait out the whole idle timeout for a
-      // machine that is doing nothing. Release it now instead.
-      const freed = await this.releaseIdleWorkerForOtherModel(modelKey);
+      if (serving > 0) {
+        return {
+          reason: `At worker capacity (${liveCount}/${cfg.maxConcurrentWorkers}); the queue continues on ${serving} machine(s)`,
+        };
+      }
+      // Every model needs its own weights, so a machine serving model A
+      // cannot take a job for model B. With no slot free, an idle machine of
+      // another model gives its slot up rather than making this model wait
+      // out that machine's whole idle timeout.
+      const waitedMs = backlog.oldestQueuedAt ? Date.now() - backlog.oldestQueuedAt.getTime() : 0;
+      const freed = await this.releaseIdleWorkerForOtherModel(modelKey, waitedMs);
       return {
-        worker: null,
         reason: freed
-          ? 'กำลังปิดเครื่องที่ว่างเพื่อเปลี่ยนไปโมเดลที่คุณเลือก'
+          ? 'Released an idle machine of another model to make room'
           : `At worker capacity (${liveCount}/${cfg.maxConcurrentWorkers})`,
       };
     }
@@ -490,7 +527,6 @@ export class GpuWorkerManager {
     const spentToday = await this.todaySpendUsd();
     if (spentToday >= cfg.dailyBudgetUsd) {
       return {
-        worker: null,
         reason: `Daily GPU budget reached ($${spentToday.toFixed(2)} of $${cfg.dailyBudgetUsd.toFixed(2)})`,
       };
     }
@@ -526,7 +562,6 @@ export class GpuWorkerManager {
     });
     if (recentBootFailure) {
       return {
-        worker: null,
         reason: `Waiting before re-renting after a failed boot — ${recentBootFailure.lastError}`.slice(0, 500),
       };
     }
@@ -540,7 +575,6 @@ export class GpuWorkerManager {
       const balance = await provider.getBalance(apiKey);
       if (balance.balanceUsd <= cfg.maxPricePerHourUsd) {
         return {
-          worker: null,
           reason: `Provider balance too low ($${balance.balanceUsd.toFixed(2)}) to rent for an hour`,
         };
       }
@@ -561,7 +595,6 @@ export class GpuWorkerManager {
 
       if (offers.length === 0) {
         return {
-          worker: null,
           reason:
             `No ${profile.gpuModels.join('/') || 'suitable'} GPU available under ` +
             `$${cfg.maxPricePerHourUsd}/hr with ${Math.round(profile.minVramMb / 1024)} GB VRAM`,
@@ -569,11 +602,11 @@ export class GpuWorkerManager {
       }
 
       const rented = await this.rentWorker(offers[0], modelKey, profile, provider, apiKey, cfg);
-      // A machine rented this tick has not booted — it has no endpoint yet.
-      // Handing it back as usable made the queue submit to it at once, fail,
-      // and spend one of the job's two attempts on every first rental.
+      // A machine rented this tick has not booted — it has no endpoint yet, and
+      // the queue only hands jobs to booted machines (submitting to one still
+      // starting fails and spends one of the job's two attempts).
       return {
-        worker: null,
+        rented: true,
         reason: `Rented worker #${rented.id} (${rented.gpuModel ?? 'GPU'}); waiting for it to boot`,
       };
     } catch (error) {
@@ -584,7 +617,7 @@ export class GpuWorkerManager {
       }
       const message = (error as Error).message;
       console.error(`[gpu] could not rent for ${modelKey}:`, message);
-      return { worker: null, reason: `Could not rent a GPU right now: ${message}`.slice(0, 500) };
+      return { reason: `Could not rent a GPU right now: ${message}`.slice(0, 500) };
     }
   }
 
@@ -597,11 +630,25 @@ export class GpuWorkerManager {
    *
    * Returns true when something was released.
    */
-  private static async releaseIdleWorkerForOtherModel(wantedModelKey: string): Promise<boolean> {
+  /** No other ready machine of the same model was used more recently. */
+  private static async isWarmestIdle(worker: AiGpuWorker): Promise<boolean> {
+    const warmer = await prisma.aiGpuWorker.count({
+      where: {
+        modelKey: worker.modelKey,
+        status: 'ready',
+        id: { not: worker.id },
+        lastJobAt: { gt: worker.lastJobAt ?? new Date(0) },
+      },
+    });
+    return warmer === 0;
+  }
+
+  private static async releaseIdleWorkerForOtherModel(wantedModelKey: string, waitedMs: number): Promise<boolean> {
     const candidates = await prisma.aiGpuWorker.findMany({
       where: { status: 'ready', modelKey: { not: wantedModelKey } },
       orderBy: { lastJobAt: 'asc' }, // least recently useful first
     });
+    const now = Date.now();
 
     for (const worker of candidates) {
       const active = await prisma.aiGpuJob.count({
@@ -615,6 +662,14 @@ export class GpuWorkerManager {
         where: { status: 'queued', modelKey: worker.modelKey },
       });
       if (queuedForIt > 0) continue;
+
+      // A machine someone is plainly still using — studio open on its model,
+      // or a job just finished — keeps its slot for a short grace, so two
+      // customers on different models do not evict each other on every order.
+      if (waitedMs < PING_PONG_GRACE_MS) {
+        const justUsed = worker.lastJobAt !== null && now - worker.lastJobAt.getTime() < 60_000;
+        if (justUsed || (await isStudioPresent(worker.modelKey, now))) continue;
+      }
 
       await this.terminate(worker.id, `Released to make room for ${wantedModelKey}`);
       return true;

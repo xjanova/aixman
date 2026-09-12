@@ -77,6 +77,16 @@ export class GpuEta {
     return samples.length >= MIN_SAMPLES ? median(samples) : null;
   }
 
+  /** Render seconds for a typical job (a 5 s clip, one image) — history first. */
+  static async typicalRenderSeconds(modelKey: string): Promise<number> {
+    return (await this.medianRenderSeconds(modelKey)) ?? this.baselineRenderSeconds(modelKey, { duration: 5 });
+  }
+
+  /** Seconds from renting a machine to it being ready — history first. */
+  static async typicalBootSeconds(): Promise<number> {
+    return (await this.medianWarmupSeconds()) ?? DEFAULT_WARMUP_SECONDS;
+  }
+
   /**
    * Baseline render estimate for a model that has no history yet, scaled by how
    * much output was asked for.
@@ -141,14 +151,20 @@ export class GpuEta {
       },
     });
 
-    let seconds = render * (ahead + 1);
+    // Machines already up share the queue; with several, the jobs ahead are
+    // rendered side by side rather than one after another.
+    const upForModel = await prisma.aiGpuWorker.count({
+      where: { modelKey: job.modelKey, status: { in: ['ready', 'busy'] } },
+    });
+    let seconds = render * Math.ceil((ahead + 1) / Math.max(1, upForModel));
     let includesWarmup = false;
     let warmupRemainingSeconds = 0;
 
     const worker = job.worker;
     const usableWorker = await prisma.aiGpuWorker.findFirst({
       where: { modelKey: job.modelKey, status: { in: ['ready', 'busy', 'warming', 'provisioning'] } },
-      orderBy: { rentedAt: 'asc' },
+      // Any machine already up beats one still booting.
+      orderBy: [{ readyAt: { sort: 'desc', nulls: 'last' } }, { rentedAt: 'asc' }],
     });
     const live = worker ?? usableWorker;
 
