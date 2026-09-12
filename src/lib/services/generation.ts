@@ -1,5 +1,5 @@
 import { after } from 'next/server';
-import prisma from '@/lib/db';
+import prisma, { SLOW_DB_TX } from '@/lib/db';
 import { Prisma } from '@/generated/prisma/client';
 import { getProvider } from '@/lib/providers';
 import { getGpuProvider } from '@/lib/gpu';
@@ -110,7 +110,9 @@ export class GenerationService {
       throw new Error('No available API accounts for this provider. Please try again later.');
     }
 
-    // 3. Atomically check & deduct credits + create generation in one transaction
+    // 3. Atomically check & deduct credits + create generation in one transaction.
+    // SLOW_DB_TX: a 9.2 s stall once expired a valid order here under Prisma's
+    // defaults (rolled back, no charge, but "Generation failed" for nothing).
     const { generation } = await prisma.$transaction(async (tx) => {
       // Atomic conditional update — prevents double-spend race condition
       const updated = await tx.$executeRawUnsafe(
@@ -154,15 +156,7 @@ export class GenerationService {
       });
 
       return { generation: gen };
-    }, {
-      // Prisma's defaults (2 s to start, 5 s to finish) are tighter than the
-      // shared MySQL guarantees: one stall of 9.2 s expired a valid order and
-      // the customer got "Generation failed" for nothing (rolled back, no
-      // charge). Four short statements finish in milliseconds; this only
-      // gives a slow moment room to pass.
-      maxWait: 5_000,
-      timeout: 15_000,
-    });
+    }, SLOW_DB_TX);
 
     // 5b. GPU-backed providers have no inference API to call — they rent a
     // machine and run the model on it. Queue the job and return immediately;
@@ -414,31 +408,34 @@ export class GenerationService {
     });
     if (existingRefund) return;
 
-    await prisma.$transaction([
-      prisma.aiUserCredit.update({
+    // A callback with SLOW_DB_TX, not the array form: the GPU queue calls this
+    // after it has already marked the job failed, and nothing retries it, so a
+    // refund lost to a slow moment of the database stays lost.
+    await prisma.$transaction(async (tx) => {
+      const credit = await tx.aiUserCredit.update({
         where: { userId },
         data: {
           balance: { increment: amount },
           totalUsed: { decrement: amount },
         },
-      }),
-      prisma.aiCreditTransaction.create({
+      });
+      await tx.aiCreditTransaction.create({
         data: {
           userId,
           type: 'refund',
           amount,
-          balanceAfter: userCredit.balance + amount,
+          balanceAfter: credit.balance,
           description: 'Auto-refund: generation failed',
           generationId,
         },
-      }),
+      });
       // Recorded on the generation too, so the gallery can say "คืนเครดิตแล้ว"
       // without joining the transaction log on every read.
-      prisma.aiGeneration.update({
+      await tx.aiGeneration.update({
         where: { id: generationId },
         data: { creditsRefunded: amount },
-      }),
-    ]);
+      });
+    }, SLOW_DB_TX);
   }
 
   /**
