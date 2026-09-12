@@ -83,11 +83,19 @@ export default function RootLayout({
       {/* Body has no opaque bg — AmbientBackground (fixed, z-index 0) supplies the dark base + fiber threads. Adding `bg-background` here would cover them entirely. */}
       <body className="min-h-full flex flex-col text-foreground">
         <AmbientBackground />
-        <SessionProvider>
-          <ToastProvider>
-            {children}
-          </ToastProvider>
-        </SessionProvider>
+        {/* Load-bearing, not cosmetic: AmbientBackground is `fixed z-0` over an
+            opaque base, and CSS paints z-index 0 layers after ordinary content.
+            Without a positioned layer above it, every page's unpositioned text
+            and panels are laid out but covered — only elements that happen to
+            be `position: relative` show through. One layer here covers every
+            route, instead of each layout remembering (admin's used to). */}
+        <div className="relative z-[1] flex flex-1 flex-col">
+          <SessionProvider>
+            <ToastProvider>
+              {children}
+            </ToastProvider>
+          </SessionProvider>
+        </div>
         <ServiceWorkerRegister />
       </body>
     </html>
