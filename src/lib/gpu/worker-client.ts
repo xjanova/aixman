@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import type { WorkerProfile } from './config';
 import { buildMiniMaxH3Workflow, frameLengthFor } from './workflows/minimax-h3';
 import { getCatalogEntry, type CatalogJobParams } from './catalog';
+import { readFrameSource } from './frame-input';
 import {
   bindParameters,
   convertUiWorkflowToApi,
@@ -46,6 +47,12 @@ export interface WorkerJobParams {
 
 export interface SubmitResult {
   externalJobId: string;
+}
+
+/** Frame stills uploaded into the worker's ComfyUI input dir, by filename. */
+interface StagedFrames {
+  first?: string;
+  last?: string;
 }
 
 export type PollOutcome =
@@ -157,6 +164,77 @@ export class WorkerClient {
     clearSchema(this.endpoint.replace(/\/+$/, ''));
   }
 
+  /**
+   * Upload a job's first/last-frame stills into the worker, for catalogue
+   * models that take them. The pasted-workflow and fallback paths keep their
+   * old behaviour of receiving the raw value.
+   *
+   * Runs per submission, so a job retried on another machine re-uploads there.
+   */
+  private async stageFrames(params: WorkerJobParams, objectInfo: ComfyObjectInfo): Promise<StagedFrames> {
+    const entry = this.modelKey ? getCatalogEntry(this.modelKey) : undefined;
+    if (this.profile.workflow || !entry?.video) return {};
+
+    const lastSource = typeof params.extra?.inputImageEnd === 'string' ? params.extra.inputImageEnd : undefined;
+    const frames: StagedFrames = {};
+    if (entry.video.firstFrame && params.inputImage) frames.first = await this.uploadImage(params.inputImage, 'first');
+    if (entry.video.lastFrame && lastSource) frames.last = await this.uploadImage(lastSource, 'last');
+
+    // LoadImage's schema lists the input dir as it was when /object_info was
+    // cached, and validateGraph checks combo values against that list — so a
+    // file uploaded a moment ago would read as "not available on the worker".
+    if (frames.first || frames.last) await this.refreshNodeSpec(objectInfo, 'LoadImage');
+    return frames;
+  }
+
+  /**
+   * POST one still to ComfyUI's `/upload/image` and return the name to put in a
+   * LoadImage node.
+   *
+   * The multipart body is built by hand as one buffer: the container's proxy
+   * forwards exactly `Content-Length` bytes, and a streamed FormData body could
+   * go out chunked with no length at all.
+   */
+  private async uploadImage(source: string, role: 'first' | 'last'): Promise<string> {
+    const { bytes, contentType, ext } = await readFrameSource(source);
+    const filename = `aixman-${role}-${randomUUID()}.${ext}`;
+    const boundary = `----aixman${randomUUID().replace(/-/g, '')}`;
+    const body = Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="${filename}"\r\n` +
+          `Content-Type: ${contentType}\r\n\r\n`
+      ),
+      bytes,
+      Buffer.from(
+        `\r\n--${boundary}\r\nContent-Disposition: form-data; name="overwrite"\r\n\r\ntrue\r\n--${boundary}--\r\n`
+      ),
+    ]);
+
+    const res = await this.request('/upload/image', {
+      method: 'POST',
+      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+      body: new Uint8Array(body),
+      timeout: SUBMIT_TIMEOUT_MS,
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(`Worker refused the ${role} frame (HTTP ${res.status}): ${text.slice(0, 200)}`);
+    }
+    const data = JSON.parse(text) as { name?: string; subfolder?: string };
+    if (!data.name) throw new Error(`Worker returned no name for the ${role} frame`);
+    return data.subfolder ? `${data.subfolder}/${data.name}` : data.name;
+  }
+
+  /** Re-read one node class's schema into the cached `/object_info`. */
+  private async refreshNodeSpec(objectInfo: ComfyObjectInfo, classType: string): Promise<void> {
+    const res = await this.request(`/object_info/${encodeURIComponent(classType)}`, { timeout: 30_000 });
+    if (!res.ok) {
+      throw new Error(`Could not refresh the worker's ${classType} schema (HTTP ${res.status})`);
+    }
+    const fresh = (await res.json()) as ComfyObjectInfo;
+    if (fresh[classType]) objectInfo[classType] = fresh[classType];
+  }
+
   // ----------------------------------------------------------------
   // ComfyUI
   // ----------------------------------------------------------------
@@ -174,7 +252,8 @@ export class WorkerClient {
    */
   private async buildGraph(
     params: WorkerJobParams,
-    objectInfo: ComfyObjectInfo
+    objectInfo: ComfyObjectInfo,
+    frames: StagedFrames = {}
   ): Promise<unknown> {
     if (this.profile.workflow) {
       return applyWorkflowVars(this.profile.workflow, {
@@ -202,16 +281,21 @@ export class WorkerClient {
         fps: params.fps,
         seed: params.seed,
         steps: typeof params.extra?.steps === 'number' ? params.extra.steps : undefined,
-        imageFilename: params.inputImage,
+        // Names in the worker's input dir, uploaded by `stageFrames` — never the
+        // raw URL or data URL the customer sent.
+        imageFilename: frames.first,
+        lastImageFilename: frames.last,
         audioFilename: typeof params.extra?.audioFilename === 'string' ? params.extra.audioFilename : undefined,
         lyrics: typeof params.extra?.lyrics === 'string' ? params.extra.lyrics : undefined,
+        resolution: typeof params.extra?.resolution === 'string' ? params.extra.resolution : undefined,
       };
 
       let graph = convertUiWorkflowToApi(entry.template, objectInfo);
       if (entry.inject) graph = injectNodes(graph, entry.inject(jobParams));
       // Bind before pruning: pruning cascades through dependants, so redirecting
-      // a path first is what stops the cascade from eating it.
-      const bound = bindParameters(graph, entry.bind(jobParams));
+      // a path first is what stops the cascade from eating it. The schema lets
+      // `connect` bindings wire sockets the template left open (H3's frames).
+      const bound = bindParameters(graph, entry.bind(jobParams), objectInfo);
 
       // A binding that misses leaves the *template's demo value* in place — the
       // customer would be charged for a render of the sample prompt. Fail loudly
@@ -249,7 +333,8 @@ export class WorkerClient {
     // spending render time on it. Also catches half-downloaded weights.
     let graph: ComfyGraph;
     try {
-      const rawGraph = await this.buildGraph(params, objectInfo);
+      const frames = await this.stageFrames(params, objectInfo);
+      const rawGraph = await this.buildGraph(params, objectInfo, frames);
       const validated = validateGraph(rawGraph as ComfyGraph, objectInfo);
       graph = validated.graph;
       for (const warning of validated.warnings) {

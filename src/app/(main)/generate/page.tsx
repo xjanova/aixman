@@ -200,7 +200,7 @@ function probeDuration(file: File, kind: "audio" | "video"): Promise<number | nu
  */
 async function uploadMedia(
   file: File,
-  kind: "audio" | "video",
+  kind: "audio" | "video" | "image",
 ): Promise<{ url?: string; error?: string }> {
   try {
     const form = new FormData();
@@ -213,6 +213,27 @@ async function uploadMedia(
   } catch {
     return { error: "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้" };
   }
+}
+
+type ResolutionPreset = { id: string; label: string; aspects: string[]; isDefault?: boolean };
+
+/**
+ * The resolution preset an order uses: the customer's pick while this aspect
+ * still offers it, else the model's default for that aspect.
+ *
+ * Display only. `handleGenerate` sends the raw pick and lets the server apply
+ * the same fallback: computing from `selectedModel` inside the handler made
+ * React Compiler classify it as render-time code (a false `react-hooks/purity`
+ * error on its `Date.now()`), and a component with a compiler error loses
+ * auto-memoization entirely.
+ */
+function pickResolution(
+  presets: ResolutionPreset[] | null | undefined,
+  aspect: string,
+  chosen: string | null,
+): ResolutionPreset | null {
+  const offered = (presets ?? []).filter((r) => r.aspects.includes(aspect));
+  return offered.find((r) => r.id === chosen) ?? offered.find((r) => r.isDefault) ?? offered[0] ?? null;
 }
 
 /*
@@ -697,7 +718,15 @@ export default function GeneratePage() {
   const [inputAudioName, setInputAudioName] = useState<string | null>(null);
   const [sourceVideo, setSourceVideo] = useState<string | null>(null);
   const [sourceVideoName, setSourceVideoName] = useState<string | null>(null);
-  const [uploading, setUploading] = useState<"audio" | "video" | null>(null);
+  const [uploading, setUploading] = useState<"audio" | "video" | "image" | null>(null);
+  /**
+   * The frame a video must end on, for models that take one (first-and-last-
+   * frame mode). Uploaded to R2 like the lip-sync inputs, so this is a URL:
+   * the server reads it for the rented worker and only accepts our own links.
+   */
+  const [inputImageEnd, setInputImageEnd] = useState<string | null>(null);
+  /** Resolution preset id, for models that offer presets; null = model default. */
+  const [resolution, setResolution] = useState<string | null>(null);
   /** Clip length in seconds. Was never sent, so every clip came out at the
    *  provider default regardless of what the model could do. */
   const [duration, setDuration] = useState(5);
@@ -826,6 +855,14 @@ export default function GeneratePage() {
     if (!durationChoices.includes(duration)) setDuration(durationChoices[0]);
   }, [tab, aspectRatio, duration, durationChoices]);
 
+  /** Resolution presets this model offers for the chosen aspect ratio. */
+  const resolutionChoices =
+    tab === "video" ? (selectedModel?.video?.resolutions ?? []).filter((r) => r.aspects.includes(aspectRatio)) : [];
+  /** The preset in force: the customer's pick if still offered, else the default. */
+  const activeResolution = tab === "video" ? pickResolution(selectedModel?.video?.resolutions, aspectRatio, resolution) : null;
+  /** Whether this model can end on a chosen frame (first-and-last-frame mode). */
+  const offersLastFrame = tab === "video" && videoMode === "i2v" && selectedModel?.video?.lastFrame === true;
+
   /** An image→video run has nothing to animate without its first frame. */
   const missingStartFrame = tab === "video" && videoMode === "i2v" && !inputImage;
 
@@ -844,7 +881,9 @@ export default function GeneratePage() {
     selectedModel?.canOrder === false ||
     (tab !== "lipsync" && !prompt.trim()) ||
     missingStartFrame ||
-    missingLipsyncInput;
+    missingLipsyncInput ||
+    // An order placed mid-upload would go out without the end frame.
+    uploading === "image";
 
   /**
    * Whether /api/upscale would find a model it can run — the same match it
@@ -923,6 +962,21 @@ export default function GeneratePage() {
     }
     if (kind === "audio") { setInputAudio(result.url!); setInputAudioName(file.name); }
     else { setSourceVideo(result.url!); setSourceVideoName(file.name); }
+  };
+
+  /** Last frame → R2. No try/finally, for the same reason as handleMediaUpload. */
+  const handleEndFrameUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setUploading("image");
+    const result = await uploadMedia(file, "image");
+    setUploading(null);
+    if (result.error) {
+      toast("error", "อัปโหลดไม่สำเร็จ", result.error);
+      return;
+    }
+    setInputImageEnd(result.url!);
   };
 
   const pollResult = useCallback(async (generationId: number) => {
@@ -1053,8 +1107,16 @@ export default function GeneratePage() {
       inputImage: tab === "lipsync" && lipsyncNeeds === "video" ? undefined : imageToSend || undefined,
       inputAudio: tab === "lipsync" ? inputAudio ?? undefined : undefined,
       inputVideo: tab === "lipsync" ? sourceVideo ?? undefined : undefined,
+      // Only alongside a first frame: an end frame on its own is not a mode
+      // this studio offers. A model without first-and-last-frame mode never
+      // shows the picker, and ignores the field if it is sent.
+      inputImageEnd: tab === "video" && videoMode === "i2v" && imageToSend ? inputImageEnd ?? undefined : undefined,
       params: {
         width: ar?.w || 1024, height: ar?.h || 1024, aspectRatio,
+        // The customer's pick as-is. The server falls back to the model's
+        // default when it is absent or not offered for the frame shape
+        // (h3RenderPlan), which is the same preset the popover shows as chosen.
+        resolution: resolution ?? undefined,
         strength: refImage && tab === "image" ? strength : undefined,
         numOutputs: tab === "image" ? outputs : undefined,
         // Every video adapter reads `duration`; none of them read steps or
@@ -1395,6 +1457,25 @@ export default function GeneratePage() {
               </div>
             </Popover>
           )}
+
+          {/* Resolution presets — only where the model offers a real choice for
+              this aspect ratio (H3: 768p / 720p / 544p on 16:9). */}
+          {resolutionChoices.length > 1 && (
+            <Popover id="resolution" open={openPanel} onToggle={setOpenPanel} label="ความละเอียด"
+              value={activeResolution?.id ?? "—"} width={220} align="right">
+              <div style={{ display: "grid", gap: 6 }}>
+                {resolutionChoices.map(r => (
+                  <button key={r.id} onClick={() => { setResolution(r.id); setOpenPanel(null); }}
+                    style={{
+                      padding: "8px 10px", borderRadius: 8, fontSize: 12, cursor: "pointer", textAlign: "left", fontWeight: 600,
+                      background: activeResolution?.id === r.id ? `hsla(${220 + HUE},60%,50%,0.25)` : "rgba(255,255,255,0.04)",
+                      color: activeResolution?.id === r.id ? "#fff" : "#94a3b8",
+                      border: activeResolution?.id === r.id ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
+                    }}>{r.label}</button>
+                ))}
+              </div>
+            </Popover>
+          )}
         </div>
 
         {/* Count + advanced + reference on one row */}
@@ -1508,6 +1589,28 @@ export default function GeneratePage() {
                 <div style={{ fontSize: 22, marginBottom: 4 }}>↑</div>
                 อัปโหลดภาพ
                 <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => handleImageUpload(e)} />
+              </label>
+            )}
+          </Section>
+        )}
+
+        {/* The frame the clip should end on — first-and-last-frame models only.
+            Optional: without it the model decides where the motion goes. */}
+        {offersLastFrame && (
+          <Section label="ภาพสุดท้าย (ไม่บังคับ)">
+            {inputImageEnd ? (
+              <div style={{ position: "relative" }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={inputImageEnd} alt="End frame" style={{ width: "100%", borderRadius: 10, maxHeight: 180, objectFit: "cover" }} />
+                <button onClick={() => setInputImageEnd(null)}
+                  style={{ position: "absolute", top: 8, right: 8, width: 26, height: 26, borderRadius: "50%", background: "rgba(0,0,0,0.65)", color: "#fff", border: "none", cursor: "pointer", fontSize: 14 }}>×</button>
+              </div>
+            ) : (
+              <label style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, borderRadius: 12, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#64748b", fontSize: 12, cursor: uploading === "image" ? "wait" : "pointer" }}>
+                <div style={{ fontSize: 22, marginBottom: 4 }}>{uploading === "image" ? "…" : "↑"}</div>
+                {uploading === "image" ? "กำลังอัปโหลด…" : "อัปโหลดภาพที่ต้องการให้คลิปจบ"}
+                <input type="file" accept="image/png,image/jpeg,image/webp" style={{ display: "none" }}
+                  disabled={uploading === "image"} onChange={handleEndFrameUpload} />
               </label>
             )}
           </Section>

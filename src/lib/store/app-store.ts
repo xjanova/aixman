@@ -29,6 +29,15 @@ interface AIModel {
   maxOutputs?: number | null;
   /** Set when the price grows with clip length; see lib/pricing.ts. */
   durationCurve?: DurationCurve | null;
+  /**
+   * Optional video controls (rented-GPU models): a first frame, a last frame,
+   * and resolution presets per aspect ratio. From the GPU catalogue entry.
+   */
+  video?: {
+    firstFrame?: boolean;
+    lastFrame?: boolean;
+    resolutions?: { id: string; label: string; aspects: string[]; isDefault?: boolean }[];
+  } | null;
 }
 
 interface AIStyle {

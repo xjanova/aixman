@@ -33,6 +33,11 @@ export interface GenerationRequest {
   inputAudio?: string;
   /** Clip to re-dub, as a URL from `/api/uploads`. See `inputAudio`. */
   inputVideo?: string;
+  /**
+   * The frame a video must end on (first-and-last-frame mode), as a URL from
+   * `/api/uploads?kind=image`. `inputImage` stays the first frame.
+   */
+  inputImageEnd?: string;
   styleId?: number;
 }
 
@@ -48,6 +53,11 @@ export interface GenerationParams {
   numOutputs?: number;
   /** Song lyrics for music models; omitted for an instrumental. */
   lyrics?: string;
+  /**
+   * Resolution preset id for a video model that offers presets (GPU catalogue
+   * `video.resolutions`, e.g. H3's '720p'); the model's default when omitted.
+   */
+  resolution?: string;
   [key: string]: unknown;
 }
 

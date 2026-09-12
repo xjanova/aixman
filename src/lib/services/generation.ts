@@ -9,6 +9,7 @@ import { persistAssetSafe, isStorageConfigured } from '@/lib/storage/r2';
 import type { GenerationRequest, GenerationResult, ProviderSlug } from '@/types';
 import { fitFrame } from '@/lib/gpu/frame';
 import { getCatalogEntry } from '@/lib/gpu/catalog';
+import { isAcceptedFrameSource } from '@/lib/gpu/frame-input';
 import { creditsForDuration } from '@/lib/pricing';
 
 /**
@@ -53,6 +54,17 @@ export class GenerationService {
       throw new Error('โมเดลนี้ยังตั้งค่าไม่เสร็จ กรุณาติดต่อผู้ดูแลระบบ');
     }
 
+    // A rented worker gets its frame stills from *our server*, which reads them
+    // (frame-input.ts). Refuse a source it would refuse, before credits move,
+    // rather than charge and refund when the job reaches a machine.
+    if (gpuModel && request.type === 'video') {
+      for (const src of [request.inputImage, request.inputImageEnd]) {
+        if (src !== undefined && !isAcceptedFrameSource(src)) {
+          throw new Error('ไฟล์ภาพที่แนบไม่ถูกต้อง กรุณาอัปโหลดใหม่');
+        }
+      }
+    }
+
     // The model's limits are what its price was set against and what a rented
     // card can hold. The API (and the mobile app) can send anything — an
     // unclamped 60 s request would cost far more than it paid for, or not fit.
@@ -82,6 +94,7 @@ export class GenerationService {
       ...(request.params ?? {}),
       ...(request.inputAudio ? { inputAudio: request.inputAudio } : {}),
       ...(request.inputVideo ? { inputVideo: request.inputVideo } : {}),
+      ...(request.inputImageEnd ? { inputImageEnd: request.inputImageEnd } : {}),
     };
 
     // 2. Select an account from the pool
