@@ -11,6 +11,8 @@ import { fitFrame } from '@/lib/gpu/frame';
 import { getCatalogEntry, isAdminOnlyPreset } from '@/lib/gpu/catalog';
 import { isAcceptedFrameSource } from '@/lib/gpu/frame-input';
 import { creditsForDuration } from '@/lib/pricing';
+import { getGpuConfig } from '@/lib/gpu/config';
+import { GpuBalance, RENDERING_PAUSED_MESSAGE } from './gpu-balance';
 
 /**
  * Generation Service
@@ -52,6 +54,13 @@ export class GenerationService {
     const gpuModel = getGpuProvider(model.provider.slug) !== null;
     if (gpuModel && !isStorageConfigured()) {
       throw new Error('โมเดลนี้ยังตั้งค่าไม่เสร็จ กรุณาติดต่อผู้ดูแลระบบ');
+    }
+
+    // The vendor balance cannot rent a machine and none is running for this
+    // model: an order now would only wait out the grace and be refunded.
+    // Refuse it up front instead (gpu-balance.ts).
+    if (gpuModel && (await GpuBalance.pausesModel(await getGpuConfig(), model.modelId))) {
+      throw new Error(RENDERING_PAUSED_MESSAGE);
     }
 
     // A rented worker gets its frame stills from *our server*, which reads them

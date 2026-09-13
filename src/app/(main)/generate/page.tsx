@@ -129,6 +129,7 @@ interface GenerationStatus {
     etaSeconds?: number | null;
     etaLabel?: string | null;
     etaBasis?: string;
+    paused?: boolean;
   } | null;
 }
 
@@ -507,6 +508,8 @@ interface QueueProgress {
   etaSeconds: number | null;
   etaLabel: string | null;
   basis: string;
+  /** Rendering is stopped for now (the label says what happens next). */
+  paused: boolean;
   /** When this reading arrived, so the bar keeps moving between polls. */
   at: number;
 }
@@ -556,7 +559,9 @@ function GeneratingOverlay({ progress }: { progress: QueueProgress | null }) {
               <div key={place} className="xdr-motion" style={{ fontSize: 40, fontWeight: 700, lineHeight: 1.05, animation: "xdr-pop 450ms ease-out" }}>{place}</div>
             </>
           ) : (
-            <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: "0.04em" }}>กำลังสร้าง</div>
+            <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: "0.04em" }}>
+              {progress?.paused ? "หยุดชั่วคราว" : "กำลังสร้าง"}
+            </div>
           )}
         </div>
       </div>
@@ -1021,6 +1026,7 @@ export default function GeneratePage() {
           // With no history the estimate is a rough baseline, and is worded
           // as such rather than quoted like a firm figure.
           basis: data.gpu.etaBasis ?? "history",
+          paused: data.gpu.paused === true,
           at: Date.now(),
         });
       } else if (sawGpu) {

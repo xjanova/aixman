@@ -5,6 +5,8 @@ import { getGpuConfig } from '@/lib/gpu/config';
 import { GpuWorkerManager } from '@/lib/services/gpu-worker';
 import { GpuQueue } from '@/lib/services/gpu-queue';
 import { withTickLock } from '@/lib/services/gpu-lock';
+import { GpuBalance } from '@/lib/services/gpu-balance';
+import { saveTelegramConfig, sendTelegram } from '@/lib/notify/telegram';
 
 /**
  * Admin control surface for rented GPUs.
@@ -206,6 +208,28 @@ export async function POST(request: NextRequest) {
       case 'tick': {
         const report = await withTickLock(() => GpuQueue.tick());
         return NextResponse.json(report ?? { skipped: true, reason: 'Another tick is already running' });
+      }
+
+      case 'refresh-balance': {
+        // After a top-up: read it now instead of waiting for the next tick, so
+        // orders reopen and the recovery alert goes out straight away.
+        const reading = await GpuBalance.check(await getGpuConfig(), 0);
+        return NextResponse.json({ success: true, balance: reading });
+      }
+
+      case 'save-telegram': {
+        const telegram = await saveTelegramConfig({ botToken: body.botToken, chatId: body.chatId });
+        return NextResponse.json({ success: true, telegram });
+      }
+
+      case 'test-telegram': {
+        const result = await sendTelegram('✅ AIXMAN: ทดสอบการแจ้งเตือน — ถ้าเห็นข้อความนี้ แปลว่าบอทส่งถึงแล้ว');
+        if (!result.ok) {
+          // Telegram's own reason ("chat not found", "Unauthorized") is what the
+          // admin needs to fix it; the token is already scrubbed out of it.
+          return NextResponse.json({ error: `ส่งไม่สำเร็จ: ${result.error}` }, { status: 400 });
+        }
+        return NextResponse.json({ success: true });
       }
 
       case 'save-config': {

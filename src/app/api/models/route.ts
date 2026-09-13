@@ -5,6 +5,7 @@ import { ModelReadiness, TUNING_MESSAGE } from '@/lib/services/model-readiness';
 import { accountBlock, type AccountBlock } from '@/lib/services/account-pool';
 import { getCatalogEntry, visibleVideoOptions } from '@/lib/gpu/catalog';
 import { getGpuConfig } from '@/lib/gpu/config';
+import { GpuBalance } from '@/lib/services/gpu-balance';
 import { isStorageConfigured } from '@/lib/storage/r2';
 import { isInHouse, publicProvider } from '@/lib/public-provider';
 
@@ -64,6 +65,21 @@ export async function GET() {
     getGpuConfig(),
   ]);
 
+  // Vendor balance too low to rent (gpu-balance.ts): a model with no machine
+  // running cannot render anything, so it is shown as closed rather than taking
+  // an order that would only be refunded. A stored reading — no vendor call here.
+  const pausedModels = new Set<string>();
+  if (gpuCfg.enabled && (await GpuBalance.read(gpuCfg)).state === 'insufficient') {
+    const live = await prisma.aiGpuWorker.findMany({
+      where: { status: { in: ['provisioning', 'warming', 'ready', 'busy'] } },
+      select: { modelKey: true },
+    });
+    const running = new Set(live.map((w) => w.modelKey));
+    for (const m of models) {
+      if (isInHouse(m.provider.slug) && !running.has(m.modelId)) pausedModels.add(m.modelId);
+    }
+  }
+
   const byProvider = new Map<number, Availability>();
   const availability = (provider: { id: number; slug: string; isActive: boolean }): Availability => {
     const cached = byProvider.get(provider.id);
@@ -85,7 +101,7 @@ export async function GET() {
   return NextResponse.json({
     models: models.map((m) => {
       const inHouse = isInHouse(m.provider.slug);
-      const avail = availability(m.provider);
+      const avail = pausedModels.has(m.modelId) ? 'maintenance' : availability(m.provider);
       const readinessOk = ModelReadiness.canOrder(m.readiness, admin);
       const status = avail !== 'ok' ? 'unavailable' : m.readiness === 'tuning' ? 'tuning' : readinessOk ? 'ready' : 'unavailable';
       const reason =

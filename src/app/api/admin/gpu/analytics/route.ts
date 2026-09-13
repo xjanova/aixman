@@ -2,8 +2,9 @@ import { NextResponse } from 'next/server';
 import { isAdmin } from '@/lib/auth';
 import prisma from '@/lib/db';
 import { getGpuConfig } from '@/lib/gpu/config';
-import { getGpuProvider } from '@/lib/gpu';
 import { GpuWorkerManager } from '@/lib/services/gpu-worker';
+import { GpuBalance, type BalanceReading } from '@/lib/services/gpu-balance';
+import { getTelegramStatus } from '@/lib/notify/telegram';
 import { isStorageConfigured } from '@/lib/storage/r2';
 import { getCatalogEntry } from '@/lib/gpu/catalog';
 import { isStudioPresent } from '@/lib/services/studio-presence';
@@ -27,6 +28,8 @@ export const dynamic = 'force-dynamic';
 
 const DAYS = 30;
 const FALLBACK_USD_THB = 36;
+/** The page polls every 15 s; the vendor needs asking about once a minute. */
+const ADMIN_BALANCE_MAX_AGE_MS = 60_000;
 
 interface DayBucket {
   date: string;
@@ -151,21 +154,23 @@ export async function GET() {
   }, 0);
   const renderSeconds = completed.reduce((s, j) => s + j.gpuSeconds, 0);
 
-  // ---- Live provider balance ----------------------------------------
+  // ---- Provider balance -------------------------------------------------
+  // Through GpuBalance so the page's 15 s poll costs at most one vendor call a
+  // minute, and a reading taken here also triggers the low-balance alert.
   // Best effort: the dashboard must still render if the marketplace is down.
-  let balance: { balanceUsd: number; availableRentalHours?: number } | null = null;
+  let balanceReading: BalanceReading | null = null;
   let balanceError: string | null = null;
   try {
-    const provider = getGpuProvider(cfg.providerSlug);
-    if (provider) {
-      const apiKey = await GpuWorkerManager.getApiKey(cfg.providerSlug);
-      balance = await provider.getBalance(apiKey);
-    }
+    balanceReading = await GpuBalance.check(cfg, ADMIN_BALANCE_MAX_AGE_MS);
   } catch (error) {
     balanceError = (error as Error).message.includes('No active API key')
       ? 'ยังไม่ได้ตั้งค่า API key'
       : 'อ่านยอดเงินจาก provider ไม่ได้';
+    // The last stored reading is still worth showing, marked by its time.
+    const stored = await GpuBalance.read(cfg);
+    if (stored.usd != null) balanceReading = stored;
   }
+  const balance = balanceReading?.usd != null ? balanceReading : null;
 
   const spentToday = await GpuWorkerManager.todaySpendUsd();
   const burnRateUsdPerHour = liveWorkers.reduce((s, w) => s + Number(w.pricePerHourUsd), 0);
@@ -215,14 +220,19 @@ export async function GET() {
     },
     balance: balance
       ? {
-          balanceUsd: Number(balance.balanceUsd.toFixed(2)),
+          balanceUsd: Number((balance.usd ?? 0).toFixed(2)),
           availableRentalHours: balance.availableRentalHours ?? null,
           // At the current burn, how long before the account is empty.
           hoursAtCurrentBurn:
-            burnRateUsdPerHour > 0 ? Number((balance.balanceUsd / burnRateUsdPerHour).toFixed(1)) : null,
+            burnRateUsdPerHour > 0 ? Number(((balance.usd ?? 0) / burnRateUsdPerHour).toFixed(1)) : null,
+          state: balance.state,
+          lowBelowUsd: balance.lowBelowUsd,
+          insufficientAtOrBelowUsd: balance.insufficientAtOrBelowUsd,
+          checkedAt: balance.checkedAt,
         }
       : null,
     balanceError,
+    telegram: await getTelegramStatus(),
     // Without R2 the queue refuses to rent (a render would be lost with the
     // machine), so the admin needs to see why nothing is happening.
     storageConfigured: isStorageConfigured(),
