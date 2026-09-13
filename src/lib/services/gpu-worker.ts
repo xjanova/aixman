@@ -17,6 +17,7 @@ import { RentUnconfirmedError, type GpuOffer, type GpuRentalProvider, type Pendi
 import { isStorageConfigured } from '@/lib/storage/r2';
 import { isStudioPresent } from './studio-presence';
 import { GpuEta } from './gpu-eta';
+import { GpuBalance } from './gpu-balance';
 import { shouldAddMachine } from './gpu-scaler';
 
 /**
@@ -577,11 +578,12 @@ export class GpuWorkerManager {
     // the next tick try again, rather than failing every queued job. ---
     try {
       // Renting with an empty vendor balance produces an instance that dies
-      // mid-render; check before committing.
-      const balance = await provider.getBalance(apiKey);
-      if (balance.balanceUsd <= cfg.maxPricePerHourUsd) {
+      // mid-render; check before committing. Always a fresh reading here, and
+      // stored, so admins are alerted and the queue can stop waiting on it.
+      const balance = await GpuBalance.check(cfg, 0);
+      if (balance.state === 'insufficient') {
         return {
-          reason: `Provider balance too low ($${balance.balanceUsd.toFixed(2)}) to rent for an hour`,
+          reason: `Provider balance too low ($${(balance.usd ?? 0).toFixed(2)}) to rent for an hour`,
         };
       }
 

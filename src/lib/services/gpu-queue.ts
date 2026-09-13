@@ -6,6 +6,7 @@ import { getGpuConfig, getWorkerProfile, type GpuBudgetConfig } from '@/lib/gpu/
 import { isAdminOnlyPreset } from '@/lib/gpu/catalog';
 import { WorkerClient, type WorkerJobParams } from '@/lib/gpu/worker-client';
 import { GpuWorkerManager } from './gpu-worker';
+import { GpuBalance, INSUFFICIENT_BALANCE_GRACE_MS, RENDERING_PAUSED_MESSAGE } from './gpu-balance';
 import { GenerationService } from './generation';
 import { ModelReadiness } from './model-readiness';
 import { uploadBuffer, isStorageConfigured } from '@/lib/storage/r2';
@@ -28,6 +29,9 @@ const ASSIGN_STALE_MS = 5 * 60_000;
 
 /** Pause before the one retry of recording a render that was just submitted. */
 const RECORD_RETRY_MS = 2_000;
+
+/** Job failure reason when the vendor balance cannot rent; `userFacingError` matches it. */
+const RENDERING_PAUSED_PREFIX = 'Rendering paused';
 
 export interface TickReport {
   enabled: boolean;
@@ -118,6 +122,18 @@ export class GpuQueue {
       await GpuWorkerManager.reconcile(cfg);
     } catch (error) {
       console.error('[gpu] reconcile failed:', (error as Error).message);
+    }
+
+    // Watch the vendor balance even while nothing is queued, so a low balance
+    // is reported before a batch runs into it. Throttled inside to one vendor
+    // call every few minutes.
+    if (cfg.enabled) {
+      try {
+        await GpuBalance.check(cfg);
+      } catch (error) {
+        const message = (error as Error).message;
+        if (!message.includes('No active API key')) console.error('[gpu] balance check failed:', message);
+      }
     }
 
     await this.requeueStaleAssignments();
@@ -605,9 +621,17 @@ export class GpuQueue {
    * forever for a render that never starts. A job is stuck once it has waited
    * the full warmup-plus-render allowance *and* no worker for its model is
    * serving. A long queue behind a working GPU is not stuck.
+   *
+   * A vendor balance too low to rent is different: nothing will change until
+   * someone tops it up, and they have just been alerted. Jobs get a short grace
+   * for that instead of 90 minutes (two waited that long on 2026-09-13).
    */
   private static async failStuckQueued(cfg: GpuBudgetConfig, reason: string | undefined): Promise<number> {
-    const allowanceMs = (cfg.warmupTimeoutMinutes + cfg.jobTimeoutMinutes) * 60_000;
+    const balance = await GpuBalance.read(cfg);
+    const paused = balance.state === 'insufficient';
+    const allowanceMs = paused
+      ? INSUFFICIENT_BALANCE_GRACE_MS
+      : (cfg.warmupTimeoutMinutes + cfg.jobTimeoutMinutes) * 60_000;
     const cutoff = new Date(Date.now() - allowanceMs);
     const stale = await prisma.aiGpuJob.findMany({
       where: { status: 'queued', queuedAt: { lt: cutoff } },
@@ -616,10 +640,13 @@ export class GpuQueue {
 
     let failed = 0;
     const serving = new Map<string, boolean>();
+    // While paused, a machine rented just before the money ran out is still on
+    // its way and will take these jobs — the same test as GpuBalance.pausesModel.
+    const servingStatuses = paused ? ['provisioning', 'warming', 'ready', 'busy'] : ['ready', 'busy'];
     for (const job of stale) {
       if (!serving.has(job.modelKey)) {
         const count = await prisma.aiGpuWorker.count({
-          where: { modelKey: job.modelKey, status: { in: ['ready', 'busy'] } },
+          where: { modelKey: job.modelKey, status: { in: servingStatuses } },
         });
         serving.set(job.modelKey, count > 0);
       }
@@ -629,9 +656,11 @@ export class GpuQueue {
       await this.settleFailure(
         job,
         null,
-        `No suitable GPU available within ${minutes} min${reason ? `: ${reason}` : ''}`,
+        paused
+          ? `${RENDERING_PAUSED_PREFIX} — provider balance $${(balance.usd ?? 0).toFixed(2)} cannot rent a machine (waited ${minutes} min)`
+          : `No suitable GPU available within ${minutes} min${reason ? `: ${reason}` : ''}`,
         false,
-        // Market shortage or a spent budget says nothing about the model.
+        // Market shortage, a spent budget or an empty balance says nothing about the model.
         { countAgainstModel: false }
       );
       failed += 1;
@@ -672,10 +701,16 @@ export class GpuQueue {
 function userFacingError(technical: string): string {
   const REFUNDED = ' (คืนเครดิตแล้ว)';
 
-  // Checked first: it quotes the last vendor reason, which can itself contain
-  // "timeout" or "budget" and would otherwise be misread by the rules below.
   // How the work is run is not the customer's concern (and is a trade
   // secret): no message here names machines, GPUs, renting or providers.
+  //
+  // An empty vendor balance first: "queue too busy" was false — nothing was
+  // queued ahead, rendering had simply stopped until someone paid.
+  if (technical.startsWith(RENDERING_PAUSED_PREFIX) || /balance too low/i.test(technical)) {
+    return RENDERING_PAUSED_MESSAGE + REFUNDED;
+  }
+  // Checked before the rest: it quotes the last vendor reason, which can itself
+  // contain "timeout" or "budget" and would otherwise be misread below.
   if (/^No suitable GPU available within/i.test(technical)) {
     return 'คิวหนาแน่นเกินเวลาที่กำหนด กรุณาลองใหม่ภายหลัง' + REFUNDED;
   }
@@ -694,7 +729,7 @@ function userFacingError(technical: string): string {
   if (/Failed to save render/i.test(technical)) {
     return 'บันทึกไฟล์ผลลัพธ์ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง' + REFUNDED;
   }
-  if (/budget|capacity|balance too low/i.test(technical)) {
+  if (/budget|capacity/i.test(technical)) {
     return 'ระบบไม่ว่างอยู่ในขณะนี้ กรุณาลองใหม่ภายหลัง' + REFUNDED;
   }
   if (/no .* GPU available|No available/i.test(technical)) {

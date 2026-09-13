@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId, isAdmin } from '@/lib/auth';
 import { GenerationService } from '@/lib/services/generation';
 import { keyFromPublicUrl } from '@/lib/storage/r2';
+import { RENDERING_PAUSED_MESSAGE } from '@/lib/services/gpu-balance';
 import type { GenerationRequest } from '@/types';
 
 const MAX_PROMPT_LENGTH = 10000;
@@ -113,6 +114,11 @@ export async function POST(request: NextRequest) {
     // customer can fix it by uploading again, so say so instead of "failed".
     if (message.includes('ไฟล์ภาพที่แนบไม่ถูกต้อง')) {
       return NextResponse.json({ error: message }, { status: 400 });
+    }
+    // Rendering paused until the vendor balance is topped up (gpu-balance.ts).
+    // Refused before any credit moved; a retry later will work.
+    if (message === RENDERING_PAUSED_MESSAGE) {
+      return NextResponse.json({ error: message }, { status: 503 });
     }
 
     console.error('Generation error:', error);

@@ -15,6 +15,7 @@ import {
   Activity,
   AlertTriangle,
   Ban,
+  Bell,
   CircleDollarSign,
   Cpu,
   ExternalLink,
@@ -23,6 +24,7 @@ import {
   Percent,
   RefreshCw,
   Save,
+  Send,
   Server,
   TrendingUp,
   Wallet,
@@ -116,11 +118,30 @@ interface GpuConfig {
   jobTimeoutMinutes: number;
 }
 
+/** The vendor balance against the thresholds in gpu-balance.ts. */
+type BalanceState = "ok" | "low" | "insufficient" | "unknown";
+
+interface TelegramStatus {
+  configured: boolean;
+  source: "settings" | "env" | null;
+  tokenSaved: boolean;
+  chatIds: string[];
+}
+
 interface Analytics {
   config: GpuConfig;
   pricing: { thbPerCredit: number; usdToThb: number };
-  balance: { balanceUsd: number; availableRentalHours: number | null; hoursAtCurrentBurn: number | null } | null;
+  balance: {
+    balanceUsd: number;
+    availableRentalHours: number | null;
+    hoursAtCurrentBurn: number | null;
+    state: BalanceState;
+    lowBelowUsd: number;
+    insufficientAtOrBelowUsd: number;
+    checkedAt: string | null;
+  } | null;
   balanceError: string | null;
+  telegram: TelegramStatus;
   storageConfigured: boolean;
   budget: {
     spentTodayUsd: number;
@@ -165,6 +186,8 @@ interface Analytics {
 const SIMPLEPOD_KEY_URL = 'https://dash.simplepod.ai/account';
 /** Balance top-up. Renting stops dead when this runs out. */
 const SIMPLEPOD_BILLING_URL = 'https://dash.simplepod.ai/';
+/** Where an admin makes the alert bot. */
+const BOTFATHER_URL = 'https://t.me/BotFather';
 
 const thb = (n: number) =>
   new Intl.NumberFormat("th-TH", { style: "currency", currency: "THB", maximumFractionDigits: 0 }).format(n);
@@ -472,6 +495,11 @@ export default function GpuAdminPage() {
   const [message, setMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [form, setForm] = useState<GpuConfig | null>(null);
+  // Telegram alerts. The saved token never comes back from the server, so the
+  // field starts empty and an empty field on save keeps the saved one. The chat
+  // field is null until edited, and shows the saved ids until then.
+  const [tgToken, setTgToken] = useState("");
+  const [tgChat, setTgChat] = useState<string | null>(null);
   // Boot/ComfyUI logs of one worker, read through its proxy on demand.
   const [logs, setLogs] = useState<{ workerId: number; text: Record<string, string> | null; error?: string } | null>(null);
 
@@ -516,7 +544,7 @@ export default function GpuAdminPage() {
     payload: Record<string, unknown>,
     label: string,
     done?: (body: Record<string, unknown>) => string,
-  ) => {
+  ): Promise<boolean> => {
     setBusy(label);
     setMessage(null);
 
@@ -524,7 +552,7 @@ export default function GpuAdminPage() {
     if (!result.ok) {
       setMessage({ kind: "err", text: result.error });
       setBusy(null);
-      return;
+      return false;
     }
     // The form is seeded once and not refreshed, so a switch flipped by an
     // action must be mirrored here — otherwise the next "บันทึก" would quietly
@@ -538,6 +566,18 @@ export default function GpuAdminPage() {
     // keeps its spinner until the fresh numbers are actually on screen.
     await load();
     setBusy(null);
+    return true;
+  };
+
+  const saveTelegram = async () => {
+    const payload: Record<string, unknown> = { action: "save-telegram" };
+    if (tgToken.trim()) payload.botToken = tgToken.trim();
+    if (tgChat !== null) payload.chatId = tgChat;
+    const saved = await post(payload, "tg-save", () => "บันทึกการตั้งค่า Telegram แล้ว — กด “ส่งข้อความทดสอบ” เพื่อเช็คว่าถึงจริง");
+    if (saved) {
+      setTgToken("");
+      setTgChat(null);
+    }
   };
 
   const saveKey = async () => {
@@ -602,6 +642,8 @@ export default function GpuAdminPage() {
   const needsKey = Boolean(data?.balanceError);
   const p = data?.profit;
   const b = data?.budget;
+  const bal = data?.balance;
+  const tg = data?.telegram;
 
   return (
     <div>
@@ -693,6 +735,54 @@ export default function GpuAdminPage() {
         </div>
       )}
 
+      {/* Vendor balance running out. On 2026-09-13 it hit −$0.03 mid-batch and
+          nothing said so until two jobs had waited 90 minutes. */}
+      {(bal?.state === "low" || bal?.state === "insufficient") && (
+        <div className={`glass rounded-xl p-4 mb-6 border flex items-center justify-between gap-3 flex-wrap ${bal.state === "insufficient" ? "border-error/40" : "border-warning/30"}`}>
+          <div className="flex items-start gap-2 text-sm">
+            <AlertTriangle className={`w-5 h-5 shrink-0 ${bal.state === "insufficient" ? "text-error" : "text-warning"}`} />
+            <span>
+              {bal.state === "insufficient" ? (
+                <>
+                  <b>ยอดเงิน SimplePod ไม่พอเช่าเครื่อง ({usd(bal.balanceUsd)})</b>
+                  <span className="text-muted">
+                    {" "}— ปิดรับงานที่ใช้ GPU เช่าชั่วคราว งานที่รอคิวจะถูกยกเลิกและคืนเครดิตหลังรอ 15 นาที
+                    เติมเงินแล้วกด “อ่านยอดใหม่” เพื่อเปิดรับงานทันที
+                  </span>
+                </>
+              ) : (
+                <>
+                  <b>ยอดเงิน SimplePod ใกล้หมด ({usd(bal.balanceUsd)})</b>
+                  <span className="text-muted">
+                    {" "}— ต่ำกว่า {usd(bal.lowBelowUsd)} (ค่าเช่าเต็มกำลัง 1 ชม.) ถ้าเหลือไม่เกิน {usd(bal.insufficientAtOrBelowUsd)} จะเช่าเครื่องไม่ได้
+                  </span>
+                </>
+              )}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <a
+              href={SIMPLEPOD_BILLING_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-2 rounded-lg bg-primary/20 text-primary-light hover:bg-primary/30 text-sm font-medium inline-flex items-center gap-1"
+            >
+              เติมเงิน <ExternalLink className="w-3.5 h-3.5" />
+            </a>
+            <button
+              onClick={() => void post({ action: "refresh-balance" }, "balance", (r) => {
+                const next = (r.balance as { usd?: number | null } | undefined)?.usd;
+                return next != null ? `ยอดเงินล่าสุด ${usd(next)}` : "อ่านยอดใหม่แล้ว";
+              })}
+              disabled={busy !== null}
+              className="px-3 py-2 rounded-lg glass-light hover:bg-surface-light text-sm disabled:opacity-40"
+            >
+              {busy === "balance" ? "กำลังอ่าน..." : "อ่านยอดใหม่"}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Setup — the only thing needed to go live */}
       {needsKey && (
         <div className="glass rounded-xl p-5 mb-6 border border-warning/30">
@@ -739,13 +829,15 @@ export default function GpuAdminPage() {
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <KpiCard
           label="ยอดเงิน SimplePod"
-          value={data?.balance ? usd(data.balance.balanceUsd) : "–"}
+          value={bal ? usd(bal.balanceUsd) : "–"}
           sub={
             <span className="flex items-center gap-2 flex-wrap">
               <span>
-                {data?.balance?.hoursAtCurrentBurn != null
-                  ? `พอใช้อีก ~${data.balance.hoursAtCurrentBurn} ชม. ที่อัตราปัจจุบัน`
-                  : data?.balanceError ?? ""}
+                {bal?.hoursAtCurrentBurn != null
+                  ? `พอใช้อีก ~${bal.hoursAtCurrentBurn} ชม. ที่อัตราปัจจุบัน`
+                  : bal
+                    ? `เตือนเมื่อต่ำกว่า ${usd(bal.lowBelowUsd)}${tg?.configured ? " ทาง Telegram" : ""}`
+                    : data?.balanceError ?? ""}
               </span>
               {/* Surfaced here because an empty balance is the one failure that
                   cannot be fixed from inside this app. */}
@@ -760,7 +852,7 @@ export default function GpuAdminPage() {
             </span>
           }
           icon={<Wallet className="w-4 h-4" />}
-          tone={data?.balance && data.balance.balanceUsd < 1 ? "bad" : "default"}
+          tone={bal?.state === "insufficient" ? "bad" : bal?.state === "low" ? "warn" : "default"}
         />
         <KpiCard
           label="กำลังเผาอยู่ตอนนี้"
@@ -958,6 +1050,80 @@ export default function GpuAdminPage() {
           </div>
         </div>
       )}
+
+      {/* Telegram alerts — the owner's pick: no push quota to run out of. */}
+      <div className="glass rounded-xl p-5 mb-6">
+        <div className="flex items-center justify-between gap-3 flex-wrap mb-1">
+          <h2 className="font-bold flex items-center gap-2">
+            <Bell className="w-4 h-4 text-primary-light" /> แจ้งเตือนผ่าน Telegram
+          </h2>
+          <span className={`text-xs ${tg?.configured ? "text-success" : "text-warning"}`}>
+            {tg?.configured
+              ? `● เปิดใช้งาน${tg.source === "env" ? " (จาก .env ของเซิร์ฟเวอร์)" : ""}`
+              : tg?.tokenSaved
+                ? "● มี token แล้ว — ยังขาด Chat ID"
+                : "● ยังไม่ได้ตั้งค่า"}
+          </span>
+        </div>
+        <p className="text-xs text-muted mb-4">
+          ส่งถึงแอดมินเมื่อยอดเงิน SimplePod ต่ำกว่า {usd(bal?.lowBelowUsd ?? 0)}, เมื่อไม่พอเช่าเครื่อง
+          (ปิดรับงานชั่วคราว) และเมื่อกลับมาปกติ — เตือนซ้ำทุก 6 ชม. ถ้ายังไม่เติม
+        </p>
+
+        <div className="grid sm:grid-cols-2 gap-4">
+          <div>
+            <label className="text-xs text-muted block mb-1">Bot token</label>
+            <input
+              type="password"
+              value={tgToken}
+              onChange={(e) => setTgToken(e.target.value)}
+              placeholder={tg?.tokenSaved ? "บันทึกไว้แล้ว — เว้นว่างเพื่อใช้ตัวเดิม" : "123456789:ABCdef..."}
+              autoComplete="off"
+              className="w-full px-3 py-2 rounded-lg glass-light text-sm outline-none"
+            />
+            <p className="text-[11px] text-muted mt-1">
+              สร้างบอทที่{" "}
+              <a href={BOTFATHER_URL} target="_blank" rel="noopener noreferrer"
+                 className="text-primary-light underline underline-offset-2 hover:opacity-80">
+                @BotFather
+              </a>{" "}
+              → /newbot แล้วคัดลอก token มาวาง • เก็บแบบเข้ารหัส และไม่แสดงกลับอีก
+            </p>
+          </div>
+          <div>
+            <label className="text-xs text-muted block mb-1">Chat ID</label>
+            <input
+              type="text"
+              value={tgChat ?? tg?.chatIds.join(", ") ?? ""}
+              onChange={(e) => setTgChat(e.target.value)}
+              placeholder="เช่น 123456789 หรือ -1001234567890"
+              autoComplete="off"
+              className="w-full px-3 py-2 rounded-lg glass-light text-sm outline-none"
+            />
+            <p className="text-[11px] text-muted mt-1">
+              ทักบอทก่อน 1 ครั้ง แล้วเปิด api.telegram.org/bot&lt;token&gt;/getUpdates ดูเลข chat → id •
+              กลุ่มขึ้นต้นด้วย - • หลายที่คั่นด้วยจุลภาค
+            </p>
+          </div>
+        </div>
+
+        <div className="flex gap-2 mt-4 flex-wrap">
+          <button
+            onClick={() => void saveTelegram()}
+            disabled={busy !== null || (!tgToken.trim() && tgChat === null)}
+            className="px-4 py-2 rounded-lg bg-primary/20 text-primary-light hover:bg-primary/30 text-sm font-medium flex items-center gap-2 disabled:opacity-40"
+          >
+            <Save className="w-4 h-4" /> {busy === "tg-save" ? "กำลังบันทึก..." : "บันทึก"}
+          </button>
+          <button
+            onClick={() => void post({ action: "test-telegram" }, "tg-test", () => "ส่งข้อความทดสอบแล้ว — เช็คใน Telegram")}
+            disabled={busy !== null || !tg?.configured}
+            className="px-4 py-2 rounded-lg glass-light hover:bg-surface-light text-sm flex items-center gap-2 disabled:opacity-40"
+          >
+            <Send className="w-4 h-4" /> {busy === "tg-test" ? "กำลังส่ง..." : "ส่งข้อความทดสอบ"}
+          </button>
+        </div>
+      </div>
 
       {/* Live workers */}
       <div className="glass rounded-xl p-5 mb-6">
