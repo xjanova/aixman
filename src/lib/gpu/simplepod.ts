@@ -1,5 +1,7 @@
 import { createHash } from 'crypto';
+import { gzipBase64 } from './script-encoding';
 import {
+  RentRefusedError,
   RentUnconfirmedError,
   type GpuBalance,
   type GpuInstance,
@@ -74,6 +76,10 @@ interface TemplateRow {
  */
 export class SimplePodProvider implements GpuRentalProvider {
   readonly slug: GpuProviderSlug = 'simplepod';
+  readonly label = 'SimplePod';
+  // Every published port gets a trycloudflare.com URL from the vendor.
+  readonly exposure = 'vendor-https' as const;
+  readonly credential = 'api-key' as const;
 
   private baseUrl(): string {
     return process.env.SIMPLEPOD_BASE_URL || DEFAULT_BASE_URL;
@@ -306,7 +312,7 @@ export class SimplePodProvider implements GpuRentalProvider {
       // A 4xx is a refusal — nothing was rented. Anything else (timeout, 502
       // from the vendor's edge) may have been processed anyway, so look for
       // the machine before deciding.
-      if (/→ 4dd/.test((error as Error).message)) throw error;
+      if (/→ 4\d\d\b/.test((error as Error).message)) throw new RentRefusedError((error as Error).message);
       console.warn('[gpu] rent request did not complete cleanly, checking whether it went through:', (error as Error).message);
     }
 
@@ -479,12 +485,17 @@ const BOOT_SCRIPT_PATH = '/workspace/aixman-boot.sh';
  *
  * So the script travels base64-encoded in one line that writes it to a file
  * and runs it with bash. base64 needs no quoting in any POSIX shell.
+ *
+ * Gzipped first: the script grew past 20 KB once the proxy learned to report
+ * render progress, and SimplePod documents no limit on this field — only 13 KB
+ * is known to work. Compressed, it is smaller than that. gzip is an essential
+ * package on the Ubuntu base the images are built on.
  */
 export function asSingleLine(script: string): string {
   if (!script.includes('\n')) return script;
-  const encoded = Buffer.from(script, 'utf8').toString('base64');
+  const encoded = gzipBase64(script);
   return (
-    `mkdir -p /workspace && echo ${encoded} | base64 -d > ${BOOT_SCRIPT_PATH} ` +
+    `mkdir -p /workspace && echo ${encoded} | base64 -d | gunzip > ${BOOT_SCRIPT_PATH} ` +
     `&& exec bash ${BOOT_SCRIPT_PATH}`
   );
 }

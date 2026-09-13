@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { isAdmin } from '@/lib/auth';
 import prisma from '@/lib/db';
 import { getGpuConfig } from '@/lib/gpu/config';
-import { getGpuProvider } from '@/lib/gpu';
+import { GPU_PROVIDER_SLUGS, getGpuProvider } from '@/lib/gpu';
 import { GpuWorkerManager } from '@/lib/services/gpu-worker';
 import { isStorageConfigured } from '@/lib/storage/r2';
 import { getCatalogEntry } from '@/lib/gpu/catalog';
@@ -27,6 +27,14 @@ export const dynamic = 'force-dynamic';
 
 const DAYS = 30;
 const FALLBACK_USD_THB = 36;
+
+/** Where a rental's render estimate came from (offer-picker.ts RenderBasis; 'model median' before 2026-09-13). */
+const RENDER_BASIS_TH: Record<string, string> = {
+  history: ' จากประวัติการ์ดรุ่นนี้',
+  blended: ' จากประวัติการ์ดรุ่นนี้ที่ยังมีน้อย ผสมค่าประมาณจากสเปค',
+  prior: ' ประมาณจากสเปคการ์ด (ยังไม่เคยใช้การ์ดรุ่นนี้)',
+  'model median': ' ค่ากลางของโมเดล',
+};
 
 interface DayBucket {
   date: string;
@@ -151,21 +159,49 @@ export async function GET() {
   }, 0);
   const renderSeconds = completed.reduce((s, j) => s + j.gpuSeconds, 0);
 
-  // ---- Live provider balance ----------------------------------------
-  // Best effort: the dashboard must still render if the marketplace is down.
-  let balance: { balanceUsd: number; availableRentalHours?: number } | null = null;
-  let balanceError: string | null = null;
-  try {
-    const provider = getGpuProvider(cfg.providerSlug);
-    if (provider) {
-      const apiKey = await GpuWorkerManager.getApiKey(cfg.providerSlug);
-      balance = await provider.getBalance(apiKey);
-    }
-  } catch (error) {
-    balanceError = (error as Error).message.includes('No active API key')
-      ? 'ยังไม่ได้ตั้งค่า API key'
-      : 'อ่านยอดเงินจาก provider ไม่ได้';
-  }
+  // ---- Every vendor: connected, rented from, balance -----------------
+  // Best effort per vendor: the dashboard must still render if one is down.
+  const vendors = await Promise.all(
+    GPU_PROVIDER_SLUGS.map(async (slug) => {
+      const provider = getGpuProvider(slug);
+      let connected = false;
+      let balanceUsd: number | null = null;
+      let balanceUnknown = false;
+      let error: string | null = null;
+      if (provider) {
+        try {
+          const apiKey = await GpuWorkerManager.getApiKey(slug);
+          connected = true;
+          const bal = await Promise.race([
+            provider.getBalance(apiKey),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 10_000)),
+          ]);
+          balanceUnknown = Boolean(bal.unknown);
+          balanceUsd = Number.isFinite(bal.balanceUsd) ? bal.balanceUsd : null;
+        } catch {
+          if (connected) error = 'อ่านยอดเงินไม่ได้';
+        }
+      }
+      return {
+        slug,
+        label: provider?.label ?? slug,
+        credential: provider?.credential ?? 'api-key',
+        connected,
+        enabled: cfg.providers.includes(slug),
+        balanceUsd,
+        balanceUnknown,
+        error,
+        liveWorkers: liveWorkers.filter((w) => w.providerSlug === slug).length,
+      };
+    })
+  );
+  const connectedVendors = vendors.filter((v) => v.connected);
+  const knownBalances = connectedVendors.filter((v) => v.balanceUsd !== null);
+  // Kept for app builds that read the old single-vendor shape.
+  const balance = knownBalances.length
+    ? { balanceUsd: knownBalances.reduce((s, v) => s + (v.balanceUsd ?? 0), 0) }
+    : null;
+  const balanceError = connectedVendors.length === 0 ? 'ยังไม่ได้ตั้งค่า API key' : null;
 
   const spentToday = await GpuWorkerManager.todaySpendUsd();
   const burnRateUsdPerHour = liveWorkers.reduce((s, w) => s + Number(w.pricePerHourUsd), 0);
@@ -203,7 +239,7 @@ export async function GET() {
     if (!p || typeof p.costUsd !== 'number') return null;
     return (
       `เลือกจาก ${p.candidates} ข้อเสนอ • ต้นทุนงานโดยประมาณ $${p.costUsd.toFixed(3)} ` +
-      `(บูต ~${p.bootSeconds} วิ + เรนเดอร์ ~${p.renderSeconds} วิ${p.renderBasis === 'history' ? ' จากประวัติการ์ดรุ่นนี้' : ' ค่ากลางของโมเดล'})`
+      `(บูต ~${p.bootSeconds} วิ + เรนเดอร์ ~${p.renderSeconds} วิ${RENDER_BASIS_TH[String(p.renderBasis)] ?? ' ค่ากลางของโมเดล'})`
     );
   };
 
@@ -213,16 +249,18 @@ export async function GET() {
       thbPerCredit: Number(thbPerCredit.toFixed(4)),
       usdToThb: Number(usdToThb.toFixed(2)),
     },
+    // Summed across vendors with a readable balance.
     balance: balance
       ? {
           balanceUsd: Number(balance.balanceUsd.toFixed(2)),
-          availableRentalHours: balance.availableRentalHours ?? null,
-          // At the current burn, how long before the account is empty.
+          availableRentalHours: null,
+          // At the current burn, how long before the accounts are empty.
           hoursAtCurrentBurn:
             burnRateUsdPerHour > 0 ? Number((balance.balanceUsd / burnRateUsdPerHour).toFixed(1)) : null,
         }
       : null,
     balanceError,
+    vendors: vendors.map((v) => ({ ...v, balanceUsd: v.balanceUsd === null ? null : Number(v.balanceUsd.toFixed(2)) })),
     // Without R2 the queue refuses to rent (a render would be lost with the
     // machine), so the admin needs to see why nothing is happening.
     storageConfigured: isStorageConfigured(),
@@ -297,6 +335,7 @@ export async function GET() {
       ),
       gpuModel: w.gpuModel,
       gpuCount: w.gpuCount,
+      vendor: getGpuProvider(w.providerSlug)?.label ?? w.providerSlug,
       supportId: w.supportId,
       pricePerHourUsd: Number(w.pricePerHourUsd),
       accruedCostUsd: Number(GpuWorkerManager.accruedCostUsd(w, now).toFixed(4)),
@@ -321,6 +360,7 @@ export async function GET() {
         modelName: modelName(w.modelKey),
         gpuModel: w.gpuModel,
         gpuCount: w.gpuCount,
+        vendor: getGpuProvider(w.providerSlug)?.label ?? w.providerSlug,
         supportId: w.supportId,
         pricePerHourUsd: Number(w.pricePerHourUsd),
         rentedAt: w.rentedAt.toISOString(),

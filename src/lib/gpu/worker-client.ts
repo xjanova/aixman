@@ -3,6 +3,7 @@ import type { WorkerProfile } from './config';
 import { buildMiniMaxH3Workflow, frameLengthFor } from './workflows/minimax-h3';
 import { getCatalogEntry, type CatalogJobParams } from './catalog';
 import { readFrameSource } from './frame-input';
+import { PROGRESS_PATH } from './provision';
 import {
   bindParameters,
   convertUiWorkflowToApi,
@@ -62,8 +63,35 @@ export type PollOutcome =
   /** The server no longer knows about this job — the container likely restarted. */
   | { state: 'lost'; error: string };
 
+/**
+ * What the worker's proxy has heard from ComfyUI about the prompt it is
+ * executing. Counts are of graph nodes; `value`/`max` are the latest progress
+ * event (a sampler's step N of M), reset whenever a new node starts.
+ */
+export interface WorkerProgress {
+  promptId: string | null;
+  /** The proxy is connected to ComfyUI's websocket right now. */
+  listening: boolean;
+  /** Seconds since ComfyUI started executing this prompt. */
+  elapsed: number;
+  value: number;
+  max: number;
+  /** `value`/`max` came from a sampler, not a decoder or loader. */
+  progressIsSampler: boolean;
+  nodesTotal: number;
+  nodesDone: number;
+  samplersTotal: number;
+  samplersDone: number;
+  /** Seconds since the last sampler finished; null while none has. */
+  sinceSampling: number | null;
+  done: boolean;
+  failed: boolean;
+}
+
 const SUBMIT_TIMEOUT_MS = 60_000;
 const POLL_TIMEOUT_MS = 20_000;
+/** Progress is read while a customer waits on the page — never make them wait on it. */
+const PROGRESS_TIMEOUT_MS = 4_000;
 
 export class WorkerClient {
   constructor(
@@ -138,6 +166,39 @@ export class WorkerClient {
     return this.profile.apiKind === 'comfyui'
       ? this.pollComfy(externalJobId)
       : this.pollSimple(externalJobId);
+  }
+
+  /**
+   * How far the running render is, or null when the worker cannot say: the
+   * `simple` dialect has no such report, and a machine booted before the proxy
+   * learned to listen answers 404. Callers fall back to a time-based figure,
+   * so every failure here is quiet.
+   */
+  async progress(): Promise<WorkerProgress | null> {
+    if (this.profile.apiKind !== 'comfyui') return null;
+    try {
+      const res = await this.request(PROGRESS_PATH, { timeout: PROGRESS_TIMEOUT_MS });
+      if (!res.ok) return null;
+      const raw = (await res.json()) as Record<string, unknown>;
+      const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+      return {
+        promptId: typeof raw.prompt_id === 'string' ? raw.prompt_id : null,
+        listening: raw.listening === true,
+        elapsed: num(raw.elapsed),
+        value: num(raw.value),
+        max: num(raw.max),
+        progressIsSampler: raw.progress_is_sampler === true,
+        nodesTotal: num(raw.nodes_total),
+        nodesDone: num(raw.nodes_done),
+        samplersTotal: num(raw.samplers_total),
+        samplersDone: num(raw.samplers_done),
+        sinceSampling: typeof raw.since_sampling === 'number' ? raw.since_sampling : null,
+        done: raw.done === true,
+        failed: raw.failed === true,
+      };
+    } catch {
+      return null;
+    }
   }
 
   /**

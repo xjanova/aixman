@@ -23,6 +23,7 @@ import { useAppStore } from "@/lib/store/app-store";
 import { useToast } from "@/components/ui/toast-provider";
 import { creditsForDuration } from "@/lib/pricing";
 import { downloadGeneration, extensionOf, saveFavorite } from "@/lib/client-actions";
+import { nextQueueProgress, shownFraction, type QueueProgress, type QueueReading } from "@/lib/queue-progress";
 import { AUDIO_EXT, AudioCover, AudioResult } from "@/components/xdreamer/audio";
 
 const HUE = 70;
@@ -122,14 +123,7 @@ interface GenerationStatus {
   expiresAt?: string;
   daysLeft?: number | null;
   errorMessage?: string | null;
-  gpu?: {
-    stage: QueueProgress["stage"];
-    label: string;
-    queuePosition?: number | null;
-    etaSeconds?: number | null;
-    etaLabel?: string | null;
-    etaBasis?: string;
-  } | null;
+  gpu?: QueueReading | null;
 }
 
 // ─── X-DREAMER UI primitives (local helpers) ───────────────────────────
@@ -496,19 +490,14 @@ function SampleFrame({ src, label, aspect, isVideo = false }: { src: string; lab
   );
 }
 
-/**
- * What /api/generate/[id] reports while a queued job waits — a place in the
- * queue and an honest ETA, never how the work is run.
- */
-interface QueueProgress {
-  stage: "queued" | "starting" | "rendering";
-  label: string;
-  position: number | null;
-  etaSeconds: number | null;
-  etaLabel: string | null;
-  basis: string;
-  /** When this reading arrived, so the bar keeps moving between polls. */
-  at: number;
+/** A clock for components whose display moves between polls. */
+function useNow(intervalMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(timer);
+  }, [intervalMs]);
+  return now;
 }
 
 /** Rotating captions while a result is being made — flavour, not status. */
@@ -523,6 +512,8 @@ const CREATING_TIPS: Record<string, string[]> = {
 /** The animated centre of a frame while its result is being made. */
 function GeneratingOverlay({ progress }: { progress: QueueProgress | null }) {
   const place = progress?.stage === "queued" ? progress.position ?? 0 : 0;
+  const now = useNow(500);
+  const fraction = progress?.stage === "rendering" ? shownFraction(progress, now) : null;
   return (
     <div style={{ position: "absolute", inset: 0, background: "rgba(2,6,23,0.45)", backdropFilter: "blur(3px)", overflow: "hidden", display: "grid", placeItems: "center" }}>
       {/* A soft band of light sweeping down the frame. */}
@@ -555,6 +546,13 @@ function GeneratingOverlay({ progress }: { progress: QueueProgress | null }) {
               {/* Keyed on the number, so each step down replays the pop. */}
               <div key={place} className="xdr-motion" style={{ fontSize: 40, fontWeight: 700, lineHeight: 1.05, animation: "xdr-pop 450ms ease-out" }}>{place}</div>
             </>
+          ) : fraction != null ? (
+            <>
+              <div style={{ fontSize: 10, letterSpacing: "0.18em", opacity: 0.75 }}>กำลังสร้าง</div>
+              <div style={{ fontSize: 34, fontWeight: 700, lineHeight: 1.1, fontVariantNumeric: "tabular-nums" }}>
+                {Math.floor(fraction * 100)}<span style={{ fontSize: 16, opacity: 0.8 }}>%</span>
+              </div>
+            </>
           ) : (
             <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: "0.04em" }}>กำลังสร้าง</div>
           )}
@@ -579,11 +577,15 @@ function GeneratingStatus({ progress, tab, startedAt }: { progress: QueueProgres
   // What was left at the last reading, less the time since — so the bar and
   // the countdown move every second, not only when a poll lands.
   const remaining = progress?.etaSeconds != null ? Math.max(0, progress.etaSeconds - (now - progress.at) / 1000) : null;
-  const fraction = remaining != null ? Math.min(0.97, elapsed / Math.max(1, elapsed + remaining)) : null;
+  // Once it is this customer's turn the bar starts over as the render's own
+  // progress — that turn is the moment worth seeing — and until then it
+  // spans the whole wait.
+  const render = progress?.stage === "rendering" ? shownFraction(progress, now) : null;
+  const fraction = render ?? (remaining != null ? Math.min(0.97, elapsed / Math.max(1, elapsed + remaining)) : null);
   const queued = progress?.stage === "queued";
 
   const headline = progress
-    ? `${progress.label}${queued && (progress.position ?? 0) > 1 ? ` • คิวที่ ${progress.position}` : ""}`
+    ? `${progress.label}${queued && (progress.position ?? 0) > 1 ? ` • คิวที่ ${progress.position}` : ""}${render != null ? ` ${Math.floor(render * 100)}%` : ""}`
     : "กำลังสร้างผลงานของคุณ";
   const eta = progress?.etaLabel
     ? `${progress.basis === "baseline" ? "คาดว่าใช้เวลา" : "เหลืออีก"} ${progress.etaLabel}`
@@ -991,13 +993,15 @@ export default function GeneratePage() {
     const startedAt = Date.now();
     let deadlineMs = API_DEADLINE_MS;
     let sawGpu = false;
+    let rendering = false;
     // A transient network blip shouldn't abandon a job the user already paid
     // for; only give up after several consecutive failures.
     let consecutiveErrors = 0;
 
     while (Date.now() - startedAt < deadlineMs) {
-      // Poll gently once the job is known to be a long-running GPU render.
-      await new Promise((r) => setTimeout(r, sawGpu ? 5000 : 2000));
+      // Poll gently while a GPU job waits in the queue; closer while it renders,
+      // where each reading moves the percentage the customer is watching.
+      await new Promise((r) => setTimeout(r, rendering ? 3000 : sawGpu ? 5000 : 2000));
       const read = await readGeneration(generationId);
       if (!read.ok) {
         // An unreachable server or a garbled answer counts as a blip, like
@@ -1010,19 +1014,12 @@ export default function GeneratePage() {
       const data = read.data;
 
       if (data.gpu) {
+        const gpu = data.gpu;
         sawGpu = true;
+        rendering = gpu.stage === "rendering";
         deadlineMs = GPU_DEADLINE_MS;
-        setProgress({
-          stage: data.gpu.stage,
-          label: data.gpu.label,
-          position: data.gpu.queuePosition ?? null,
-          etaSeconds: data.gpu.etaSeconds ?? null,
-          etaLabel: data.gpu.etaLabel ?? null,
-          // With no history the estimate is a rough baseline, and is worded
-          // as such rather than quoted like a firm figure.
-          basis: data.gpu.etaBasis ?? "history",
-          at: Date.now(),
-        });
+        const at = Date.now();
+        setProgress((prev) => nextQueueProgress(prev, gpu, at));
       } else if (sawGpu) {
         setProgress(null);
       }
@@ -1763,7 +1760,11 @@ export default function GeneratePage() {
             opacity: cannotSubmit ? 0.6 : 1,
             boxShadow: `0 10px 24px -8px hsla(${270 + HUE},70%,50%,0.55)`,
           }}>
-          {isGenerating ? (progress?.stage === "queued" && (progress.position ?? 0) > 0 ? `⟳ รอคิว • คิวที่ ${progress.position}` : "⟳ กำลังทอ...") : (
+          {isGenerating ? (
+            progress?.stage === "queued" && (progress.position ?? 0) > 0 ? `⟳ รอคิว • คิวที่ ${progress.position}`
+              : progress?.stage === "rendering" && progress.fraction != null ? `⟳ กำลังทอ... ${Math.floor((shownFraction(progress, progress.at) ?? 0) * 100)}%`
+              : "⟳ กำลังทอ..."
+          ) : (
             <>ทอ ✦ {outputs > 1 ? `${outputs} ภาพ · ` : ""}{totalCredits || "—"} credits</>
           )}
         </button>

@@ -57,6 +57,13 @@ export const READY_PATH = '/aixman/ready';
 /** Proxy path returning the tail of the boot, ComfyUI and proxy logs, for diagnosis. */
 export const LOG_PATH = '/aixman/log';
 
+/**
+ * Proxy path reporting how far the running render is — which node, sampler
+ * step N of M — as read from ComfyUI's websocket. ComfyUI has no HTTP
+ * endpoint for this; only websocket clients hear it.
+ */
+export const PROGRESS_PATH = '/aixman/progress';
+
 export interface ProvisionOptions {
   /** Port the token-gated proxy listens on — the one published publicly. */
   publicPort: number;
@@ -70,7 +77,20 @@ export interface ProvisionOptions {
   downloads?: { repo: string; file: string; dest: string; as?: string }[];
   /** Community node packs the model's template depends on. */
   customNodes?: { repo: string; ref?: string }[];
+  /**
+   * The vendor gives only a bare IP and port (GpuExposure 'tunnel'): fetch
+   * cloudflared, keep the proxy on loopback, and let it open an HTTPS tunnel
+   * and report the URL to `AIXMAN_CALLBACK_URL` (passed in `env`).
+   */
+  tunnel?: boolean;
 }
+
+/**
+ * cloudflared, for workers that open their own tunnel. `latest` rather than a
+ * pinned release: the quick-tunnel command line has been stable for years,
+ * and a pinned URL that 404s would fail every boot.
+ */
+export const CLOUDFLARED_URL = 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64';
 
 /**
  * Render environment variables as shell exports.
@@ -99,18 +119,241 @@ export function renderEnvExports(env: Record<string, string>): string {
  * requires the shared bearer token, and forwards to ComfyUI bound to loopback.
  *
  * Written with the standard library only so it needs no extra install step.
+ *
+ * It also listens to ComfyUI's websocket to report render progress at
+ * `PROGRESS_PATH`. ComfyUI sends a prompt's events only to the client id the
+ * prompt was submitted under, so `/prompt` bodies are relabelled with the
+ * proxy's own id on the way through — the node list read off the same body is
+ * what tells a sampler step from a loader. None of this may break a render: a
+ * body that will not parse is forwarded untouched, and the listener lives on
+ * its own thread, reconnecting until ComfyUI is up.
  */
 function proxySource(): string {
   return String.raw`
-import os, sys, json, http.server, socketserver, urllib.request, urllib.error, hmac
+import os, sys, json, re, time, socket, base64, struct, threading, subprocess, http.server, socketserver, urllib.request, urllib.error, hmac
 
 TOKEN = os.environ.get("AIXMAN_WORKER_TOKEN", "")
 UPSTREAM = "http://127.0.0.1:8188"
 PORT = int(os.environ.get("AIXMAN_PROXY_PORT", "8189"))
+# Loopback when a tunnel is the way in; the port is then never published.
+BIND = os.environ.get("AIXMAN_PROXY_BIND", "0.0.0.0")
 ROOT = os.environ.get("AIXMAN_ROOT", "/workspace/aixman")
+CALLBACK_URL = os.environ.get("AIXMAN_CALLBACK_URL", "")
 READY_PATH = "${READY_PATH}"
 LOG_PATH = "${LOG_PATH}"
+PROGRESS_PATH = "${PROGRESS_PATH}"
+PROGRESS_CLIENT = "aixman-progress"
 HOP = {"connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-authorization"}
+
+# Node classes whose "progress" events are denoising steps. KSamplerSelect
+# and the Sampler* scheduler pickers only configure one, so they must not match.
+SAMPLER = re.compile(r"^(KSampler(Advanced)?|SamplerCustom(Advanced)?)$|Sampler$")
+LOCK = threading.Lock()
+GRAPHS = {}  # prompt_id -> {node_id: class_type}, the last few submitted
+STATE = {}   # the prompt ComfyUI is executing now
+LISTENING = [False]
+
+def is_sampler(graph, node):
+    return bool(node) and bool(SAMPLER.search(graph.get(node) or ""))
+
+def note_graph(prompt_id, graph):
+    with LOCK:
+        GRAPHS[prompt_id] = graph
+        while len(GRAPHS) > 8:
+            GRAPHS.pop(next(iter(GRAPHS)))
+
+def on_event(kind, data):
+    pid = data.get("prompt_id")
+    now = time.time()
+    with LOCK:
+        if kind == "execution_start":
+            STATE.clear()
+            STATE.update(prompt_id=pid, started=now, node=None, pnode=None, value=0, max=0,
+                         nodes_done=0, samplers_done=0, sampler_end=None, done=False, failed=False)
+            return
+        if not STATE or pid != STATE.get("prompt_id"):
+            return
+        # Looked up per event: execution can start before /prompt's reply has
+        # come back through here with the id the graph is filed under.
+        graph = GRAPHS.get(pid, {})
+        if kind == "execution_cached":
+            for node in data.get("nodes") or []:
+                STATE["nodes_done"] += 1
+                if is_sampler(graph, node):
+                    STATE["samplers_done"] += 1
+        elif kind == "executing":
+            prev = STATE.get("node")
+            if prev is not None:
+                STATE["nodes_done"] += 1
+                if is_sampler(graph, prev):
+                    STATE["samplers_done"] += 1
+                    STATE["sampler_end"] = now
+            STATE.update(node=data.get("node"), pnode=None, value=0, max=0)
+            if data.get("node") is None:
+                STATE["done"] = True
+        elif kind == "progress":
+            STATE.update(pnode=data.get("node"), value=data.get("value") or 0, max=data.get("max") or 0)
+        elif kind == "execution_success":
+            STATE["done"] = True
+        elif kind in ("execution_error", "execution_interrupted"):
+            STATE.update(done=True, failed=True)
+
+def progress_snapshot():
+    now = time.time()
+    with LOCK:
+        if not STATE:
+            return {"prompt_id": None, "listening": LISTENING[0]}
+        graph = GRAPHS.get(STATE["prompt_id"], {})
+        return {
+            "prompt_id": STATE["prompt_id"],
+            "listening": LISTENING[0],
+            "elapsed": round(now - STATE["started"], 1),
+            "value": STATE["value"],
+            "max": STATE["max"],
+            "progress_is_sampler": is_sampler(graph, STATE["pnode"]),
+            "nodes_total": len(graph),
+            "nodes_done": STATE["nodes_done"],
+            "samplers_total": sum(1 for c in graph.values() if SAMPLER.search(c or "")),
+            "samplers_done": STATE["samplers_done"],
+            "since_sampling": round(now - STATE["sampler_end"], 1) if STATE["sampler_end"] else None,
+            "done": STATE["done"],
+            "failed": STATE["failed"],
+        }
+
+def ws_send(sock, op, data=b""):
+    # Client frames must be masked. Only pongs are sent, and a ping carries
+    # at most 125 bytes, so the short length form always fits.
+    mask = os.urandom(4)
+    sock.sendall(bytes([0x80 | op, 0x80 | len(data)]) + mask + bytes(c ^ mask[i % 4] for i, c in enumerate(data)))
+
+def ws_messages(sock, buf):
+    def take(n):
+        while len(buf) < n:
+            chunk = sock.recv(65536)
+            if not chunk:
+                raise ConnectionError("websocket closed")
+            buf.extend(chunk)
+        out = bytes(buf[:n])
+        del buf[:n]
+        return out
+    parts, kind = [], None
+    while True:
+        b1, b2 = take(2)
+        op, n = b1 & 0x0F, b2 & 0x7F
+        if n == 126:
+            n = struct.unpack(">H", take(2))[0]
+        elif n == 127:
+            n = struct.unpack(">Q", take(8))[0]
+        mask = take(4) if b2 & 0x80 else None
+        data = take(n)
+        if mask:
+            data = bytes(c ^ mask[i % 4] for i, c in enumerate(data))
+        if op == 8:
+            raise ConnectionError("websocket closed by ComfyUI")
+        if op == 9:
+            ws_send(sock, 10, data)
+            continue
+        if op in (1, 2):
+            kind, parts = op, ([data] if op == 1 else [])
+        elif op == 0 and kind == 1:
+            parts.append(data)
+        if b1 & 0x80 and op in (0, 1, 2):
+            if kind == 1:
+                yield b"".join(parts).decode("utf-8", "replace")
+            kind, parts = None, []
+
+def ws_listen():
+    while True:
+        sock = None
+        try:
+            sock = socket.create_connection(("127.0.0.1", 8188), timeout=10)
+            key = base64.b64encode(os.urandom(16)).decode()
+            sock.sendall(("GET /ws?clientId=%s HTTP/1.1\r\nHost: 127.0.0.1:8188\r\nUpgrade: websocket\r\n"
+                          "Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n"
+                          % (PROGRESS_CLIENT, key)).encode())
+            buf = bytearray()
+            while b"\r\n\r\n" not in buf:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    raise ConnectionError("closed during handshake")
+                buf.extend(chunk)
+            head, _, rest = bytes(buf).partition(b"\r\n\r\n")
+            if b" 101 " not in head.split(b"\r\n", 1)[0]:
+                raise ConnectionError("websocket upgrade refused")
+            # Idle can last as long as the machine does; only a closed
+            # socket (ComfyUI restarting) should end this read.
+            sock.settimeout(None)
+            LISTENING[0] = True
+            sys.stderr.write("[proxy] listening for render progress\n")
+            for text in ws_messages(sock, bytearray(rest)):
+                try:
+                    msg = json.loads(text)
+                    on_event(msg.get("type"), msg.get("data") or {})
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        if LISTENING[0]:
+            sys.stderr.write("[proxy] progress listener disconnected\n")
+        LISTENING[0] = False
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+        time.sleep(3)
+
+# --- Own HTTPS tunnel, for vendors that give only a bare IP and port ---
+# The platform must not send this worker's token or anyone's prompt over plain
+# HTTP, so the proxy opens a Cloudflare quick tunnel to itself and reports the
+# https URL. A restarted tunnel has a new URL, which is reported again.
+TUNNEL_BIN = os.environ.get("AIXMAN_TUNNEL_BIN") or os.path.join(ROOT, "cloudflared")
+TUNNEL_URL = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+CURRENT_TUNNEL = [None]
+
+def report_tunnel(url):
+    body = json.dumps({"url": url}).encode()
+    for _ in range(180):
+        if CURRENT_TUNNEL[0] != url:
+            return  # superseded by a newer tunnel
+        try:
+            req = urllib.request.Request(CALLBACK_URL, data=body, method="POST", headers={
+                "Authorization": "Bearer " + TOKEN, "Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=15) as up:
+                if up.status == 200:
+                    sys.stderr.write("[proxy] reported tunnel %s\n" % url)
+                    return
+        except urllib.error.HTTPError as e:
+            # 404: the platform has not recorded this machine yet — retry.
+            # 401/410: not ours, or already released — stop.
+            if e.code in (400, 401, 403, 410):
+                sys.stderr.write("[proxy] tunnel report refused: HTTP %d\n" % e.code)
+                return
+        except Exception:
+            pass
+        time.sleep(10)
+
+def tunnel_loop():
+    while not os.access(TUNNEL_BIN, os.X_OK):
+        time.sleep(3)
+    while True:
+        try:
+            proc = subprocess.Popen(
+                [TUNNEL_BIN, "tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:%d" % PORT],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            with open(os.path.join(ROOT, "tunnel.log"), "a") as log:
+                for line in proc.stdout:
+                    log.write(line)
+                    log.flush()
+                    found = TUNNEL_URL.search(line)
+                    if found and CURRENT_TUNNEL[0] != found.group(0):
+                        CURRENT_TUNNEL[0] = found.group(0)
+                        threading.Thread(target=report_tunnel, args=(found.group(0),), daemon=True).start()
+            proc.wait()
+        except Exception as e:
+            sys.stderr.write("[proxy] tunnel failed: %s\n" % e)
+        CURRENT_TUNNEL[0] = None
+        time.sleep(5)
 
 def tail(path, limit=64 * 1024):
     try:
@@ -195,13 +438,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if route == LOG_PATH:
             # The only window into a boot that went wrong: the machine and its
             # disk vanish when it is released. Behind the same token as the rest.
-            self._json(200, {name: tail(os.path.join(ROOT, name)) for name in ("boot.log", "comfyui.log", "proxy.log")})
+            self._json(200, {name: tail(os.path.join(ROOT, name)) for name in ("boot.log", "comfyui.log", "proxy.log", "tunnel.log")})
+            return
+        if route == PROGRESS_PATH:
+            self._json(200, progress_snapshot())
             return
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else None
+        graph = None
+        if method == "POST" and route == "/prompt" and body:
+            try:
+                submitted = json.loads(body)
+                graph = {str(k): str((v or {}).get("class_type") or "") for k, v in (submitted.get("prompt") or {}).items()}
+                submitted["client_id"] = PROGRESS_CLIENT
+                body = json.dumps(submitted).encode()
+            except Exception:
+                graph = None  # forwarded as it came; progress just goes unreported
         req = urllib.request.Request(UPSTREAM + self.path, data=body, method=method)
+        skip = {"authorization"} | ({"content-length"} if graph is not None else set())
         for k, v in self.headers.items():
-            if k.lower() not in HOP and k.lower() != "authorization":
+            if k.lower() not in HOP and k.lower() not in skip:
                 req.add_header(k, v)
         try:
             with urllib.request.urlopen(req, timeout=600) as up:
@@ -218,11 +474,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 # Streamed in chunks: renders can be hundreds of megabytes and
                 # buffering one whole in memory would exhaust the container.
+                reply = bytearray() if graph is not None else None
                 while True:
                     chunk = up.read(65536)
                     if not chunk:
                         break
+                    if reply is not None and len(reply) < 65536:
+                        reply.extend(chunk)
                     self.wfile.write(chunk)
+                if reply:
+                    try:
+                        pid = json.loads(bytes(reply)).get("prompt_id")
+                        if pid:
+                            note_graph(pid, graph)
+                    except Exception:
+                        pass
         except urllib.error.HTTPError as e:
             payload = e.read()
             self.send_response(e.code)
@@ -247,7 +513,10 @@ class Server(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-Server(("0.0.0.0", PORT), Handler).serve_forever()
+threading.Thread(target=ws_listen, daemon=True).start()
+if CALLBACK_URL:
+    threading.Thread(target=tunnel_loop, daemon=True).start()
+Server((BIND, PORT), Handler).serve_forever()
 `.trim();
 }
 
@@ -293,6 +562,7 @@ echo "[aixman] boot script started $(date -u +%FT%TZ) as $(id -un) with python $
 export DEBIAN_FRONTEND=noninteractive
 export AIXMAN_PROXY_PORT=${opts.publicPort}
 export AIXMAN_ROOT=${ROOT}
+${opts.tunnel ? 'export AIXMAN_PROXY_BIND=127.0.0.1' : '# the vendor publishes the proxy port itself'}
 ${opts.hfToken ? `export HF_TOKEN=${shellQuote(opts.hfToken)}` : '# no HF token supplied'}
 ${opts.env ? renderEnvExports(opts.env) : ''}
 
@@ -315,9 +585,9 @@ start_proxy() {
   nohup python3 ${ROOT}/proxy.py >> ${ROOT}/proxy.log 2>&1 &
   PROXY_PID=$!
 }
-echo "[aixman] starting auth proxy on 0.0.0.0:${opts.publicPort}"
+echo "[aixman] starting auth proxy on port ${opts.publicPort}"
 start_proxy
-
+${opts.tunnel ? tunnelFetch() : ''}
 # A host whose driver is older than the image's CUDA boots the container fine
 # and only fails at the first tensor — find out now, not 40 minutes in.
 if ! python3 -c "import sys, torch; sys.exit(0 if torch.cuda.is_available() else 1)"; then
@@ -473,6 +743,31 @@ while true; do
   fi
   sleep 20
 done
+`;
+}
+
+/**
+ * Download cloudflared in the background; the proxy starts the tunnel as soon
+ * as the binary is in place. Python rather than curl, which a runtime image
+ * need not ship. A worker that cannot open its tunnel can never be reached, so
+ * the platform releases it after TUNNEL_REPORT_TIMEOUT (gpu-worker.ts) — there
+ * is no one to read a boot failure recorded here.
+ */
+function tunnelFetch(): string {
+  return `
+echo "[aixman] fetching cloudflared for the HTTPS tunnel"
+(
+  for attempt in 1 2 3 4 5; do
+    if python3 -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' \\
+         ${shellQuote(CLOUDFLARED_URL)} ${ROOT}/cloudflared.part \\
+       && chmod +x ${ROOT}/cloudflared.part && mv -f ${ROOT}/cloudflared.part ${ROOT}/cloudflared; then
+      echo "[aixman] cloudflared ready"
+      break
+    fi
+    echo "[aixman] cloudflared download failed (attempt $attempt)"
+    sleep 5
+  done
+) &
 `;
 }
 

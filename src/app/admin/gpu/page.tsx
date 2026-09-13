@@ -56,6 +56,8 @@ interface WorkerRow {
   lifetimeLeftMinutes: number;
   gpuModel: string | null;
   gpuCount: number;
+  /** Which vendor it was rented from. */
+  vendor?: string;
   supportId: string | null;
   pricePerHourUsd: number;
   accruedCostUsd: number;
@@ -76,6 +78,7 @@ interface RentalRow {
   modelName: string;
   gpuModel: string | null;
   gpuCount: number;
+  vendor?: string;
   supportId: string | null;
   pricePerHourUsd: number;
   rentedAt: string;
@@ -114,13 +117,29 @@ interface GpuConfig {
   maxWorkerLifetimeMinutes: number;
   warmupTimeoutMinutes: number;
   jobTimeoutMinutes: number;
+  waitValueUsdPerHour: number;
+}
+
+/** One GPU vendor: whether we hold its key, rent from it, and its balance. */
+interface VendorRow {
+  slug: string;
+  label: string;
+  credential: "api-key" | "client-id-secret";
+  connected: boolean;
+  enabled: boolean;
+  balanceUsd: number | null;
+  balanceUnknown: boolean;
+  error: string | null;
+  liveWorkers: number;
 }
 
 interface Analytics {
   config: GpuConfig;
   pricing: { thbPerCredit: number; usdToThb: number };
+  /** Summed across vendors whose balance could be read. */
   balance: { balanceUsd: number; availableRentalHours: number | null; hoursAtCurrentBurn: number | null } | null;
   balanceError: string | null;
+  vendors?: VendorRow[];
   storageConfigured: boolean;
   budget: {
     spentTodayUsd: number;
@@ -165,6 +184,55 @@ interface Analytics {
 const SIMPLEPOD_KEY_URL = 'https://dash.simplepod.ai/account';
 /** Balance top-up. Renting stops dead when this runs out. */
 const SIMPLEPOD_BILLING_URL = 'https://dash.simplepod.ai/';
+
+/**
+ * Where each vendor's credential and top-up live, plus a line on what it is
+ * good for. The consoles are single-page apps too, so these are the pages
+ * their docs name, not paths a redirect has proven.
+ */
+const VENDOR_INFO: Record<string, { keyUrl: string; billingUrl: string; keyHint: string; blurb: string }> = {
+  simplepod: {
+    keyUrl: SIMPLEPOD_KEY_URL,
+    billingUrl: SIMPLEPOD_BILLING_URL,
+    keyHint: "แท็บ Subaccounts — คัดลอกทั้งบรรทัด",
+    blurb: "ตลาดเช่าหลัก โฮสต์ A100 บูต ~2 นาที",
+  },
+  runpod: {
+    keyUrl: "https://console.runpod.io/user/settings",
+    billingUrl: "https://console.runpod.io/user/billing",
+    keyHint: "Settings → API Keys — สิทธิ์ Read/Write",
+    blurb: "ศูนย์ข้อมูลของ RunPod + เครื่องชุมชน • HTTPS ในตัว • ต้องมีเครดิตพอ 1 ชม.",
+  },
+  vast: {
+    keyUrl: "https://cloud.vast.ai/manage-keys/",
+    billingUrl: "https://cloud.vast.ai/billing/",
+    keyHint: "Keys → API Keys",
+    blurb: "ถูกสุด ของเยอะ ใช้รับงานล้น • คิดค่าเน็ตขาเข้าบางโฮสต์ • เข้าผ่าน tunnel ของเราเอง",
+  },
+  verda: {
+    keyUrl: "https://console.verda.com/",
+    billingUrl: "https://console.verda.com/",
+    keyHint: "Keys → Cloud API credentials (Client ID + Client Secret)",
+    blurb: "ศูนย์ข้อมูลฟินแลนด์ RTX PRO 6000/H100/A100/L40S • เป็น VM บูตช้ากว่า ~3 นาที",
+  },
+};
+
+type VendorCreds = { apiKey?: string; clientId?: string; clientSecret?: string };
+
+/** What "ทดสอบการเชื่อมต่อ" found at one vendor — nothing is rented to find it. */
+interface VendorTest {
+  balanceUsd: number | null;
+  balanceUnknown: boolean;
+  models: {
+    modelKey: string;
+    name: string;
+    offers: number;
+    eligible: number;
+    best: { gpuModel: string; pricePerHourUsd: number; region: string | null; costUsd: number; bootSeconds: number; renderSeconds: number } | null;
+    note?: string;
+  }[];
+}
+type VendorTestState = VendorTest | { error: string } | "loading";
 
 const thb = (n: number) =>
   new Intl.NumberFormat("th-TH", { style: "currency", currency: "THB", maximumFractionDigits: 0 }).format(n);
@@ -429,21 +497,213 @@ async function postAction(
   }
 }
 
-async function postApiKey(
-  apiKey: string,
-): Promise<{ ok: true; warning?: string; balanceUsd: number } | { ok: false; error: string }> {
+async function postVendorKey(
+  provider: string,
+  creds: VendorCreds,
+): Promise<{ ok: true; warning?: string; balanceUsd: number | null } | { ok: false; error: string }> {
   try {
     const res = await fetch("/api/admin/gpu/setup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ apiKey, enable: true }),
+      body: JSON.stringify({ provider, ...creds, enable: true }),
     });
     const body = await res.json();
     if (!res.ok) return { ok: false, error: body.error || "บันทึกไม่สำเร็จ" };
-    return { ok: true, warning: body.warning, balanceUsd: body.balanceUsd };
+    return { ok: true, warning: body.warning, balanceUsd: body.balanceUsd ?? null };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
+}
+
+/** What a vendor test found, per model — and the button to rent a test machine there. */
+function VendorTestResult({
+  slug,
+  label,
+  state,
+  busy,
+  idleMinutes,
+  onRentTest,
+}: {
+  slug: string;
+  label: string;
+  state: VendorTestState | undefined;
+  busy: string | null;
+  idleMinutes: number;
+  onRentTest: (slug: string, modelKey: string, confirmText: string) => void;
+}) {
+  if (!state || state === "loading") return null;
+  if ("error" in state) return <p className="text-xs text-error mt-2">ทดสอบไม่ผ่าน: {state.error}</p>;
+  return (
+    <div className="mt-2 text-xs space-y-1.5">
+      <div className="text-success">
+        เชื่อมต่อได้ • ยอดเงิน {state.balanceUsd !== null ? usd(state.balanceUsd) : state.balanceUnknown ? "ไม่ทราบ" : "–"}
+      </div>
+      {state.models.map((m) => (
+        <div key={m.modelKey} className="flex items-center justify-between gap-2 flex-wrap">
+          <span>
+            <b>{m.name}</b>{" "}
+            {m.best ? (
+              <span className="text-muted">
+                — ว่าง {m.eligible} เครื่อง • ดีสุด {m.best.gpuModel} {usd(m.best.pricePerHourUsd)}/ชม.
+                {m.best.region ? ` (${m.best.region})` : ""} • บูต ~{Math.round(m.best.bootSeconds / 60)} นาที
+              </span>
+            ) : (
+              <span className="text-muted">— ไม่มีเครื่องว่างที่รันได้{m.offers > 0 ? ` (มี ${m.offers} แต่ไม่ผ่านเกณฑ์)` : ""}{m.note ? ` • ${m.note}` : ""}</span>
+            )}
+          </span>
+          {m.best && (
+            <button
+              disabled={busy !== null}
+              onClick={() =>
+                onRentTest(
+                  slug,
+                  m.modelKey,
+                  `เช่าเครื่องทดสอบ ${m.name} ที่ ${label}?\n\n` +
+                    `• เครื่อง: ${m.best!.gpuModel} ราว ${usd(m.best!.pricePerHourUsd)}/ชม. (เสียเงินจริงตั้งแต่เริ่มเช่า)\n` +
+                    `• บูตประมาณ ${Math.round(m.best!.bootSeconds / 60)} นาที แล้วสั่งงานจากสตูดิโอได้เลย\n` +
+                    `• ถ้าไม่มีงาน เครื่องจะปิดเองเมื่อว่างเกิน ${idleMinutes} นาที หรือกด "ปิด" ในตารางเครื่องได้ทุกเมื่อ`,
+                )
+              }
+              className="px-2 py-1 rounded-md bg-warning/15 text-warning hover:bg-warning/25 disabled:opacity-40"
+            >
+              {busy === `rent:${slug}:${m.modelKey}` ? "กำลังเช่า..." : "เช่าเครื่องทดสอบ"}
+            </button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Every vendor on one strip: connect it, see its balance and machines, and
+ * choose whether the picker may rent there. The picker compares offers from
+ * all enabled vendors and rents the best value anywhere.
+ */
+function VendorsSection({
+  vendors,
+  creds,
+  busy,
+  tests,
+  idleMinutes,
+  onCreds,
+  onConnect,
+  onToggle,
+  onTest,
+  onRentTest,
+}: {
+  vendors: VendorRow[];
+  creds: Record<string, VendorCreds>;
+  busy: string | null;
+  tests: Record<string, VendorTestState>;
+  idleMinutes: number;
+  onCreds: (slug: string, next: VendorCreds) => void;
+  onConnect: (slug: string) => void;
+  onToggle: (slug: string, enabled: boolean) => void;
+  onTest: (slug: string) => void;
+  onRentTest: (slug: string, modelKey: string, confirmText: string) => void;
+}) {
+  return (
+    <div className="glass rounded-xl p-5 mb-6">
+      <div className="flex items-center gap-2 mb-1">
+        <KeyRound className="w-5 h-5 text-primary-light" />
+        <h2 className="font-bold">ผู้ให้เช่า GPU</h2>
+      </div>
+      <p className="text-sm text-muted mb-4">
+        ระบบจะถามราคาและเครื่องว่างจากทุกเจ้าที่เปิดไว้พร้อมกัน แล้วเช่าเครื่องที่คุ้มที่สุด — เจ้าไหนเครื่องหมด เงินหมด
+        หรือ API ล่ม ก็ไปเจ้าอื่นเอง
+      </p>
+      <div className="grid md:grid-cols-2 gap-3">
+        {vendors.map((v) => {
+          const info = VENDOR_INFO[v.slug];
+          const c = creds[v.slug] ?? {};
+          const filled = v.credential === "client-id-secret" ? Boolean(c.clientId?.trim() && c.clientSecret?.trim()) : Boolean(c.apiKey?.trim());
+          return (
+            <div key={v.slug} className="rounded-lg glass-light p-4">
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <div className="font-semibold">{v.label}</div>
+                <span className={`text-[11px] px-2 py-0.5 rounded-full ${v.connected ? "bg-success/15 text-success" : "bg-surface-light text-muted"}`}>
+                  {v.connected ? "เชื่อมต่อแล้ว" : "ยังไม่เชื่อมต่อ"}
+                </span>
+              </div>
+              {info && <p className="text-[11px] text-muted mb-2">{info.blurb}</p>}
+              {v.connected && (
+                <div className="text-sm mb-2 flex items-center gap-3 flex-wrap">
+                  <span>
+                    ยอดเงิน{" "}
+                    <b className={v.balanceUsd !== null && v.balanceUsd < 1 ? "text-error" : ""}>
+                      {v.balanceUsd !== null ? usd(v.balanceUsd) : v.balanceUnknown ? "ไม่ทราบ (เจ้านี้ไม่เปิดให้อ่าน)" : v.error ?? "–"}
+                    </b>
+                  </span>
+                  <span className="text-muted text-xs">เครื่องที่เปิดอยู่ {v.liveWorkers}</span>
+                  {info && (
+                    <a href={info.billingUrl} target="_blank" rel="noopener noreferrer"
+                       className="text-primary-light text-xs underline underline-offset-2 inline-flex items-center gap-1">
+                      เติมเงิน <ExternalLink className="w-3 h-3" />
+                    </a>
+                  )}
+                </div>
+              )}
+              {v.connected && (
+                <label className="flex items-center gap-2 text-sm mb-2 cursor-pointer">
+                  <input type="checkbox" className="w-4 h-4" checked={v.enabled} disabled={busy !== null}
+                         onChange={(e) => onToggle(v.slug, e.target.checked)} />
+                  ให้ระบบเช่าจากเจ้านี้
+                  {!v.enabled && v.liveWorkers > 0 && <span className="text-[11px] text-muted">(เครื่องที่เปิดอยู่ยังถูกดูแลและปิดตามปกติ)</span>}
+                </label>
+              )}
+              <div className="flex gap-2 flex-wrap items-center">
+                {v.credential === "client-id-secret" ? (
+                  <>
+                    <input type="text" value={c.clientId ?? ""} autoComplete="off" placeholder="Client ID"
+                           onChange={(e) => onCreds(v.slug, { ...c, clientId: e.target.value })}
+                           className="flex-1 min-w-[140px] px-3 py-2 rounded-lg glass text-sm outline-none" />
+                    <input type="password" value={c.clientSecret ?? ""} autoComplete="off" placeholder="Client Secret"
+                           onChange={(e) => onCreds(v.slug, { ...c, clientSecret: e.target.value })}
+                           className="flex-1 min-w-[140px] px-3 py-2 rounded-lg glass text-sm outline-none" />
+                  </>
+                ) : (
+                  <input type="password" value={c.apiKey ?? ""} autoComplete="off"
+                         placeholder={v.connected ? "API key ใหม่ (ถ้าจะเปลี่ยน)" : `${v.label} API key`}
+                         onChange={(e) => onCreds(v.slug, { ...c, apiKey: e.target.value })}
+                         className="flex-1 min-w-[200px] px-3 py-2 rounded-lg glass text-sm outline-none" />
+                )}
+                <button onClick={() => onConnect(v.slug)} disabled={busy !== null || !filled}
+                        className="px-3 py-2 rounded-lg bg-primary/20 text-primary-light hover:bg-primary/30 text-sm font-medium disabled:opacity-40">
+                  {busy === `setup:${v.slug}` ? "กำลังตรวจสอบ..." : v.connected ? "เปลี่ยน key" : "เชื่อมต่อ"}
+                </button>
+              </div>
+              {info && (
+                <p className="text-[11px] text-muted mt-2">
+                  <a href={info.keyUrl} target="_blank" rel="noopener noreferrer"
+                     className="text-primary-light underline underline-offset-2 inline-flex items-center gap-1">
+                    เปิดหน้าเอา key <ExternalLink className="w-3 h-3" />
+                  </a>{" "}
+                  ({info.keyHint})
+                </p>
+              )}
+              {v.connected && (
+                <div className="mt-3 border-t border-white/5 pt-3">
+                  <button onClick={() => onTest(v.slug)} disabled={busy !== null || tests[v.slug] === "loading"}
+                          className="px-3 py-1.5 rounded-lg glass text-xs font-medium hover:bg-surface-light disabled:opacity-40">
+                    {tests[v.slug] === "loading" ? "กำลังทดสอบ..." : "ทดสอบการเชื่อมต่อ (ไม่เสียเงิน)"}
+                  </button>
+                  <VendorTestResult
+                    slug={v.slug}
+                    label={v.label}
+                    state={tests[v.slug]}
+                    busy={busy}
+                    idleMinutes={idleMinutes}
+                    onRentTest={onRentTest}
+                  />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 /** Boot/ComfyUI logs of one worker, read through its proxy. */
@@ -468,7 +728,8 @@ export default function GpuAdminPage() {
   const [data, setData] = useState<Analytics | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
-  const [apiKey, setApiKey] = useState("");
+  const [creds, setCreds] = useState<Record<string, VendorCreds>>({});
+  const [tests, setTests] = useState<Record<string, VendorTestState>>({});
   const [message, setMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [form, setForm] = useState<GpuConfig | null>(null);
@@ -540,27 +801,57 @@ export default function GpuAdminPage() {
     setBusy(null);
   };
 
-  const saveKey = async () => {
-    const key = apiKey.trim();
-    if (!key) return;
-    setBusy("setup");
+  const connectVendor = async (slug: string) => {
+    const c = creds[slug] ?? {};
+    setBusy(`setup:${slug}`);
     setMessage(null);
 
-    const result = await postApiKey(key);
+    const result = await postVendorKey(slug, {
+      apiKey: c.apiKey?.trim(),
+      clientId: c.clientId?.trim(),
+      clientSecret: c.clientSecret?.trim(),
+    });
     if (!result.ok) {
       setMessage({ kind: "err", text: result.error });
       setBusy(null);
       return;
     }
-    setApiKey("");
+    setCreds((all) => ({ ...all, [slug]: {} }));
+    const label = data?.vendors?.find((v) => v.slug === slug)?.label ?? slug;
     setMessage({
       kind: result.warning ? "err" : "ok",
-      text: result.warning || `เชื่อมต่อสำเร็จ • ยอดเงิน ${usd(result.balanceUsd)}`,
+      text:
+        result.warning ||
+        `เชื่อมต่อ ${label} สำเร็จ${result.balanceUsd !== null ? ` • ยอดเงิน ${usd(result.balanceUsd)}` : ""} — ระบบจะเทียบข้อเสนอจากเจ้านี้ด้วยตั้งแต่รอบถัดไป`,
     });
     setForm(null);
     // As in `post`, `busy` stays set across the reload.
     await load();
     setBusy(null);
+  };
+
+  const testVendor = async (slug: string) => {
+    setTests((all) => ({ ...all, [slug]: "loading" }));
+    const result = await postAction({ action: "test-vendor", provider: slug });
+    setTests((all) => ({
+      ...all,
+      [slug]: result.ok ? (result.body as unknown as VendorTest) : { error: result.error },
+    }));
+  };
+
+  const rentTest = (slug: string, modelKey: string, confirmText: string) => {
+    if (!confirm(confirmText)) return;
+    const idle = data?.config.idleTimeoutMinutes ?? 0;
+    void post({ action: "rent-test", provider: slug, modelKey }, `rent:${slug}:${modelKey}`, (r) =>
+      `เช่าเครื่องทดสอบแล้ว #${Number(r.workerId)} (${String(r.gpuModel ?? "GPU")}) — รอบูตในตารางเครื่องด้านล่าง ` +
+      `แล้วสั่งงานจากสตูดิโอได้เลย • ปิดเองเมื่อว่างเกิน ${idle} นาที หรือกด "ปิด" ได้ทุกเมื่อ`);
+  };
+
+  const toggleVendor = (slug: string, enabled: boolean) => {
+    const current = (data?.vendors ?? []).filter((v) => v.enabled).map((v) => v.slug);
+    const providers = enabled ? [...new Set([...current, slug])] : current.filter((s) => s !== slug);
+    void post({ action: "set-providers", providers }, `toggle:${slug}`, () =>
+      enabled ? "เปิดให้เช่าจากเจ้านี้แล้ว" : "หยุดเช่าจากเจ้านี้แล้ว — เครื่องที่เปิดอยู่ยังถูกดูแลจนปิดตามปกติ");
   };
 
   // This page renders entirely on the client, so the server sends an empty
@@ -599,7 +890,9 @@ export default function GpuAdminPage() {
     );
   }
 
-  const needsKey = Boolean(data?.balanceError);
+  const vendors = data?.vendors ?? [];
+  const needsKey = vendors.length > 0 ? !vendors.some((v) => v.connected) : Boolean(data?.balanceError);
+  const connectedCount = vendors.filter((v) => v.connected).length;
   const p = data?.profit;
   const b = data?.budget;
 
@@ -609,7 +902,7 @@ export default function GpuAdminPage() {
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
             <Cpu className="w-6 h-6 text-primary-light" />
-            GPU ที่เช่า (SimplePod)
+            GPU ที่เช่า
           </h1>
           <p className="text-sm text-muted mt-1">
             คิดเงินตามเวลาที่เครื่องเปิด — ไม่ใช่ตามจำนวนงาน ตัวเลขกำไรด้านล่างรวมเวลาบูตและเวลาว่างแล้ว
@@ -693,71 +986,42 @@ export default function GpuAdminPage() {
         </div>
       )}
 
-      {/* Setup — the only thing needed to go live */}
+      {/* Setup — one credential per vendor is all it takes to go live */}
       {needsKey && (
-        <div className="glass rounded-xl p-5 mb-6 border border-warning/30">
-          <div className="flex items-center gap-2 mb-2">
-            <KeyRound className="w-5 h-5 text-warning" />
-            <h2 className="font-bold">เชื่อมต่อ SimplePod</h2>
-          </div>
-          <p className="text-sm text-muted mb-2">
-            กรอก API key ครั้งเดียว ระบบจะตั้งค่าที่เหลือให้เองทั้งหมด — สร้าง provider, เพิ่มโมเดลทั้งหมด,
-            ตั้งเพดานงบ ไม่ต้อง build Docker image และไม่ต้องตั้ง cron เอง
-          </p>
-          <p className="text-sm mb-3 flex items-center gap-2 flex-wrap">
-            <a
-              href={SIMPLEPOD_KEY_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-primary-light underline underline-offset-2 hover:opacity-80 inline-flex items-center gap-1"
-            >
-              เปิดหน้าเอา API key ของ SimplePod <ExternalLink className="w-3.5 h-3.5" />
-            </a>
-            <span className="text-muted text-xs">(อยู่ในแท็บ Subaccounts — คัดลอกทั้งบรรทัด)</span>
-          </p>
-          <div className="flex gap-2 flex-wrap">
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="SimplePod API key"
-              autoComplete="off"
-              className="flex-1 min-w-[240px] px-3 py-2 rounded-lg glass-light text-sm outline-none"
-            />
-            <button
-              onClick={() => void saveKey()}
-              disabled={busy !== null || !apiKey.trim()}
-              className="px-4 py-2 rounded-lg bg-primary/20 text-primary-light hover:bg-primary/30 text-sm font-medium disabled:opacity-40"
-            >
-              {busy === "setup" ? "กำลังตรวจสอบ..." : "เชื่อมต่อและเปิดใช้งาน"}
-            </button>
-          </div>
+        <div className="glass rounded-xl p-4 mb-3 border border-warning/30 text-sm">
+          <b>ยังไม่ได้เชื่อมต่อผู้ให้เช่า GPU เจ้าไหนเลย</b>
+          <span className="text-muted">
+            {" "}— ใส่ key ของเจ้าใดเจ้าหนึ่งด้านล่าง ระบบจะตั้งค่าที่เหลือให้เองทั้งหมด (เพิ่มโมเดล ตั้งเพดานงบ)
+            ไม่ต้อง build Docker image และไม่ต้องตั้ง cron เอง
+          </span>
         </div>
+      )}
+      {vendors.length > 0 && (
+        <VendorsSection
+          vendors={vendors}
+          creds={creds}
+          busy={busy}
+          tests={tests}
+          idleMinutes={data.config.idleTimeoutMinutes}
+          onCreds={(slug, next) => setCreds((all) => ({ ...all, [slug]: next }))}
+          onConnect={(slug) => void connectVendor(slug)}
+          onToggle={toggleVendor}
+          onTest={(slug) => void testVendor(slug)}
+          onRentTest={rentTest}
+        />
       )}
 
       {/* KPIs */}
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <KpiCard
-          label="ยอดเงิน SimplePod"
+          label={connectedCount > 1 ? `ยอดเงินรวม ${connectedCount} เจ้า` : "ยอดเงินผู้ให้เช่า"}
           value={data?.balance ? usd(data.balance.balanceUsd) : "–"}
           sub={
-            <span className="flex items-center gap-2 flex-wrap">
-              <span>
-                {data?.balance?.hoursAtCurrentBurn != null
-                  ? `พอใช้อีก ~${data.balance.hoursAtCurrentBurn} ชม. ที่อัตราปัจจุบัน`
-                  : data?.balanceError ?? ""}
-              </span>
-              {/* Surfaced here because an empty balance is the one failure that
-                  cannot be fixed from inside this app. */}
-              <a
-                href={SIMPLEPOD_BILLING_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary-light underline underline-offset-2 hover:opacity-80 inline-flex items-center gap-1"
-              >
-                เติมเงิน <ExternalLink className="w-3 h-3" />
-              </a>
-            </span>
+            // Each vendor's top-up link sits on its card above: an empty
+            // balance is the one failure that cannot be fixed from this app.
+            data?.balance?.hoursAtCurrentBurn != null
+              ? `พอใช้อีก ~${data.balance.hoursAtCurrentBurn} ชม. ที่อัตราปัจจุบัน`
+              : data?.balanceError ?? ""
           }
           icon={<Wallet className="w-4 h-4" />}
           tone={data?.balance && data.balance.balanceUsd < 1 ? "bad" : "default"}
@@ -924,6 +1188,7 @@ export default function GpuAdminPage() {
               ["maxWorkerLifetimeMinutes", "อายุเครื่องสูงสุด (นาที)", "กันเครื่องหลุดค้าง"],
               ["warmupTimeoutMinutes", "รอเครื่องพร้อมสูงสุด (นาที)", "ต้องเผื่อโหลดโมเดล ~42GB"],
               ["jobTimeoutMinutes", "เรนเดอร์นานสุด (นาที)", "เกินแล้วยกเลิกและคืนเครดิต"],
+              ["waitValueUsdPerHour", "มูลค่าเวลาที่ลูกค้ารอ (USD/ชม.)", "ใช้ชั่งการ์ดถูกแต่ช้า กับแพงแต่เร็ว • 0 = ดูแค่ค่าเช่า"],
             ] as const).map(([key, label, hint]) => (
               <div key={key}>
                 <label className="text-xs text-muted block mb-1">{label}</label>
@@ -1008,7 +1273,8 @@ export default function GpuAdminPage() {
                     <td className="py-2 pr-3">{w.modelName}</td>
                     <td className="py-2 pr-3">
                       {w.gpuModel ?? "–"}{w.gpuCount > 1 ? ` ×${w.gpuCount}` : ""}
-                      {w.supportId && <div className="text-[11px] text-muted" title="รหัสเครื่องฝั่ง SimplePod">{w.supportId}</div>}
+                      {w.vendor && <div className="text-[11px] text-primary-light">{w.vendor}</div>}
+                      {w.supportId && <div className="text-[11px] text-muted" title={`รหัสเครื่องฝั่ง ${w.vendor ?? "ผู้ให้เช่า"}`}>{w.supportId}</div>}
                     </td>
                     <td className="py-2 pr-3">{usd(w.pricePerHourUsd)}</td>
                     <td className="py-2 pr-3" title={`ปิดแน่นอนใน ${w.lifetimeLeftMinutes} นาที (อายุเครื่องสูงสุด)`}>
@@ -1132,7 +1398,8 @@ export default function GpuAdminPage() {
                   <tr key={r.id} className="border-b border-white/5 last:border-0 align-top">
                     <td className="py-2 pr-3 text-muted">
                       {r.id}
-                      {r.supportId && <div className="text-[10px]" title="รหัสเครื่องฝั่ง SimplePod">{r.supportId}</div>}
+                      {r.vendor && <div className="text-[10px] text-primary-light">{r.vendor}</div>}
+                      {r.supportId && <div className="text-[10px]" title={`รหัสเครื่องฝั่ง ${r.vendor ?? "ผู้ให้เช่า"}`}>{r.supportId}</div>}
                     </td>
                     <td className="py-2 pr-3 whitespace-nowrap">{r.modelName}</td>
                     <td className="py-2 pr-3 whitespace-nowrap" title={r.pickNote ?? undefined}>

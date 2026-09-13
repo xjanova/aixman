@@ -4,6 +4,7 @@ import prisma from '@/lib/db';
 import { GpuQueue } from '@/lib/services/gpu-queue';
 import { RetentionService, daysUntil } from '@/lib/services/retention';
 import { GpuEta, formatEta } from '@/lib/services/gpu-eta';
+import { GpuProgress, estimatedFraction, type RenderPhase } from '@/lib/services/gpu-progress';
 import { publicProvider } from '@/lib/public-provider';
 
 /**
@@ -26,6 +27,15 @@ const QUEUE_LABELS = {
   rendering: 'กำลังสร้างผลงานของคุณ',
 } as const;
 
+/** What each measured stage of a render is called — never how it is run. */
+const PHASE_LABELS: Record<RenderPhase, string> = {
+  waiting: QUEUE_LABELS.starting,
+  loading: 'ถึงคิวของคุณแล้ว กำลังเตรียมการสร้าง',
+  sampling: QUEUE_LABELS.rendering,
+  finishing: 'ใกล้เสร็จแล้ว กำลังเก็บรายละเอียดสุดท้าย',
+  saving: 'สร้างเสร็จแล้ว กำลังบันทึกผลงาน',
+};
+
 export async function GET(
   _request: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -47,7 +57,9 @@ export async function GET(
       model: {
         include: { provider: { select: { name: true, slug: true } } },
       },
-      gpuJob: { select: { status: true } },
+      // The worker is read server-side for render progress; none of it is
+      // ever put in the response.
+      gpuJob: { select: { status: true, modelKey: true, externalJobId: true, startedAt: true, worker: true } },
     },
   });
 
@@ -68,6 +80,14 @@ export async function GET(
     etaSeconds: number | null;
     etaLabel: string | null;
     etaBasis: string;
+    /**
+     * How far this render is, 0–0.99, once it is this customer's turn: step
+     * counts from the renderer when it reports them, time served against the
+     * estimate when it cannot. Null while queued.
+     */
+    progress?: number | null;
+    /** Which measured stage the render is in; null when `progress` is an estimate. */
+    phase?: RenderPhase | null;
   } | null = null;
 
   if (generation.gpuJob && ['pending', 'processing'].includes(generation.status)) {
@@ -75,9 +95,20 @@ export async function GET(
     const eta = await GpuEta.estimate(generation.id);
 
     if (job.status === 'running') {
-      gpu = { stage: 'rendering', label: QUEUE_LABELS.rendering, queuePosition: 0, etaSeconds: eta.seconds, etaLabel: formatEta(eta.seconds), etaBasis: eta.basis };
+      const measured = await GpuProgress.forRunningJob(job, job.worker);
+      const elapsed = job.startedAt ? (Date.now() - job.startedAt.getTime()) / 1000 : 0;
+      gpu = {
+        stage: 'rendering',
+        label: measured?.phase ? PHASE_LABELS[measured.phase] : QUEUE_LABELS.rendering,
+        queuePosition: 0,
+        etaSeconds: eta.seconds,
+        etaLabel: formatEta(eta.seconds),
+        etaBasis: eta.basis,
+        progress: measured?.fraction ?? estimatedFraction(elapsed, eta.seconds),
+        phase: measured?.phase ?? null,
+      };
     } else if (job.status === 'assigned') {
-      gpu = { stage: 'starting', label: QUEUE_LABELS.starting, queuePosition: 0, etaSeconds: eta.seconds, etaLabel: formatEta(eta.seconds), etaBasis: eta.basis };
+      gpu = { stage: 'starting', label: QUEUE_LABELS.starting, queuePosition: 0, etaSeconds: eta.seconds, etaLabel: formatEta(eta.seconds), etaBasis: eta.basis, progress: 0, phase: null };
     } else {
       // The ETA's count includes jobs already rendering ahead, which is what
       // "people in front of you" means to a customer.

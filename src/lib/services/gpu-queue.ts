@@ -174,6 +174,10 @@ export class GpuQueue {
       _min: { queuedAt: true },
     });
     if (pending.length === 0) return { dispatched: 0, failed: 0 };
+    // Models are served in the order their oldest job arrived, so whoever
+    // ordered first gets the next free slot — a customer's image does not
+    // wait behind a video ordered after it just because of how groups sort.
+    pending.sort((a, b) => (a._min.queuedAt?.getTime() ?? 0) - (b._min.queuedAt?.getTime() ?? 0));
 
     let dispatched = 0;
     let failed = 0;
@@ -181,37 +185,12 @@ export class GpuQueue {
 
     for (const group of pending) {
       const modelKey = group.modelKey;
-      let queued = group._count._all;
 
-      // 1. Every booted, idle machine serving this model takes the next job —
-      //    one GPU renders one job at a time. Only a booted machine can take
-      //    one: submitting to one still starting fails and costs the job an
-      //    attempt for nothing. Warmest first.
-      const ready = await prisma.aiGpuWorker.findMany({
-        where: { modelKey, status: 'ready', endpoint: { not: null } },
-        orderBy: { lastJobAt: { sort: 'desc', nulls: 'last' } },
-      });
-      for (const worker of ready) {
-        if (queued <= 0) break;
-        const busy = await prisma.aiGpuJob.count({
-          where: { workerId: worker.id, status: { in: ['assigned', 'running'] } },
-        });
-        if (busy > 0) continue;
-
-        const job = await this.claimNextJob(modelKey, worker.id);
-        if (!job) {
-          queued = 0;
-          break;
-        }
-        queued -= 1;
-        try {
-          await this.submitJob(job, worker);
-          dispatched += 1;
-        } catch (error) {
-          await this.settleFailure(job, worker, (error as Error).message, true);
-          failed += 1;
-        }
-      }
+      // 1. Machines already up take what they can.
+      const assigned = await this.assignIdleWorkers(modelKey, group._count._all);
+      dispatched += assigned.dispatched;
+      failed += assigned.failed;
+      const queued = assigned.remaining;
       if (queued <= 0) continue;
 
       // 2. Jobs still waiting: rent another machine if that finishes them
@@ -233,6 +212,79 @@ export class GpuQueue {
     }
 
     return { dispatched, failed, reason };
+  }
+
+  /**
+   * Every booted, idle machine serving this model takes the next job — one
+   * GPU renders one job at a time. Only a booted machine can take one:
+   * submitting to one still starting fails and costs the job an attempt for
+   * nothing. Warmest first. `remaining` is what is left queued.
+   */
+  private static async assignIdleWorkers(
+    modelKey: string,
+    queued: number
+  ): Promise<{ dispatched: number; failed: number; remaining: number }> {
+    let dispatched = 0;
+    let failed = 0;
+    const ready = await prisma.aiGpuWorker.findMany({
+      where: { modelKey, status: 'ready', endpoint: { not: null } },
+      orderBy: { lastJobAt: { sort: 'desc', nulls: 'last' } },
+    });
+    for (const worker of ready) {
+      if (queued <= 0) break;
+      const busy = await prisma.aiGpuJob.count({
+        where: { workerId: worker.id, status: { in: ['assigned', 'running'] } },
+      });
+      if (busy > 0) continue;
+
+      const job = await this.claimNextJob(modelKey, worker.id);
+      if (!job) return { dispatched, failed, remaining: 0 };
+      queued -= 1;
+      try {
+        await this.submitJob(job, worker);
+        dispatched += 1;
+      } catch (error) {
+        await this.settleFailure(job, worker, (error as Error).message, true);
+        failed += 1;
+      }
+    }
+    return { dispatched, failed, remaining: queued };
+  }
+
+  /** Whether the fast lane has anything to do — checked before taking the lock. */
+  static async hasFastWork(): Promise<boolean> {
+    const n = await prisma.aiGpuJob.count({ where: { status: { in: ['queued', 'running'] } } });
+    return n > 0;
+  }
+
+  /**
+   * The lane between minute ticks: collect finished renders and hand queued
+   * jobs to machines already up. Nothing is rented, reaped or swept here —
+   * that stays on the minute tick, whose pace the budget logic assumes.
+   *
+   * Without it a finished render was noticed up to a minute late — dead time
+   * the customer watched and the machine was billed for — and a machine
+   * rendering 20-second images could take only one job a minute.
+   */
+  static async fastTick(): Promise<{ completed: number; failed: number; dispatched: number }> {
+    const cfg = await getGpuConfig();
+    const polled = await this.pollRunningJobs(cfg);
+    let { failed } = polled;
+    let dispatched = 0;
+
+    const pending = await prisma.aiGpuJob.groupBy({
+      by: ['modelKey'],
+      where: { status: 'queued' },
+      _count: { _all: true },
+      _min: { queuedAt: true },
+    });
+    pending.sort((a, b) => (a._min.queuedAt?.getTime() ?? 0) - (b._min.queuedAt?.getTime() ?? 0));
+    for (const group of pending) {
+      const assigned = await this.assignIdleWorkers(group.modelKey, group._count._all);
+      dispatched += assigned.dispatched;
+      failed += assigned.failed;
+    }
+    return { completed: polled.completed, failed, dispatched };
   }
 
   /**
@@ -505,6 +557,9 @@ export class GpuQueue {
   ): Promise<void> {
     const now = new Date();
     const canRetry = retryable && job.attempts < job.maxAttempts;
+    // A card type that cannot run this model is avoided from now on, and its
+    // failure is not the model's (GpuWorkerManager.noteRenderFailure).
+    const cardFault = await GpuWorkerManager.noteRenderFailure(job.modelKey, worker, message).catch(() => false);
 
     if (worker) {
       await prisma.aiGpuWorker.update({
@@ -562,7 +617,7 @@ export class GpuQueue {
     // running out of memory) says nothing about the model they do order.
     const extra = (job.payload as { extra?: { resolution?: unknown } } | null)?.extra;
     const experiment = isAdminOnlyPreset(job.modelKey, extra?.resolution);
-    if (countAgainstModel && !experiment && generation?.modelId) {
+    if (countAgainstModel && !experiment && !cardFault && generation?.modelId) {
       await ModelReadiness.recordFailure(generation.modelId, message);
     }
   }

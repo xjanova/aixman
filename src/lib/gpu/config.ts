@@ -1,6 +1,8 @@
 import prisma from '@/lib/db';
 import { DEFAULT_BASE_IMAGE, DEFAULT_BASE_TAG, DEFAULT_MIN_CUDA, READY_PATH } from './provision';
 import { getCatalogEntry, type CatalogEntry } from './catalog';
+import type { GpuArch } from './gpu-specs';
+import { isGpuProviderSlug, type GpuProviderSlug } from './types';
 
 /**
  * GPU rental configuration, backed by `ai_settings` (group: `gpu`).
@@ -18,7 +20,14 @@ import { getCatalogEntry, type CatalogEntry } from './catalog';
 export interface GpuBudgetConfig {
   /** Master kill switch. When false nothing is ever rented. */
   enabled: boolean;
+  /** The first vendor set up, kept for callers from before there were several. */
   providerSlug: string;
+  /**
+   * Vendors the picker may rent from (`gpu_providers`, comma-separated). Every
+   * one with a stored key is still reconciled and swept for orphans whether
+   * listed or not — taking a vendor off this list must not strand a machine.
+   */
+  providers: GpuProviderSlug[];
   /** Hard ceiling on simultaneously rented machines. */
   maxConcurrentWorkers: number;
   /** Refuse any offer above this hourly price. */
@@ -38,6 +47,12 @@ export interface GpuBudgetConfig {
   warmupTimeoutMinutes: number;
   /** Give up on a single generation after this long. */
   jobTimeoutMinutes: number;
+  /**
+   * What an hour of customers waiting is worth to the business, in USD. The
+   * offer picker adds it to rental cost, so a card that saves a cent but makes
+   * people wait a minute longer loses. 0 ranks on rental cost alone.
+   */
+  waitValueUsdPerHour: number;
   /** Optional marketplace region filter. */
   region?: string;
 }
@@ -55,8 +70,13 @@ export interface WorkerProfile {
   diskGb: number;
   /** Minimum VRAM in MB. Quantised MiniMax H3 needs ~24 GB. */
   minVramMb: number;
-  /** Preferred GPU models; empty means "any that meets minVramMb". */
+  /**
+   * An allow-list of card names (substrings). Empty means any card gpu-specs.ts
+   * places at `minArch` or newer that meets minVramMb.
+   */
   gpuModels: string[];
+  /** Oldest architecture the model runs on; Ampere when unset. */
+  minArch?: GpuArch;
   gpuCount: number;
   /** Weights are tens of GB — a slow host makes cold start unbearable. */
   minDownloadMbps?: number;
@@ -84,6 +104,7 @@ const SETTING_GROUP = 'gpu';
 export const GPU_DEFAULTS: GpuBudgetConfig = {
   enabled: false,
   providerSlug: 'simplepod',
+  providers: ['simplepod'],
   maxConcurrentWorkers: 1,
   // 0.6 excluded every card that can hold MiniMax H3 or Qwen-Image: on
   // 2026-09-11 the cheapest were A100 40 GB $0.48, RTX 5090 $0.72 and RTX PRO
@@ -101,6 +122,12 @@ export const GPU_DEFAULTS: GpuBudgetConfig = {
   // killed just before it becomes useful.
   warmupTimeoutMinutes: 60,
   jobTimeoutMinutes: 30,
+  // At $2 an hour, a card must save a cent for every ~18 s longer a customer
+  // waits. Checked against 2026-09 SimplePod prices: one H3 clip stays on the
+  // measured A100 ($0.50) rather than an untried 24 GB 4090 ($0.35, an
+  // estimated minute slower) or 3090; a large backlog with no A100 goes to a
+  // 96 GB RTX PRO 6000, not the cheap cards. At $1 the 4090 edged the A100.
+  waitValueUsdPerHour: 2,
 };
 
 /**
@@ -122,7 +149,8 @@ export const MINIMAX_H3_PROFILE: WorkerProfile = {
   // ~42.5 GB of weights plus ComfyUI, torch and render output.
   diskGb: 120,
   minVramMb: 24576,
-  gpuModels: ['A100', 'RTX 5090', 'RTX PRO 6000', 'RTX 4090'],
+  gpuModels: [],
+  minArch: 'ampere',
   gpuCount: 1,
   // Weights are tens of gigabytes; below this the cold start alone outlives the
   // warmup timeout and the rental is wasted before it renders anything.
@@ -136,6 +164,20 @@ function parseNumber(raw: string | null | undefined, fallback: number): number {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
+/**
+ * The vendors to rent from. Before there were several, the one in
+ * `gpu_provider` was the only choice, so an unset list means exactly that.
+ * Unknown names are dropped rather than failing the tick.
+ */
+export function parseProviders(raw: string | null | undefined, legacy: string): GpuProviderSlug[] {
+  const listed = (raw ?? '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(isGpuProviderSlug);
+  if (listed.length > 0) return [...new Set(listed)];
+  return isGpuProviderSlug(legacy) ? [legacy] : [...GPU_DEFAULTS.providers];
+}
+
 function parseBool(raw: string | null | undefined, fallback: boolean): boolean {
   if (raw == null || raw.trim() === '') return fallback;
   return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase());
@@ -145,9 +187,11 @@ export async function getGpuConfig(): Promise<GpuBudgetConfig> {
   const rows = await prisma.aiSetting.findMany({ where: { group: SETTING_GROUP } });
   const map = new Map(rows.map((r) => [r.key, r.value]));
 
+  const providerSlug = map.get('gpu_provider')?.trim() || GPU_DEFAULTS.providerSlug;
   const cfg: GpuBudgetConfig = {
     enabled: parseBool(map.get('gpu_enabled'), GPU_DEFAULTS.enabled),
-    providerSlug: map.get('gpu_provider')?.trim() || GPU_DEFAULTS.providerSlug,
+    providerSlug,
+    providers: parseProviders(map.get('gpu_providers'), providerSlug),
     maxConcurrentWorkers: Math.max(
       0,
       Math.floor(parseNumber(map.get('gpu_max_concurrent_workers'), GPU_DEFAULTS.maxConcurrentWorkers))
@@ -165,6 +209,7 @@ export async function getGpuConfig(): Promise<GpuBudgetConfig> {
     ),
     warmupTimeoutMinutes: parseNumber(map.get('gpu_warmup_timeout_minutes'), GPU_DEFAULTS.warmupTimeoutMinutes),
     jobTimeoutMinutes: parseNumber(map.get('gpu_job_timeout_minutes'), GPU_DEFAULTS.jobTimeoutMinutes),
+    waitValueUsdPerHour: parseNumber(map.get('gpu_wait_value_usd_per_hour'), GPU_DEFAULTS.waitValueUsdPerHour),
     region: map.get('gpu_region')?.trim() || undefined,
   };
 
@@ -200,6 +245,7 @@ function profileFromCatalog(entry: CatalogEntry): WorkerProfile {
     diskGb: entry.hardware.diskGb,
     minVramMb: entry.hardware.minVramMb,
     gpuModels: entry.hardware.gpuModels,
+    minArch: entry.hardware.minArch,
     gpuCount: 1,
     // Weights are tens of gigabytes; below this the cold start alone outlives
     // the warmup timeout and the rental is wasted before it renders anything.

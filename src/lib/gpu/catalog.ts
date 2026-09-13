@@ -1,5 +1,6 @@
 import type { ParameterBinding, UiWorkflow } from './comfy-convert';
 import type { DurationCurve } from '@/lib/pricing';
+import type { GpuArch } from './gpu-specs';
 import minimaxH3Template from './workflows/templates/minimax_h3_t2v.json';
 import aceStepTemplate from './workflows/templates/ace_step_1_5.json';
 import qwenImageTemplate from './workflows/templates/qwen_image.json';
@@ -96,7 +97,14 @@ export interface CatalogEntry {
   hardware: {
     minVramMb: number;
     diskGb: number;
+    /**
+     * An allow-list of card names, matched as substrings. Empty means any card
+     * gpu-specs.ts knows and places at `minArch` or newer — the offer picker
+     * then weighs every one of them on cost and speed.
+     */
     gpuModels: string[];
+    /** Oldest architecture this model runs on; `MIN_ARCH` (Ampere) when unset. */
+    minArch?: GpuArch;
     minCudaVersion?: string;
   };
   /**
@@ -315,10 +323,13 @@ const MINIMAX_H3: CatalogEntry = {
     // Portrait and square — the 768p LoRA only knows landscape (H3_TURBO_MIXED).
     { repo: 'Comfy-Org/MiniMax-H3', file: 'loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors', dest: 'loras', bytes: 1_956_193_000 },
   ],
-  // A100 40 GB is on the list because on SimplePod it was the cheapest card
-  // with room for these weights ($0.48/hr against $0.72 for a 5090, measured
-  // 2026-09-11). int8 and the nvfp4 text encoder do not need Blackwell.
-  hardware: { minVramMb: 24576, diskGb: 120, gpuModels: ['A100', 'RTX 5090', 'RTX PRO 6000', 'RTX 4090'] },
+  // Any Ampere-or-newer card with the VRAM. The list used to be A100, RTX
+  // 5090, RTX PRO 6000 and RTX 4090 — the A100 40 GB was the cheapest with
+  // room for these weights on SimplePod ($0.48/hr against $0.72 for a 5090,
+  // measured 2026-09-11) — which hid every other card that could do the work
+  // (L40S, H100, RTX 6000 Ada, A6000) from the offer picker. int8 and the
+  // nvfp4 text encoder do not need Blackwell.
+  hardware: { minVramMb: 24576, diskGb: 120, gpuModels: [], minArch: 'ampere' },
   /**
    * Splice the turbo chain into the model path:
    *
@@ -457,8 +468,8 @@ const ACE_STEP: CatalogEntry = {
   // Any card that holds it — but not *any* name: the CUDA 13 image has no
   // kernels for Volta, and the market's cheapest 16 GB cards are V100s that
   // report a CUDA 13 driver. Unfiltered, this would rent one and fail at the
-  // first tensor. Every entry here is Turing or newer.
-  hardware: { minVramMb: 12288, diskGb: 60, gpuModels: ['RTX', 'A100', 'A40', 'A10', 'L4', 'H100', 'H200'] },
+  // first tensor. Turing is enough for this one (gpu-specs.ts places cards).
+  hardware: { minVramMb: 12288, diskGb: 60, gpuModels: [], minArch: 'turing' },
   bind: (p) => [
     // Input names differ across ACE-Step revisions; first match wins. Verified
     // against ComfyUI v0.35.1's /prompt validation (see provision.ts); if a
@@ -508,7 +519,7 @@ const QWEN_IMAGE: CatalogEntry = {
     // The template's LoraLoaderModelOnly expects this exact filename.
     { repo: 'lightx2v/Qwen-Image-Lightning', file: 'Qwen-Image-Lightning-8steps-V1.0.safetensors', dest: 'loras', bytes: 1_698_951_104 },
   ],
-  hardware: { minVramMb: 24576, diskGb: 90, gpuModels: ['A100', 'RTX 5090', 'RTX PRO 6000', 'RTX 4090'] },
+  hardware: { minVramMb: 24576, diskGb: 90, gpuModels: [], minArch: 'ampere' },
   bind: (p) => [
     // 6 and 7 are positive and negative. Binding by id rather than by class is
     // deliberate — two CLIPTextEncode nodes are indistinguishable by type and

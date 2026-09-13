@@ -12,12 +12,35 @@
  * and never throw on an already-gone instance.
  */
 
-export type GpuProviderSlug = 'simplepod';
+export type GpuProviderSlug = 'simplepod' | 'runpod' | 'vast' | 'verda';
+
+export const GPU_PROVIDER_SLUGS: readonly GpuProviderSlug[] = ['simplepod', 'runpod', 'vast', 'verda'];
+
+export function isGpuProviderSlug(value: unknown): value is GpuProviderSlug {
+  return typeof value === 'string' && (GPU_PROVIDER_SLUGS as readonly string[]).includes(value);
+}
+
+/**
+ * How the platform reaches a worker's port.
+ *
+ * - `vendor-https`: the vendor publishes it at an HTTPS URL (SimplePod's
+ *   Cloudflare tunnel, RunPod's proxy) that the instance record carries.
+ * - `tunnel`: the vendor only offers a raw IP and port. Sending the worker's
+ *   bearer token and customers' prompts over plain HTTP would let anyone on
+ *   the path read them, so the worker opens its own Cloudflare tunnel and
+ *   reports the HTTPS URL back to us (`/api/gpu/tunnel/[id]`).
+ */
+export type GpuExposure = 'vendor-https' | 'tunnel';
 
 /** A rentable machine offered by the marketplace. */
 export interface GpuOffer {
   /** Vendor-native offer id, for logging/debugging. */
   id: string;
+  /**
+   * The vendor it came from. Adapters may leave it unset; the worker manager
+   * stamps it when it merges every vendor's market into one ranking.
+   */
+  provider?: GpuProviderSlug;
   /** Opaque reference passed back to `rent()` (SimplePod: an IRI). */
   marketRef: string;
   gpuModel: string;
@@ -42,6 +65,12 @@ export interface GpuOffer {
   downloadMbps?: number;
   /** Host CUDA version as the vendor reported it, e.g. "13.3". */
   cudaVersion?: string;
+  /** USD per GB downloaded into the machine, where the vendor charges for it (Vast hosts set their own). */
+  ingressUsdPerGb?: number;
+  /** The least a rental is billed, in seconds (Verda bills in 10-minute blocks). */
+  minBillingSeconds?: number;
+  /** Boot time this vendor adds before our script runs — a VM starting, an image pull. */
+  extraBootSeconds?: number;
 }
 
 export interface GpuOfferFilter {
@@ -119,6 +148,11 @@ export interface GpuRentSpec {
   registry?: { host: string; username: string; password: string };
   /** Tag written into the instance name so orphan sweeps can identify us. */
   nameTag: string;
+  /**
+   * Oldest host CUDA the image runs on. Offers were filtered on it already;
+   * vendors that place the machine at order time (RunPod) need it again.
+   */
+  minCudaVersion?: string;
 }
 
 /** An order the vendor accepted whose instance we never saw. */
@@ -128,6 +162,8 @@ export interface PendingRental {
   /** When the order was placed, ms since epoch. */
   at: number;
   nameTag: string;
+  /** Which vendor took the order; SimplePod for entries written before there were others. */
+  provider?: GpuProviderSlug;
 }
 
 export class RentUnconfirmedError extends Error {
@@ -137,14 +173,42 @@ export class RentUnconfirmedError extends Error {
   }
 }
 
+/**
+ * The vendor refused the order outright (a 4xx) — nothing was rented, so the
+ * next offer can be tried at once. Anything less certain than a refusal must
+ * not be retried elsewhere: the first order may have gone through.
+ */
+export class RentRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RentRefusedError';
+  }
+}
+
 export interface GpuBalance {
+  /** Infinity when the vendor no longer says (see `unknown`). */
   balanceUsd: number;
   /** Vendor's own estimate of remaining runway at current burn. */
   availableRentalHours?: number;
+  /**
+   * The vendor has no way to read the balance any more (RunPod's only balance
+   * query is on an API it is retiring). Renting proceeds; the vendor refuses
+   * an order it cannot fund, which is treated as a refusal.
+   */
+  unknown?: boolean;
 }
 
 export interface GpuRentalProvider {
   readonly slug: GpuProviderSlug;
+  /** What admins see. */
+  readonly label: string;
+  readonly exposure: GpuExposure;
+  /**
+   * How the stored credential is shaped, for the setup form: most vendors take
+   * one API key; Verda's OAuth needs a client id and secret, stored together as
+   * `id:secret`.
+   */
+  readonly credential: 'api-key' | 'client-id-secret';
 
   /** Cheapest-first list of machines matching `filter`. */
   findOffers(filter: GpuOfferFilter, apiKey: string): Promise<GpuOffer[]>;

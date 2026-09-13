@@ -2,6 +2,8 @@ import { Prisma } from '@/generated/prisma/client';
 import prisma from '@/lib/db';
 import { getGpuConfig } from '@/lib/gpu/config';
 import { getCatalogEntry } from '@/lib/gpu/catalog';
+import { cardFamily, priorSpeed } from '@/lib/gpu/gpu-specs';
+import type { RenderStats } from '@/lib/gpu/offer-picker';
 
 /**
  * Wait-time estimates for GPU-backed jobs.
@@ -75,15 +77,26 @@ interface RenderSampleRow {
  * Raw SQL so only `$.duration` leaves the database: the payload also carries
  * the start frame, which the studio sends as a data URL of several MB, and
  * this runs on every poll of a pending generation.
+ *
+ * Admin-only presets are left out: a 1080p test render takes ~2.9× as long,
+ * and a run of them would have quoted every customer's 768p clip as slow and
+ * made the scaler and offer picker plan for work nobody ordered.
  */
 async function renderSamples(modelKey: string, take: number): Promise<RenderSampleRow[]> {
   const since = new Date(Date.now() - HISTORY_WINDOW_DAYS * 86_400_000);
+  const experiments = (getCatalogEntry(modelKey)?.video?.resolutions ?? []).filter((r) => r.adminOnly).map((r) => r.id);
+  // NULL NOT IN (…) is NULL, which would drop every job with no preset.
+  const notExperiment =
+    experiments.length > 0
+      ? Prisma.sql`AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(j.payload, '$.extra.resolution')), '') NOT IN (${Prisma.join(experiments)})`
+      : Prisma.empty;
   try {
     return await prisma.$queryRaw<RenderSampleRow[]>`
       SELECT j.gpu_seconds, JSON_EXTRACT(j.payload, '$.duration') AS duration, w.gpu_model
       FROM ai_gpu_jobs j
       LEFT JOIN ai_gpu_workers w ON w.id = j.worker_id
       WHERE j.model_key = ${modelKey} AND j.status = 'completed' AND j.gpu_seconds > 0 AND j.queued_at >= ${since}
+        ${notExperiment}
       ORDER BY j.completed_at DESC
       LIMIT ${take}`;
   } catch (error) {
@@ -129,11 +142,15 @@ function unitSeconds(modelKey: string, row: RenderSampleRow): number {
 }
 
 export class GpuEta {
-  /** Median seconds from rental to a healthy inference server. */
-  static async medianWarmupSeconds(): Promise<number | null> {
+  /**
+   * Median seconds from rental to a healthy inference server — for one model
+   * when given, since its weights decide the download (46 GB for H3, 10 GB for
+   * ACE-Step); pooled across models otherwise.
+   */
+  static async medianWarmupSeconds(modelKey?: string): Promise<number | null> {
     const since = new Date(Date.now() - HISTORY_WINDOW_DAYS * 86_400_000);
     const workers = await prisma.aiGpuWorker.findMany({
-      where: { readyAt: { not: null }, rentedAt: { gte: since } },
+      where: { readyAt: { not: null }, rentedAt: { gte: since }, ...(modelKey ? { modelKey } : {}) },
       select: { rentedAt: true, readyAt: true },
       take: 50,
       orderBy: { rentedAt: 'desc' },
@@ -158,26 +175,38 @@ export class GpuEta {
   }
 
   /**
-   * Median unit-length render seconds per GPU model for one model, where a GPU
-   * has enough history — so the offer picker can price a card by how fast it
-   * really is.
+   * What the offer picker needs to price a card by how fast it really is:
+   * unit-length render stats per GPU name (every card with any history — the
+   * picker decides how far to trust a small sample), and the model's speed on
+   * an A100-class card, from every render scaled by its card's paper speed
+   * (gpu-specs.ts), for pricing cards that have never rendered here.
    */
-  static async medianRenderSecondsByGpu(modelKey: string): Promise<Map<string, number>> {
+  static async renderProfile(
+    modelKey: string
+  ): Promise<{ referenceUnitSeconds: number; statsByGpu: Map<string, RenderStats> }> {
     const rows = await renderSamples(modelKey, 200);
     const byGpu = new Map<string, number[]>();
+    const normalised: number[] = [];
     for (const r of rows) {
-      const gpu = r.gpu_model;
-      if (!gpu) continue;
-      const list = byGpu.get(gpu) ?? [];
-      list.push(unitSeconds(modelKey, r));
-      byGpu.set(gpu, list);
+      const unit = unitSeconds(modelKey, r);
+      if (!(unit > 0)) continue;
+      normalised.push(unit * priorSpeed(r.gpu_model));
+      if (!r.gpu_model) continue;
+      // By family: the instance's name for a card is not the listing's.
+      const family = cardFamily(r.gpu_model);
+      const list = byGpu.get(family) ?? [];
+      list.push(unit);
+      byGpu.set(family, list);
     }
-    const out = new Map<string, number>();
+    const statsByGpu = new Map<string, RenderStats>();
     for (const [gpu, samples] of byGpu) {
-      const m = samples.length >= MIN_SAMPLES ? median(samples) : null;
-      if (m !== null) out.set(gpu, m);
+      statsByGpu.set(gpu, { median: median(samples) as number, n: samples.length });
     }
-    return out;
+    const reference =
+      normalised.length >= MIN_SAMPLES
+        ? (median(normalised) as number)
+        : this.baselineRenderSeconds(modelKey, { duration: 5 });
+    return { referenceUnitSeconds: reference, statsByGpu };
   }
 
   /** Render seconds for a unit-length job (a 5 s clip, one image) — history first. */
@@ -196,9 +225,13 @@ export class GpuEta {
     return durations.reduce<number>((sum, d) => sum + lengthFactor(modelKey, d), 0) / durations.length;
   }
 
-  /** Seconds from renting a machine to it being ready — history first. */
-  static async typicalBootSeconds(): Promise<number> {
-    return (await this.medianWarmupSeconds()) ?? DEFAULT_WARMUP_SECONDS;
+  /** Seconds from renting a machine to it being ready — this model's history, then everyone's. */
+  static async typicalBootSeconds(modelKey?: string): Promise<number> {
+    return (
+      (modelKey ? await this.medianWarmupSeconds(modelKey) : null) ??
+      (await this.medianWarmupSeconds()) ??
+      DEFAULT_WARMUP_SECONDS
+    );
   }
 
   /**
@@ -232,7 +265,7 @@ export class GpuEta {
 
     const [historyRender, historyWarmup, cfg] = await Promise.all([
       this.medianRenderSeconds(job.modelKey),
-      this.medianWarmupSeconds(),
+      this.medianWarmupSeconds(job.modelKey).then((own) => own ?? this.medianWarmupSeconds()),
       getGpuConfig(),
     ]);
 

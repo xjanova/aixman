@@ -109,7 +109,7 @@ npx prisma db push   # Push schema (ai_ tables only!)
 
 Auto-cooldown on rate limit (5 min), auto-disable after 5 consecutive errors.
 
-## Self-Hosted GPU (SimplePod → MiniMax H3)
+## Self-Hosted GPU (SimplePod · RunPod · Vast.ai · Verda → MiniMax H3)
 
 **SimplePod is a GPU rental marketplace, NOT an inference API.** There is no
 `/generate` endpoint and no model list — it rents a Docker container on a GPU
@@ -125,17 +125,40 @@ generating. Consequences that must never be regressed:
 
 - `/api/cron/gpu-tick` **must run every minute** — it is what reaps machines.
   If it stops, rented GPUs bill forever. Schedule alongside `reset-counters`.
+  The in-process scheduler (`gpu-scheduler.ts`) runs one loop: the full tick
+  once a minute and, between them, a **fast lane** every 10 s
+  (`GpuQueue.fastTick`) that only collects finished renders and feeds idle
+  machines — it never rents, reaps or sweeps. Keep both on the one loop: a
+  second timer could hold the lock when the reaping tick is due.
 - Budget caps live in `ai_settings` group `gpu` and are read fresh every tick:
   `gpu_daily_budget_usd`, `gpu_max_concurrent_workers`, `gpu_idle_timeout_minutes`,
   `gpu_max_worker_lifetime_minutes` (absolute kill switch).
-- Scaling (`GpuQueue.dispatchQueued` → `GpuWorkerManager.addCapacity`): every
-  idle booted machine of a model takes a job; another machine is rented only
-  when the backlog per machine exceeds `1 + boot/render` (`gpu-scaler.ts` —
+- Scaling (`GpuQueue.dispatchQueued` → `GpuWorkerManager.addCapacity`): models
+  are served oldest-job-first; every idle booted machine of a model takes a
+  job; another machine is rented only when the backlog per machine exceeds
+  `1 + boot/render` (`gpu-scaler.ts`, boot from that model's own history —
   H3 ≈ 3 waiting, Qwen ≈ 6). Models run side by side up to the cap; at the cap
-  a model with no machine may take an *idle* other-model machine's slot, but
-  not one just used or open in a customer's studio for the first 90 s
+  a model with no machine, or whose backlog has outgrown its machines, may
+  take an *idle* other-model machine's slot (one with nothing queued for it),
+  but not one just used or open in a customer's studio for the first 90 s
   (anti ping-pong). Extra machines close on the plain idle timeout; only the
   warmest idle machine per model gets the studio-presence grace.
+- Which card (`offer-picker.ts`, `gpu-specs.ts`): **any card that can run the
+  model competes** — VRAM from the catalogue, architecture from the name
+  (Ampere+ for H3/Qwen, Turing+ for ACE-Step; unknown names are refused; an
+  admin allow-list in `gpu_worker_profiles` still overrides). Ranked by rental
+  cost (boot at the host's speed + expected jobs + idle tail + disk) **plus
+  customers' waiting** priced at `gpu_wait_value_usd_per_hour` (default $2) —
+  without that term the cheapest 24 GB card always wins. Untried cards are
+  priced from a paper-speed prior (half of any speed-up believed, VRAM short of
+  the weights assumed to swap) and blended with real history by card family.
+  A rental that cannot afford boot + one job within today's budget is not made.
+- Memory (`ai_settings`): `gpu_offer_penalties` — hosts that refused an order
+  (30 min), had no usable CUDA or never became ready (3 h); a refused order
+  tries the next offer in the same tick. `gpu_card_penalties` — a card family
+  that failed a model with OOM/no-kernel before ever completing it is kept off
+  that model for 24 h, and the failure does not count against the model. A
+  family that has completed the model's work is never banned.
 - The orphan sweep only terminates instances named `aixman-*`. Never name an
   unrelated SimplePod instance with that prefix.
 - Results **must** go to R2 before the worker is reaped — the tunnel URL dies
@@ -144,10 +167,40 @@ generating. Consequences that must never be regressed:
 - The container port is publicly reachable and ComfyUI has no auth of its own.
   Each worker gets `AIXMAN_WORKER_TOKEN`; the image is expected to enforce it.
 
-**Setup is an API key plus R2.** Admin → GPU ที่เช่า → paste the SimplePod key.
-That verifies it, creates the provider + encrypted credential, writes the budget
-caps, and activates the models. R2 (`R2_*` in `.env`) must also be set: without
-it the queue refuses to rent and refunds, because a render dies with the machine.
+**Setup is one vendor credential plus R2.** Admin → GPU ที่เช่า → a card per
+vendor: paste its key (Verda: Client ID + Secret, stored as `id:secret`). That
+verifies it, creates the vendor's provider row + encrypted credential, adds it
+to `gpu_providers`, writes the budget caps, and activates the models. The
+models always live on the **`simplepod` provider row** whichever vendor was set
+up — that row marks them as rented-GPU models (`getGpuProvider(slug)` in
+generation.ts); the vendor is chosen per machine. R2 (`R2_*` in `.env`) must
+also be set: without it the queue refuses to rent and refunds, because a
+render dies with the machine. Each card has "ทดสอบการเชื่อมต่อ" (read-only:
+balance + free machines per model) and "เช่าเครื่องทดสอบ" (a real rental at
+that vendor under every guardrail except the scaling rule, taken under the
+tick lock).
+
+**Vendors** (`src/lib/gpu/{simplepod,runpod,vast,verda}.ts`, all behind
+`GpuRentalProvider`). `addCapacity` asks every enabled vendor at once
+(`gatherMarkets`, 25 s timeout each) — **machine first, never vendor first**:
+all free machines are ranked together, then each must be paid for by its own
+vendor's credit (`fundedOffers`: planned work × 1.5), then the daily budget.
+One vendor's outage, sold-out market or empty wallet only removes its machines.
+No key anywhere throws (refund); anything else is a reason for the next tick.
+
+| Vendor | Reached by | Traps |
+|---|---|---|
+| SimplePod | vendor HTTPS tunnel | start script runs line by line → gzip+base64 one-liner |
+| RunPod | `https://{pod}-{port}.proxy.runpod.net` | REST **v2** only (v1 retires 2026-11-15, its field names 422 on v2); balance only via GraphQL (retires early 2027 → `unknown`, RunPod's 402 does the job); 400 = no capacity; `GET` returns env incl. the token — never log pods |
+| Vast.ai | **own tunnel** | ports are plain TCP; hosts charge `inet_down_cost` per GB (priced in); `stopped` still bills storage → treated as error and destroyed; `/users/current` returns the API key |
+| Verda | **own tunnel** | whole VMs: first-boot script starts our container; scripts are readable via API and hold the token → deleted once running; `offline` bills → error; delete **must name the OS volume** or it keeps billing; ids come back as plain text |
+
+Tunnel mode (`GpuExposure 'tunnel'`): the proxy stays on loopback, the boot
+downloads cloudflared, the proxy opens a quick tunnel and POSTs its URL to
+`/api/gpu/tunnel/[callbackId]` with the worker token (URL must be
+`*.trycloudflare.com`; needs an https `NEXTAUTH_URL`). Reconcile never writes
+back an endpoint the vendor did not report — the callback could land mid-tick.
+A tunnel-mode worker with no URL after 15 min is terminated.
 Nothing else is required because:
 
 - **No custom Docker image.** A stock `pytorch/pytorch` **CUDA 13.0** image is
@@ -170,6 +223,16 @@ Nothing else is required because:
   `/aixman/ready`: 503 while downloading, 500 once the boot failed (the worker
   is released at once), 200 only when every file is in place and ComfyUI answers.
   ComfyUI itself is up long before 40 GB of weights land.
+- **Render progress is real.** The proxy listens on ComfyUI's websocket (stdlib
+  only) and serves `/aixman/progress`; ComfyUI sends a prompt's events only to
+  the client id it was submitted under, so the proxy relabels `/prompt` bodies
+  with its own. `render-progress.ts` folds sampler steps into one fraction
+  (loading 2–8%, sampling 8–85%, finishing 85–98%, saving 99%); a machine booted
+  before this existed answers 404 and the customer sees a time-based bar. Any
+  change to the proxy's Python must stay unable to break `/prompt` — test it
+  against a fake ComfyUI, it is the machine's only entrance.
+- **The start script travels gzipped + base64** (`asSingleLine`): SimplePod
+  documents no length limit and only ~13 KB is proven.
 - **No crontab.** `src/instrumentation.ts` starts an in-process scheduler.
 
 Gotchas that will bite if changed carelessly:
@@ -186,8 +249,12 @@ Gotchas that will bite if changed carelessly:
 - 2K output is not offered — it needs 4× H100 (123.6 GB VRAM), which this
   marketplace does not carry. 1344×768 matches the official template.
 
-Adding another vendor (RunPod, Vast.ai): implement `GpuRentalProvider` and
-register it in `src/lib/gpu/index.ts`. Nothing else changes.
+Adding another vendor: implement `GpuRentalProvider` (declare `exposure` and
+`credential`; turn "sold out/unfunded" into `RentRefusedError`, "may have been
+created" into `RentUnconfirmedError`; name instances `aixman-…`), add its slug
+to `GpuProviderSlug`, register it in `src/lib/gpu/index.ts`, and add a row to
+`VENDOR_ROWS` (setup route) and `VENDOR_INFO` (admin page). Test it against a
+mocked `fetch` built from the vendor's documented responses before a real key.
 
 `/admin/gpu` is the control room: balance, live burn rate, budget caps,
 utilisation, and profit. Profit uses *worker uptime* cost, not per-job cost —

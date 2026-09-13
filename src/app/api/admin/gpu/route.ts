@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isAdmin } from '@/lib/auth';
 import prisma from '@/lib/db';
 import { getGpuConfig } from '@/lib/gpu/config';
+import { isGpuProviderSlug } from '@/lib/gpu/types';
 import { GpuWorkerManager } from '@/lib/services/gpu-worker';
 import { GpuQueue } from '@/lib/services/gpu-queue';
 import { withTickLock } from '@/lib/services/gpu-lock';
@@ -108,6 +109,7 @@ const EDITABLE_SETTINGS: Record<string, { key: string; min: number; max: number;
   maxWorkerLifetimeMinutes: { key: 'gpu_max_worker_lifetime_minutes', min: 10, max: 1440, integer: true },
   warmupTimeoutMinutes: { key: 'gpu_warmup_timeout_minutes', min: 5, max: 180, integer: true },
   jobTimeoutMinutes: { key: 'gpu_job_timeout_minutes', min: 2, max: 240, integer: true },
+  waitValueUsdPerHour: { key: 'gpu_wait_value_usd_per_hour', min: 0, max: 100 },
 };
 
 async function saveConfig(config: unknown): Promise<string[]> {
@@ -206,6 +208,43 @@ export async function POST(request: NextRequest) {
       case 'tick': {
         const report = await withTickLock(() => GpuQueue.tick());
         return NextResponse.json(report ?? { skipped: true, reason: 'Another tick is already running' });
+      }
+
+      case 'test-vendor': {
+        // Read-only: balance and which machines each model would get.
+        if (!isGpuProviderSlug(body.provider)) {
+          return NextResponse.json({ error: 'ไม่รู้จักผู้ให้เช่านี้' }, { status: 400 });
+        }
+        return NextResponse.json({ success: true, ...(await GpuWorkerManager.testVendor(body.provider)) });
+      }
+
+      case 'rent-test': {
+        // Spends real money: the page asks the admin to confirm first.
+        if (!isGpuProviderSlug(body.provider) || typeof body.modelKey !== 'string') {
+          return NextResponse.json({ error: 'ข้อมูลไม่ครบ' }, { status: 400 });
+        }
+        // Under the tick's lock: a tick renting at the same moment could
+        // otherwise take the concurrency cap past its limit.
+        const provider = body.provider;
+        const modelKey = body.modelKey;
+        const worker = await withTickLock(() => GpuWorkerManager.rentTestMachine(provider, modelKey));
+        if (!worker) {
+          return NextResponse.json({ error: 'ระบบกำลังรันคิวอยู่ ลองกดใหม่อีกครั้งในไม่กี่วินาที' }, { status: 409 });
+        }
+        return NextResponse.json({ success: true, workerId: worker.id, gpuModel: worker.gpuModel });
+      }
+
+      case 'set-providers': {
+        // Which vendors the picker may rent from. A vendor taken off keeps its
+        // key, so its machines are still watched and reaped.
+        const requested = Array.isArray(body.providers) ? (body.providers as unknown[]) : [];
+        const providers = [...new Set(requested.filter(isGpuProviderSlug))];
+        await prisma.aiSetting.upsert({
+          where: { key: 'gpu_providers' },
+          update: { value: providers.join(',') },
+          create: { key: 'gpu_providers', value: providers.join(','), type: 'string', group: 'gpu' },
+        });
+        return NextResponse.json({ success: true, providers });
       }
 
       case 'save-config': {
