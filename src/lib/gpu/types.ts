@@ -12,6 +12,8 @@
  * and never throw on an already-gone instance.
  */
 
+import type { GpuArch } from './gpu-specs';
+
 export type GpuProviderSlug = 'simplepod' | 'runpod' | 'vast' | 'verda';
 
 export const GPU_PROVIDER_SLUGS: readonly GpuProviderSlug[] = ['simplepod', 'runpod', 'vast', 'verda'];
@@ -92,6 +94,12 @@ export interface GpuOfferFilter {
    * host driver provides fails at model load — after the rental is paid for.
    */
   minCudaVersion?: string;
+  /**
+   * Oldest GPU architecture the model runs on. Eligibility is decided by name
+   * afterwards anyway (gpu-specs.ts); a market that reports compute capability
+   * can drop older cards before they fill its page.
+   */
+  minArch?: GpuArch;
 }
 
 export type GpuInstanceStatus = 'provisioning' | 'running' | 'stopped' | 'error';

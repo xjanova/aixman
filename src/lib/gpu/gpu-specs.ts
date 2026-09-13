@@ -47,6 +47,22 @@ const ARCH_RANK: Record<GpuArch, number> = {
  */
 export const MIN_ARCH: GpuArch = 'ampere';
 
+/**
+ * The lowest CUDA compute capability of each architecture, ×100 as Vast.ai
+ * writes it (8.0 → 800). Lets a market that reports it filter server-side —
+ * Vast's cheapest rows are V100s (700) with CUDA 13 drivers, and left in they
+ * crowd real candidates out of a price-ordered page.
+ */
+export const MIN_COMPUTE_CAP: Record<GpuArch, number> = {
+  pascal: 600,
+  volta: 700,
+  turing: 750,
+  ampere: 800,
+  ada: 890,
+  hopper: 900,
+  blackwell: 1000,
+};
+
 // Most specific first: "RTX PRO 6000" must not be read as "RTX 6000", nor
 // "H100 NVL" as a plain "H100".
 const SPECS: GpuSpec[] = [
@@ -64,6 +80,8 @@ const SPECS: GpuSpec[] = [
   { match: /\bL40S\b/i, arch: 'ada', speed: 1.0 },
   { match: /\bL40\b/i, arch: 'ada', speed: 0.85 },
   { match: /RTX\s*6000\s*Ada|RTX\s*6000\b.*Ada/i, arch: 'ada', speed: 1.0 },
+  // 48 GB, a cut-down RTX 6000 Ada. Vast spells it "RTX 5880Ada".
+  { match: /RTX\s*5880\s*Ada/i, arch: 'ada', speed: 0.9 },
   { match: /RTX\s*5000\s*Ada/i, arch: 'ada', speed: 0.7 },
   { match: /RTX\s*4500\s*Ada|RTX\s*4000\s*Ada/i, arch: 'ada', speed: 0.45 },
   { match: /RTX\s*4090/i, arch: 'ada', speed: 0.95 },
@@ -82,7 +100,8 @@ const SPECS: GpuSpec[] = [
   { match: /\bA10G?\b/i, arch: 'ampere', speed: 0.4 },
   { match: /\bA16\b|\bA2\b/i, arch: 'ampere', speed: 0.15 },
   { match: /\bV100\b|TITAN\s*V\b/i, arch: 'volta', speed: 0.4 },
-  { match: /\bT4\b|RTX\s*20\d0|TITAN\s*RTX|Quadro\s*RTX/i, arch: 'turing', speed: 0.25 },
+  // Vast writes Quadro RTX cards as "Q RTX 8000".
+  { match: /\bT4\b|RTX\s*20\d0|TITAN\s*RTX|Quadro\s*RTX|\bQ\s*RTX\s*\d{4}\b/i, arch: 'turing', speed: 0.25 },
   { match: /\bP100\b|\bP40\b|\bP4\b|GTX\s*10\d0|TITAN\s*X/i, arch: 'pascal', speed: 0.15 },
 ];
 

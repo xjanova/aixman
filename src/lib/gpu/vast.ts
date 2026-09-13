@@ -1,5 +1,6 @@
 import { randomBytes } from 'crypto';
 import { bootFromEnv, gzipBase64 } from './script-encoding';
+import { MIN_ARCH, MIN_COMPUTE_CAP } from './gpu-specs';
 import { VendorHttpError, sleep, vendorFetch } from './vendor-http';
 import {
   RentRefusedError,
@@ -112,6 +113,9 @@ export class VastProvider implements GpuRentalProvider {
     if (filter.minDownloadMbps) query.inet_down = { gte: filter.minDownloadMbps };
     if (filter.minCudaVersion) query.cuda_max_good = { gte: Number(filter.minCudaVersion) };
     if (filter.maxPricePerHourUsd) query.dph_base = { lte: filter.maxPricePerHourUsd * count };
+    // The cheapest rows are V100s with CUDA 13 drivers (compute 7.0); unfiltered
+    // they fill the price-ordered page ahead of cards that can do the work.
+    query.compute_cap = { gte: MIN_COMPUTE_CAP[filter.minArch ?? MIN_ARCH] };
 
     const res = await this.call<{ offers?: VastOffer[] }>(apiKey, `${API}/bundles/`, {
       method: 'POST',
@@ -122,6 +126,11 @@ export class VastProvider implements GpuRentalProvider {
     const offers: GpuOffer[] = [];
     for (const o of res?.offers ?? []) {
       if (!o.id || !o.gpu_name || o.rented) continue; // the search returns rented rows too
+      // Hugging Face and Docker Hub are blocked from mainland China: a host
+      // there cannot fetch the image or the weights, and the boot would fail
+      // after it was paid for. Found on the first live query (2026-09-13):
+      // the top H3 pick was a CN host.
+      if (isMainlandChina(o.geolocation)) continue;
       const gpus = o.num_gpus || count;
       const perGpu = (o.dph_base ?? 0) / gpus;
       if (perGpu <= 0) continue;
@@ -188,6 +197,9 @@ export class VastProvider implements GpuRentalProvider {
     } catch (error) {
       if (error instanceof RentRefusedError) throw error;
       if (error instanceof VendorHttpError) {
+        // A bad key comes back as 404 too ("auth_error: Invalid user key") —
+        // not a taken offer; trying the next one would only fail the same way.
+        if (AUTH_ERROR.test(error.message)) throw error;
         // The offer was taken or withdrawn (no_such_ask), or the order was bad.
         if ([400, 402, 404, 410].includes(error.status) || /no_such_ask/i.test(error.message)) {
           throw new RentRefusedError(error.message);
@@ -311,6 +323,14 @@ export class VastProvider implements GpuRentalProvider {
       statusMessage: i.status_msg ?? undefined,
     };
   }
+}
+
+/** Vast answers a bad key with 404 and this text, not with 401. */
+const AUTH_ERROR = /auth_error|invalid user key/i;
+
+/** Vast's geolocation reads "Yunnan, CN", or a bare "CN". */
+function isMainlandChina(geolocation: string | undefined): boolean {
+  return /(^|,\s*)CN\s*$/i.test(geolocation ?? '');
 }
 
 function toStatus(status: string | null | undefined): GpuInstanceStatus {
