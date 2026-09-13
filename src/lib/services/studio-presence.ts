@@ -68,6 +68,14 @@ export async function isStudioPresent(modelKey: string, now = Date.now()): Promi
 const PREWARM_GROUP = 'gpu_prewarm';
 const PREWARM_PREFIX = PREWARM_DEMAND_PREFIX;
 
+/**
+ * How long a customer must stay on a model before it counts. The studio picks
+ * each tab's featured model by itself and pings the moment the selection
+ * changes, so someone clicking through tabs and models would otherwise ask for
+ * a machine for every one of them. The studio's next ping comes 30 s later.
+ */
+export const PREWARM_DWELL_MS = 25_000;
+
 /** How long after arriving a visit still asks for a machine. */
 export const PREWARM_ARRIVAL_MS = 3 * 60_000;
 
@@ -75,9 +83,10 @@ const visits = (store.__studioVisits ??= new Map());
 const demandWrites = (store.__prewarmWrites ??= new Map());
 
 /**
- * Record a ping in this user's visit to the model; true while the visit is
- * still in its first `PREWARM_ARRIVAL_MS`. A gap longer than the presence
- * window ends a visit, so coming back later counts as arriving again.
+ * Record a ping in this user's visit to the model; true once the visit has
+ * lasted `PREWARM_DWELL_MS` and until it is `PREWARM_ARRIVAL_MS` old. A gap
+ * longer than the presence window ends a visit, so coming back later counts
+ * as arriving again.
  *
  * In memory: only the presence route calls it, and a restart merely makes a
  * visit look new — which the tick's guards absorb.
@@ -88,10 +97,11 @@ export function isArrival(userId: number, modelKey: string, now = Date.now()): b
   if (!visit || now - visit.last > PRESENCE_FRESH_MS) {
     if (visits.size > 5_000) visits.clear();
     visits.set(id, { since: now, last: now });
-    return true;
+    return false;
   }
   visit.last = now;
-  return now - visit.since <= PREWARM_ARRIVAL_MS;
+  const age = now - visit.since;
+  return age >= PREWARM_DWELL_MS && age <= PREWARM_ARRIVAL_MS;
 }
 
 export async function notePrewarmDemand(modelKey: string, now = Date.now()): Promise<void> {

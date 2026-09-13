@@ -151,8 +151,10 @@ generating. Consequences that must never be regressed:
   warmest idle machine per model gets the studio-presence grace.
 - Pre-warm (`GpuQueue.prewarm`, `gpu_prewarm_cooldown_minutes`, default 30,
   0 = off): a customer whose credits cover the model's smallest order *arriving*
-  on the studio (first 3 min of a visit — a tab left open never asks again)
-  gets a machine rented before they order, so the boot overlaps the prompt.
+  on the studio (from 25 s on the model — the studio auto-selects and pings on
+  every switch, so click-throughs must not count — until 3 min into the visit;
+  a tab left open never asks again) gets a machine rented before they order,
+  so the boot overlaps the prompt.
   Only for a model with no machine and nothing queued, only into a free slot
   (never evicts), not while the balance is low or the budget spent, one per
   tick, and not again for that model within the cooldown after a pre-warmed
