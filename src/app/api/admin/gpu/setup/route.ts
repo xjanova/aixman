@@ -6,6 +6,7 @@ import { getGpuProvider } from '@/lib/gpu';
 import { GPU_DEFAULTS, getGpuConfig } from '@/lib/gpu/config';
 import { MODEL_CATALOG } from '@/lib/gpu/catalog';
 import { isGpuProviderSlug, type GpuProviderSlug } from '@/lib/gpu/types';
+import { GpuBalance } from '@/lib/services/gpu-balance';
 
 /**
  * One-step GPU setup, per vendor: supply that vendor's credential and
@@ -246,6 +247,12 @@ export async function POST(request: NextRequest) {
         await prisma.aiModel.updateMany({ where: { providerId: modelsRow.id }, data: { isActive: true } })
       ).count;
     }
+
+    // Orders pause while no vendor can pay for a machine. A funded vendor just
+    // connected reopens them now, not at the next balance read minutes later.
+    await GpuBalance.check(await getGpuConfig(), 0).catch((error) =>
+      console.error('[gpu] balance refresh after setup failed:', (error as Error).message)
+    );
 
     return NextResponse.json({
       success: true,

@@ -247,6 +247,8 @@ export async function POST(request: NextRequest) {
           update: { value: providers.join(',') },
           create: { key: 'gpu_providers', value: providers.join(','), type: 'string', group: 'gpu' },
         });
+        // Which vendors count decides whether orders are paused — re-read now.
+        await GpuBalance.check(await getGpuConfig(), 0).catch(() => undefined);
         return NextResponse.json({ success: true, providers });
       }
 
