@@ -4,9 +4,12 @@ import prisma from '@/lib/db';
 import { getGpuConfig } from '@/lib/gpu/config';
 import { GPU_PROVIDER_SLUGS, getGpuProvider } from '@/lib/gpu';
 import { GpuWorkerManager } from '@/lib/services/gpu-worker';
+import { GpuBalance, type BalanceReading } from '@/lib/services/gpu-balance';
+import { getTelegramStatus } from '@/lib/notify/telegram';
 import { isStorageConfigured } from '@/lib/storage/r2';
 import { getCatalogEntry } from '@/lib/gpu/catalog';
 import { isStudioPresent } from '@/lib/services/studio-presence';
+import { buildDailyBuckets, pricingBasis } from '@/lib/services/gpu-stats';
 
 /**
  * Profit and usage analytics for rented GPUs.
@@ -26,7 +29,8 @@ import { isStudioPresent } from '@/lib/services/studio-presence';
 export const dynamic = 'force-dynamic';
 
 const DAYS = 30;
-const FALLBACK_USD_THB = 36;
+/** The page polls every 15 s; the vendor needs asking about once a minute. */
+const ADMIN_BALANCE_MAX_AGE_MS = 60_000;
 
 /** Where a rental's render estimate came from (offer-picker.ts RenderBasis; 'model median' before 2026-09-13). */
 const RENDER_BASIS_TH: Record<string, string> = {
@@ -35,20 +39,6 @@ const RENDER_BASIS_TH: Record<string, string> = {
   prior: ' ประมาณจากสเปคการ์ด (ยังไม่เคยใช้การ์ดรุ่นนี้)',
   'model median': ' ค่ากลางของโมเดล',
 };
-
-interface DayBucket {
-  date: string;
-  spendUsd: number;
-  renderCostUsd: number;
-  jobs: number;
-  failed: number;
-  revenueThb: number;
-  credits: number;
-}
-
-function dayKey(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
 
 export async function GET() {
   if (!(await isAdmin())) {
@@ -82,62 +72,10 @@ export async function GET() {
     }),
   ]);
 
-  // ---- Pricing basis -------------------------------------------------
-  // Blended rate across active packages: what a credit is actually worth to
-  // the business, including bonus credits given away.
-  const totalCredits = packages.reduce((s, p) => s + p.credits + p.bonusCredits, 0);
-  const totalThb = packages.reduce((s, p) => s + Number(p.priceThb), 0);
-  const totalUsd = packages.reduce((s, p) => s + Number(p.priceUsd), 0);
-  const thbPerCredit = totalCredits > 0 ? totalThb / totalCredits : 0;
-  const usdToThb = totalUsd > 0 ? totalThb / totalUsd : FALLBACK_USD_THB;
-
-  // ---- Daily buckets -------------------------------------------------
-  const buckets = new Map<string, DayBucket>();
-  for (let i = 0; i < DAYS; i++) {
-    const d = new Date(since.getFullYear(), since.getMonth(), since.getDate() + i);
-    buckets.set(dayKey(d), {
-      date: dayKey(d),
-      spendUsd: 0,
-      renderCostUsd: 0,
-      jobs: 0,
-      failed: 0,
-      revenueThb: 0,
-      credits: 0,
-    });
-  }
-
-  // Spread each worker's uptime cost across the days it was actually alive,
-  // rather than dumping it all on the day it was rented.
-  for (const w of workers) {
-    const rate = Number(w.pricePerHourUsd);
-    if (rate <= 0) continue;
-    const end = w.terminatedAt && w.terminatedAt < now ? w.terminatedAt : now;
-
-    for (const [key, bucket] of buckets) {
-      const dayStart = new Date(`${key}T00:00:00`);
-      const dayEnd = new Date(dayStart.getTime() + 86_400_000);
-      const from = w.rentedAt > dayStart ? w.rentedAt : dayStart;
-      const to = end < dayEnd ? end : dayEnd;
-      const ms = to.getTime() - from.getTime();
-      if (ms > 0) bucket.spendUsd += (ms / 3_600_000) * rate;
-    }
-  }
-
-  for (const job of jobs) {
-    const bucket = buckets.get(dayKey(job.queuedAt));
-    if (!bucket) continue;
-    if (job.status === 'completed') {
-      bucket.jobs += 1;
-      bucket.renderCostUsd += Number(job.costUsd);
-      const credits = job.generation?.creditsUsed ?? 0;
-      bucket.credits += credits;
-      bucket.revenueThb += credits * thbPerCredit;
-    } else if (job.status === 'failed') {
-      bucket.failed += 1;
-    }
-  }
-
-  const daily = [...buckets.values()];
+  // ---- Pricing basis + daily buckets (gpu-stats.ts, shared with the
+  // Telegram daily report so the two never disagree) ------------------
+  const { thbPerCredit, usdToThb } = pricingBasis(packages);
+  const daily = buildDailyBuckets(workers, jobs, since, DAYS, now, thbPerCredit);
 
   // ---- Totals --------------------------------------------------------
   const completed = jobs.filter((j) => j.status === 'completed');
@@ -159,49 +97,43 @@ export async function GET() {
   }, 0);
   const renderSeconds = completed.reduce((s, j) => s + j.gpuSeconds, 0);
 
-  // ---- Every vendor: connected, rented from, balance -----------------
-  // Best effort per vendor: the dashboard must still render if one is down.
-  const vendors = await Promise.all(
-    GPU_PROVIDER_SLUGS.map(async (slug) => {
-      const provider = getGpuProvider(slug);
-      let connected = false;
-      let balanceUsd: number | null = null;
-      let balanceUnknown = false;
-      let error: string | null = null;
-      if (provider) {
-        try {
-          const apiKey = await GpuWorkerManager.getApiKey(slug);
-          connected = true;
-          const bal = await Promise.race([
-            provider.getBalance(apiKey),
-            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 10_000)),
-          ]);
-          balanceUnknown = Boolean(bal.unknown);
-          balanceUsd = Number.isFinite(bal.balanceUsd) ? bal.balanceUsd : null;
-        } catch {
-          if (connected) error = 'อ่านยอดเงินไม่ได้';
-        }
-      }
-      return {
-        slug,
-        label: provider?.label ?? slug,
-        credential: provider?.credential ?? 'api-key',
-        connected,
-        enabled: cfg.providers.includes(slug),
-        balanceUsd,
-        balanceUnknown,
-        error,
-        liveWorkers: liveWorkers.filter((w) => w.providerSlug === slug).length,
-      };
-    })
-  );
-  const connectedVendors = vendors.filter((v) => v.connected);
-  const knownBalances = connectedVendors.filter((v) => v.balanceUsd !== null);
-  // Kept for app builds that read the old single-vendor shape.
-  const balance = knownBalances.length
-    ? { balanceUsd: knownBalances.reduce((s, v) => s + (v.balanceUsd ?? 0), 0) }
-    : null;
-  const balanceError = connectedVendors.length === 0 ? 'ยังไม่ได้ตั้งค่า API key' : null;
+  // ---- Provider balance -------------------------------------------------
+  // Through GpuBalance so the page's 15 s poll costs at most one vendor call a
+  // minute, and a reading taken here also triggers the low-balance alert.
+  // Best effort: the dashboard must still render if the marketplace is down.
+  let balanceReading: BalanceReading | null = null;
+  let balanceError: string | null = null;
+  try {
+    balanceReading = await GpuBalance.check(cfg, ADMIN_BALANCE_MAX_AGE_MS);
+  } catch (error) {
+    balanceError = (error as Error).message.includes('No active API key')
+      ? 'ยังไม่ได้ตั้งค่า API key'
+      : 'อ่านยอดเงินจาก provider ไม่ได้';
+    // The last stored reading is still worth showing, marked by its time.
+    const stored = await GpuBalance.read(cfg);
+    if (stored.usd != null) balanceReading = stored;
+  }
+  const balance = balanceReading?.usd != null ? balanceReading : null;
+
+  // ---- Every vendor: key held, rented from, last balance read -------
+  // Balances come from the reading above (one vendor round a minute at
+  // most), not a live call per vendor on every 15 s poll.
+  const keyed = await GpuWorkerManager.keyedProviders();
+  const vendors = GPU_PROVIDER_SLUGS.map((slug) => {
+    const provider = getGpuProvider(slug);
+    const read = balanceReading?.vendors.find((v) => v.slug === slug);
+    return {
+      slug,
+      label: provider?.label ?? slug,
+      credential: provider?.credential ?? 'api-key',
+      connected: keyed.has(slug),
+      enabled: cfg.providers.includes(slug),
+      balanceUsd: read?.usd != null ? Number(read.usd.toFixed(2)) : null,
+      balanceUnknown: Boolean(read?.unknown),
+      error: read?.error ? 'อ่านยอดเงินไม่ได้' : null,
+      liveWorkers: liveWorkers.filter((w) => w.providerSlug === slug).length,
+    };
+  });
 
   const spentToday = await GpuWorkerManager.todaySpendUsd();
   const burnRateUsdPerHour = liveWorkers.reduce((s, w) => s + Number(w.pricePerHourUsd), 0);
@@ -249,18 +181,24 @@ export async function GET() {
       thbPerCredit: Number(thbPerCredit.toFixed(4)),
       usdToThb: Number(usdToThb.toFixed(2)),
     },
-    // Summed across vendors with a readable balance.
+    // The best-funded vendor's balance — what one rental can draw on
+    // (gpu-balance.ts); each vendor's own is in `vendors`.
     balance: balance
       ? {
-          balanceUsd: Number(balance.balanceUsd.toFixed(2)),
-          availableRentalHours: null,
-          // At the current burn, how long before the accounts are empty.
+          balanceUsd: Number((balance.usd ?? 0).toFixed(2)),
+          availableRentalHours: balance.availableRentalHours ?? null,
+          // At the current burn, how long before that account is empty.
           hoursAtCurrentBurn:
-            burnRateUsdPerHour > 0 ? Number((balance.balanceUsd / burnRateUsdPerHour).toFixed(1)) : null,
+            burnRateUsdPerHour > 0 ? Number(((balance.usd ?? 0) / burnRateUsdPerHour).toFixed(1)) : null,
+          state: balance.state,
+          lowBelowUsd: balance.lowBelowUsd,
+          insufficientAtOrBelowUsd: balance.insufficientAtOrBelowUsd,
+          checkedAt: balance.checkedAt,
         }
       : null,
     balanceError,
-    vendors: vendors.map((v) => ({ ...v, balanceUsd: v.balanceUsd === null ? null : Number(v.balanceUsd.toFixed(2)) })),
+    vendors,
+    telegram: await getTelegramStatus(),
     // Without R2 the queue refuses to rent (a render would be lost with the
     // machine), so the admin needs to see why nothing is happening.
     storageConfigured: isStorageConfigured(),

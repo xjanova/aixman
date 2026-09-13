@@ -28,6 +28,7 @@ import {
 import { isStorageConfigured } from '@/lib/storage/r2';
 import { isStudioPresent } from './studio-presence';
 import { GpuEta } from './gpu-eta';
+import { GpuBalance } from './gpu-balance';
 import { shouldAddMachine } from './gpu-scaler';
 
 /**
@@ -805,6 +806,14 @@ export class GpuWorkerManager {
     // best machine anywhere wins. Vendor hiccups (SimplePod returns
     // intermittent 502s) become a reason for the next tick, never a refund. ---
     const { markets, clients } = await this.gatherMarkets(cfg, profile);
+    // The balances just read keep the stored reading fresh — admins are
+    // alerted, and orders pause only when no vendor can pay (gpu-balance.ts).
+    await GpuBalance.recordMarkets(
+      cfg,
+      markets
+        .filter((m) => m.note !== 'no API key')
+        .map((m) => ({ slug: m.slug, label: this.resolveProvider(m.slug).label, balanceUsd: m.balanceUsd }))
+    ).catch((error) => console.error('[gpu] could not store vendor balances:', (error as Error).message));
     // Not one vendor holds a key: that cannot fix itself, so it throws and the
     // queue refunds now rather than holding credits until the stale sweep.
     if (markets.length > 0 && markets.every((m) => m.note === 'no API key')) {

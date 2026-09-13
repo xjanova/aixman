@@ -1,6 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdmin } from '@/lib/auth';
 import prisma from '@/lib/db';
+import { settingMeta, settingWriteBlock, validateSettingValue } from '@/lib/settings-catalog';
+
+/**
+ * Generic editor for `ai_settings`, behind the admin Settings page.
+ *
+ * It must not become a way around the pages that own a setting: an encrypted
+ * value (the Telegram bot token) is never sent to the browser and cannot be
+ * overwritten with plaintext here, values the system writes itself are
+ * read-only, and the GPU caps go through /admin/gpu, which enforces their
+ * bounds. See settings-catalog.ts.
+ */
+
+function redact<T extends { key: string; type: string; value: string | null }>(row: T): T & { redacted?: boolean } {
+  const secret = row.type === 'encrypted' || settingMeta(row.key)?.secret;
+  return secret ? { ...row, value: null, redacted: true } : row;
+}
 
 export async function GET() {
   try {
@@ -13,7 +29,7 @@ export async function GET() {
       orderBy: [{ group: 'asc' }, { key: 'asc' }],
     });
 
-    return NextResponse.json({ settings });
+    return NextResponse.json({ settings: settings.map(redact) });
   } catch (error) {
     console.error('Failed to list settings:', error);
     return NextResponse.json(
@@ -21,6 +37,28 @@ export async function GET() {
       { status: 500 }
     );
   }
+}
+
+/** The `type` column for a new row of a catalogued key ('text' is stored as 'string'). */
+function storedType(key: string): string {
+  const input = settingMeta(key)?.input;
+  return !input || input === 'text' ? 'string' : input;
+}
+
+/** The first reason any of these writes is refused, or null. */
+async function refuseWrites(entries: [string, string | null][]): Promise<string | null> {
+  const rows = await prisma.aiSetting.findMany({
+    where: { key: { in: entries.map(([k]) => k) } },
+    select: { key: true, type: true },
+  });
+  const typeOf = new Map(rows.map((r) => [r.key, r.type]));
+  for (const [key, value] of entries) {
+    const block = settingWriteBlock(key, typeOf.get(key));
+    if (block) return `${key}: ${block}`;
+    const invalid = validateSettingValue(key, value);
+    if (invalid) return invalid;
+  }
+  return null;
 }
 
 // Save/update settings for a group
@@ -35,12 +73,14 @@ export async function POST(request: NextRequest) {
     // Support: { group, settings: { key: value, ... } } from the frontend
     if (body.group && body.settings && !Array.isArray(body.settings)) {
       const entries = Object.entries(body.settings as Record<string, string | null>);
+      const refused = await refuseWrites(entries);
+      if (refused) return NextResponse.json({ error: refused }, { status: 400 });
       const results = await Promise.all(
         entries.map(([key, value]) =>
           prisma.aiSetting.upsert({
             where: { key },
             update: { value: value ?? null },
-            create: { key, value: value ?? null, group: body.group, type: 'string' },
+            create: { key, value: value ?? null, group: body.group, type: storedType(key) },
           })
         )
       );
@@ -49,8 +89,11 @@ export async function POST(request: NextRequest) {
 
     // Support: { settings: [{key, value}] } array format
     if (Array.isArray(body.settings)) {
+      const items = body.settings as { key: string; value: string }[];
+      const refused = await refuseWrites(items.map((i) => [i.key, i.value]));
+      if (refused) return NextResponse.json({ error: refused }, { status: 400 });
       const results = await Promise.all(
-        body.settings.map((item: { key: string; value: string }) =>
+        items.map((item) =>
           prisma.aiSetting.upsert({
             where: { key: item.key },
             update: { value: item.value },
@@ -87,6 +130,12 @@ export async function PUT(request: NextRequest) {
     if (!key) {
       return NextResponse.json({ error: 'Key is required' }, { status: 400 });
     }
+    // A known key is created by its own feature, not typed in here — and an
+    // "encrypted" type must never be given a plaintext value.
+    const block = settingWriteBlock(key, type) ?? (type === 'encrypted' ? 'ค่าแบบเข้ารหัสสร้างจากหน้านี้ไม่ได้' : null);
+    if (block) return NextResponse.json({ error: `${key}: ${block}` }, { status: 400 });
+    const invalid = validateSettingValue(key, value ?? null);
+    if (invalid) return NextResponse.json({ error: invalid }, { status: 400 });
 
     const setting = await prisma.aiSetting.create({
       data: {

@@ -5,6 +5,8 @@ import { GpuQueue } from '@/lib/services/gpu-queue';
 import { RetentionService, daysUntil } from '@/lib/services/retention';
 import { GpuEta, formatEta } from '@/lib/services/gpu-eta';
 import { GpuProgress, estimatedFraction, type RenderPhase } from '@/lib/services/gpu-progress';
+import { GpuBalance, INSUFFICIENT_BALANCE_GRACE_MS } from '@/lib/services/gpu-balance';
+import { getGpuConfig } from '@/lib/gpu/config';
 import { publicProvider } from '@/lib/public-provider';
 
 /**
@@ -25,6 +27,7 @@ const QUEUE_LABELS = {
   next: 'ใกล้ถึงคิวของคุณแล้ว',
   starting: 'ถึงคิวของคุณแล้ว กำลังเริ่มสร้าง',
   rendering: 'กำลังสร้างผลงานของคุณ',
+  paused: 'ระบบสร้างงานหยุดชั่วคราว',
 } as const;
 
 /** What each measured stage of a render is called — never how it is run. */
@@ -88,6 +91,8 @@ export async function GET(
     progress?: number | null;
     /** Which measured stage the render is in; null when `progress` is an estimate. */
     phase?: RenderPhase | null;
+    /** Rendering is stopped for now; added rather than a new stage, for app builds in the field. */
+    paused?: boolean;
   } | null = null;
 
   if (generation.gpuJob && ['pending', 'processing'].includes(generation.status)) {
@@ -109,6 +114,18 @@ export async function GET(
       };
     } else if (job.status === 'assigned') {
       gpu = { stage: 'starting', label: QUEUE_LABELS.starting, queuePosition: 0, etaSeconds: eta.seconds, etaLabel: formatEta(eta.seconds), etaBasis: eta.basis, progress: 0, phase: null };
+    } else if (await GpuBalance.pausesModel(await getGpuConfig(), job.modelKey)) {
+      // Nothing will render until an admin tops up the vendor balance, so a
+      // countdown would be a false promise. Say what happens instead.
+      gpu = {
+        stage: 'queued',
+        label: `${QUEUE_LABELS.paused} ถ้ายังไม่กลับมาภายใน ${Math.round(INSUFFICIENT_BALANCE_GRACE_MS / 60_000)} นาที จะคืนเครดิตให้อัตโนมัติ`,
+        queuePosition: null,
+        etaSeconds: null,
+        etaLabel: null,
+        etaBasis: eta.basis,
+        paused: true,
+      };
     } else {
       // The ETA's count includes jobs already rendering ahead, which is what
       // "people in front of you" means to a customer.

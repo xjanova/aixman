@@ -24,6 +24,8 @@ export interface QueueProgress {
   floor: number;
   /** Fraction per second over recent readings, to carry the bar between polls. */
   rate: number;
+  /** Rendering is stopped for now (the label says what happens next). */
+  paused: boolean;
   /** When this reading arrived, so the bar keeps moving between polls. */
   at: number;
 }
@@ -38,6 +40,7 @@ export interface QueueReading {
   etaBasis?: string;
   progress?: number | null;
   phase?: string | null;
+  paused?: boolean;
 }
 
 /**
@@ -84,6 +87,7 @@ export function nextQueueProgress(prev: QueueProgress | null, gpu: QueueReading,
     // Smoothed, so one long step doesn't stall the bar and one fast one
     // doesn't fling it.
     rate: last ? 0.5 * last.rate + 0.5 * instant : 0,
+    paused: gpu.paused === true,
     at,
   };
 }

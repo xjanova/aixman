@@ -554,7 +554,9 @@ function GeneratingOverlay({ progress }: { progress: QueueProgress | null }) {
               </div>
             </>
           ) : (
-            <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: "0.04em" }}>กำลังสร้าง</div>
+            <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: "0.04em" }}>
+              {progress?.paused ? "หยุดชั่วคราว" : "กำลังสร้าง"}
+            </div>
           )}
         </div>
       </div>
