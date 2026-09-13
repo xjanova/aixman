@@ -30,6 +30,7 @@ import { isStudioPresent } from './studio-presence';
 import { GpuEta } from './gpu-eta';
 import { GpuBalance } from './gpu-balance';
 import { shouldAddMachine } from './gpu-scaler';
+import { raiseAlert } from '@/lib/notify/alerts';
 
 /**
  * Reserved prefix for instance names we own. The orphan sweep terminates any
@@ -508,6 +509,16 @@ export class GpuWorkerManager {
         // Boots elsewhere take minutes; one that outlived the whole warmup
         // window is a slow or broken host, and would be picked again.
         await this.penalizeWorkerOffer(worker, HOST_FAILURE_PENALTY_MS, 'never became ready');
+        raiseAlert({
+          type: 'boot-failed',
+          key: String(worker.id),
+          level: 'warning',
+          title: `เครื่องบูตไม่เสร็จใน ${cfg.warmupTimeoutMinutes} นาที — ปิดทิ้งแล้ว`,
+          lines: [
+            `เครื่อง #${worker.id} ${worker.gpuModel ?? ''} ที่ ${worker.providerSlug} (${worker.modelKey})`,
+            'ระบบหลบเครื่องนี้แล้วเช่าใหม่ให้เอง — ถ้าเจอบ่อย ลองเพิ่ม "รอเครื่องพร้อมสูงสุด" ที่หน้า GPU',
+          ],
+        });
         return;
       }
 
@@ -525,6 +536,16 @@ export class GpuWorkerManager {
       if (provider.exposure === 'tunnel' && !endpoint && ageMs > TUNNEL_REPORT_TIMEOUT_MS) {
         await this.terminate(worker.id, `Never reported its HTTPS tunnel within ${TUNNEL_REPORT_TIMEOUT_MS / 60_000} min`);
         await this.penalizeWorkerOffer(worker, HOST_FAILURE_PENALTY_MS, 'tunnel never came up');
+        raiseAlert({
+          type: 'boot-failed',
+          key: String(worker.id),
+          level: 'warning',
+          title: 'เครื่องเปิด tunnel ไม่สำเร็จ — ติดต่อเครื่องไม่ได้ ปิดทิ้งแล้ว',
+          lines: [
+            `เครื่อง #${worker.id} ${worker.gpuModel ?? ''} ที่ ${worker.providerSlug} (${worker.modelKey})`,
+            'ระบบหลบเครื่องนี้แล้วเช่าใหม่ให้เอง',
+          ],
+        });
         return;
       }
 
@@ -542,9 +563,23 @@ export class GpuWorkerManager {
         // sqlalchemy", and the pip error that explained it died with the box.
         await this.preserveBootLog(worker);
         await this.terminate(worker.id, `${BOOT_FAILURE_PREFIX}: ${probe.detail ?? 'unknown'}`);
-        if (HOST_FAULT.test(probe.detail ?? '')) {
+        const hostFault = HOST_FAULT.test(probe.detail ?? '');
+        if (hostFault) {
           await this.penalizeWorkerOffer(worker, HOST_FAILURE_PENALTY_MS, 'no usable CUDA');
         }
+        raiseAlert({
+          type: 'boot-failed',
+          key: String(worker.id),
+          level: 'warning',
+          title: 'เครื่องบูตไม่สำเร็จ — ปิดทิ้งแล้ว',
+          lines: [
+            `เครื่อง #${worker.id} ${worker.gpuModel ?? ''} ที่ ${worker.providerSlug} (${worker.modelKey})`,
+            `สาเหตุ: ${probe.detail ?? 'ไม่ทราบ'}`,
+            hostFault
+              ? 'เป็นปัญหาของเครื่องนั้นเอง ระบบหลบเครื่องนี้แล้ว'
+              : `ระบบพักการเช่าโมเดลนี้ ${BOOT_FAILURE_BACKOFF_MS / 60_000} นาทีก่อนลองใหม่ — log การบูตดูได้ที่หน้า GPU`,
+          ],
+        });
         return;
       }
       await prisma.aiGpuWorker.update({
@@ -762,6 +797,18 @@ export class GpuWorkerManager {
 
     const spentToday = await this.todaySpendUsd();
     if (spentToday >= cfg.dailyBudgetUsd) {
+      raiseAlert({
+        type: 'budget',
+        key: `100:${new Date().toDateString()}`,
+        level: 'warning',
+        title: 'งบค่าเครื่องวันนี้หมดแล้ว — หยุดเช่าเครื่องใหม่จนขึ้นวันใหม่',
+        lines: [
+          `ใช้ไป $${spentToday.toFixed(2)} จากงบ $${cfg.dailyBudgetUsd.toFixed(2)}`,
+          `งานรอคิว ${backlog.queued} งาน (${modelKey}) — ถ้ารอเกินเวลาจะคืนเครดิตอัตโนมัติ`,
+          'เพิ่มงบได้ที่หน้า GPU ช่อง "งบต่อวัน"',
+        ],
+        cooldownMs: 24 * 3_600_000,
+      });
       return {
         reason: `Daily GPU budget reached ($${spentToday.toFixed(2)} of $${cfg.dailyBudgetUsd.toFixed(2)})`,
       };
@@ -922,6 +969,17 @@ export class GpuWorkerManager {
           // the sweep can find the machine, tag it and terminate it.
           await this.rememberPendingRental({ ...error.pending, provider: vendor.slug });
           console.error(`[gpu] ${modelKey}: order at ${vendor.provider.label} unconfirmed:`, message);
+          raiseAlert({
+            type: 'rent-unconfirmed',
+            key: error.pending.nameTag,
+            level: 'critical',
+            title: 'สั่งเช่าเครื่องแล้วแต่ยืนยันไม่ได้ — อาจมีเครื่องคิดเงินโดยไม่มีใครใช้',
+            lines: [
+              `ผู้ให้เช่า ${vendor.provider.label} · โมเดล ${modelKey} · ชื่อเครื่อง ${error.pending.nameTag}`,
+              message,
+              'ระบบจะตามหาและปิดเครื่องนั้นเองในรอบกวาดถัดไป — ถ้าอีกครึ่งชั่วโมงยังเห็นเครื่องชื่อนี้ในบัญชีผู้ให้เช่า ให้ปิดเอง',
+            ],
+          });
           return { reason: `Could not confirm a rental at ${vendor.provider.label}: ${message}`.slice(0, 500) };
         }
         if (error instanceof RentRefusedError) {
@@ -1391,6 +1449,18 @@ export class GpuWorkerManager {
           lastError: `Terminate failed: ${(error as Error).message}`.slice(0, 1000),
         },
       });
+      raiseAlert({
+        type: 'terminate-failed',
+        key: String(workerId),
+        level: 'critical',
+        title: 'ปิดเครื่องไม่สำเร็จ — เครื่องอาจยังคิดเงินอยู่',
+        lines: [
+          `เครื่อง #${workerId} · ${worker.providerSlug} ${worker.externalId} · $${Number(worker.pricePerHourUsd).toFixed(2)}/ชม.`,
+          `สั่งปิดเพราะ: ${reason}`,
+          `ผู้ให้เช่าตอบ: ${(error as Error).message}`,
+          'ระบบลองปิดใหม่ทุกนาที — ถ้าได้ข้อความนี้ซ้ำ ให้เข้าไปปิดในเว็บผู้ให้เช่าเอง',
+        ],
+      });
       return;
     }
 
@@ -1439,6 +1509,18 @@ export class GpuWorkerManager {
         console.error(`[gpu] orphan sweep failed for ${vendor.provider.label}:`, (error as Error).message);
       }
     }
+    if (terminated.length > 0) {
+      raiseAlert({
+        type: 'orphans',
+        key: terminated.join(','),
+        level: 'warning',
+        title: `พบเครื่องตกค้างที่ระบบไม่ได้ติดตาม — ปิดให้แล้ว ${terminated.length} เครื่อง`,
+        lines: [
+          terminated.join(', '),
+          'มักเกิดจากการเช่าที่บันทึกไม่ครบ — เช็คบิลของผู้ให้เช่าว่าไม่มีเครื่องอื่นค้าง',
+        ],
+      });
+    }
     return { terminated };
   }
 
@@ -1480,6 +1562,17 @@ export class GpuWorkerManager {
         console.warn(`[gpu] terminated orphaned ${provider.label} instance ${instance.id} (${instance.name})`);
       } catch (error) {
         console.error(`[gpu] failed to terminate orphan ${slug}:${instance.id}:`, error);
+        raiseAlert({
+          type: 'terminate-failed',
+          key: `orphan:${slug}:${instance.id}`,
+          level: 'critical',
+          title: 'ปิดเครื่องตกค้างไม่สำเร็จ — เครื่องอาจยังคิดเงินอยู่',
+          lines: [
+            `${provider.label} ${instance.id} (${instance.name})`,
+            `ผู้ให้เช่าตอบ: ${(error as Error).message}`,
+            'ระบบลองใหม่ทุกรอบกวาด — ถ้าได้ข้อความนี้ซ้ำ ให้เข้าไปปิดในเว็บผู้ให้เช่าเอง',
+          ],
+        });
       }
     }
 

@@ -8,6 +8,7 @@ import { WorkerClient, type WorkerJobParams } from '@/lib/gpu/worker-client';
 import { GpuWorkerManager } from './gpu-worker';
 import { GpuBalance, INSUFFICIENT_BALANCE_GRACE_MS, RENDERING_PAUSED_MESSAGE } from './gpu-balance';
 import { maybeSendDailyReport } from './gpu-report';
+import { raiseAlert } from '@/lib/notify/alerts';
 import { GenerationService } from './generation';
 import { ModelReadiness } from './model-readiness';
 import { uploadBuffer, isStorageConfigured } from '@/lib/storage/r2';
@@ -33,6 +34,12 @@ const RECORD_RETRY_MS = 2_000;
 
 /** Job failure reason when the vendor balance cannot rent; `userFacingError` matches it. */
 const RENDERING_PAUSED_PREFIX = 'Rendering paused';
+
+/** Warn admins once a day when today's GPU spend reaches this share of the budget. */
+const BUDGET_WARN_AT = 0.8;
+/** This many terminal job failures inside the window is worth an alert. */
+const FAILURE_BURST_COUNT = 3;
+const FAILURE_BURST_WINDOW_MS = 30 * 60_000;
 
 export interface TickReport {
   enabled: boolean;
@@ -162,6 +169,24 @@ export class GpuQueue {
     });
     report.spentTodayUsd = Number((await GpuWorkerManager.todaySpendUsd()).toFixed(4));
 
+    // Early warning, once a day: at 100% renting simply stops (gpu-worker.ts).
+    if (cfg.enabled && cfg.dailyBudgetUsd > 0) {
+      const used = report.spentTodayUsd / cfg.dailyBudgetUsd;
+      if (used >= BUDGET_WARN_AT && used < 1) {
+        raiseAlert({
+          type: 'budget',
+          key: `80:${new Date().toDateString()}`,
+          level: 'warning',
+          title: `งบค่าเครื่องวันนี้ใช้ไปแล้ว ${Math.round(used * 100)}%`,
+          lines: [
+            `ใช้ไป $${report.spentTodayUsd.toFixed(2)} จากงบ $${cfg.dailyBudgetUsd.toFixed(2)} · เครื่องเปิดอยู่ ${report.liveWorkers} · คิว ${report.queued}`,
+            'ครบงบแล้วระบบหยุดเช่าเครื่องใหม่จนขึ้นวันใหม่ — เพิ่มงบได้ที่หน้า GPU',
+          ],
+          cooldownMs: 24 * 3_600_000,
+        });
+      }
+    }
+
     return report;
   }
 
@@ -230,7 +255,18 @@ export class GpuQueue {
         // never succeed, so refund now rather than retrying forever.
         const message = (error as Error).message;
         reason ??= message;
-        failed += await this.failAllQueued(modelKey, message);
+        const refunded = await this.failAllQueued(modelKey, message);
+        failed += refunded;
+        raiseAlert({
+          type: 'config-error',
+          key: modelKey,
+          level: 'critical',
+          title: `ระบบเช่า GPU ตั้งค่าไม่ครบ — เช่าเครื่องให้ ${modelKey} ไม่ได้`,
+          lines: [
+            message,
+            `คืนเครดิตงานในคิว ${refunded} งาน — งานใหม่ของโมเดลนี้จะถูกคืนเครดิตแบบเดียวกันจนกว่าจะแก้`,
+          ],
+        });
       }
     }
 
@@ -379,6 +415,17 @@ export class GpuQueue {
       // this one back in the queue for another machine.
       await GpuWorkerManager.drain(worker.id, `Could not record a submitted render: ${(error as Error).message}`)
         .catch(() => {});
+      raiseAlert({
+        type: 'render-unrecorded',
+        key: String(job.id),
+        level: 'warning',
+        title: 'ส่งงานเข้าเครื่องแล้วแต่บันทึกฐานข้อมูลไม่ได้ — ปิดเครื่องนั้นแล้ว',
+        lines: [
+          `งาน #${job.generationId} · เครื่อง #${worker.id} (${worker.providerSlug})`,
+          `ข้อผิดพลาด: ${(error as Error).message}`,
+          'งานถูกส่งไปเครื่องอื่นอัตโนมัติ — ถ้าเกิดบ่อย แปลว่าฐานข้อมูลช้าหรือล่ม',
+        ],
+      });
       throw error;
     }
   }
@@ -643,6 +690,34 @@ export class GpuQueue {
     if (countAgainstModel && !experiment && !cardFault && generation?.modelId) {
       await ModelReadiness.recordFailure(generation.modelId, message);
     }
+
+    // Several renders failing close together is a pattern worth a look even
+    // when each one was refunded. Only failures on a machine count: an admin's
+    // stop, a stale-queue refund and a config error are not render failures,
+    // and the last two have alerts of their own.
+    if (countAgainstModel && !experiment) {
+      const recent = await prisma.aiGpuJob
+        .count({
+          where: {
+            status: 'failed',
+            workerId: { not: null },
+            completedAt: { gte: new Date(now.getTime() - FAILURE_BURST_WINDOW_MS) },
+            NOT: { errorMessage: { startsWith: 'Stopped by admin' } },
+          },
+        })
+        .catch(() => 0);
+      if (recent >= FAILURE_BURST_COUNT) {
+        raiseAlert({
+          type: 'failure-burst',
+          level: 'warning',
+          title: `งานล้ม ${recent} งานใน ${FAILURE_BURST_WINDOW_MS / 60_000} นาทีล่าสุด`,
+          lines: [
+            `ล่าสุด: งาน #${job.generationId} (${job.modelKey}) — ${message}`,
+            'เครดิตคืนให้ลูกค้าอัตโนมัติแล้ว — ดูสาเหตุในตาราง "งานล่าสุด" ที่หน้า GPU',
+          ],
+        });
+      }
+    }
   }
 
   /**
@@ -726,6 +801,18 @@ export class GpuQueue {
         { countAgainstModel: false }
       );
       failed += 1;
+    }
+    if (failed > 0) {
+      raiseAlert({
+        type: 'stuck-refund',
+        level: 'warning',
+        title: `งานรอเครื่องนานเกินกำหนด — ยกเลิกและคืนเครดิต ${failed} งาน`,
+        lines: [
+          paused
+            ? `สาเหตุ: ยอดเงินผู้ให้เช่าไม่พอเช่าเครื่อง ($${(balance.usd ?? 0).toFixed(2)}) — เติมเงินแล้วกด "อ่านยอดใหม่" ที่หน้า GPU`
+            : `สาเหตุ: ${reason ?? 'ไม่มีเครื่องที่ตรงเงื่อนไขในเวลาที่กำหนด'}`,
+        ],
+      });
     }
     return failed;
   }

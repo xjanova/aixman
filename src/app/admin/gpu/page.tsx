@@ -16,6 +16,7 @@ import {
   AlertTriangle,
   Ban,
   Bell,
+  ChevronDown,
   CircleDollarSign,
   Cpu,
   ExternalLink,
@@ -31,6 +32,7 @@ import {
   Wallet,
   Zap,
 } from "lucide-react";
+import { ALERT_ICON, ALERT_LABEL, ALERT_TYPES } from "@/lib/notify/alert-types";
 
 interface DailyPoint {
   date: string;
@@ -1326,8 +1328,9 @@ export default function GpuAdminPage() {
           </span>
         </div>
         <p className="text-xs text-muted mb-4">
-          ส่งถึงแอดมินเมื่อยอดเงิน SimplePod ต่ำกว่า {usd(bal?.lowBelowUsd ?? 0)}, เมื่อไม่พอเช่าเครื่อง
-          (ปิดรับงานชั่วคราว) และเมื่อกลับมาปกติ — เตือนซ้ำทุก 6 ชม. ถ้ายังไม่เติม
+          ส่งถึงแอดมินทุกเรื่องที่ต้องรู้ทันที — ยอดเงินผู้ให้เช่าต่ำกว่า {usd(bal?.lowBelowUsd ?? 0)} หรือไม่พอเช่า,
+          ปิดเครื่องไม่ได้, โมเดลถูกปิดรับงาน, งบวันนี้ใกล้หมด ฯลฯ ({ALERT_TYPES.length} เรื่อง ดูรายการด้านล่าง)
+          — เรื่องเดิมไม่ส่งซ้ำถี่ ๆ
         </p>
 
         <div className="grid sm:grid-cols-2 gap-4">
@@ -1404,6 +1407,36 @@ export default function GpuAdminPage() {
             ดูตัวอย่างการ์ดแจ้งเตือนยอดเงิน <ExternalLink className="w-3 h-3" />
           </a>
         </div>
+
+        {/* What the bot will send, so a message never comes as a surprise. */}
+        <details className="group mt-4 rounded-lg glass-light">
+          <summary className="cursor-pointer select-none list-none [&::-webkit-details-marker]:hidden px-3 py-2 text-sm flex items-center gap-2">
+            <Bell className="w-4 h-4 text-primary-light" />
+            เรื่องที่บอทจะแจ้ง ({ALERT_TYPES.length} แบบ)
+            <span className="text-xs text-muted hidden sm:inline">
+              {ALERT_ICON.critical} {ALERT_LABEL.critical} · {ALERT_ICON.warning} {ALERT_LABEL.warning} · {ALERT_ICON.info} {ALERT_LABEL.info}
+            </span>
+            <ChevronDown className="w-4 h-4 ml-auto text-muted transition-transform group-open:rotate-180" />
+          </summary>
+          <ul className="px-3 pb-3 pt-1 grid md:grid-cols-2 gap-x-6 gap-y-2.5">
+            {ALERT_TYPES.map((a) => (
+              <li key={a.id} className="flex gap-2 text-xs leading-relaxed">
+                <span aria-label={ALERT_LABEL[a.level]} className="shrink-0">{ALERT_ICON[a.level]}</span>
+                <div className="min-w-0">
+                  <div className="text-foreground">
+                    {a.title}
+                    {a.card && (
+                      <span className="ml-1.5 px-1.5 py-px rounded bg-primary/15 text-primary-light text-[10px] align-middle">
+                        รูปภาพ
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-muted">{a.when}</div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </details>
       </div>
 
       {/* Live workers */}

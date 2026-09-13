@@ -182,6 +182,7 @@ export const SETTINGS_CATALOG: Record<string, SettingMeta> = {
     category: 'notify', input: 'text', managedAt: GPU_PAGE,
   },
   notify_daily_report_last: { label: 'ส่งรายงานประจำวันล่าสุด', tip: 'วันที่ (เวลาไทย) ที่ส่งรายงาน 09:00 สำเร็จล่าสุด — ระบบบันทึกเอง', category: 'notify', input: 'text', readOnly: true },
+  notify_alert_state: { label: 'ประวัติการส่งแจ้งเตือนด่วน', tip: 'เวลาที่ส่งแจ้งเตือนแต่ละเรื่องล่าสุด ใช้กันส่งเรื่องเดิมซ้ำถี่ ๆ (เช่น ปิดเครื่องไม่ได้ แจ้งชั่วโมงละครั้ง) — ระบบบันทึกเอง เก็บ 7 วัน', category: 'notify', input: 'json', readOnly: true },
 
   // ── แอปมือถือ ──────────────────────────────────────────────────────────
   mobile_min_supported_version: {

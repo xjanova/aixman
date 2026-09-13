@@ -8,6 +8,8 @@ import { GpuQueue } from '@/lib/services/gpu-queue';
 import { withTickLock } from '@/lib/services/gpu-lock';
 import { GpuBalance } from '@/lib/services/gpu-balance';
 import { saveTelegramConfig, sendTelegram } from '@/lib/notify/telegram';
+import { raiseAlert } from '@/lib/notify/alerts';
+import { ALERT_ICON, ALERT_LABEL, ALERT_TYPES, formatAlert } from '@/lib/notify/alert-types';
 import { sendDailyReport } from '@/lib/services/gpu-report';
 
 /**
@@ -199,6 +201,16 @@ export async function POST(request: NextRequest) {
         }
         // A tick that was mid-poll may have re-queued a job in between.
         refunded += await GpuQueue.cancelAllPending(STOPPED_BY_ADMIN);
+        raiseAlert({
+          type: 'emergency-stop',
+          level: 'info',
+          title: 'แอดมินกด "หยุดทั้งหมด"',
+          lines: [
+            `ปิดเครื่อง ${workers.length} เครื่อง · ยกเลิกและคืนเครดิต ${refunded} งาน`,
+            'ปิดการเช่าเครื่องแล้ว — เปิดคืนได้ที่หน้า GPU',
+          ],
+          cooldownMs: 0,
+        });
         return NextResponse.json({ success: true, terminated: workers.length, refunded, rentalEnabled: false });
       }
 
@@ -265,7 +277,15 @@ export async function POST(request: NextRequest) {
       }
 
       case 'test-telegram': {
-        const result = await sendTelegram('✅ AIXMAN: ทดสอบการแจ้งเตือน — ถ้าเห็นข้อความนี้ แปลว่าบอทส่งถึงแล้ว');
+        // In the alerts' own format, so the admin sees what one looks like.
+        const result = await sendTelegram(
+          formatAlert('resolved', 'ทดสอบการแจ้งเตือน', [
+            'ถ้าเห็นข้อความนี้ แปลว่าบอทส่งถึงแล้ว',
+            `เรื่องที่บอทจะแจ้งมี ${ALERT_TYPES.length} แบบ แยกระดับด้วยสี: ${(['critical', 'warning', 'info', 'resolved'] as const)
+              .map((l) => `${ALERT_ICON[l]} ${ALERT_LABEL[l]}`)
+              .join(' · ')}`,
+          ])
+        );
         if (!result.ok) {
           // Telegram's own reason ("chat not found", "Unauthorized") is what the
           // admin needs to fix it; the token is already scrubbed out of it.

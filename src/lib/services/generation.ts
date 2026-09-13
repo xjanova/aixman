@@ -13,6 +13,7 @@ import { isAcceptedFrameSource } from '@/lib/gpu/frame-input';
 import { creditsForDuration } from '@/lib/pricing';
 import { getGpuConfig } from '@/lib/gpu/config';
 import { GpuBalance, RENDERING_PAUSED_MESSAGE } from './gpu-balance';
+import { raiseAlert } from '@/lib/notify/alerts';
 
 /**
  * Generation Service
@@ -53,6 +54,13 @@ export class GenerationService {
     // instead of charging and refunding a tick later.
     const gpuModel = getGpuProvider(model.provider.slug) !== null;
     if (gpuModel && !isStorageConfigured()) {
+      raiseAlert({
+        type: 'config-error',
+        key: 'storage',
+        level: 'critical',
+        title: 'ยังไม่ได้ตั้งค่า R2 — ลูกค้าสั่งงานโมเดลเช่า GPU ไม่ได้',
+        lines: [`ลูกค้าเพิ่งโดนปฏิเสธที่โมเดล ${model.name}`, 'ตั้งค่า R2_* ใน .env ของเซิร์ฟเวอร์แล้วรีสตาร์ต'],
+      });
       throw new Error('โมเดลนี้ยังตั้งค่าไม่เสร็จ กรุณาติดต่อผู้ดูแลระบบ');
     }
 
@@ -116,6 +124,17 @@ export class GenerationService {
     // 2. Select an account from the pool
     const account = await AccountPoolManager.selectAccount(model.providerId);
     if (!account) {
+      raiseAlert({
+        type: 'no-accounts',
+        key: String(model.providerId),
+        level: 'critical',
+        title: `${model.provider.name} ไม่มีคีย์ API ที่ใช้ได้`,
+        lines: [
+          `ลูกค้าเพิ่งโดนปฏิเสธที่โมเดล ${model.name}`,
+          'คีย์ทุกอันถูกปิด ติดลิมิต หรือถูกพักจากข้อผิดพลาด — ตรวจที่หน้าคลังคีย์ (Pools)',
+        ],
+        path: '/admin/pools',
+      });
       throw new Error('No available API accounts for this provider. Please try again later.');
     }
 
