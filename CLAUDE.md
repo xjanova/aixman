@@ -28,6 +28,12 @@ AIXMAN is an AI image and video generation platform at **https://ai.xman4289.com
 - Modify shared table structures without coordinating with xmanstudio
 - Store secrets in ai_ tables without encryption
 
+## Git workflow
+
+- **Commit straight to `main`.** Don't create feature branches or open PRs. The owner decided this on 2026-09-13.
+- A push to `main` runs CI ("CI - Build & Quality Checks"), then auto-deploys to production. So before every push, run `npx tsc --noEmit`, eslint on the files you changed, and `npm run build`, and push only deployable states.
+- CI commits `chore: release vX.Y.Z` to `main` after each push. Pull (or rebase) before pushing.
+
 ## Tech Stack
 
 - **Framework:** Next.js 15 (App Router) + React 19
