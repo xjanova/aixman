@@ -57,7 +57,7 @@ export const SETTING_CATEGORIES: SettingCategory[] = [
   { id: 'general', label: 'ทั่วไป', description: 'ข้อมูลเว็บไซต์และสถานะการติดตั้ง' },
   { id: 'credits', label: 'เครดิตและสมาชิก', description: 'เครดิตที่แจกและกติกาการใช้เครดิต' },
   { id: 'storage', label: 'ไฟล์และการเก็บรักษา', description: 'ไฟล์ผลงานเก็บนานแค่ไหน และรูปแบบไฟล์' },
-  { id: 'gpu', label: 'GPU เช่า (SimplePod)', description: 'เพดานค่าใช้จ่ายและเวลาของเครื่องที่เช่ามาเรนเดอร์ — แก้ได้ที่หน้า GPU' },
+  { id: 'gpu', label: 'GPU เช่า', description: 'เพดานค่าใช้จ่ายและเวลาของเครื่องที่เช่ามาเรนเดอร์ (SimplePod, RunPod, Vast.ai, Verda) — แก้ได้ที่หน้า GPU' },
   { id: 'notify', label: 'การแจ้งเตือน', description: 'Telegram แจ้งยอดเงินและรายงานประจำวัน' },
   { id: 'mobile', label: 'แอปมือถือ', description: 'บังคับอัปเดตแอป XDreamer' },
   { id: 'generation', label: 'การสร้างงาน', description: 'ค่าเริ่มต้นของสตูดิโอ (ส่วนใหญ่ยังไม่ได้เชื่อมกับระบบ)' },
@@ -123,7 +123,7 @@ export const SETTINGS_CATALOG: Record<string, SettingMeta> = {
   },
   gpu_max_price_per_hour_usd: {
     label: 'ราคาเช่าสูงสุดต่อชั่วโมง',
-    tip: 'ไม่เช่าเครื่องที่แพงกว่านี้ · เป็นเกณฑ์ "ยอดเงินไม่พอเช่า" ด้วย (ยอด SimplePod ≤ ค่านี้ = เช่าไม่ได้ ปิดรับงาน) · A100 40GB ราว $0.50/ชม. (ก.ย. 2569)',
+    tip: 'ไม่เช่าเครื่องที่แพงกว่านี้ ไม่ว่าเจ้าไหน · เป็นเกณฑ์ "ยอดเงินไม่พอเช่า" ด้วย (ยอดของเจ้าที่มีเงินมากสุด ≤ ค่านี้ = เช่าไม่ได้ ปิดรับงาน) · A100 40GB ราว $0.50/ชม. (ก.ย. 2569)',
     category: 'gpu', input: 'number', unit: 'USD', managedAt: GPU_PAGE,
   },
   gpu_daily_budget_usd: {
@@ -141,6 +141,21 @@ export const SETTINGS_CATALOG: Record<string, SettingMeta> = {
     tip: 'ต่อเวลาจาก "ปิดเมื่อว่าง" เฉพาะตอนมีลูกค้าอยู่หน้าสร้างงานของโมเดลนั้น ให้สั่งต่อได้โดยไม่ต้องรอบูต · 0 = ปิด · สูงสุด 30',
     category: 'gpu', input: 'number', unit: 'นาที', managedAt: GPU_PAGE,
   },
+  gpu_prewarm_cooldown_minutes: {
+    label: 'เปิดเครื่องรอลูกค้า — พักหลังเปิดเก้อ',
+    tip: 'ลูกค้าที่มีเครดิตพอสั่งงานเพิ่งเข้าหน้าสร้างงานของโมเดลที่ไม่มีเครื่องเปิดอยู่ → เช่าเครื่องทันที ให้บูตระหว่างลูกค้าพิมพ์พรอมต์ · ถ้าเครื่องนั้นปิดไปโดยไม่มีงาน จะไม่เปิดรอให้โมเดลนั้นอีกจนครบเวลานี้ · ไม่เปิดตอนยอดเงินใกล้หมด เครื่องเต็มเพดาน หรืองบวันหมด · เปิดเก้อ 1 ครั้ง ≈ บูต + เวลาว่าง (~15 นาที, A100 ≈ $0.12) · 0 = ปิด',
+    category: 'gpu', input: 'number', unit: 'นาที', managedAt: GPU_PAGE,
+  },
+  gpu_wait_value_usd_per_hour: {
+    label: 'มูลค่าเวลาที่ลูกค้ารอ',
+    tip: 'ใช้ชั่งการ์ดถูกแต่ช้ากับแพงแต่เร็ว: ที่ $2/ชม. การ์ดต้องประหยัดได้ 1 เซ็นต์ต่อทุก ~18 วินาทีที่ลูกค้ารอนานขึ้นจึงจะถูกเลือก · 0 = ดูแค่ค่าเช่า',
+    category: 'gpu', input: 'number', unit: 'USD/ชม.', managedAt: GPU_PAGE,
+  },
+  gpu_providers: {
+    label: 'ผู้ให้เช่าที่ระบบเลือกเช่าได้',
+    tip: 'รายชื่อคั่นจุลภาค (simplepod, runpod, vast, verda) · ระบบดูเครื่องว่างจากทุกเจ้าในรายการแล้วเลือกเครื่องที่คุ้มสุดที่บัญชีเจ้านั้นมีเงินพอ · เจ้าที่ไม่อยู่ในรายการยังถูกตรวจและปิดเครื่องตกค้างตามปกติ · เปิด/ปิดแต่ละเจ้าที่หน้า GPU',
+    category: 'gpu', input: 'text', managedAt: GPU_PAGE,
+  },
   gpu_max_worker_lifetime_minutes: {
     label: 'อายุเครื่องสูงสุด',
     tip: 'ตัวกันสุดท้าย: เครื่องถูกปิดเมื่อเปิดครบเวลานี้แม้ยังมีงาน (งานที่ถูกตัดส่งไปเครื่องใหม่) · กันเครื่องที่หลุดการติดตามคิดเงินค้าง',
@@ -156,7 +171,7 @@ export const SETTINGS_CATALOG: Record<string, SettingMeta> = {
     tip: 'เกินแล้วยกเลิกงานนั้นและคืนเครดิต · H3 คลิป 15 วิ 720p ใช้ ~10 นาที · 1080p 15 วิคาดว่า 34–37 นาที (เกิน 30)',
     category: 'gpu', input: 'number', unit: 'นาที', managedAt: GPU_PAGE,
   },
-  gpu_provider: { label: 'ผู้ให้เช่า GPU', tip: 'ตอนนี้รองรับ SimplePod อย่างเดียว', category: 'gpu', input: 'text', readOnly: true },
+  gpu_provider: { label: 'ผู้ให้เช่าเจ้าแรกที่ตั้งค่า', tip: 'ค่าจากตอนที่มีผู้ให้เช่าเจ้าเดียว — ใช้แทนรายชื่อผู้ให้เช่าเมื่อยังไม่มี gpu_providers · รายชื่อที่ระบบเช่าได้จริงดูที่ gpu_providers', category: 'gpu', input: 'text', readOnly: true },
   gpu_region: {
     label: 'จำกัดภูมิภาคของเครื่อง',
     tip: 'เว้นว่าง = เลือกจากทุกภูมิภาค (ถูกสุดที่ผ่านเงื่อนไข) · ใส่เมื่ออยากได้เครื่องในภูมิภาคที่กำหนดเท่านั้น — ตัวเลือกน้อยลงอาจเช่าไม่ได้',
@@ -217,11 +232,18 @@ export const SETTINGS_CATALOG: Record<string, SettingMeta> = {
   setup_completed: { label: 'ติดตั้งระบบเสร็จแล้ว', tip: 'ระบบตั้งเป็นเปิดหลังติดตั้งครั้งแรกเสร็จ — ใช้กันหน้า /setup ถูกเปิดซ้ำ', category: 'system', input: 'boolean', readOnly: true },
   seed_version: { label: 'เวอร์ชันข้อมูลตั้งต้น', tip: 'เวอร์ชันของชุดข้อมูลที่ seed ลงฐานข้อมูล', category: 'system', input: 'text', readOnly: true },
   gpu_last_sweep_at: { label: 'กวาดเครื่องตกค้างล่าสุด', tip: 'เวลาที่ระบบค้นหาเครื่องที่หลุดการติดตามครั้งล่าสุด (ทุก 30 นาทีตอนว่าง)', category: 'system', input: 'text', readOnly: true },
-  gpu_provider_balance: { label: 'ยอดเงิน SimplePod ล่าสุด', tip: 'ค่าที่อ่านจาก SimplePod ล่าสุด (อ่านทุก ≤5 นาที) และสถานะการแจ้งเตือน — ใช้ตัดสินใจปิดรับงานเมื่อเงินไม่พอ', category: 'system', input: 'json', readOnly: true },
+  gpu_provider_balance: { label: 'ยอดเงินผู้ให้เช่าล่าสุด', tip: 'ยอดที่อ่านจากทุกเจ้าที่มีคีย์ล่าสุด (อ่านทุก ≤5 นาที) และสถานะการแจ้งเตือน — ปิดรับงานเฉพาะเมื่อไม่มีเจ้าไหนมีเงินพอเช่า', category: 'system', input: 'json', readOnly: true },
+  gpu_offer_penalties: { label: 'เครื่องที่ระบบเลี่ยงชั่วคราว', tip: 'ข้อเสนอเครื่องที่บูตไม่ขึ้นหรือถูกผู้ให้เช่าปฏิเสธ ระบบเลี่ยงไว้ชั่วคราวแล้วหมดอายุเอง — ระบบบันทึกเอง', category: 'system', input: 'json', readOnly: true },
+  gpu_card_penalties: { label: 'รุ่นการ์ดที่เลี่ยงต่อโมเดล', tip: 'รุ่นการ์ดที่เรนเดอร์โมเดลนั้นไม่ได้ (เช่น VRAM ไม่พอ) ระบบเลี่ยงไว้ 1 วัน — ระบบบันทึกเอง', category: 'system', input: 'json', readOnly: true },
+  gpu_pending_rentals: { label: 'คำสั่งเช่าที่ยังยืนยันไม่ได้', tip: 'ผู้ให้เช่ารับคำสั่งแล้วแต่ระบบยังหาเครื่องไม่เจอ — รอบกวาดจะตามหาและปิดเครื่องนั้นเอง · ระบบบันทึกเอง', category: 'system', input: 'json', readOnly: true },
+  gpu_tick_lock: { label: 'ล็อกรอบทำงาน GPU', tip: 'กันรอบจัดคิวและเช่าเครื่องทำงานซ้อนกัน หมดอายุเอง — ระบบบันทึกเอง ห้ามแก้', category: 'system', input: 'text', readOnly: true },
 };
 
 /** Keys the system writes per model: `gpu_presence_<model>` (studio-presence.ts). */
 export const PRESENCE_PREFIX = 'gpu_presence_';
+
+/** `gpu_prewarm_demand_<model>`: a customer with credits just arrived (studio-presence.ts). */
+export const PREWARM_DEMAND_PREFIX = 'gpu_prewarm_demand_';
 
 /** Metadata for a key, including the generated presence keys. Null for unknown keys. */
 export function settingMeta(key: string): SettingMeta | null {
@@ -231,6 +253,15 @@ export function settingMeta(key: string): SettingMeta | null {
     return {
       label: `ลูกค้าเปิดสตูดิโอล่าสุด · ${key.slice(PRESENCE_PREFIX.length)}`,
       tip: 'เวลาล่าสุดที่มีลูกค้าเปิดหน้าสร้างงานของโมเดลนี้ — ใช้ยืดเวลาปิดเครื่องที่ว่าง',
+      category: 'system',
+      input: 'text',
+      readOnly: true,
+    };
+  }
+  if (key.startsWith(PREWARM_DEMAND_PREFIX)) {
+    return {
+      label: `ลูกค้ามีเครดิตเพิ่งเข้าสตูดิโอ · ${key.slice(PREWARM_DEMAND_PREFIX.length)}`,
+      tip: 'เวลาล่าสุดที่ลูกค้าที่มีเครดิตพอสั่งงานเพิ่งเข้าหน้าสร้างงานของโมเดลนี้ — ใช้ตัดสินใจเปิดเครื่องรอก่อนสั่ง',
       category: 'system',
       input: 'text',
       readOnly: true,

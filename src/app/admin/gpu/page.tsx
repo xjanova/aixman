@@ -119,6 +119,7 @@ interface GpuConfig {
   dailyBudgetUsd: number;
   idleTimeoutMinutes: number;
   presenceExtensionMinutes: number;
+  prewarmCooldownMinutes: number;
   maxWorkerLifetimeMinutes: number;
   warmupTimeoutMinutes: number;
   jobTimeoutMinutes: number;
@@ -1274,6 +1275,7 @@ export default function GpuAdminPage() {
               ["maxConcurrentWorkers", "เครื่องพร้อมกันสูงสุด", "เปิดเพิ่มเองเมื่อคิวยาว / แยกเครื่องต่อโมเดล ไม่เกินเท่านี้"],
               ["idleTimeoutMinutes", "ปิดเครื่องเมื่อว่างเกิน (นาที)", "สั้น = ประหยัด แต่บูตใหม่บ่อย"],
               ["presenceExtensionMinutes", "รอเพิ่มถ้าลูกค้ายังเปิดสตูดิโอ (นาที)", "ต่อจากเวลาว่าง เฉพาะตอนมีคนอยู่หน้าสร้างงาน • 0 = ปิด"],
+              ["prewarmCooldownMinutes", "เปิดเครื่องรอลูกค้า — พักหลังเปิดเก้อ (นาที)", "ลูกค้ามีเครดิตเข้าหน้าสร้างงาน → เปิดเครื่องรอก่อนสั่ง • ถ้าไม่มีใครใช้ จะรอเท่านี้ก่อนเปิดรอบใหม่ • 0 = ปิด"],
               ["maxWorkerLifetimeMinutes", "อายุเครื่องสูงสุด (นาที)", "กันเครื่องหลุดค้าง"],
               ["warmupTimeoutMinutes", "รอเครื่องพร้อมสูงสุด (นาที)", "ต้องเผื่อโหลดโมเดล ~42GB"],
               ["jobTimeoutMinutes", "เรนเดอร์นานสุด (นาที)", "เกินแล้วยกเลิกและคืนเครดิต"],

@@ -41,6 +41,13 @@ export interface GpuBudgetConfig {
    * this model selected (see studio-presence.ts). 0 turns it off.
    */
   presenceExtensionMinutes: number;
+  /**
+   * Pre-warming: a customer with credits arriving on the studio for a model
+   * with no machine gets one rented before they order (GpuQueue.prewarm).
+   * After a pre-warmed machine closes without rendering anything, no other is
+   * pre-warmed for that model for this long. 0 turns pre-warming off.
+   */
+  prewarmCooldownMinutes: number;
   /** Absolute kill switch — a worker is never allowed to outlive this. */
   maxWorkerLifetimeMinutes: number;
   /** Give up (and reap) if the inference server never becomes healthy. */
@@ -115,6 +122,10 @@ export const GPU_DEFAULTS: GpuBudgetConfig = {
   // A machine boots in ~2 min, so a short idle timeout plus this grace for a
   // customer who is still on the page beats a long flat timeout.
   presenceExtensionMinutes: 5,
+  // An unused pre-warm costs one boot plus the idle timeout (~15 min of one
+  // card, ≈ $0.12 on an A100); waiting 30 min after one bounds a visitor who
+  // never orders to about a third of a machine for that model.
+  prewarmCooldownMinutes: 30,
   maxWorkerLifetimeMinutes: 240,
   // A fresh machine installs ComfyUI and pulls ~42.5 GB of weights. At the
   // 500 Mbps floor we require, that is ~12 minutes of download alone, plus
@@ -202,6 +213,10 @@ export async function getGpuConfig(): Promise<GpuBudgetConfig> {
     presenceExtensionMinutes: Math.min(
       30,
       parseNumber(map.get('gpu_presence_extension_minutes'), GPU_DEFAULTS.presenceExtensionMinutes)
+    ),
+    prewarmCooldownMinutes: parseNumber(
+      map.get('gpu_prewarm_cooldown_minutes'),
+      GPU_DEFAULTS.prewarmCooldownMinutes
     ),
     maxWorkerLifetimeMinutes: parseNumber(
       map.get('gpu_max_worker_lifetime_minutes'),

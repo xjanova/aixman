@@ -149,6 +149,14 @@ generating. Consequences that must never be regressed:
   but not one just used or open in a customer's studio for the first 90 s
   (anti ping-pong). Extra machines close on the plain idle timeout; only the
   warmest idle machine per model gets the studio-presence grace.
+- Pre-warm (`GpuQueue.prewarm`, `gpu_prewarm_cooldown_minutes`, default 30,
+  0 = off): a customer whose credits cover the model's smallest order *arriving*
+  on the studio (first 3 min of a visit — a tab left open never asks again)
+  gets a machine rented before they order, so the boot overlaps the prompt.
+  Only for a model with no machine and nothing queued, only into a free slot
+  (never evicts), not while the balance is low or the budget spent, one per
+  tick, and not again for that model within the cooldown after a pre-warmed
+  machine closed unused (`metadata.pick.prewarm`, no job ever assigned).
 - Which card (`offer-picker.ts`, `gpu-specs.ts`): **any card that can run the
   model competes** — VRAM from the catalogue, architecture from the name
   (Ampere+ for H3/Qwen, Turing+ for ACE-Step; unknown names are refused; an
@@ -229,6 +237,10 @@ Nothing else is required because:
   `/aixman/ready`: 503 while downloading, 500 once the boot failed (the worker
   is released at once), 200 only when every file is in place and ComfyUI answers.
   ComfyUI itself is up long before 40 GB of weights land.
+- **Weights download 3 at a time** (`FETCH_PARALLEL`, catalogue lists the
+  largest first), `hf_xet` high-performance mode only with ≥ 48 GB of container
+  memory (cgroup limit, else MemTotal). Completion is judged by the files on
+  disk, not exit codes — a download killed for memory writes no failure itself.
 - **Render progress is real.** The proxy listens on ComfyUI's websocket (stdlib
   only) and serves `/aixman/progress`; ComfyUI sends a prompt's events only to
   the client id it was submitted under, so the proxy relabels `/prompt` bodies

@@ -11,6 +11,7 @@ import { maybeSendDailyReport } from './gpu-report';
 import { raiseAlert } from '@/lib/notify/alerts';
 import { GenerationService } from './generation';
 import { ModelReadiness } from './model-readiness';
+import { prewarmDemand } from './studio-presence';
 import { uploadBuffer, isStorageConfigured } from '@/lib/storage/r2';
 
 /**
@@ -28,6 +29,9 @@ import { uploadBuffer, isStorageConfigured } from '@/lib/storage/r2';
 
 /** A job claimed but not yet submitted for longer than this is presumed crashed. */
 const ASSIGN_STALE_MS = 5 * 60_000;
+
+/** A worker in any of these is up, or on its way up, and costs money. */
+const LIVE_WORKER_STATUSES = ['provisioning', 'warming', 'ready', 'busy', 'draining'];
 
 /** Pause before the one retry of recording a render that was just submitted. */
 const RECORD_RETRY_MS = 2_000;
@@ -163,6 +167,15 @@ export class GpuQueue {
 
     report.failed += await this.failStuckQueued(cfg, dispatched.reason);
 
+    if (cfg.enabled && cfg.prewarmCooldownMinutes > 0) {
+      try {
+        await this.prewarm(cfg);
+      } catch (error) {
+        // A guess about an order that has not happened: never worth failing the tick.
+        console.error('[gpu] pre-warm failed:', (error as Error).message);
+      }
+    }
+
     report.queued = await prisma.aiGpuJob.count({ where: { status: 'queued' } });
     report.liveWorkers = await prisma.aiGpuWorker.count({
       where: { status: { in: ['provisioning', 'warming', 'ready', 'busy', 'draining'] } },
@@ -271,6 +284,75 @@ export class GpuQueue {
     }
 
     return { dispatched, failed, reason };
+  }
+
+  /**
+   * Rent a machine for a customer who has not ordered yet.
+   *
+   * The first order on a model with no machine waits for a rental, a boot and
+   * the weights. A customer with credits who has just opened the studio on
+   * that model (studio-presence.ts) is likely to order within minutes, and the
+   * boot can run while they write the prompt. Speculative, so every guard
+   * leans towards not renting:
+   *   - the model has no machine at all and nothing queued (the queue's own
+   *     scaling handles that);
+   *   - some vendor can comfortably pay — not while the balance is low;
+   *   - no pre-warmed machine for the model closed unused within the cooldown,
+   *     which bounds what a visitor who never orders can cost;
+   *   - one per tick; addCapacity adds the rest (free slot only, budget, the
+   *     boot-failure pause, vendor credit).
+   * Unused, the machine closes on the idle timeout like any other.
+   */
+  private static async prewarm(cfg: GpuBudgetConfig): Promise<void> {
+    const wanted = await prewarmDemand();
+    if (wanted.length === 0) return;
+    const balance = await GpuBalance.read(cfg);
+    if (balance.state === 'low' || balance.state === 'insufficient') return;
+
+    for (const modelKey of wanted) {
+      const [machines, jobs] = await Promise.all([
+        prisma.aiGpuWorker.count({ where: { modelKey, status: { in: LIVE_WORKER_STATUSES } } }),
+        prisma.aiGpuJob.count({ where: { modelKey, status: { in: ['queued', 'assigned', 'running'] } } }),
+      ]);
+      if (machines > 0 || jobs > 0) continue;
+      if (await this.recentUnusedPrewarm(modelKey, cfg.prewarmCooldownMinutes)) continue;
+
+      try {
+        const result = await GpuWorkerManager.addCapacity(
+          modelKey,
+          cfg,
+          { queued: 0, oldestQueuedAt: null },
+          { prewarm: true }
+        );
+        if (result.rented) {
+          console.log(`[gpu] ${modelKey}: pre-warmed for a customer on the studio — ${result.reason}`);
+          return;
+        }
+      } catch (error) {
+        // A configuration error: the customer's order will meet it too, and be
+        // refunded there. Nothing to undo for a machine never rented.
+        console.error(`[gpu] ${modelKey}: pre-warm failed:`, (error as Error).message);
+      }
+    }
+  }
+
+  /** A pre-warmed machine for this model closed, within the window, having rendered nothing. */
+  private static async recentUnusedPrewarm(modelKey: string, windowMinutes: number): Promise<boolean> {
+    const recent = await prisma.aiGpuWorker.findMany({
+      where: { modelKey, terminatedAt: { gte: new Date(Date.now() - windowMinutes * 60_000) } },
+      select: { id: true, metadata: true },
+      orderBy: { terminatedAt: 'desc' },
+      take: 20,
+    });
+    const prewarmed = recent
+      .filter((w) => (w.metadata as { pick?: { prewarm?: unknown } } | null)?.pick?.prewarm === true)
+      .map((w) => w.id);
+    if (prewarmed.length === 0) return false;
+    const used = await prisma.aiGpuJob.groupBy({
+      by: ['workerId'],
+      where: { workerId: { in: prewarmed } },
+    });
+    return used.length < prewarmed.length;
   }
 
   /**

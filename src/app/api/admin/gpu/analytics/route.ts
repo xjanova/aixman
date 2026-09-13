@@ -170,6 +170,7 @@ export async function GET() {
     const p = (metadata as { pick?: Record<string, unknown> } | null)?.pick;
     if (!p || typeof p.costUsd !== 'number') return null;
     return (
+      (p.prewarm === true ? 'เปิดรอลูกค้าที่เข้าหน้าสร้างงาน (ยังไม่มีคิว) • ' : '') +
       `เลือกจาก ${p.candidates} ข้อเสนอ • ต้นทุนงานโดยประมาณ $${p.costUsd.toFixed(3)} ` +
       `(บูต ~${p.bootSeconds} วิ + เรนเดอร์ ~${p.renderSeconds} วิ${RENDER_BASIS_TH[String(p.renderBasis)] ?? ' ค่ากลางของโมเดล'})`
     );

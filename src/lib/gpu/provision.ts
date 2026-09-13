@@ -48,6 +48,12 @@ export const COMFYUI_REF = 'v0.35.1';
 /** Where ComfyUI is installed inside the container. */
 const ROOT = '/workspace/aixman';
 
+/** Weight files downloaded at once (see `fetch_all` in the start script). */
+const FETCH_PARALLEL = 3;
+
+/** Container memory at which hf_xet's high-performance mode is safe to turn on. */
+const XET_HIGH_PERFORMANCE_MIN_GB = 48;
+
 /**
  * Proxy path that answers whether the worker can take a job. Served by the
  * proxy itself, so it works before ComfyUI is up and can report a boot failure.
@@ -539,8 +545,11 @@ export function buildComfyUiStartScript(opts: ProvisionOptions): string {
   // `split_files/`. `hf download` preserves the repo path, so each file is
   // fetched then moved to the directory ComfyUI actually loads from.
   const downloads = (opts.downloads ?? []).map(
-    (d) =>
-      `  fetch_model ${shellQuote(d.repo)} ${shellQuote(d.file)} ${shellQuote(d.dest)} ${shellQuote(d.as ?? '')} || ok=0`
+    (d) => `  fetch_next ${shellQuote(d.repo)} ${shellQuote(d.file)} ${shellQuote(d.dest)} ${shellQuote(d.as ?? '')}`
+  );
+  // Where each file must end up, checked after every download has finished.
+  const weightTargets = (opts.downloads ?? []).map((d) =>
+    shellQuote(`${d.dest}/${d.as || d.file.split('/').pop()}`)
   );
 
   const customNodes = (opts.customNodes ?? []).map(
@@ -622,8 +631,37 @@ python3 -m pip list --format=freeze 2>/dev/null \\
 export PIP_CONSTRAINT=${ROOT}/constraints.txt
 
 # hf_xet is the transfer backend HF serves large files through now;
-# hf_transfer is deprecated and must not be enabled.
+# hf_transfer is deprecated and must not be enabled. Progress bars off: several
+# downloads run at once, and their interleaved bars would bury the lines
+# ${LOG_PATH} exists to show.
 pip_install "huggingface_hub" -U "huggingface_hub>=0.34" hf_xet
+export HF_HUB_DISABLE_PROGRESS_BARS=1
+export HF_HUB_DISABLE_UPDATE_CHECK=1
+
+# Memory the container may really use: its cgroup limit where one is set,
+# otherwise the machine's.
+mem_gb() {
+  local limit="" total
+  if [ -r /sys/fs/cgroup/memory.max ]; then
+    limit="$(cat /sys/fs/cgroup/memory.max)"
+  elif [ -r /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
+    limit="$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)"
+  fi
+  total=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) * 1024 ))
+  if [[ "$limit" =~ ^[0-9]+$ ]] && [ "$limit" -lt "$total" ]; then total="$limit"; fi
+  echo $(( total / 1073741824 ))
+}
+# High-performance mode saturates the link and every core: the machine is
+# billed by the second and has nothing better to do while the weights land.
+# It also buffers more, times ${FETCH_PARALLEL} downloads at once — so only
+# where memory is plentiful; a download killed for memory costs a retry.
+MEM_GB="$(mem_gb 2>/dev/null || echo 0)"
+if [ "\${MEM_GB:-0}" -ge ${XET_HIGH_PERFORMANCE_MIN_GB} ]; then
+  export HF_XET_HIGH_PERFORMANCE=1
+  echo "[aixman] \${MEM_GB} GB of memory: hf_xet high-performance mode on"
+else
+  echo "[aixman] \${MEM_GB} GB of memory: hf_xet in its default mode"
+fi
 
 fetch_model() {
   local repo="$1" path="$2" dest="$3" rename="$4"
@@ -661,16 +699,38 @@ fetch_model() {
   return 1
 }
 
+# Files download side by side. One stream seldom fills a fast host's link, and
+# one after another the small files (VAEs, LoRAs) queued behind a 20 GB model
+# they could have finished under. The catalogue lists the largest file first,
+# so the long pole starts at once. Capped, because every hf process buffers in
+# RAM and the machine is sized for the model, not for the download.
+FETCH_PARALLEL=${FETCH_PARALLEL}
+WEIGHT_FILES=(${weightTargets.join(' ')})
+
 # Only a complete set counts. Marking ready after a failed file would hand the
-# worker jobs that cannot load their model.
+# worker jobs that cannot load their model. Judged by what is on disk rather
+# than by exit codes: a download killed outright (out of memory) writes no
+# failure of its own.
 fetch_all() {
-  local ok=1
+  local running=0 missing="" f
+  fetch_next() {
+    if [ "$running" -ge "$FETCH_PARALLEL" ]; then
+      wait -n 2>/dev/null || true
+      running=$((running - 1))
+    fi
+    fetch_model "$@" &
+    running=$((running + 1))
+  }
 ${downloads.join('\n') || '  :'}
-  if [ "$ok" = 1 ]; then
+  wait
+  for f in "\${WEIGHT_FILES[@]}"; do
+    [ -s "${ROOT}/models/$f" ] || missing="$missing $f"
+  done
+  if [ -z "$missing" ]; then
     touch ${ROOT}/models.ready
     echo "[aixman] all weights in place"
   else
-    fail_boot "weights failed to download: $(tr '\\n' ' ' < ${ROOT}/failed.list)"
+    fail_boot "weights failed to download:$missing"
   fi
 }
 echo "[aixman] downloading weights in the background"

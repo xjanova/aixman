@@ -748,11 +748,17 @@ export class GpuWorkerManager {
    *
    * Different models get their own machines side by side up to the cap, so a
    * customer switching models no longer evicts everyone else's.
+   *
+   * `prewarm`: nothing is queued yet — a customer who can pay has just opened
+   * the studio (GpuQueue.prewarm). Only for a model with no machine, and only
+   * into a free slot: a guess about an order never displaces a machine that
+   * someone may be using.
    */
   static async addCapacity(
     modelKey: string,
     cfg: GpuBudgetConfig,
-    backlog: { queued: number; oldestQueuedAt: Date | null }
+    backlog: { queued: number; oldestQueuedAt: Date | null },
+    opts: { prewarm?: boolean } = {}
   ): Promise<CapacityResult> {
     if (!cfg.enabled) {
       return { reason: 'GPU rental is disabled (gpu_enabled = false)' };
@@ -761,6 +767,7 @@ export class GpuWorkerManager {
     const serving = await prisma.aiGpuWorker.count({
       where: { modelKey, status: { in: ['ready', 'busy', 'warming', 'provisioning'] } },
     });
+    if (opts.prewarm && serving > 0) return { reason: 'Pre-warm skipped: the model already has a machine' };
     if (serving > 0) {
       const [unitRenderSeconds, bootSeconds, lengthFactor] = await Promise.all([
         GpuEta.typicalRenderSeconds(modelKey),
@@ -776,6 +783,9 @@ export class GpuWorkerManager {
     }
 
     const liveCount = await prisma.aiGpuWorker.count({ where: { status: { in: LIVE_STATUSES } } });
+    if (liveCount >= cfg.maxConcurrentWorkers && opts.prewarm) {
+      return { reason: `Pre-warm skipped: at worker capacity (${liveCount}/${cfg.maxConcurrentWorkers})` };
+    }
     if (liveCount >= cfg.maxConcurrentWorkers) {
       // Every model needs its own weights, so a machine serving model A
       // cannot take a job for model B. With no slot free, an idle machine of
@@ -796,6 +806,9 @@ export class GpuWorkerManager {
     }
 
     const spentToday = await this.todaySpendUsd();
+    if (spentToday >= cfg.dailyBudgetUsd && opts.prewarm) {
+      return { reason: 'Pre-warm skipped: daily GPU budget reached' };
+    }
     if (spentToday >= cfg.dailyBudgetUsd) {
       raiseAlert({
         type: 'budget',
@@ -939,7 +952,7 @@ export class GpuWorkerManager {
       if (!vendor || failedVendors.has(vendor.slug)) continue;
       attempts += 1;
       console.log(
-        `[gpu] ${modelKey}: renting ${pick.offer.gpuModel} at ${vendor.provider.label} (offer ${pick.offer.id}, ` +
+        `[gpu] ${modelKey}: ${opts.prewarm ? 'pre-warming' : 'renting'} ${pick.offer.gpuModel} at ${vendor.provider.label} (offer ${pick.offer.id}, ` +
           `$${pick.offer.pricePerHourUsd}/hr) ≈ $${pick.costUsd.toFixed(3)} for boot ${pick.bootSeconds}s + ` +
           `render ${pick.renderSeconds}s (${pick.renderBasis}), best of ${eligible.length} from ${markets.length} vendor(s)`
       );
@@ -954,6 +967,8 @@ export class GpuWorkerManager {
           candidates: eligible.length,
           vendors: markets.map((m) => ({ slug: m.slug, offers: m.offers.length, note: m.note ?? null })),
           cheapestHourly: Math.min(...eligible.map((o) => o.pricePerHourUsd)),
+          // GpuQueue.prewarm reads this back to tell a pre-warm that went unused.
+          ...(opts.prewarm ? { prewarm: true } : {}),
         });
         // A machine rented this tick has not booted — it has no endpoint yet,
         // and the queue only hands jobs to booted machines (submitting to one
