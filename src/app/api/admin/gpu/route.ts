@@ -7,6 +7,7 @@ import { GpuQueue } from '@/lib/services/gpu-queue';
 import { withTickLock } from '@/lib/services/gpu-lock';
 import { GpuBalance } from '@/lib/services/gpu-balance';
 import { saveTelegramConfig, sendTelegram } from '@/lib/notify/telegram';
+import { sendDailyReport } from '@/lib/services/gpu-report';
 
 /**
  * Admin control surface for rented GPUs.
@@ -229,6 +230,12 @@ export async function POST(request: NextRequest) {
           // admin needs to fix it; the token is already scrubbed out of it.
           return NextResponse.json({ error: `ส่งไม่สำเร็จ: ${result.error}` }, { status: 400 });
         }
+        return NextResponse.json({ success: true });
+      }
+
+      case 'send-report': {
+        const result = await sendDailyReport(await getGpuConfig());
+        if (!result.ok) return NextResponse.json({ error: `ส่งไม่สำเร็จ: ${result.error}` }, { status: 400 });
         return NextResponse.json({ success: true });
       }
 

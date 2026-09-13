@@ -8,6 +8,7 @@ import { getTelegramStatus } from '@/lib/notify/telegram';
 import { isStorageConfigured } from '@/lib/storage/r2';
 import { getCatalogEntry } from '@/lib/gpu/catalog';
 import { isStudioPresent } from '@/lib/services/studio-presence';
+import { buildDailyBuckets, pricingBasis } from '@/lib/services/gpu-stats';
 
 /**
  * Profit and usage analytics for rented GPUs.
@@ -27,23 +28,8 @@ import { isStudioPresent } from '@/lib/services/studio-presence';
 export const dynamic = 'force-dynamic';
 
 const DAYS = 30;
-const FALLBACK_USD_THB = 36;
 /** The page polls every 15 s; the vendor needs asking about once a minute. */
 const ADMIN_BALANCE_MAX_AGE_MS = 60_000;
-
-interface DayBucket {
-  date: string;
-  spendUsd: number;
-  renderCostUsd: number;
-  jobs: number;
-  failed: number;
-  revenueThb: number;
-  credits: number;
-}
-
-function dayKey(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
 
 export async function GET() {
   if (!(await isAdmin())) {
@@ -77,62 +63,10 @@ export async function GET() {
     }),
   ]);
 
-  // ---- Pricing basis -------------------------------------------------
-  // Blended rate across active packages: what a credit is actually worth to
-  // the business, including bonus credits given away.
-  const totalCredits = packages.reduce((s, p) => s + p.credits + p.bonusCredits, 0);
-  const totalThb = packages.reduce((s, p) => s + Number(p.priceThb), 0);
-  const totalUsd = packages.reduce((s, p) => s + Number(p.priceUsd), 0);
-  const thbPerCredit = totalCredits > 0 ? totalThb / totalCredits : 0;
-  const usdToThb = totalUsd > 0 ? totalThb / totalUsd : FALLBACK_USD_THB;
-
-  // ---- Daily buckets -------------------------------------------------
-  const buckets = new Map<string, DayBucket>();
-  for (let i = 0; i < DAYS; i++) {
-    const d = new Date(since.getFullYear(), since.getMonth(), since.getDate() + i);
-    buckets.set(dayKey(d), {
-      date: dayKey(d),
-      spendUsd: 0,
-      renderCostUsd: 0,
-      jobs: 0,
-      failed: 0,
-      revenueThb: 0,
-      credits: 0,
-    });
-  }
-
-  // Spread each worker's uptime cost across the days it was actually alive,
-  // rather than dumping it all on the day it was rented.
-  for (const w of workers) {
-    const rate = Number(w.pricePerHourUsd);
-    if (rate <= 0) continue;
-    const end = w.terminatedAt && w.terminatedAt < now ? w.terminatedAt : now;
-
-    for (const [key, bucket] of buckets) {
-      const dayStart = new Date(`${key}T00:00:00`);
-      const dayEnd = new Date(dayStart.getTime() + 86_400_000);
-      const from = w.rentedAt > dayStart ? w.rentedAt : dayStart;
-      const to = end < dayEnd ? end : dayEnd;
-      const ms = to.getTime() - from.getTime();
-      if (ms > 0) bucket.spendUsd += (ms / 3_600_000) * rate;
-    }
-  }
-
-  for (const job of jobs) {
-    const bucket = buckets.get(dayKey(job.queuedAt));
-    if (!bucket) continue;
-    if (job.status === 'completed') {
-      bucket.jobs += 1;
-      bucket.renderCostUsd += Number(job.costUsd);
-      const credits = job.generation?.creditsUsed ?? 0;
-      bucket.credits += credits;
-      bucket.revenueThb += credits * thbPerCredit;
-    } else if (job.status === 'failed') {
-      bucket.failed += 1;
-    }
-  }
-
-  const daily = [...buckets.values()];
+  // ---- Pricing basis + daily buckets (gpu-stats.ts, shared with the
+  // Telegram daily report so the two never disagree) ------------------
+  const { thbPerCredit, usdToThb } = pricingBasis(packages);
+  const daily = buildDailyBuckets(workers, jobs, since, DAYS, now, thbPerCredit);
 
   // ---- Totals --------------------------------------------------------
   const completed = jobs.filter((j) => j.status === 'completed');

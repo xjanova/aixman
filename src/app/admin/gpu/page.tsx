@@ -20,6 +20,7 @@ import {
   Cpu,
   ExternalLink,
   Gauge,
+  Image as ImageIcon,
   KeyRound,
   Percent,
   RefreshCw,
@@ -1122,6 +1123,27 @@ export default function GpuAdminPage() {
           >
             <Send className="w-4 h-4" /> {busy === "tg-test" ? "กำลังส่ง..." : "ส่งข้อความทดสอบ"}
           </button>
+          <button
+            onClick={() => void post({ action: "send-report" }, "tg-report", () => "ส่งรายงานประจำวันแล้ว — เช็คใน Telegram")}
+            disabled={busy !== null || !tg?.configured}
+            className="px-4 py-2 rounded-lg glass-light hover:bg-surface-light text-sm flex items-center gap-2 disabled:opacity-40"
+          >
+            <ImageIcon className="w-4 h-4" /> {busy === "tg-report" ? "กำลังสร้างรูป..." : "ส่งรายงานประจำวันตอนนี้"}
+          </button>
+        </div>
+
+        {/* The cards are PNGs drawn on the server (next/og); these open the
+            exact image that would be sent, without sending it. */}
+        <div className="flex items-center gap-4 mt-3 text-xs text-muted flex-wrap">
+          <span>รายงานแบบรูปภาพส่งอัตโนมัติทุกเช้า 09:00 (เวลาไทย) และทุกครั้งที่ยอดเงินเปลี่ยนสถานะ</span>
+          <a href="/api/admin/gpu/report?kind=daily" target="_blank" rel="noopener noreferrer"
+             className="text-primary-light underline underline-offset-2 hover:opacity-80 inline-flex items-center gap-1">
+            ดูตัวอย่างรายงานประจำวัน <ExternalLink className="w-3 h-3" />
+          </a>
+          <a href="/api/admin/gpu/report?kind=balance" target="_blank" rel="noopener noreferrer"
+             className="text-primary-light underline underline-offset-2 hover:opacity-80 inline-flex items-center gap-1">
+            ดูตัวอย่างการ์ดแจ้งเตือนยอดเงิน <ExternalLink className="w-3 h-3" />
+          </a>
         </div>
       </div>
 

@@ -114,6 +114,41 @@ export async function sendTelegram(text: string): Promise<{ ok: true } | { ok: f
   return errors.length > 0 ? { ok: false, error: scrub(errors.join('; '), cfg.token) } : { ok: true };
 }
 
+/** Telegram's limit on a photo caption. */
+const MAX_CAPTION = 1000;
+
+/** Send a PNG with a caption to every configured chat. Never throws. */
+export async function sendTelegramPhoto(
+  png: Buffer,
+  caption: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const cfg = await loadConfig().catch(() => null);
+  if (!cfg) return { ok: false, error: 'ยังไม่ได้ตั้งค่า Telegram' };
+
+  const text = caption.length > MAX_CAPTION ? `${caption.slice(0, MAX_CAPTION - 1)}…` : caption;
+  const errors: string[] = [];
+  for (const chatId of cfg.chatIds) {
+    try {
+      const form = new FormData();
+      form.append('chat_id', chatId);
+      form.append('caption', text);
+      form.append('photo', new Blob([new Uint8Array(png)], { type: 'image/png' }), 'aixman-report.png');
+      const res = await fetch(`https://api.telegram.org/bot${cfg.token}/sendPhoto`, {
+        method: 'POST',
+        body: form,
+        signal: AbortSignal.timeout(SEND_TIMEOUT_MS * 3),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { description?: string };
+        errors.push(`${chatId}: HTTP ${res.status} ${data.description ?? ''}`.trim());
+      }
+    } catch (error) {
+      errors.push(`${chatId}: ${(error as Error).message}`);
+    }
+  }
+  return errors.length > 0 ? { ok: false, error: scrub(errors.join('; '), cfg.token) } : { ok: true };
+}
+
 /** Fire-and-log wrapper for alerts: true when every chat received it. */
 export async function notifyAdmins(text: string): Promise<boolean> {
   const result = await sendTelegram(text);
@@ -121,6 +156,31 @@ export async function notifyAdmins(text: string): Promise<boolean> {
     console.error('[telegram] alert not delivered:', result.error);
   }
   return result.ok;
+}
+
+/**
+ * An alert as a picture card with `text` as its caption, falling back to the
+ * text alone when the card cannot be drawn — a missing picture must never cost
+ * the alert itself. True when it was delivered either way.
+ */
+export async function notifyAdminsWithCard(card: () => Promise<Buffer>, text: string): Promise<boolean> {
+  if (!(await isTelegramConfigured())) return false;
+  let png: Buffer | null = null;
+  try {
+    png = await card();
+  } catch (error) {
+    console.error('[telegram] report card failed, sending text instead:', (error as Error).message);
+  }
+  if (png) {
+    const result = await sendTelegramPhoto(png, text);
+    if (result.ok) return true;
+    console.error('[telegram] photo not delivered, sending text instead:', result.error);
+  }
+  return notifyAdmins(text);
+}
+
+export async function isTelegramConfigured(): Promise<boolean> {
+  return (await loadConfig().catch(() => null)) !== null;
 }
 
 /**

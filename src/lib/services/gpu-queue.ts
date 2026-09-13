@@ -7,6 +7,7 @@ import { isAdminOnlyPreset } from '@/lib/gpu/catalog';
 import { WorkerClient, type WorkerJobParams } from '@/lib/gpu/worker-client';
 import { GpuWorkerManager } from './gpu-worker';
 import { GpuBalance, INSUFFICIENT_BALANCE_GRACE_MS, RENDERING_PAUSED_MESSAGE } from './gpu-balance';
+import { maybeSendDailyReport } from './gpu-report';
 import { GenerationService } from './generation';
 import { ModelReadiness } from './model-readiness';
 import { uploadBuffer, isStorageConfigured } from '@/lib/storage/r2';
@@ -133,6 +134,12 @@ export class GpuQueue {
       } catch (error) {
         const message = (error as Error).message;
         if (!message.includes('No active API key')) console.error('[gpu] balance check failed:', message);
+      }
+      // Yesterday's numbers as a picture on Telegram, once a morning.
+      try {
+        await maybeSendDailyReport(cfg);
+      } catch (error) {
+        console.error('[gpu] daily report failed:', (error as Error).message);
       }
     }
 

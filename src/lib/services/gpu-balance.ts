@@ -2,7 +2,7 @@ import prisma from '@/lib/db';
 import { getGpuProvider } from '@/lib/gpu';
 import type { GpuBudgetConfig } from '@/lib/gpu/config';
 import type { GpuBalance as VendorBalance } from '@/lib/gpu/types';
-import { notifyAdmins } from '@/lib/notify/telegram';
+import { notifyAdminsWithCard } from '@/lib/notify/telegram';
 import { balanceThresholds, classifyBalance as classify, decideAlert, type BalanceState } from './gpu-balance-rules';
 
 export { balanceThresholds, type BalanceState };
@@ -130,13 +130,53 @@ async function maybeAlert(prev: Stored | null, next: Stored, cfg: GpuBudgetConfi
   const state = classify(next.usd, cfg);
   const decision = decideAlert(prev, state, next.checkedAt);
   if (decision.send) {
-    if (await notifyAdmins(await alertText(state, next.usd, cfg))) {
+    const text = await alertText(state, next.usd, cfg);
+    if (await notifyAdminsWithCard(() => balanceCard(state, next, cfg), text)) {
       next.alerted = state;
       next.alertedAt = next.checkedAt;
     }
   } else if (decision.remember) {
     next.alerted = decision.remember;
   }
+}
+
+/**
+ * The alert as a picture: balance, gauge against both thresholds, queue, live
+ * machines, today's spend and runway. next/og is loaded only here, so the
+ * routes that merely read the balance (/api/models, every order) never load it.
+ */
+async function balanceCard(state: Exclude<BalanceState, 'unknown'>, reading: Stored, cfg: GpuBudgetConfig): Promise<Buffer> {
+  const [{ renderBalanceCard }, { GpuWorkerManager }] = await Promise.all([
+    import('@/lib/notify/report-card'),
+    import('./gpu-worker'),
+  ]);
+  const [queued, live, spentTodayUsd] = await Promise.all([
+    prisma.aiGpuJob.count({ where: { status: 'queued' } }),
+    prisma.aiGpuWorker.findMany({
+      where: { status: { in: ['provisioning', 'warming', 'ready', 'busy', 'draining'] } },
+      select: { pricePerHourUsd: true },
+    }),
+    GpuWorkerManager.todaySpendUsd(),
+  ]);
+  const burn = live.reduce((s, w) => s + Number(w.pricePerHourUsd), 0);
+  return renderBalanceCard({
+    state,
+    usd: reading.usd,
+    ...balanceThresholds(cfg),
+    queued,
+    liveWorkers: live.length,
+    spentTodayUsd,
+    dailyBudgetUsd: cfg.dailyBudgetUsd,
+    runwayHours: burn > 0 && reading.usd > 0 ? Number((reading.usd / burn).toFixed(1)) : null,
+    at: new Date(reading.checkedAt),
+  });
+}
+
+/** The card for the stored reading, for the admin preview. Null before the first reading. */
+export async function renderCurrentBalanceCard(cfg: GpuBudgetConfig): Promise<Buffer | null> {
+  const stored = await load();
+  if (!stored) return null;
+  return balanceCard(classify(stored.usd, cfg), stored, cfg);
 }
 
 export class GpuBalance {
