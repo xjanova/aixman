@@ -325,7 +325,13 @@ def report_tunnel(url):
             return  # superseded by a newer tunnel
         try:
             req = urllib.request.Request(CALLBACK_URL, data=body, method="POST", headers={
-                "Authorization": "Bearer " + TOKEN, "Content-Type": "application/json"})
+                "Authorization": "Bearer " + TOKEN, "Content-Type": "application/json",
+                # urllib introduces itself as "Python-urllib/3.x", and the WAF in
+                # front of the platform answers that with 403 before the request
+                # ever reaches the route (measured 2026-09-16: same request with a
+                # browser UA got the route's own 404). Every tunnel report was
+                # refused this way, so no tunnel-mode machine was ever reachable.
+                "User-Agent": "aixman-worker/1.0"})
             with urllib.request.urlopen(req, timeout=15) as up:
                 if up.status == 200:
                     sys.stderr.write("[proxy] reported tunnel %s\n" % url)
