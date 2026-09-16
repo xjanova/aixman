@@ -26,10 +26,12 @@ import {
   Percent,
   RefreshCw,
   Save,
+  Search,
   Send,
   Server,
   TrendingUp,
   Wallet,
+  X,
   Zap,
 } from "lucide-react";
 import { ALERT_ICON, ALERT_LABEL, ALERT_TYPES } from "@/lib/notify/alert-types";
@@ -326,6 +328,159 @@ const STATUS_COLOR: Record<string, string> = {
 // ────────────────────────────────────────────────────────────
 
 /** Revenue vs cost over time, with the gap between them shaded as profit. */
+/* ------------------------------------------------------------------ *
+ * Shared table controls
+ *
+ * Every table here grows without bound — rentals and jobs accumulate for the
+ * whole window — so each one filters and pages through the same three pieces:
+ * `options` builds a column's choices from the rows themselves (no hardcoded
+ * vendor or card list to fall out of date), `hit` is the free-text match, and
+ * `pageOf` clamps the page so a filter that shrinks the result can never leave
+ * the table blank on a page that no longer exists.
+ * ------------------------------------------------------------------ */
+
+const PAGE_SIZE = 15;
+
+interface PagedView<T> {
+  rows: T[];
+  page: number;
+  pages: number;
+  /** Rows the filter left, across all pages. */
+  total: number;
+  /** Rows before filtering, so the footer can say what was hidden. */
+  unfiltered: number;
+}
+
+/** Distinct non-empty values, sorted — what a column filter offers. */
+function options(values: (string | null | undefined)[]): string[] {
+  return [...new Set(values.filter((v): v is string => Boolean(v && v.trim())))].sort();
+}
+
+/** Free-text match across the fields a row can be searched by. */
+function hit(query: string, ...fields: (string | number | null | undefined)[]): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  return fields.some((f) => f !== null && f !== undefined && String(f).toLowerCase().includes(needle));
+}
+
+function pageOf<T>(rows: T[], page: number, unfiltered: number): PagedView<T> {
+  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const safe = Math.min(Math.max(1, page), pages);
+  return { rows: rows.slice((safe - 1) * PAGE_SIZE, safe * PAGE_SIZE), page: safe, pages, total: rows.length, unfiltered };
+}
+
+function FilterSelect({
+  label,
+  value,
+  choices,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  choices: { value: string; label: string }[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <select
+      aria-label={label}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      title={label}
+      className={`px-2.5 py-1.5 rounded-lg bg-surface-light text-xs focus:outline-none ${value ? "text-primary-light" : "text-muted"}`}
+    >
+      <option value="">{label}: ทั้งหมด</option>
+      {choices.map((c) => (
+        <option key={c.value} value={c.value}>
+          {c.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function SearchBox({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder: string }) {
+  return (
+    <span className="relative flex items-center">
+      <Search className="w-3.5 h-3.5 absolute left-2.5 text-muted pointer-events-none" />
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="pl-8 pr-7 py-1.5 rounded-lg bg-surface-light text-xs w-48 focus:outline-none"
+      />
+      {value && (
+        <button onClick={() => onChange("")} title="ล้างคำค้น" className="absolute right-2 text-muted hover:text-foreground">
+          <X className="w-3.5 h-3.5" />
+        </button>
+      )}
+    </span>
+  );
+}
+
+/** Filter row: the controls, plus a reset that only appears when something is on. */
+function FilterBar({ active, onReset, children }: { active: boolean; onReset: () => void; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-2 flex-wrap mb-3">
+      {children}
+      {active && (
+        <button onClick={onReset} className="px-2.5 py-1.5 rounded-lg text-xs text-muted hover:text-foreground flex items-center gap-1">
+          <X className="w-3.5 h-3.5" /> ล้างตัวกรอง
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Row count, the "nothing matched" line, and paging — one footer for every table. */
+function TableFooter<T>({ view, onPage }: { view: PagedView<T>; onPage: (page: number) => void }) {
+  const filtered = view.total !== view.unfiltered;
+  return (
+    <div className="flex items-center justify-between gap-3 flex-wrap mt-3 text-xs text-muted">
+      <span>
+        {view.total === 0
+          ? "ไม่มีแถวที่ตรงกับตัวกรอง — ลองล้างตัวกรอง"
+          : `แสดง ${view.rows.length} จาก ${view.total} แถว${filtered ? ` (กรองจาก ${view.unfiltered})` : ""}`}
+      </span>
+      {view.pages > 1 && (
+        <span className="flex items-center gap-1">
+          <button
+            onClick={() => onPage(view.page - 1)}
+            disabled={view.page <= 1}
+            className="px-2 py-1 rounded-lg glass-light disabled:opacity-30"
+          >
+            ก่อนหน้า
+          </button>
+          <span className="px-1">
+            {view.page}/{view.pages}
+          </span>
+          <button
+            onClick={() => onPage(view.page + 1)}
+            disabled={view.page >= view.pages}
+            className="px-2 py-1 rounded-lg glass-light disabled:opacity-30"
+          >
+            ถัดไป
+          </button>
+        </span>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * Tabs — this page carries five unrelated jobs (money, vendors, machines,
+ * work, settings) and scrolled past three screens with all of them open.
+ * ------------------------------------------------------------------ */
+
+const TABS = [
+  { key: "overview", label: "ภาพรวม", icon: Gauge },
+  { key: "vendors", label: "ผู้ให้เช่า", icon: KeyRound },
+  { key: "machines", label: "เครื่อง", icon: Server },
+  { key: "jobs", label: "งาน", icon: Activity },
+  { key: "settings", label: "ตั้งค่า", icon: Bell },
+] as const;
+
+type TabKey = (typeof TABS)[number]["key"];
+
 function ProfitChart({ data, usdToThb }: { data: DailyPoint[]; usdToThb: number }) {
   const W = 720;
   const H = 220;
@@ -767,6 +922,16 @@ export default function GpuAdminPage() {
   const [tgChat, setTgChat] = useState<string | null>(null);
   // Boot/ComfyUI logs of one worker, read through its proxy on demand.
   const [logs, setLogs] = useState<{ workerId: number; text: Record<string, string> | null; error?: string } | null>(null);
+  const [tab, setTab] = useState<TabKey>("overview");
+  // Table filters. Every setter resets its table to page 1 — a filter that
+  // leaves fewer rows than the page currently shown would otherwise land the
+  // admin on a page that no longer exists.
+  const [workerFilter, setWorkerFilter] = useState({ status: "", vendor: "", q: "" });
+  const [workerPage, setWorkerPage] = useState(1);
+  const [rentalFilter, setRentalFilter] = useState({ vendor: "", gpu: "", model: "", outcome: "", q: "" });
+  const [rentalPage, setRentalPage] = useState(1);
+  const [jobFilter, setJobFilter] = useState({ status: "", q: "" });
+  const [jobPage, setJobPage] = useState(1);
 
   const showLogs = async (workerId: number) => {
     setLogs({ workerId, text: null });
@@ -942,6 +1107,55 @@ export default function GpuAdminPage() {
   const bal = data?.balance;
   const tg = data?.telegram;
 
+  // With no key at all there is nothing to show anywhere else, so the vendor
+  // tab opens first — but only over the default, never over a tab the admin picked.
+  const activeTab: TabKey = needsKey && tab === "overview" ? "vendors" : tab;
+
+  const allWorkers = data?.workers ?? [];
+  const workerRows = allWorkers.filter(
+    (w) =>
+      (!workerFilter.status || w.status === workerFilter.status) &&
+      (!workerFilter.vendor || w.vendor === workerFilter.vendor) &&
+      hit(workerFilter.q, w.id, w.modelName, w.gpuModel, w.supportId, w.vendor, w.lastError)
+  );
+  const workerView = pageOf(workerRows, workerPage, allWorkers.length);
+  const workerFilterOn = Boolean(workerFilter.status || workerFilter.vendor || workerFilter.q);
+  const setWorkerField = (patch: Partial<typeof workerFilter>) => {
+    setWorkerFilter((f) => ({ ...f, ...patch }));
+    setWorkerPage(1);
+  };
+
+  const allRentals = data?.rentals ?? [];
+  const rentalRows = allRentals.filter((r) => {
+    const outcome = !r.terminatedAt ? "live" : r.bootMinutes !== null ? "ready" : "never";
+    return (
+      (!rentalFilter.vendor || r.vendor === rentalFilter.vendor) &&
+      (!rentalFilter.gpu || r.gpuModel === rentalFilter.gpu) &&
+      (!rentalFilter.model || r.modelKey === rentalFilter.model) &&
+      (!rentalFilter.outcome || rentalFilter.outcome === outcome) &&
+      hit(rentalFilter.q, r.id, r.modelName, r.gpuModel, r.supportId, r.vendor, r.endReason, r.pickNote)
+    );
+  });
+  const rentalView = pageOf(rentalRows, rentalPage, allRentals.length);
+  const rentalFilterOn = Boolean(
+    rentalFilter.vendor || rentalFilter.gpu || rentalFilter.model || rentalFilter.outcome || rentalFilter.q
+  );
+  const setRentalField = (patch: Partial<typeof rentalFilter>) => {
+    setRentalFilter((f) => ({ ...f, ...patch }));
+    setRentalPage(1);
+  };
+
+  const allJobs = data?.recentJobs ?? [];
+  const jobRows = allJobs.filter(
+    (j) => (!jobFilter.status || j.status === jobFilter.status) && hit(jobFilter.q, j.id, j.generationId, j.errorMessage)
+  );
+  const jobView = pageOf(jobRows, jobPage, allJobs.length);
+  const jobFilterOn = Boolean(jobFilter.status || jobFilter.q);
+  const setJobField = (patch: Partial<typeof jobFilter>) => {
+    setJobFilter((f) => ({ ...f, ...patch }));
+    setJobPage(1);
+  };
+
   return (
     <div>
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
@@ -1074,6 +1288,35 @@ export default function GpuAdminPage() {
         </div>
       )}
 
+      <div className="flex items-center gap-1 mb-6 border-b border-white/5 overflow-x-auto">
+        {TABS.map((t) => {
+          const Icon = t.icon;
+          const badge =
+            t.key === "machines"
+              ? allWorkers.length
+              : t.key === "jobs"
+                ? (data?.queue.queued ?? 0) + (data?.queue.running ?? 0)
+                : 0;
+          const on = activeTab === t.key;
+          return (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={`px-4 py-2.5 text-sm flex items-center gap-2 border-b-2 -mb-px whitespace-nowrap transition-colors ${
+                on ? "border-primary-light text-foreground" : "border-transparent text-muted hover:text-foreground"
+              }`}
+            >
+              <Icon className="w-4 h-4" /> {t.label}
+              {badge > 0 && (
+                <span className="px-1.5 py-0.5 rounded-full bg-primary/20 text-primary-light text-[10px]">{badge}</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {activeTab === "vendors" && (
+        <>
       {/* Setup — one credential per vendor is all it takes to go live */}
       {needsKey && (
         <div className="glass rounded-xl p-4 mb-3 border border-warning/30 text-sm">
@@ -1098,7 +1341,11 @@ export default function GpuAdminPage() {
           onRentTest={rentTest}
         />
       )}
+        </>
+      )}
 
+      {activeTab === "overview" && (
+        <>
       {/* KPIs */}
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <KpiCard
@@ -1246,7 +1493,11 @@ export default function GpuAdminPage() {
           <p className="text-sm text-muted py-8 text-center">ยังไม่มีข้อมูล</p>
         )}
       </div>
+        </>
+      )}
 
+      {activeTab === "settings" && (
+        <>
       {/* Quota / caps */}
       {form && (
         <div className="glass rounded-xl p-5 mb-6">
@@ -1440,12 +1691,33 @@ export default function GpuAdminPage() {
           </ul>
         </details>
       </div>
+        </>
+      )}
 
+      {activeTab === "machines" && (
+        <>
       {/* Live workers */}
       <div className="glass rounded-xl p-5 mb-6">
         <h2 className="font-bold flex items-center gap-2 mb-3">
           <Server className="w-4 h-4 text-primary-light" /> เครื่องที่กำลังเช่า
         </h2>
+        {allWorkers.length > 0 && (
+          <FilterBar active={workerFilterOn} onReset={() => { setWorkerFilter({ status: "", vendor: "", q: "" }); setWorkerPage(1); }}>
+            <FilterSelect
+              label="สถานะ"
+              value={workerFilter.status}
+              choices={options(allWorkers.map((w) => w.status)).map((s) => ({ value: s, label: STATUS_LABEL[s] ?? s }))}
+              onChange={(status) => setWorkerField({ status })}
+            />
+            <FilterSelect
+              label="ผู้ให้เช่า"
+              value={workerFilter.vendor}
+              choices={options(allWorkers.map((w) => w.vendor)).map((v) => ({ value: v, label: v }))}
+              onChange={(vendor) => setWorkerField({ vendor })}
+            />
+            <SearchBox value={workerFilter.q} onChange={(q) => setWorkerField({ q })} placeholder="ค้นหา รหัส/โมเดล/GPU" />
+          </FilterBar>
+        )}
         {data && data.workers.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -1462,7 +1734,7 @@ export default function GpuAdminPage() {
                 </tr>
               </thead>
               <tbody>
-                {data.workers.map((w) => (
+                {workerView.rows.map((w) => (
                   <tr key={w.id} className="border-b border-white/5 last:border-0 align-top">
                     <td className="py-2 pr-3">
                       <span style={{ color: STATUS_COLOR[w.status] ?? "#94a3b8" }}>
@@ -1539,6 +1811,7 @@ export default function GpuAdminPage() {
                 ))}
               </tbody>
             </table>
+            <TableFooter view={workerView} onPage={setWorkerPage} />
             {logs && (
               <div className="mt-4">
                 <div className="flex items-center justify-between mb-2">
@@ -1593,7 +1866,46 @@ export default function GpuAdminPage() {
             </div>
           )}
         </div>
-        {data.rentals.length > 0 ? (
+        {allRentals.length > 0 && (
+          <FilterBar
+            active={rentalFilterOn}
+            onReset={() => { setRentalFilter({ vendor: "", gpu: "", model: "", outcome: "", q: "" }); setRentalPage(1); }}
+          >
+            <FilterSelect
+              label="ผู้ให้เช่า"
+              value={rentalFilter.vendor}
+              choices={options(allRentals.map((r) => r.vendor)).map((v) => ({ value: v, label: v }))}
+              onChange={(vendor) => setRentalField({ vendor })}
+            />
+            <FilterSelect
+              label="การ์ด"
+              value={rentalFilter.gpu}
+              choices={options(allRentals.map((r) => r.gpuModel)).map((g) => ({ value: g, label: g }))}
+              onChange={(gpu) => setRentalField({ gpu })}
+            />
+            <FilterSelect
+              label="โมเดล"
+              value={rentalFilter.model}
+              choices={options(allRentals.map((r) => r.modelKey)).map((k) => ({
+                value: k,
+                label: allRentals.find((r) => r.modelKey === k)?.modelName ?? k,
+              }))}
+              onChange={(model) => setRentalField({ model })}
+            />
+            <FilterSelect
+              label="ผลการบูต"
+              value={rentalFilter.outcome}
+              choices={[
+                { value: "live", label: "ยังเปิดอยู่" },
+                { value: "ready", label: "บูตเสร็จ" },
+                { value: "never", label: "ปิดก่อนพร้อมใช้" },
+              ]}
+              onChange={(outcome) => setRentalField({ outcome })}
+            />
+            <SearchBox value={rentalFilter.q} onChange={(q) => setRentalField({ q })} placeholder="ค้นหา รหัส/สาเหตุที่ปิด" />
+          </FilterBar>
+        )}
+        {allRentals.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -1611,7 +1923,7 @@ export default function GpuAdminPage() {
                 </tr>
               </thead>
               <tbody>
-                {data.rentals.map((r) => (
+                {rentalView.rows.map((r) => (
                   <tr key={r.id} className="border-b border-white/5 last:border-0 align-top">
                     <td className="py-2 pr-3 text-muted">
                       {r.id}
@@ -1646,16 +1958,32 @@ export default function GpuAdminPage() {
                 ))}
               </tbody>
             </table>
+            <TableFooter view={rentalView} onPage={setRentalPage} />
           </div>
         ) : (
           <p className="text-sm text-muted py-6 text-center">ยังไม่เคยเช่าเครื่องในช่วงนี้</p>
         )}
       </div>
+        </>
+      )}
 
+      {activeTab === "jobs" && (
+        <>
       {/* Recent jobs */}
       <div className="glass rounded-xl p-5">
         <h2 className="font-bold mb-3">งานล่าสุด</h2>
-        {data && data.recentJobs.length > 0 ? (
+        {allJobs.length > 0 && (
+          <FilterBar active={jobFilterOn} onReset={() => { setJobFilter({ status: "", q: "" }); setJobPage(1); }}>
+            <FilterSelect
+              label="สถานะ"
+              value={jobFilter.status}
+              choices={options(allJobs.map((j) => j.status)).map((s) => ({ value: s, label: STATUS_LABEL[s] ?? s }))}
+              onChange={(status) => setJobField({ status })}
+            />
+            <SearchBox value={jobFilter.q} onChange={(q) => setJobField({ q })} placeholder="ค้นหา รหัสงาน/ข้อความผิดพลาด" />
+          </FilterBar>
+        )}
+        {allJobs.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -1669,7 +1997,7 @@ export default function GpuAdminPage() {
                 </tr>
               </thead>
               <tbody>
-                {data.recentJobs.map((j) => (
+                {jobView.rows.map((j) => (
                   <tr key={j.id} className="border-b border-white/5 last:border-0">
                     <td className="py-2 pr-3 text-muted">{j.generationId}</td>
                     <td className="py-2 pr-3">
@@ -1693,11 +2021,14 @@ export default function GpuAdminPage() {
                 ))}
               </tbody>
             </table>
+            <TableFooter view={jobView} onPage={setJobPage} />
           </div>
         ) : (
           <p className="text-sm text-muted py-6 text-center">ยังไม่มีงาน</p>
         )}
       </div>
+        </>
+      )}
     </div>
   );
 }
