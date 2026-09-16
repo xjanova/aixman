@@ -243,6 +243,13 @@ export interface GpuRentalProvider {
   /** Destroy the instance and stop billing. MUST be idempotent. */
   terminate(id: string, apiKey: string): Promise<void>;
 
+  /**
+   * Container logs kept by the vendor, for a machine the platform cannot reach
+   * itself. Optional: only vendors that expose their own logs can serve this,
+   * and it is the only window into a boot that never opened a port.
+   */
+  fetchVendorLogs?(id: string, apiKey: string): Promise<string>;
+
   /** Every instance the account currently has, used for orphan sweeps. */
   listInstances(apiKey: string): Promise<GpuInstance[]>;
 
