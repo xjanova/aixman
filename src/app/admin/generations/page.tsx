@@ -503,7 +503,10 @@ export default function AdminGenerationsPage() {
                   <a href={open.resultUrl} target="_blank" rel="noreferrer" className="px-3 py-2 rounded-lg glass-light text-sm flex items-center gap-2">
                     <ExternalLink className="w-4 h-4" /> เปิดไฟล์ต้นฉบับ
                   </a>
-                  <a href={open.resultUrl} download className="px-3 py-2 rounded-lg glass-light text-sm flex items-center gap-2">
+                  {/* Through our own origin, not the storage URL: a browser
+                      ignores `download` cross-origin and opens the clip in a
+                      tab instead of saving it. */}
+                  <a href={`/api/admin/generations/${open.id}/file`} download className="px-3 py-2 rounded-lg glass-light text-sm flex items-center gap-2">
                     <Download className="w-4 h-4" /> ดาวน์โหลด
                   </a>
                 </>
