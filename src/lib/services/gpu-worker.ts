@@ -221,6 +221,22 @@ export class GpuWorkerManager {
    * Where a tunnel-mode worker reports its URL. Must be HTTPS: the worker sends
    * its bearer token there.
    */
+  /**
+   * The same base, but a tunnel-mode rental cannot proceed without it: an
+   * interpolated `null` used to produce the URL "null/api/gpu/tunnel/…", which
+   * the worker retries against forever while the machine bills and no tunnel is
+   * ever recorded. Refusing to rent is the cheaper failure.
+   */
+  private static requireTunnelCallbackBase(): string {
+    const base = this.tunnelCallbackBase();
+    if (!base) {
+      throw new Error(
+        'ยังตั้ง NEXTAUTH_URL/AUTH_URL เป็น https ไม่ถูกต้อง — เช่าเครื่องที่ต้องใช้ tunnel ไม่ได้'
+      );
+    }
+    return base;
+  }
+
   private static tunnelCallbackBase(): string | null {
     const base = (process.env.NEXTAUTH_URL || process.env.AUTH_URL || 'https://ai.xman4289.com').replace(/\/+$/, '');
     return base.startsWith('https://') ? base : null;
@@ -1356,7 +1372,7 @@ export class GpuWorkerManager {
       ...(profile.env || {}),
       AIXMAN_MODEL_KEY: modelKey,
       AIXMAN_WORKER_TOKEN: authToken,
-      ...(callbackId ? { AIXMAN_CALLBACK_URL: `${this.tunnelCallbackBase()}/api/gpu/tunnel/${callbackId}` } : {}),
+      ...(callbackId ? { AIXMAN_CALLBACK_URL: `${this.requireTunnelCallbackBase()}/api/gpu/tunnel/${callbackId}` } : {}),
     };
 
     // For a ComfyUI worker on the stock PyTorch image, the start script installs

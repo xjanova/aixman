@@ -316,6 +316,7 @@ def ws_listen():
 TUNNEL_BIN = os.environ.get("AIXMAN_TUNNEL_BIN") or os.path.join(ROOT, "cloudflared")
 TUNNEL_URL = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 CURRENT_TUNNEL = [None]
+REPORT_FAILURE_LOGGED = [False]
 
 def report_tunnel(url):
     body = json.dumps({"url": url}).encode()
@@ -335,8 +336,12 @@ def report_tunnel(url):
             if e.code in (400, 401, 403, 410):
                 sys.stderr.write("[proxy] tunnel report refused: HTTP %d\n" % e.code)
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            # Retrying in silence is how a broken callback URL hid for weeks;
+            # say it once, then keep trying in case the platform is just slow.
+            if not REPORT_FAILURE_LOGGED[0]:
+                REPORT_FAILURE_LOGGED[0] = True
+                sys.stderr.write("[proxy] tunnel report to %s failed: %s\n" % (CALLBACK_URL, e))
         time.sleep(10)
 
 def tunnel_loop():
@@ -521,7 +526,10 @@ class Server(socketserver.ThreadingTCPServer):
 
 threading.Thread(target=ws_listen, daemon=True).start()
 if CALLBACK_URL:
+    sys.stderr.write("[proxy] tunnel mode: will report to %s\n" % CALLBACK_URL)
     threading.Thread(target=tunnel_loop, daemon=True).start()
+else:
+    sys.stderr.write("[proxy] no AIXMAN_CALLBACK_URL - no tunnel will be opened\n")
 Server((BIND, PORT), Handler).serve_forever()
 `.trim();
 }
@@ -591,7 +599,10 @@ AIXMAN_PROXY_EOF
 
 # The proxy is the sole public entrance; ComfyUI binds to loopback only.
 start_proxy() {
-  nohup python3 ${ROOT}/proxy.py >> ${ROOT}/proxy.log 2>&1 &
+  # Tee rather than redirect: the boot script's own stdout is the container log,
+  # so this is the only way the platform ever sees a '[proxy] ...' line. A
+  # worker whose tunnel never comes up writes its reason here and nowhere else.
+  nohup python3 ${ROOT}/proxy.py > >(tee -a ${ROOT}/proxy.log) 2>&1 &
   PROXY_PID=$!
 }
 echo "[aixman] starting auth proxy on port ${opts.publicPort}"
