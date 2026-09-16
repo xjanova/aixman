@@ -41,6 +41,24 @@ const IMAGE_PULL_SECONDS = 90;
 const RENT_SETTLE_TIMEOUT_MS = 45_000;
 const MIN_RELIABILITY = 0.97;
 
+/**
+ * Vast's `env` is a single string of Docker flags (`-e KEY=value -p 8189:8189`),
+ * which it shell-splits on whitespace. A value containing whitespace would tear
+ * the rest of the string apart, so it is refused loudly rather than silently
+ * mangled — silence is what cost us three machines. Ports are published only
+ * when the platform asked for them (tunnel mode asks for none).
+ */
+function dockerEnvFlags(vars: Record<string, string>, ports: number[]): string {
+  const flags: string[] = [];
+  for (const [key, value] of Object.entries(vars)) {
+    if (!value) continue;
+    if (/\s/.test(value)) throw new Error(`Vast.ai env ${key} contains whitespace and cannot be passed`);
+    flags.push(`-e ${key}=${value}`);
+  }
+  flags.push(...ports.map((port) => `-p ${port}:${port}`));
+  return flags.join(' ');
+}
+
 interface VastOffer {
   id?: number;
   gpu_name?: string;
@@ -174,12 +192,13 @@ export class VastProvider implements GpuRentalProvider {
       disk: spec.diskGb,
       runtype: 'args',
       args: ['bash', '-c', bootFromEnv(BOOT_ENV)],
-      env: {
-        ...(spec.env ?? {}),
-        [BOOT_ENV]: gzipBase64(spec.startScript ?? ''),
-        // Published only when the platform asked for a port (tunnel mode asks for none).
-        ...Object.fromEntries(spec.exposePorts.map((p) => [`-p ${p}:${p}`, '1'])),
-      },
+      // Vast takes `env` as ONE string of Docker flags, not a map. An object is
+      // accepted by the API and then dropped without a word — which is why every
+      // tunnel-mode boot died in silence: the script never reached the container,
+      // so cloudflared never ran and no tunnel was ever reported. Only the boot
+      // script has to travel this way; the rest of `spec.env` is already exported
+      // inside the script itself (see GpuRentSpec.env).
+      env: dockerEnvFlags({ [BOOT_ENV]: gzipBase64(spec.startScript ?? '') }, spec.exposePorts),
       // Never leave a stopped instance behind that bills its storage.
       cancel_unavail: true,
       target_state: 'running',
@@ -276,6 +295,30 @@ export class VastProvider implements GpuRentalProvider {
       if (error instanceof VendorHttpError && error.status === 404) return; // already gone
       throw error;
     }
+  }
+
+  /**
+   * Container logs from Vast itself, for a machine we cannot reach. A worker
+   * whose tunnel never came up has no endpoint of its own, so this is the only
+   * way to see why it failed. Vast uploads the log to S3 and hands back a URL
+   * that appears a few seconds later.
+   */
+  async fetchVendorLogs(id: string, apiKey: string): Promise<string> {
+    const res = await this.call<{ success?: boolean; result_url?: string; msg?: string }>(
+      apiKey,
+      `${API}/instances/request_logs/${encodeURIComponent(id)}/`,
+      { method: 'PUT', body: JSON.stringify({ tail: '500' }) }
+    );
+    const url = res?.result_url;
+    if (!url) throw new Error(`Vast.ai ไม่ได้ให้ URL ของ log: ${res?.msg ?? 'ไม่บอกเหตุผล'}`);
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const log = await fetch(url, { cache: 'no-store' });
+      if (log.ok) return await log.text();
+      // The upload lands after the request; until then S3 answers 403/404.
+      if (![403, 404].includes(log.status)) throw new Error(`อ่าน log จาก Vast.ai ไม่ได้ (HTTP ${log.status})`);
+      await sleep(2000);
+    }
+    throw new Error('Vast.ai ยังไม่อัปโหลด log ภายในเวลาที่รอ — ลองกดใหม่อีกครั้ง');
   }
 
   async listInstances(apiKey: string): Promise<GpuInstance[]> {

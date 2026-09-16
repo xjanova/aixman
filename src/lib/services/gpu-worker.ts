@@ -324,7 +324,17 @@ export class GpuWorkerManager {
   static async fetchLogs(workerId: number): Promise<Record<string, string>> {
     const worker = await prisma.aiGpuWorker.findUnique({ where: { id: workerId } });
     if (!worker || worker.terminatedAt) throw new Error('เครื่องนี้ถูกปิดไปแล้ว');
-    if (!worker.endpoint) throw new Error('เครื่องยังไม่มี endpoint (ยังบูตไม่ถึงขั้นเปิดพอร์ต)');
+    // No endpoint means the boot never got far enough to open a port — exactly
+    // when the log matters most. Vendors that keep their own logs can still say
+    // what happened; only those that cannot leave the admin in the dark.
+    if (!worker.endpoint) {
+      const vendor = this.resolveProvider(worker.providerSlug);
+      if (!vendor.fetchVendorLogs) {
+        throw new Error('เครื่องยังไม่มี endpoint (ยังบูตไม่ถึงขั้นเปิดพอร์ต)');
+      }
+      const vendorKey = await this.getApiKey(worker.providerSlug);
+      return { vendor: await vendor.fetchVendorLogs(worker.externalId, vendorKey) };
+    }
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15_000);
