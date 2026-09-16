@@ -25,11 +25,13 @@ import {
   KeyRound,
   Percent,
   RefreshCw,
+  Play,
   Save,
   Search,
   Send,
   Server,
   TrendingUp,
+  Upload,
   Wallet,
   X,
   Zap,
@@ -461,6 +463,249 @@ function TableFooter<T>({ view, onPage }: { view: PagedView<T>; onPage: (page: n
             ถัดไป
           </button>
         </span>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * Batch render
+ *
+ * The studio is the only way to order a render and it takes one clip at a
+ * time through a file picker: fine for a customer, useless for the owner
+ * feeding forty stills of a music video through his own GPUs. This card posts
+ * the same orders the studio does (POST /api/generate, one per still, in
+ * filename order) so nothing about credits, queueing, storage or refunds is
+ * reimplemented here.
+ * ------------------------------------------------------------------ */
+
+interface VideoModelRow {
+  id: number;
+  name: string;
+  modelId: string;
+  category?: string;
+  canOrder?: boolean;
+  maxDuration: number | null;
+  video: { firstFrame?: boolean; resolutions?: { id: string; label: string; adminOnly?: boolean }[] } | null;
+}
+
+/** Aspect to the frame the studio sends; the server may refine it per model. */
+const BATCH_ASPECTS: Record<string, { w: number; h: number }> = {
+  "16:9": { w: 1344, h: 768 },
+  "9:16": { w: 768, h: 1344 },
+  "1:1": { w: 1024, h: 1024 },
+};
+
+async function fetchVideoModels(): Promise<VideoModelRow[]> {
+  try {
+    const res = await fetch("/api/models");
+    if (!res.ok) return [];
+    const body = (await res.json()) as { models?: VideoModelRow[] };
+    return (body.models ?? []).filter((m) => m.category === "video" && m.canOrder !== false);
+  } catch {
+    return [];
+  }
+}
+
+/** A still as a data URL, which is what /api/generate takes for a first frame. */
+function readDataUrl(file: File): Promise<string | null> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
+  });
+}
+
+async function orderClip(body: Record<string, unknown>): Promise<{ id?: number; error?: string }> {
+  try {
+    const res = await fetch("/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = (await res.json().catch(() => null)) as { id?: number; error?: string } | null;
+    if (!res.ok) return { error: data?.error ?? `HTTP ${res.status}` };
+    return { id: data?.id };
+  } catch {
+    return { error: "\u0e40\u0e0a\u0e37\u0e48\u0e2d\u0e21\u0e15\u0e48\u0e2d\u0e40\u0e0b\u0e34\u0e23\u0e4c\u0e1f\u0e40\u0e27\u0e2d\u0e23\u0e4c\u0e44\u0e21\u0e48\u0e44\u0e14\u0e49" };
+  }
+}
+
+/**
+ * "scene-01.png = a slow push-in" becomes { "scene-01.png": "a slow push-in" }.
+ * Keyed by file name rather than by line order: stills get re-exported and
+ * re-sorted, and a prompt landing on the wrong scene is an expensive mistake.
+ */
+function parsePromptMap(text: string): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const line of text.split("\n")) {
+    const at = line.indexOf("=");
+    if (at <= 0) continue;
+    const name = line.slice(0, at).trim();
+    const prompt = line.slice(at + 1).trim();
+    if (name && prompt) map[name] = prompt;
+  }
+  return map;
+}
+
+function BatchRenderCard({ onQueued }: { onQueued: () => void }) {
+  const [models, setModels] = useState<VideoModelRow[]>([]);
+  const [modelId, setModelId] = useState(0);
+  const [files, setFiles] = useState<File[]>([]);
+  const [prompt, setPrompt] = useState("");
+  const [promptMap, setPromptMap] = useState("");
+  const [aspect, setAspect] = useState("16:9");
+  const [resolution, setResolution] = useState("720p");
+  const [duration, setDuration] = useState(10);
+  const [running, setRunning] = useState(false);
+  const [done, setDone] = useState<{ name: string; id?: number; error?: string }[]>([]);
+
+  useEffect(() => {
+    void fetchVideoModels().then((list) => {
+      setModels(list);
+      setModelId((current) => current || list[0]?.id || 0);
+    });
+  }, []);
+
+  const model = models.find((m) => m.id === modelId);
+  const resolutions = model?.video?.resolutions ?? [];
+  const durations = [5, 10, 15, 20].filter((d) => !model?.maxDuration || d <= model.maxDuration);
+  const map = parsePromptMap(promptMap);
+  const missing = files.filter((f) => !map[f.name] && !prompt.trim()).length;
+
+  const submit = async () => {
+    setRunning(true);
+    setDone([]);
+    const ar = BATCH_ASPECTS[aspect] ?? BATCH_ASPECTS["16:9"];
+    // Filename order, one at a time: the queue is FIFO, so this is the order
+    // the clips come back in too, scene 1 first rather than whichever file
+    // happened to be read fastest.
+    const ordered = [...files].sort((a, b) => a.name.localeCompare(b.name, "en"));
+    for (const file of ordered) {
+      const dataUrl = await readDataUrl(file);
+      if (!dataUrl) {
+        setDone((all) => [...all, { name: file.name, error: "\u0e2d\u0e48\u0e32\u0e19\u0e44\u0e1f\u0e25\u0e4c\u0e44\u0e21\u0e48\u0e44\u0e14\u0e49" }]);
+        continue;
+      }
+      const result = await orderClip({
+        modelId,
+        type: "video",
+        prompt: map[file.name] ?? prompt.trim(),
+        inputImage: dataUrl,
+        params: { width: ar.w, height: ar.h, aspectRatio: aspect, resolution, duration },
+      });
+      setDone((all) => [...all, { name: file.name, ...result }]);
+    }
+    setRunning(false);
+    onQueued();
+  };
+
+  const queued = done.filter((d) => d.id).length;
+
+  return (
+    <div className="glass rounded-xl p-5 mb-6">
+      <h2 className="font-bold flex items-center gap-2 mb-1">
+        <Play className="w-4 h-4 text-primary-light" /> ยิงงานเรนเดอร์ (แบตช์)
+      </h2>
+      <p className="text-xs text-muted mb-4">เลือกภาพนิ่งกี่ไฟล์ก็ได้ — ระบบสั่งทีละคลิปเรียงตามชื่อไฟล์ ผ่านเส้นทางเดียวกับสตูดิโอทุกอย่าง (หักเครดิต เข้าคิว เก็บไฟล์ คืนเครดิตเมื่อล้มเหลว) เครื่องจะถูกเช่าให้เองเมื่อมีงานเข้าคิว</p>
+
+      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
+        <label className="text-xs text-muted">
+          โมเดล
+          <select
+            value={modelId}
+            onChange={(e) => setModelId(Number(e.target.value))}
+            className="w-full mt-1 px-3 py-2 rounded-lg bg-surface-light text-sm text-foreground focus:outline-none"
+          >
+            {models.map((m) => (
+              <option key={m.id} value={m.id}>{m.name}</option>
+            ))}
+          </select>
+        </label>
+        <label className="text-xs text-muted">
+          สัดส่วน
+          <select value={aspect} onChange={(e) => setAspect(e.target.value)}
+                  className="w-full mt-1 px-3 py-2 rounded-lg bg-surface-light text-sm text-foreground focus:outline-none">
+            {Object.keys(BATCH_ASPECTS).map((a) => <option key={a} value={a}>{a}</option>)}
+          </select>
+        </label>
+        <label className="text-xs text-muted">
+          ความละเอียด
+          <select value={resolution} onChange={(e) => setResolution(e.target.value)}
+                  className="w-full mt-1 px-3 py-2 rounded-lg bg-surface-light text-sm text-foreground focus:outline-none">
+            {resolutions.length === 0 && <option value="720p">720p</option>}
+            {resolutions.map((r) => (
+              <option key={r.id} value={r.id}>{r.label}{r.adminOnly ? " (แอดมิน)" : ""}</option>
+            ))}
+          </select>
+        </label>
+        <label className="text-xs text-muted">
+          ความยาว (วินาที)
+          <select value={duration} onChange={(e) => setDuration(Number(e.target.value))}
+                  className="w-full mt-1 px-3 py-2 rounded-lg bg-surface-light text-sm text-foreground focus:outline-none">
+            {durations.map((d) => <option key={d} value={d}>{d}s</option>)}
+          </select>
+        </label>
+      </div>
+
+      <label className="block text-xs text-muted mb-3">
+        ภาพเริ่มต้น (เลือกได้หลายไฟล์)
+        <input
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          multiple
+          onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
+          className="w-full mt-1 text-sm text-foreground file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-surface-light file:text-sm file:text-foreground"
+        />
+      </label>
+
+      <label className="block text-xs text-muted mb-2">
+        Prompt ร่วม (ใช้กับไฟล์ที่ไม่ได้ระบุเจาะจง)
+        <textarea
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          rows={2}
+          className="w-full mt-1 px-3 py-2 rounded-lg bg-surface-light text-sm text-foreground focus:outline-none"
+        />
+      </label>
+
+      <label className="block text-xs text-muted mb-3">
+        Prompt รายไฟล์ — บรรทัดละ  ชื่อไฟล์ = prompt  (จับคู่ด้วยชื่อไฟล์ ไม่ใช่ลำดับ)
+        <textarea
+          value={promptMap}
+          onChange={(e) => setPromptMap(e.target.value)}
+          rows={3}
+          placeholder="scene-01.png = slow push-in, rain falling, no cuts"
+          className="w-full mt-1 px-3 py-2 rounded-lg bg-surface-light text-sm text-foreground focus:outline-none font-mono"
+        />
+      </label>
+
+      <div className="flex items-center gap-3 flex-wrap">
+        <button
+          onClick={() => void submit()}
+          disabled={running || files.length === 0 || !modelId || missing > 0}
+          className="px-4 py-2 rounded-lg bg-primary/20 text-primary-light text-sm flex items-center gap-2 disabled:opacity-40"
+        >
+          <Upload className="w-4 h-4" />
+          {running ? `กำลังสั่ง... (${done.length}/${files.length})` : `สั่งเรนเดอร์ ${files.length || ""} คลิป`}
+        </button>
+        {files.length > 0 && missing > 0 && (
+          <span className="text-xs text-warning">{missing} ไฟล์ยังไม่มี prompt — ใส่ prompt ร่วมหรือระบุรายไฟล์ก่อน</span>
+        )}
+        {done.length > 0 && !running && (
+          <span className="text-xs text-muted">เข้าคิวแล้ว {queued} จาก {done.length} รายการ — ดูสถานะในตารางงานล่าสุดด้านล่าง</span>
+        )}
+      </div>
+
+      {done.length > 0 && (
+        <ul className="mt-3 text-xs space-y-1 max-h-48 overflow-auto">
+          {done.map((d) => (
+            <li key={d.name} className={d.error ? "text-error" : "text-muted"}>
+              {d.name} {"\u2014"} {d.error ? d.error : `เข้าคิวแล้ว #${d.id}`}
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );
@@ -1969,6 +2214,8 @@ export default function GpuAdminPage() {
 
       {activeTab === "jobs" && (
         <>
+      <BatchRenderCard onQueued={() => void load()} />
+
       {/* Recent jobs */}
       <div className="glass rounded-xl p-5">
         <h2 className="font-bold mb-3">งานล่าสุด</h2>
