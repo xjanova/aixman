@@ -32,6 +32,7 @@ import {
   Server,
   TrendingUp,
   Upload,
+  Users,
   Wallet,
   X,
   Zap,
@@ -720,6 +721,7 @@ const TABS = [
   { key: "overview", label: "ภาพรวม", icon: Gauge },
   { key: "vendors", label: "ผู้ให้เช่า", icon: KeyRound },
   { key: "machines", label: "เครื่อง", icon: Server },
+  { key: "community", label: "เครื่องชุมชน", icon: Users },
   { key: "jobs", label: "งาน", icon: Activity },
   { key: "settings", label: "ตั้งค่า", icon: Bell },
 ] as const;
@@ -2234,6 +2236,8 @@ export default function GpuAdminPage() {
         </>
       )}
 
+      {activeTab === "community" && <CommunityNodes />}
+
       {activeTab === "jobs" && (
         <>
       <BatchRenderCard onQueued={() => void load()} />
@@ -2297,6 +2301,181 @@ export default function GpuAdminPage() {
         )}
       </div>
         </>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Community nodes — the machines the network was given rather than rented
+// ---------------------------------------------------------------------------
+
+interface CommunityRow {
+  id: number;
+  externalId: string;
+  status: string;
+  modelKey: string;
+  endpoint: string | null;
+  gpuModel: string | null;
+  gpuMemoryMb: number | null;
+  jobsCompleted: number;
+  jobsFailed: number;
+  lastJobAt: string | null;
+  lastError: string | null;
+  rentedAt: string;
+  label: string | null;
+  ownerUserId: number | null;
+  score: number;
+  tier: string;
+  canRun: string[];
+  eligibility: string;
+  note: string | null;
+  syncedAt: string | null;
+}
+
+const ELIGIBILITY_LABEL: Record<string, string> = {
+  eligible: "พร้อมรับงาน",
+  offline: "ออฟไลน์",
+  unassessed: "ยังไม่ประเมิน",
+  "no-matching-model": "ไม่มีโมเดลที่รับได้",
+  unknown: "ไม่ทราบ",
+};
+
+const KIND_LABEL: Record<string, string> = {
+  image: "ภาพ",
+  video: "วิดีโอ",
+  upscale: "ขยายภาพ",
+  embed: "ข้อความ",
+};
+
+/**
+ * Every machine somebody has plugged into the network, whatever state it is in.
+ *
+ * The listing deliberately shows the ones that cannot take work, and why. A
+ * node that is online, assessed and still idle is the single most likely
+ * support question this product will get, and the answer has to be on the
+ * screen rather than in someone's head.
+ */
+function CommunityNodes() {
+  const [rows, setRows] = useState<CommunityRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/gpu/community", { cache: "no-store" });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      setRows(body.workers ?? []);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "โหลดไม่สำเร็จ");
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+    // The relay pushes through XMAN Studio every minute; matching that here
+    // keeps the screen honest without polling for the sake of it.
+    const timer = setInterval(() => void load(), 60_000);
+    return () => clearInterval(timer);
+  }, [load]);
+
+  const ready = rows?.filter((r) => r.eligibility === "eligible").length ?? 0;
+
+  return (
+    <div className="glass rounded-xl p-5">
+      <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
+        <h2 className="font-bold flex items-center gap-2">
+          <Users className="w-4 h-4 text-primary-light" /> เครื่องจากชุมชน
+          {rows && (
+            <span className="text-xs font-normal text-muted">
+              {rows.length} เครื่อง · พร้อมรับงาน {ready}
+            </span>
+          )}
+        </h2>
+        <button onClick={() => void load()} className="text-xs flex items-center gap-1 text-muted hover:text-white">
+          <RefreshCw className="w-3 h-3" /> รีเฟรช
+        </button>
+      </div>
+
+      {error && <p className="text-sm text-error py-2">{error}</p>}
+
+      {rows === null ? (
+        <p className="text-sm text-muted py-6 text-center">กำลังโหลด...</p>
+      ) : rows.length === 0 ? (
+        <p className="text-sm text-muted py-6 text-center">
+          ยังไม่มีเครื่องจากชุมชน — เจ้าของเครื่องลงทะเบียนได้ที่หน้า GPUxMINE บน XMAN Studio
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="text-xs text-muted border-b border-white/10">
+              <tr>
+                <th className="text-left py-2 pr-3">เครื่อง</th>
+                <th className="text-left py-2 pr-3">การ์ดจอ</th>
+                <th className="text-left py-2 pr-3">คะแนน</th>
+                <th className="text-left py-2 pr-3">รับงานได้</th>
+                <th className="text-left py-2 pr-3">สถานะ</th>
+                <th className="text-left py-2 pr-3">งานสำเร็จ</th>
+                <th className="text-left py-2">เห็นล่าสุด</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} className="border-b border-white/5">
+                  <td className="py-2 pr-3">
+                    <div className="font-medium">{r.label ?? r.externalId}</div>
+                    <div className="text-xs text-muted font-mono">{r.externalId}</div>
+                  </td>
+                  <td className="py-2 pr-3">
+                    <div>{r.gpuModel ?? "–"}</div>
+                    {r.gpuMemoryMb ? (
+                      <div className="text-xs text-muted">{(r.gpuMemoryMb / 1024).toFixed(1)} GB</div>
+                    ) : null}
+                  </td>
+                  <td className="py-2 pr-3">
+                    {r.score > 0 ? (
+                      <>
+                        <div>{r.score.toLocaleString()}</div>
+                        <div className="text-xs text-muted uppercase">{r.tier}</div>
+                      </>
+                    ) : (
+                      "–"
+                    )}
+                  </td>
+                  <td className="py-2 pr-3">
+                    {r.canRun.length > 0
+                      ? r.canRun.map((k) => KIND_LABEL[k] ?? k).join(", ")
+                      : <span className="text-muted">–</span>}
+                  </td>
+                  <td className="py-2 pr-3">
+                    <span
+                      className={
+                        r.eligibility === "eligible"
+                          ? "text-success"
+                          : r.eligibility === "offline"
+                            ? "text-muted"
+                            : "text-warning"
+                      }
+                    >
+                      {ELIGIBILITY_LABEL[r.eligibility] ?? r.eligibility}
+                    </span>
+                    {r.note && <div className="text-xs text-muted max-w-xs">{r.note}</div>}
+                  </td>
+                  <td className="py-2 pr-3">
+                    {r.jobsCompleted}
+                    {r.jobsFailed > 0 && <span className="text-error"> / {r.jobsFailed} ล้ม</span>}
+                  </td>
+                  <td className="py-2 text-xs text-muted">
+                    {r.syncedAt
+                      ? new Date(r.syncedAt).toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" })
+                      : "–"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

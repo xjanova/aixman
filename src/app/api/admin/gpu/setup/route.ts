@@ -50,6 +50,14 @@ const VENDOR_ROWS: Record<GpuProviderSlug, { name: string; baseUrl: string; desc
     baseUrl: 'https://api.verda.com/v1',
     description: 'ศูนย์ข้อมูลของ Verda (DataCrunch เดิม) ที่ฟินแลนด์ — RTX PRO 6000, H100, A100, L40S',
   },
+  // Not a marketplace. The credential is the relay's admin key, and it only
+  // buys the admin pages a live view of who is online — the pool itself works
+  // without one, because community nodes bring themselves.
+  gpuxmine: {
+    name: 'GPUxMINE (เครื่องชุมชน)',
+    baseUrl: process.env.GPUXMINE_RELAY_URL || 'https://relay.gpuxmine.com',
+    description: 'เครื่องของผู้ใช้ที่ลงไคลเอนต์ GPUxMINE เอง — ไม่มีค่าเช่ารายชั่วโมง จ่ายเป็นค่าตอบแทนต่องาน',
+  },
 };
 
 /** Budget caps written on first setup. Existing values are never overwritten. */

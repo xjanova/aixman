@@ -14,9 +14,9 @@
 
 import type { GpuArch } from './gpu-specs';
 
-export type GpuProviderSlug = 'simplepod' | 'runpod' | 'vast' | 'verda';
+export type GpuProviderSlug = 'simplepod' | 'runpod' | 'vast' | 'verda' | 'gpuxmine';
 
-export const GPU_PROVIDER_SLUGS: readonly GpuProviderSlug[] = ['simplepod', 'runpod', 'vast', 'verda'];
+export const GPU_PROVIDER_SLUGS: readonly GpuProviderSlug[] = ['simplepod', 'runpod', 'vast', 'verda', 'gpuxmine'];
 
 export function isGpuProviderSlug(value: unknown): value is GpuProviderSlug {
   return typeof value === 'string' && (GPU_PROVIDER_SLUGS as readonly string[]).includes(value);
@@ -31,8 +31,14 @@ export function isGpuProviderSlug(value: unknown): value is GpuProviderSlug {
  *   bearer token and customers' prompts over plain HTTP would let anyone on
  *   the path read them, so the worker opens its own Cloudflare tunnel and
  *   reports the HTTPS URL back to us (`/api/gpu/tunnel/[id]`).
+ * - `pool-relay`: a community machine (GPUxMINE) that nobody rents. It sits
+ *   behind a home router with no reachable port at all, so it dials out to our
+ *   relay and holds the connection open; the relay publishes an HTTPS address
+ *   per node and forwards whole requests down that socket. From here it looks
+ *   exactly like any other worker URL, which is the point — nothing above this
+ *   layer needs to know the GPU is in somebody's bedroom.
  */
-export type GpuExposure = 'vendor-https' | 'tunnel';
+export type GpuExposure = 'vendor-https' | 'tunnel' | 'pool-relay';
 
 /** A rentable machine offered by the marketplace. */
 export interface GpuOffer {
