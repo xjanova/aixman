@@ -38,6 +38,16 @@ interface AIModel {
     lastFrame?: boolean;
     resolutions?: { id: string; label: string; aspects: string[]; isDefault?: boolean }[];
   } | null;
+  /**
+   * Music controls (rented-GPU audio models): whether it sings the customer's
+   * lyrics, and whether it needs a song uploaded to cover. Null for everything
+   * else, so the studio draws the plain style-only music panel.
+   */
+  music?: {
+    lyrics: boolean;
+    sourceSong: boolean;
+    maxDuration: number | null;
+  } | null;
 }
 
 interface AIStyle {

@@ -32,6 +32,23 @@ const UNAVAILABLE_TEXT: Record<Exclude<Availability, 'ok'>, string> = {
   maintenance: 'ปิดปรับปรุงชั่วคราว',
 };
 
+/**
+ * Music controls for a rented-GPU audio model.
+ *
+ * Derived from the catalogue rather than stored on the row: the same facts
+ * already decide how the job is built, and a second copy in the database would
+ * drift the moment a template changes.
+ */
+function musicOptions(modelKey: string): { lyrics: boolean; sourceSong: boolean; maxDuration: number | null } | null {
+  const entry = getCatalogEntry(modelKey);
+  if (!entry || entry.outputKind !== 'audio') return null;
+  return {
+    lyrics: true,
+    sourceSong: entry.needs?.audio === true,
+    maxDuration: entry.limits?.maxDuration ?? null,
+  };
+}
+
 /** From the provider's keys: can any of them take a request right now? */
 function fromAccounts(blocks: (AccountBlock | null)[]): Availability {
   if (blocks.some((b) => b === null)) return 'ok';
@@ -139,6 +156,10 @@ export async function GET() {
         // models that have none, so older clients see nothing new. Admin-only
         // presets reach admins only.
         video: inHouse ? visibleVideoOptions(getCatalogEntry(m.modelId), admin) : null,
+        // What the music tab needs to draw itself: whether the model sings the
+        // customer's words, and whether it starts from a song they upload.
+        // Null for anything that is not a rented-GPU audio model.
+        music: inHouse ? musicOptions(m.modelId) : null,
         // 'tuning' stays orderable for admins — running it is how it gets
         // proven. 'unavailable' is not orderable by anyone: it would fail.
         status,

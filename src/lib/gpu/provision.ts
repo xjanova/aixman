@@ -39,11 +39,15 @@ export const DEFAULT_MIN_CUDA = '13.0';
 /**
  * ComfyUI release the workers install. Pinned, because templates are converted
  * against node signatures and those change between releases — the catalogue's
- * three graphs were checked against this exact tag by submitting them to its
- * own `/prompt` validator. Bump it only after repeating that check.
+ * graphs were checked against this exact tag by submitting them to its own
+ * `/prompt` validator. Bump it only after repeating that check.
+ *
+ * v0.36.0 is the first release carrying `comfy_extras/nodes_yue2.py`, which the
+ * two YuE2 entries need; v0.35.1 answers 404 for that file. All five graphs
+ * were re-validated against it.
  */
 export const COMFYUI_REPO = 'https://github.com/Comfy-Org/ComfyUI.git';
-export const COMFYUI_REF = 'v0.35.1';
+export const COMFYUI_REF = 'v0.36.0';
 
 /** Where ComfyUI is installed inside the container. */
 const ROOT = '/workspace/aixman';

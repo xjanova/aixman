@@ -4,6 +4,8 @@ import type { GpuArch } from './gpu-specs';
 import minimaxH3Template from './workflows/templates/minimax_h3_t2v.json';
 import aceStepTemplate from './workflows/templates/ace_step_1_5.json';
 import qwenImageTemplate from './workflows/templates/qwen_image.json';
+import yue2Text2MusicTemplate from './workflows/templates/yue2_text2music.json';
+import yue2MusicCoverTemplate from './workflows/templates/yue2_music_cover.json';
 
 /**
  * Catalogue of self-hostable models customers can choose from.
@@ -545,7 +547,117 @@ const QWEN_IMAGE: CatalogEntry = {
   limits: { maxWidth: 1328, maxHeight: 1328 },
 };
 
-export const MODEL_CATALOG: CatalogEntry[] = [MINIMAX_H3, ACE_STEP, QWEN_IMAGE];
+// ---------------------------------------------------------------------------
+// YuE2 — full songs, and covers of a song the customer uploads
+// ---------------------------------------------------------------------------
+// Templates: audio_yue2_text2music.json / audio_yue2_music_cover.json. Both
+// wrap everything except SaveAudioAdvanced (10) and LoadAudio (45) in one
+// subgraph instance (outer node 33), so inner ids convert to `33_*`.
+//
+// The pipeline is two passes over the same checkpoint: YuE2GenerateABC writes a
+// melody-and-chord score, YuE2GenerateMusic sings it, and a KSampler + VAE turn
+// the result into 48 kHz stereo. The cover template swaps the first pass for
+// SheetSage2, which transcribes the uploaded song and hands the same score on —
+// which is why the cover needs one extra weight file and nothing else.
+//
+// int8_convrot rather than the bf16 checkpoint: half the download, and
+// comfy-kitchen's int8 kernels need CUDA 13, which the worker image already is.
+// On a cu126 host those kernels are disabled and the run falls back to eager —
+// slow enough to look broken — so the requirement is declared, not assumed.
+const YUE2_CKPT: ModelDownload = {
+  repo: 'Comfy-Org/YuE2',
+  file: 'checkpoints/yue2_3b_int8_convrot.safetensors',
+  dest: 'checkpoints',
+  bytes: 3_960_938_800,
+};
+
+/**
+ * Seconds of song to ask for.
+ *
+ * `max_duration` is a ceiling, not a target: the model stops at its own
+ * terminator and the node docs say long prompts shorten it further. Feeding it
+ * the customer's requested length therefore sets the *most* they can get, and
+ * the price is charged on that same number by `creditsForDuration`.
+ */
+function yue2Duration(seconds: number): number {
+  return Math.min(240, Math.max(15, Math.round(seconds || 120)));
+}
+
+/** Empty lyrics are what YuE2 reads as "instrumental" — no marker text. */
+function yue2Lyrics(p: CatalogJobParams): string {
+  return (p.lyrics ?? '').trim();
+}
+
+const YUE2_MUSIC: CatalogEntry = {
+  key: 'yue2-music',
+  name: 'YuE2 (เพลงเต็มเพลง)',
+  kind: 'audio',
+  outputKind: 'audio',
+  description: 'แต่งเพลงเต็มเพลงพร้อมเสียงร้องจากเนื้อร้องที่เขียนเอง • วางโครงทำนองก่อนแล้วค่อยร้อง คุณภาพระดับ 48 kHz',
+  template: yue2Text2MusicTemplate as UiWorkflow,
+  downloads: [YUE2_CKPT],
+  // Weights are 3.7 GiB, but the run is dominated by the autoregressive pass
+  // over a song-length sequence: a 90 s song needed ~7 GB of working memory on
+  // top of the weights when measured outside ComfyUI. 16 GB is the smallest
+  // card that leaves room for the VAE decode at the 240 s ceiling.
+  hardware: { minVramMb: 16384, diskGb: 60, gpuModels: [], minArch: 'ampere', minCudaVersion: '13.0' },
+  bind: (p) => [
+    // style and lyrics go to both passes: the score writer plans to them, and
+    // the singer is conditioned on them again. Binding only one leaves the
+    // other singing the template's demo song.
+    { nodeId: '33_24', input: 'style', value: p.prompt },
+    { nodeId: '33_24', input: 'lyrics', value: yue2Lyrics(p) },
+    { nodeId: '33_25', input: 'style', value: p.prompt },
+    { nodeId: '33_25', input: 'lyrics', value: yue2Lyrics(p) },
+    { nodeId: '33_25', input: 'max_duration', value: yue2Duration(p.durationSeconds) },
+    // Three seeds, one song: score, singer, and the sampler that decodes it.
+    // Leaving any of them on the template's constant makes a "new" seed return
+    // a near-identical track.
+    { nodeId: '33_24', input: 'seed', value: p.seed },
+    { nodeId: '33_25', input: 'seed', value: p.seed },
+    { nodeId: '33_34', input: 'seed', value: p.seed, optional: true },
+    { nodeId: '10', input: 'filename_prefix', value: 'audio/aixman', optional: true },
+  ],
+  baselineSecondsPerUnit: 2,
+  pricing: { creditsPerUnit: 12, costPerUnit: 0.05, durationCurve: { unitSeconds: 60, exponent: 1 } },
+  limits: { maxDuration: 240 },
+};
+
+const YUE2_COVER: CatalogEntry = {
+  key: 'yue2-cover',
+  name: 'YuE2 คัฟเวอร์ (จากเพลงที่อัปโหลด)',
+  kind: 'audio',
+  outputKind: 'audio',
+  description: 'อัปโหลดเพลงแล้วให้ AI เรียบเรียงใหม่ตามแนวที่สั่ง • ถอดทำนองจากเพลงต้นฉบับแล้วร้องใหม่ทั้งเพลง',
+  template: yue2MusicCoverTemplate as UiWorkflow,
+  downloads: [
+    YUE2_CKPT,
+    // SheetSage2 is the transcriber; without it the cover graph has no score to
+    // sing and the AudioEncoderLoader combo comes up empty.
+    { repo: 'Comfy-Org/YuE2', file: 'audio_encoders/sheetsage2_bf16.safetensors', dest: 'audio_encoders', bytes: 1_386_868_122 },
+  ],
+  hardware: { minVramMb: 16384, diskGb: 70, gpuModels: [], minArch: 'ampere', minCudaVersion: '13.0' },
+  needs: { audio: true },
+  bind: (p) => [
+    { nodeId: '33_25', input: 'style', value: p.prompt },
+    // A cover can keep the original words (the customer types them) or be sung
+    // on vowels when left empty — the model never hears the source vocal, only
+    // its melody, so nothing supplies lyrics by itself.
+    { nodeId: '33_25', input: 'lyrics', value: yue2Lyrics(p) },
+    { nodeId: '33_25', input: 'max_duration', value: yue2Duration(p.durationSeconds) },
+    { nodeId: '33_25', input: 'seed', value: p.seed },
+    { nodeId: '33_34', input: 'seed', value: p.seed, optional: true },
+    // LoadAudio sits outside the subgraph; the name is what `stageAudio` put in
+    // the worker's input dir, never a URL.
+    { nodeId: '45', input: 'audio', value: p.audioFilename ?? '' },
+    { nodeId: '10', input: 'filename_prefix', value: 'audio/aixman', optional: true },
+  ],
+  baselineSecondsPerUnit: 3,
+  pricing: { creditsPerUnit: 15, costPerUnit: 0.06, durationCurve: { unitSeconds: 60, exponent: 1 } },
+  limits: { maxDuration: 240 },
+};
+
+export const MODEL_CATALOG: CatalogEntry[] = [MINIMAX_H3, ACE_STEP, QWEN_IMAGE, YUE2_MUSIC, YUE2_COVER];
 
 export function getCatalogEntry(key: string): CatalogEntry | undefined {
   return MODEL_CATALOG.find((m) => m.key === key);

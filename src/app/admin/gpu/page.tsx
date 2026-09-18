@@ -1743,6 +1743,28 @@ export default function GpuAdminPage() {
 
       {activeTab === "settings" && (
         <>
+      {/* Catalogue sync. Models are code; this is what puts a newly added one
+          in the database without asking for a vendor key again. */}
+      <div className="glass rounded-xl p-5 mb-6 flex items-center justify-between gap-4">
+        <div>
+          <h2 className="font-bold mb-1">โมเดลในแคตตาล็อก</h2>
+          <p className="text-xs text-muted">
+            ซิงก์รายชื่อโมเดลที่รันบนเครื่องเช่าเข้าฐานข้อมูล — ใช้เมื่อเพิ่งเพิ่มโมเดลใหม่เข้าโค้ด
+            โมเดลใหม่จะขึ้นสถานะ &ldquo;กำลังปรับแต่ง&rdquo; จนกว่าจะเรนเดอร์สำเร็จครั้งแรก
+          </p>
+        </div>
+        <button
+          onClick={() =>
+            post({ action: "sync-models" }, "sync-models", (b) =>
+              `ซิงก์แล้ว — เพิ่มใหม่ ${Number(b.created ?? 0)} รายการ, อัปเดต ${Number(b.updated ?? 0)} รายการ`)
+          }
+          disabled={busy !== null}
+          className="px-4 py-2 rounded-lg text-sm font-semibold bg-primary/15 border border-primary/30 hover:bg-primary/25 disabled:opacity-50 whitespace-nowrap"
+        >
+          {busy === "sync-models" ? "กำลังซิงก์..." : "ซิงก์โมเดล"}
+        </button>
+      </div>
+
       {/* Quota / caps */}
       {form && (
         <div className="glass rounded-xl p-5 mb-6">

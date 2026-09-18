@@ -9,7 +9,7 @@ import { persistAssetSafe, isStorageConfigured } from '@/lib/storage/r2';
 import type { GenerationRequest, GenerationResult, ProviderSlug } from '@/types';
 import { fitFrame } from '@/lib/gpu/frame';
 import { getCatalogEntry, isAdminOnlyPreset } from '@/lib/gpu/catalog';
-import { isAcceptedFrameSource } from '@/lib/gpu/frame-input';
+import { isAcceptedAudioSource, isAcceptedFrameSource } from '@/lib/gpu/frame-input';
 import { creditsForDuration } from '@/lib/pricing';
 import { getGpuConfig } from '@/lib/gpu/config';
 import { GpuBalance, RENDERING_PAUSED_MESSAGE } from './gpu-balance';
@@ -82,6 +82,15 @@ export class GenerationService {
       }
     }
 
+    // Same rule for a cover's reference song: the model has nothing to
+    // transcribe without it, and the failure would otherwise land after the
+    // machine was rented and the credits taken.
+    if (gpuModel && getCatalogEntry(model.modelId)?.needs?.audio) {
+      if (!isAcceptedAudioSource(request.inputAudio)) {
+        throw new Error('โหมดคัฟเวอร์ต้องอัปโหลดเพลงต้นฉบับก่อน');
+      }
+    }
+
     // The model's limits are what its price was set against and what a rented
     // card can hold. The API (and the mobile app) can send anything — an
     // unclamped 60 s request would cost far more than it paid for, or not fit.
@@ -90,13 +99,19 @@ export class GenerationService {
       const v = Number.isFinite(n) && n > 0 ? n : fallback;
       return max && max > 0 ? Math.min(v, max) : v;
     };
-    // Default to a short clip, not the longest the model allows.
-    const gpuDuration = bounded(request.params?.duration, 5, model.maxDuration);
+    // Default to a short clip, not the longest the model allows. A song's
+    // "short" is a different number: five seconds of music is not a render
+    // anyone ordered, and the music tab always sends a length anyway.
+    const gpuDuration = bounded(request.params?.duration, request.type === 'audio' ? 60 : 5, model.maxDuration);
 
     // A rented-GPU job is one render with one output, whatever count was asked
     // for — charging per requested output sold four images and delivered one.
     const numOutputs = gpuModel ? 1 : request.params?.numOutputs || 1;
-    const curve = gpuModel && request.type === 'video'
+    // Length-priced types are video *and* audio: a rented card renders a four
+    // minute song for four times what it renders one minute for, and the curve
+    // is what keeps the price on the same slope. Restricting this to 'video'
+    // sold long songs at the one-minute price.
+    const curve = gpuModel && (request.type === 'video' || request.type === 'audio')
       ? getCatalogEntry(model.modelId)?.pricing.durationCurve
       : undefined;
     const requiredCredits = creditsForDuration(model.creditsPerUnit, curve, gpuDuration) * numOutputs;

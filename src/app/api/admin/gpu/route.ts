@@ -5,6 +5,7 @@ import { getGpuConfig } from '@/lib/gpu/config';
 import { isGpuProviderSlug } from '@/lib/gpu/types';
 import { GpuWorkerManager } from '@/lib/services/gpu-worker';
 import { GpuQueue } from '@/lib/services/gpu-queue';
+import { syncCatalogModels } from '@/lib/gpu/model-sync';
 import { withTickLock } from '@/lib/services/gpu-lock';
 import { GpuBalance } from '@/lib/services/gpu-balance';
 import { saveTelegramConfig, sendTelegram } from '@/lib/notify/telegram';
@@ -176,6 +177,18 @@ export async function POST(request: NextRequest) {
         }
         await GpuWorkerManager.terminate(workerId, 'Terminated manually by admin');
         return NextResponse.json({ success: true });
+      }
+
+      case 'sync-models': {
+        // Adding a model to the GPU catalogue is a code change; before this, the
+        // only way to get its row in front of customers was to re-run vendor
+        // setup, which asks for an API key again. Nothing here rents or spends.
+        const provider = await prisma.aiProvider.findUnique({ where: { slug: 'simplepod' }, select: { id: true } });
+        if (!provider) {
+          return NextResponse.json({ error: 'ยังไม่ได้ตั้งค่าผู้ให้เช่า GPU — ใส่คีย์ที่การ์ดผู้ให้เช่าก่อน' }, { status: 400 });
+        }
+        const { created, updated } = await syncCatalogModels(provider.id);
+        return NextResponse.json({ success: true, created, updated });
       }
 
       case 'worker-log': {

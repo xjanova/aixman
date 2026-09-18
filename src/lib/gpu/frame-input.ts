@@ -52,3 +52,36 @@ export async function readFrameSource(src: string): Promise<{ bytes: Buffer } & 
   if (!kind) throw new Error('Frame image is not a PNG, JPEG or WebP');
   return { bytes, ...kind };
 }
+
+/**
+ * Same contract for the song a cover is built from: only our own uploads.
+ *
+ * No data-URL branch here on purpose — a track is megabytes, and the studio
+ * already puts audio through `/api/uploads` before it ever reaches a job.
+ */
+export function isAcceptedAudioSource(src: unknown): src is string {
+  return typeof src === 'string' && src.length > 0 && keyFromPublicUrl(src) !== null;
+}
+
+export async function readAudioSource(src: string): Promise<{ bytes: Buffer } & SniffResult> {
+  if (!isAcceptedAudioSource(src)) {
+    throw new Error('Reference song must be an upload of ours');
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  let bytes: Buffer;
+  try {
+    const res = await fetch(src, { signal: controller.signal, cache: 'no-store' });
+    if (!res.ok) throw new Error(`Could not read the reference song (HTTP ${res.status})`);
+    bytes = Buffer.from(await res.arrayBuffer());
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (bytes.length === 0 || bytes.length > MAX_BYTES.audio) {
+    throw new Error('Reference song is empty or larger than the upload limit');
+  }
+  const kind = sniff(bytes, 'audio');
+  if (!kind) throw new Error('Reference song is not a recognised audio file');
+  return { bytes, ...kind };
+}

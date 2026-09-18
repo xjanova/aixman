@@ -4,7 +4,7 @@ import prisma from '@/lib/db';
 import { encrypt } from '@/lib/utils/encryption';
 import { getGpuProvider } from '@/lib/gpu';
 import { GPU_DEFAULTS, getGpuConfig } from '@/lib/gpu/config';
-import { MODEL_CATALOG } from '@/lib/gpu/catalog';
+import { syncCatalogModels } from '@/lib/gpu/model-sync';
 import { isGpuProviderSlug, type GpuProviderSlug } from '@/lib/gpu/types';
 import { GpuBalance } from '@/lib/services/gpu-balance';
 
@@ -49,6 +49,14 @@ const VENDOR_ROWS: Record<GpuProviderSlug, { name: string; baseUrl: string; desc
     name: 'Verda (เช่า GPU)',
     baseUrl: 'https://api.verda.com/v1',
     description: 'ศูนย์ข้อมูลของ Verda (DataCrunch เดิม) ที่ฟินแลนด์ — RTX PRO 6000, H100, A100, L40S',
+  },
+  // Not a marketplace. The credential is the relay's admin key, and it only
+  // buys the admin pages a live view of who is online — the pool itself works
+  // without one, because community nodes bring themselves.
+  gpuxmine: {
+    name: 'GPUxMINE (เครื่องชุมชน)',
+    baseUrl: process.env.GPUXMINE_RELAY_URL || 'https://relay.gpuxmine.com',
+    description: 'เครื่องของผู้ใช้ที่ลงไคลเอนต์ GPUxMINE เอง — ไม่มีค่าเช่ารายชั่วโมง จ่ายเป็นค่าตอบแทนต่องาน',
   },
 };
 
@@ -208,41 +216,7 @@ export async function POST(request: NextRequest) {
     // and without it the models exist in code but never reach the database.
     let activated = 0;
     if (enable) {
-      for (const entry of MODEL_CATALOG) {
-        await prisma.aiModel.upsert({
-          where: { providerId_modelId: { providerId: modelsRow.id, modelId: entry.key } },
-          create: {
-            providerId: modelsRow.id,
-            modelId: entry.key,
-            name: entry.name,
-            description: entry.description,
-            category: entry.outputKind,
-            subcategory: 'self-hosted',
-            costPerUnit: entry.pricing.costPerUnit,
-            creditsPerUnit: entry.pricing.creditsPerUnit,
-            maxWidth: entry.limits?.maxWidth ?? null,
-            maxHeight: entry.limits?.maxHeight ?? null,
-            maxDuration: entry.limits?.maxDuration ?? null,
-            isActive: true,
-            // Unproven until it renders here — listed, marked, not orderable.
-            readiness: 'tuning',
-            readinessNote: 'ยังไม่เคยสร้างงานสำเร็จบนระบบนี้ — รอทดสอบ',
-          },
-          update: {
-            name: entry.name,
-            description: entry.description,
-            category: entry.outputKind,
-            costPerUnit: entry.pricing.costPerUnit,
-            creditsPerUnit: entry.pricing.creditsPerUnit,
-            maxWidth: entry.limits?.maxWidth ?? null,
-            maxHeight: entry.limits?.maxHeight ?? null,
-            maxDuration: entry.limits?.maxDuration ?? null,
-            isActive: true,
-            // readiness is deliberately not reset — a model that has already
-            // proven itself here stays proven across re-runs of setup.
-          },
-        });
-      }
+      await syncCatalogModels(modelsRow.id);
       activated = (
         await prisma.aiModel.updateMany({ where: { providerId: modelsRow.id }, data: { isActive: true } })
       ).count;

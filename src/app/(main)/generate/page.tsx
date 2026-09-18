@@ -72,6 +72,13 @@ const MUSIC_TAG_CHIPS = [
   "male vocal", "upbeat", "chill", "cinematic", "EDM", "rock",
 ];
 
+/**
+ * Section markers a music model reads. Typed by hand they are easy to get
+ * subtly wrong (`[verse 1]`, `(chorus)`), and a marker the model does not
+ * recognise is sung as if it were a line of the song.
+ */
+const SECTION_TAGS = ["[Verse]", "[Chorus]", "[Bridge]", "[Outro]"];
+
 /** One-tap starting points for the music tab, shown before the first song. */
 const MUSIC_STARTERS = [
   "ป๊อปไทยสดใส เสียงร้องหญิง กีตาร์โปร่ง จังหวะเร็ว",
@@ -737,6 +744,12 @@ export default function GeneratePage() {
   /** Song lyrics for the music tab; empty asks for an instrumental. */
   const [lyrics, setLyrics] = useState("");
   const [songTitle, setSongTitle] = useState("");
+  /**
+   * Instrumental switch. Separate from "lyrics are empty" on purpose: a
+   * customer who wrote a verse and then wants to hear the backing track should
+   * get one without losing what they typed.
+   */
+  const [instrumental, setInstrumental] = useState(false);
 
   useEffect(() => { if (session === null) router.push("/login"); }, [session, router]);
   useEffect(() => { fetchModels(); fetchStyles(); fetchTemplates(); fetchCredits(); }, [fetchModels, fetchStyles, fetchTemplates, fetchCredits]);
@@ -873,6 +886,11 @@ export default function GeneratePage() {
   /** Lip-sync needs both halves: the voice, and the thing that speaks it. */
   const missingLipsyncInput = tab === "lipsync" && (!inputAudio || !lipsyncSource);
 
+  /** Music controls this model offers; null for API music models and every other tab. */
+  const musicOpts = tab === "audio" ? selectedModel?.music ?? null : null;
+  /** A cover has nothing to cover until the customer uploads the song. */
+  const missingSourceSong = musicOpts?.sourceSong === true && !inputAudio;
+
   /**
    * One source of truth for whether the button can fire. It used to be spelled
    * out three times — in `disabled`, in `cursor` and in `opacity` — and the
@@ -886,8 +904,11 @@ export default function GeneratePage() {
     (tab !== "lipsync" && !prompt.trim()) ||
     missingStartFrame ||
     missingLipsyncInput ||
+    missingSourceSong ||
     // An order placed mid-upload would go out without the end frame.
-    uploading === "image";
+    uploading === "image" ||
+    // …or, on a cover, without the song itself.
+    (musicOpts?.sourceSong === true && uploading === "audio");
 
   /**
    * Whether /api/upscale would find a model it can run — the same match it
@@ -1081,6 +1102,10 @@ export default function GeneratePage() {
       );
       return;
     }
+    if (missingSourceSong) {
+      toast("error", "ยังไม่ได้อัปโหลดเพลงต้นฉบับ", "โหมดคัฟเวอร์ต้องมีเพลงให้ AI ถอดทำนองก่อน");
+      return;
+    }
     setIsGenerating(true); setResult(null); setIsFavorited(false);
     setProgress(null); setGenStartedAt(Date.now());
     const ar = aspectRatios.find((a) => a.value === aspectRatio);
@@ -1104,7 +1129,9 @@ export default function GeneratePage() {
       negativePrompt: music ? undefined : negativePrompt.trim() || undefined,
       styleId: music ? undefined : selectedStyle || undefined,
       inputImage: tab === "lipsync" && lipsyncNeeds === "video" ? undefined : imageToSend || undefined,
-      inputAudio: tab === "lipsync" ? inputAudio ?? undefined : undefined,
+      // A cover reads the same field as lip-sync: both are "a track the server
+      // fetches from our bucket and hands to the model".
+      inputAudio: tab === "lipsync" || musicOpts?.sourceSong ? inputAudio ?? undefined : undefined,
       inputVideo: tab === "lipsync" ? sourceVideo ?? undefined : undefined,
       // Only alongside a first frame: an end frame on its own is not a mode
       // this studio offers. A model without first-and-last-frame mode never
@@ -1130,7 +1157,10 @@ export default function GeneratePage() {
         steps: tab === "video" || tab === "lipsync" || music ? undefined : steps,
         cfgScale: tab === "video" || tab === "lipsync" || music ? undefined : guidance,
         seed: seed ?? undefined,
-        lyrics: music ? lyrics.trim() || undefined : undefined,
+        // Instrumental wins over whatever is in the box, and is expressed by
+        // sending no lyrics at all — which is exactly what the models read as
+        // "no vocal".
+        lyrics: music && !instrumental ? lyrics.trim() || undefined : undefined,
       },
     });
     if (sent.kind === "network") {
@@ -1317,12 +1347,42 @@ export default function GeneratePage() {
             }
             style={{ ...xdrInputStyle, padding: 14, fontSize: 14, lineHeight: 1.5, resize: "none", flex: 1, minHeight: tab === "audio" ? 72 : 96 }} />
           {/* Lyrics are their own field: the music model sings exactly this.
-              Left empty, the song is an instrumental — asking for one outright
-              beats a voice humming invented syllables. */}
+              Left empty — or with the instrumental switch on — the song has no
+              vocal, which beats a voice humming invented syllables. */}
           {tab === "audio" && (
-            <textarea value={lyrics} onChange={(e) => setLyrics(e.target.value.slice(0, 3000))}
-              placeholder={"เนื้อเพลง (ไม่บังคับ) — เว้นว่างได้เพลงบรรเลง\n[verse]\n...\n[chorus]\n..."}
-              style={{ ...xdrInputStyle, marginTop: 8, padding: 12, fontSize: 13, lineHeight: 1.5, resize: "none", height: 110 }} />
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 11, color: "#94a3b8", marginRight: 2 }}>เนื้อเพลง</span>
+                {SECTION_TAGS.map((tag) => (
+                  <button key={tag} type="button" disabled={instrumental}
+                    onClick={() => setLyrics((l) => `${l.replace(/\s*$/, "")}${l.trim() ? "\n\n" : ""}${tag}\n`.slice(0, 3000))}
+                    style={{
+                      padding: "3px 8px", borderRadius: 7, fontSize: 10.5,
+                      cursor: instrumental ? "default" : "pointer", opacity: instrumental ? 0.4 : 1,
+                      background: "hsla(265,60%,60%,0.12)", color: "#c4b5fd",
+                      border: "1px solid hsla(265,60%,60%,0.28)",
+                      fontFamily: "ui-monospace,monospace",
+                    }}>
+                    {tag}
+                  </button>
+                ))}
+                <label style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#94a3b8", cursor: "pointer" }}>
+                  <input type="checkbox" checked={instrumental} onChange={(e) => setInstrumental(e.target.checked)} />
+                  เพลงบรรเลง (ไม่มีเสียงร้อง)
+                </label>
+              </div>
+              <textarea value={lyrics} onChange={(e) => setLyrics(e.target.value.slice(0, 3000))}
+                disabled={instrumental}
+                placeholder={"[Verse]\nเขียนเนื้อร้องที่นี่\n\n[Chorus]\nท่อนฮุกที่อยากให้ติดหู"}
+                style={{
+                  ...xdrInputStyle, marginTop: 6, padding: 12, fontSize: 13, lineHeight: 1.5,
+                  resize: "none", height: 110, opacity: instrumental ? 0.45 : 1,
+                }} />
+              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontSize: 10.5, color: "#64748b" }}>
+                <span>{instrumental ? "โหมดบรรเลง — เนื้อร้องที่พิมพ์ไว้จะถูกเก็บไว้เฉย ๆ" : "วงเล็บเหลี่ยมบอกโมเดลว่าเป็นท่อนอะไร"}</span>
+                <span style={{ fontFamily: "ui-monospace,monospace" }}>{lyrics.length.toLocaleString()} / 3,000</span>
+              </div>
+            </>
           )}
           {/* The free Pollinations model does not understand Thai — it renders an
               unrelated image instead of failing, so warn before credits are spent. */}
@@ -1646,6 +1706,26 @@ export default function GeneratePage() {
             />
             <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
               พูดภาษาอะไรก็ได้รวมถึงไทย — โมเดลอ่านคลื่นเสียงเป็นรูปปาก ไม่ได้อ่านภาษา
+            </div>
+          </Section>
+        )}
+
+        {/* Cover mode: the model transcribes this song's melody and sings it
+            again in the style above. The upload path is the lip-sync one, so
+            the same size and length limits apply. */}
+        {musicOpts?.sourceSong && (
+          <Section label="เพลงต้นฉบับที่จะคัฟเวอร์">
+            <FilePick
+              value={inputAudioName}
+              busy={uploading === "audio"}
+              accept="audio/mpeg,audio/wav,audio/ogg,audio/flac,audio/mp4,audio/x-m4a"
+              hint="อัปโหลดเพลง (MP3 / WAV / FLAC)"
+              onPick={(e) => handleMediaUpload(e, "audio")}
+              onClear={() => { setInputAudio(null); setInputAudioName(null); }}
+            />
+            <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
+              AI ถอดเฉพาะ<strong style={{ color: "#94a3b8" }}>ทำนอง</strong>ออกมาแล้วร้องใหม่ทั้งเพลง — เสียงร้องเดิมไม่ได้ถูกนำมาใช้
+              ถ้าอยากได้คำร้องเดิม ให้พิมพ์ลงช่องเนื้อเพลง
             </div>
           </Section>
         )}

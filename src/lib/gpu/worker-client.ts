@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import type { WorkerProfile } from './config';
 import { buildMiniMaxH3Workflow, frameLengthFor } from './workflows/minimax-h3';
 import { getCatalogEntry, type CatalogJobParams } from './catalog';
-import { readFrameSource } from './frame-input';
+import { isAcceptedAudioSource, readAudioSource, readFrameSource } from './frame-input';
 import { PROGRESS_PATH } from './provision';
 import {
   bindParameters,
@@ -54,6 +54,8 @@ export interface SubmitResult {
 interface StagedFrames {
   first?: string;
   last?: string;
+  /** Reference song for a cover, by its name in the worker's input dir. */
+  audio?: string;
 }
 
 export type PollOutcome =
@@ -234,18 +236,67 @@ export class WorkerClient {
    */
   private async stageFrames(params: WorkerJobParams, objectInfo: ComfyObjectInfo): Promise<StagedFrames> {
     const entry = this.modelKey ? getCatalogEntry(this.modelKey) : undefined;
-    if (this.profile.workflow || !entry?.video) return {};
+    if (this.profile.workflow || !entry) return {};
+    if (!entry.video && !entry.needs?.audio) return {};
 
     const lastSource = typeof params.extra?.inputImageEnd === 'string' ? params.extra.inputImageEnd : undefined;
     const frames: StagedFrames = {};
-    if (entry.video.firstFrame && params.inputImage) frames.first = await this.uploadImage(params.inputImage, 'first');
-    if (entry.video.lastFrame && lastSource) frames.last = await this.uploadImage(lastSource, 'last');
+    if (entry.video?.firstFrame && params.inputImage) frames.first = await this.uploadImage(params.inputImage, 'first');
+    if (entry.video?.lastFrame && lastSource) frames.last = await this.uploadImage(lastSource, 'last');
 
     // LoadImage's schema lists the input dir as it was when /object_info was
     // cached, and validateGraph checks combo values against that list — so a
     // file uploaded a moment ago would read as "not available on the worker".
     if (frames.first || frames.last) await this.refreshNodeSpec(objectInfo, 'LoadImage');
+
+    if (entry.needs?.audio) {
+      const source = params.extra?.inputAudio;
+      // A cover with no song to cover would otherwise render the template's
+      // demo track and charge for it, exactly like an unbound parameter.
+      if (!isAcceptedAudioSource(source)) {
+        throw new Error(`"${entry.key}" needs a reference song, and this job has none`);
+      }
+      frames.audio = await this.uploadAudio(source);
+      await this.refreshNodeSpec(objectInfo, 'LoadAudio');
+    }
     return frames;
+  }
+
+  /**
+   * Put the customer's song in the worker's input dir for LoadAudio.
+   *
+   * ComfyUI takes every input file on `/upload/image`, whatever the media type
+   * — the field name is part of that route's contract, not a claim about the
+   * bytes.
+   */
+  private async uploadAudio(source: string): Promise<string> {
+    const { bytes, contentType, ext } = await readAudioSource(source);
+    const filename = `aixman-source-${randomUUID()}.${ext}`;
+    const boundary = `----aixman${randomUUID().replace(/-/g, '')}`;
+    const body = Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="${filename}"\r\n` +
+          `Content-Type: ${contentType}\r\n\r\n`
+      ),
+      bytes,
+      Buffer.from(
+        `\r\n--${boundary}\r\nContent-Disposition: form-data; name="overwrite"\r\n\r\ntrue\r\n--${boundary}--\r\n`
+      ),
+    ]);
+
+    const res = await this.request('/upload/image', {
+      method: 'POST',
+      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+      body: new Uint8Array(body),
+      timeout: SUBMIT_TIMEOUT_MS,
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(`Worker refused the reference song (HTTP ${res.status}): ${text.slice(0, 200)}`);
+    }
+    const data = JSON.parse(text) as { name?: string; subfolder?: string };
+    if (!data.name) throw new Error('Worker returned no name for the reference song');
+    return data.subfolder ? `${data.subfolder}/${data.name}` : data.name;
   }
 
   /**
@@ -346,7 +397,8 @@ export class WorkerClient {
         // raw URL or data URL the customer sent.
         imageFilename: frames.first,
         lastImageFilename: frames.last,
-        audioFilename: typeof params.extra?.audioFilename === 'string' ? params.extra.audioFilename : undefined,
+        // The staged name, never the URL the customer uploaded to.
+        audioFilename: frames.audio,
         lyrics: typeof params.extra?.lyrics === 'string' ? params.extra.lyrics : undefined,
         resolution: typeof params.extra?.resolution === 'string' ? params.extra.resolution : undefined,
       };
