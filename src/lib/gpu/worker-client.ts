@@ -95,6 +95,21 @@ const POLL_TIMEOUT_MS = 20_000;
 /** Progress is read while a customer waits on the page — never make them wait on it. */
 const PROGRESS_TIMEOUT_MS = 4_000;
 
+
+/**
+ * Checkpoint files this worker reports on disk.
+ *
+ * ComfyUI publishes a loader's file list as the first entry of its input's
+ * combo choices, which is the same place `comfy-validate` reads to decide
+ * whether a name is dispatchable. Reading it from there means the catalogue
+ * and the validator can never disagree about what the machine has.
+ */
+function checkpointsOf(objectInfo: ComfyObjectInfo): string[] {
+  const slot = objectInfo?.CheckpointLoaderSimple?.input?.required?.ckpt_name;
+  const choices = Array.isArray(slot) ? slot[0] : undefined;
+  return Array.isArray(choices) ? choices.filter((c): c is string => typeof c === 'string') : [];
+}
+
 export class WorkerClient {
   constructor(
     private readonly endpoint: string,
@@ -401,6 +416,9 @@ export class WorkerClient {
         audioFilename: frames.audio,
         lyrics: typeof params.extra?.lyrics === 'string' ? params.extra.lyrics : undefined,
         resolution: typeof params.extra?.resolution === 'string' ? params.extra.resolution : undefined,
+        // What this worker actually has, not what the catalogue wishes it had.
+        // Community nodes bring their own weights.
+        checkpoints: checkpointsOf(objectInfo),
       };
 
       let graph = convertUiWorkflowToApi(entry.template, objectInfo);

@@ -67,6 +67,18 @@ export interface CatalogJobParams {
   lyrics?: string;
   /** Output resolution preset id from `CatalogEntry.video.resolutions`. */
   resolution?: string;
+  /**
+   * Checkpoint files this particular worker has on disk, read from its own
+   * `/object_info`.
+   *
+   * A rented machine gets exactly the weights the entry declares in
+   * `downloads`, so its list is known before it is asked. A community machine
+   * is somebody's gaming PC: it arrives with whatever its owner happened to
+   * download, and naming a file it does not have fails the job at validation
+   * with "the model download did not complete" — which on a home node is not
+   * even true. An entry that can serve community capacity picks from this.
+   */
+  checkpoints?: string[];
 }
 
 /** A resolution the studio may offer for a video model, per aspect ratio. */
@@ -668,7 +680,92 @@ const YUE2_COVER: CatalogEntry = {
   limits: { maxDuration: YUE2_MAX_SECONDS },
 };
 
-export const MODEL_CATALOG: CatalogEntry[] = [MINIMAX_H3, ACE_STEP, QWEN_IMAGE, YUE2_MUSIC, YUE2_COVER];
+
+// ---------------------------------------------------------------------------
+// SDXL — the entry a shared home card can actually serve
+// ---------------------------------------------------------------------------
+// Every other model in this catalogue needs 12 GB or more, which is correct for
+// rented datacentre cards and wrong for the network GPUxMINE is being built
+// from. A measured 8 GB GTX 1070 Ti ran this graph end to end in 21.6 s at
+// 512² and is on record at 279 s for 768² under --lowvram: slow for somebody
+// watching a progress bar, entirely fine for a queue. Without an entry it could
+// hold, every home node was told "no matching model" forever and the whole
+// supply side earned nothing.
+//
+// The graph is supplied by `inject` rather than converted from a UI template.
+// It is seven core nodes with no subgraph and no custom pack, and writing it in
+// API form directly removes the one thing that breaks such templates: widget
+// order drifting against `/object_info`.
+
+/** The checkpoint a rented card downloads; a home card almost never has this exact file. */
+const SDXL_BASE_FILE = 'sd_xl_base_1.0.safetensors';
+
+/**
+ * Which checkpoint to render with on this particular machine.
+ *
+ * A rented worker gets `SDXL_BASE_FILE` from `downloads` and reports it. A home
+ * worker reports whatever its owner collected — the machine this was written
+ * against has three SDXL derivatives and not the base model. Naming a file the
+ * worker does not have fails validation before a single step is sampled, so the
+ * entry asks the worker rather than assuming.
+ */
+function pickCheckpoint(available: string[] | undefined): string {
+  const files = available ?? [];
+  if (files.length === 0) return SDXL_BASE_FILE;
+  if (files.includes(SDXL_BASE_FILE)) return SDXL_BASE_FILE;
+
+  // Prefer something that names itself SDXL — an SD 1.5 checkpoint loads fine
+  // and then renders badly at SDXL resolutions, which is worse than obvious.
+  const sdxl = files.find((f) => /xl/i.test(f));
+  return sdxl ?? files[0];
+}
+
+const SDXL_COMMUNITY: CatalogEntry = {
+  key: 'sdxl-community',
+  name: 'SDXL (เครื่องชุมชน)',
+  kind: 'image',
+  outputKind: 'image',
+  description: 'สร้างภาพนิ่งด้วย SDXL บนการ์ดจอที่คนแชร์มา — คิวธรรมดา ไม่ใช่งานด่วน',
+  template: { nodes: [], links: [] } as UiWorkflow,
+  downloads: [
+    { repo: 'stabilityai/stable-diffusion-xl-base-1.0', file: 'sd_xl_base_1.0.safetensors', dest: 'checkpoints', bytes: 6_938_040_682 },
+  ],
+  // 6 GB is what SDXL needs to run at all once ComfyUI is allowed to stream
+  // weights; it is not what it needs to run fast. The node's own lane says
+  // which of those this machine is doing, and the pool routes on that.
+  hardware: { minVramMb: 6144, diskGb: 20, gpuModels: [], minArch: 'pascal' },
+  inject: (p) => ({
+    '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: pickCheckpoint(p.checkpoints) } },
+    '2': { class_type: 'CLIPTextEncode', inputs: { clip: ['1', 1], text: p.prompt } },
+    '3': { class_type: 'CLIPTextEncode', inputs: { clip: ['1', 1], text: p.negativePrompt ?? '' } },
+    '4': { class_type: 'EmptyLatentImage', inputs: { width: snap(p.width, 8, 1024), height: snap(p.height, 8, 1024), batch_size: 1 } },
+    '5': {
+      class_type: 'KSampler',
+      inputs: {
+        model: ['1', 0], positive: ['2', 0], negative: ['3', 0], latent_image: ['4', 0],
+        seed: p.seed,
+        // Home cards are the slowest thing on this network and steps are the
+        // one dial that costs time linearly. 20 is where SDXL stops visibly
+        // improving; a caller may ask for fewer, never for more.
+        steps: Math.min(p.steps ?? 20, 20),
+        cfg: 6.5,
+        sampler_name: 'dpmpp_2m',
+        scheduler: 'karras',
+        denoise: 1.0,
+      },
+    },
+    '6': { class_type: 'VAEDecode', inputs: { samples: ['5', 0], vae: ['1', 2] } },
+    '7': { class_type: 'SaveImage', inputs: { images: ['6', 0], filename_prefix: 'image/aixman' } },
+  }),
+  bind: () => [],
+  // Measured on the 8 GB card this was built against, at the resolution the
+  // limits below allow. A faster shared card simply finishes early.
+  baselineSecondsPerUnit: 60,
+  pricing: { creditsPerUnit: 1, costPerUnit: 0.004 },
+  limits: { maxWidth: 1024, maxHeight: 1024 },
+};
+
+export const MODEL_CATALOG: CatalogEntry[] = [MINIMAX_H3, ACE_STEP, QWEN_IMAGE, YUE2_MUSIC, YUE2_COVER, SDXL_COMMUNITY];
 
 export function getCatalogEntry(key: string): CatalogEntry | undefined {
   return MODEL_CATALOG.find((m) => m.key === key);

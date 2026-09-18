@@ -236,3 +236,24 @@ test('an offline machine keeps the lane it earned, not a default', () => {
   assert.equal(verdict.modelKey, 'minimax-h3');
   assert.equal(verdict.lane, 'slow');
 });
+
+test('once a community-tier model exists, the 8 GB home card finally gets one', () => {
+  // The whole supply side of this network is cards like this one. Every model
+  // in the catalogue needed 12 GB or more, so every home node was told "no
+  // matching model" forever and none of them could earn anything. This is the
+  // assertion that says that is over.
+  const withCommunityTier = [
+    ...CATALOGUE,
+    { key: 'sdxl-community', name: 'SDXL (เครื่องชุมชน)', kind: 'image', hardware: { minVramMb: 6144 } },
+  ];
+
+  const verdict = assessCommunityNode(
+    { assessed: true, online: true, vramTotalMb: 8191, canRun: ['image'], lanes: { image: 'slow' } },
+    withCommunityTier
+  );
+
+  assert.equal(verdict.status, 'eligible');
+  assert.equal(verdict.modelKey, 'sdxl-community');
+  // Slow, and dispatched anyway — that is the point of the lane.
+  assert.equal(verdict.lane, 'slow');
+});
