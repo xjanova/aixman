@@ -22,12 +22,12 @@ const CATALOGUE: DispatchableModel[] = [
   { key: 'minimax-h3', name: 'MiniMax H3', kind: 'video', hardware: { minVramMb: 24576 } },
 ];
 
-/** The card this whole system was built and measured on: 8 GB, three job kinds. */
+/** The card this whole system was built and measured on: 8 GB. */
 const homeCard = {
   assessed: true,
   online: true,
   vramTotalMb: 8191,
-  canRun: ['upscale', 'video', 'embed'],
+  canRun: ['upscale', 'audio', 'video', 'embed'],
 };
 
 test('an unassessed machine is never dispatched to, whatever it claims', () => {
@@ -48,6 +48,19 @@ test('a measured machine that can do nothing is told so, not left guessing', () 
 
   assert.equal(verdict.status, 'no-matching-model');
   assert.ok(verdict.note.length > 0);
+});
+
+test('a node that can do music is matched to a music model when it fits', () => {
+  // Three of the five models this platform dispatches are audio, and audio was
+  // missing from the node assessment entirely — so no machine could ever be
+  // matched to the largest category we sell.
+  const bigEnough = assessCommunityNode(
+    { assessed: true, online: true, vramTotalMb: 16384, canRun: ['audio'] },
+    CATALOGUE
+  );
+
+  assert.equal(bigEnough.status, 'eligible');
+  assert.equal(bigEnough.modelKey, 'ace-step-1.5');
 });
 
 test('an 8 GB home card gets no model, and is told the actual numbers', () => {
