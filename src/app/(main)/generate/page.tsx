@@ -958,6 +958,11 @@ export default function GeneratePage() {
   const handleMediaUpload = async (
     e: React.ChangeEvent<HTMLInputElement>,
     kind: "audio" | "video",
+    // Lip-sync is billed on the length of the voice track, so its ceiling is
+    // tight. A song to cover is priced on the length *ordered*, not the length
+    // uploaded, and a chorus alone is not a song — the cover panel passes the
+    // model's own maximum instead.
+    maxSeconds: number = MAX_INPUT_SECONDS,
   ) => {
     const file = e.target.files?.[0];
     // Clearing the picker lets the same file be chosen again after a failure —
@@ -968,12 +973,12 @@ export default function GeneratePage() {
     setUploading(kind);
 
     const seconds = await probeDuration(file, kind);
-    if (seconds !== null && seconds > MAX_INPUT_SECONDS) {
+    if (seconds !== null && seconds > maxSeconds) {
       setUploading(null);
       toast(
         "error",
         "ไฟล์ยาวเกินไป",
-        `รองรับไม่เกิน ${MAX_INPUT_SECONDS} วินาที (ไฟล์นี้ ${Math.round(seconds)} วินาที) กรุณาตัดให้สั้นลงก่อน`,
+        `รองรับไม่เกิน ${maxSeconds} วินาที (ไฟล์นี้ ${Math.round(seconds)} วินาที) กรุณาตัดให้สั้นลงก่อน`,
       );
       return;
     }
@@ -1249,7 +1254,15 @@ export default function GeneratePage() {
             <button key={t.key}
               disabled={blocked !== null && tab !== t.key}
               title={blocked ?? undefined}
-              onClick={() => { setTab(t.key); setResult(null); setNumOutputs(1); }}
+              onClick={() => {
+                setTab(t.key); setResult(null); setNumOutputs(1);
+                // The audio upload is shared between lip-sync and the cover
+                // panel, and their limits differ by a factor of six: a four
+                // minute song accepted for a cover must not still be sitting
+                // there when the customer opens lip-sync, where the bill
+                // follows the track's length.
+                if (t.key !== tab) { setInputAudio(null); setInputAudioName(null); }
+              }}
               style={{
                 flex: 1, padding: "8px 6px", borderRadius: 8, border: "none",
                 cursor: blocked !== null && tab !== t.key ? "not-allowed" : "pointer",
@@ -1719,13 +1732,13 @@ export default function GeneratePage() {
               value={inputAudioName}
               busy={uploading === "audio"}
               accept="audio/mpeg,audio/wav,audio/ogg,audio/flac,audio/mp4,audio/x-m4a"
-              hint="อัปโหลดเพลง (MP3 / WAV / FLAC)"
-              onPick={(e) => handleMediaUpload(e, "audio")}
+              hint={`อัปโหลดเพลง MP3 (ไม่เกิน ${Math.round((musicOpts.maxDuration ?? 240) / 60)} นาที, 12 MB)`}
+              onPick={(e) => handleMediaUpload(e, "audio", musicOpts.maxDuration ?? 240)}
               onClear={() => { setInputAudio(null); setInputAudioName(null); }}
             />
             <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
               AI ถอดเฉพาะ<strong style={{ color: "#94a3b8" }}>ทำนอง</strong>ออกมาแล้วร้องใหม่ทั้งเพลง — เสียงร้องเดิมไม่ได้ถูกนำมาใช้
-              ถ้าอยากได้คำร้องเดิม ให้พิมพ์ลงช่องเนื้อเพลง
+              ถ้าอยากได้คำร้องเดิม ให้พิมพ์ลงช่องเนื้อเพลง · WAV/FLAC ทั้งเพลงมักเกิน 12 MB ให้แปลงเป็น MP3 ก่อน
             </div>
           </Section>
         )}
