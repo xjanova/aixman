@@ -135,3 +135,104 @@ test('an empty catalogue answers instead of throwing', () => {
   assert.equal(verdict.status, 'no-matching-model');
   assert.ok(verdict.note.length > 0);
 });
+
+test('a node reporting no lanes at all is treated as fast, the way it was before lanes existed', () => {
+  // Every node already in the field is on an older client. Reading silence as
+  // "slow" would quietly demote the entire fleet on the day this shipped.
+  const verdict = assessCommunityNode(
+    { assessed: true, online: true, vramTotalMb: 16384, canRun: ['audio'] },
+    CATALOGUE
+  );
+
+  assert.equal(verdict.status, 'eligible');
+  assert.equal(verdict.lane, 'full');
+});
+
+test('work the node is slow at is still dispatched, and says so', () => {
+  // Slow is not a refusal. The machine does produce the track; it just must not
+  // be put in front of somebody watching a progress bar.
+  const verdict = assessCommunityNode(
+    {
+      assessed: true,
+      online: true,
+      vramTotalMb: 16384,
+      canRun: ['audio'],
+      lanes: { audio: 'slow' },
+    },
+    CATALOGUE
+  );
+
+  assert.equal(verdict.status, 'eligible');
+  assert.equal(verdict.lane, 'slow');
+  assert.equal(verdict.modelKey, 'ace-step-1.5');
+});
+
+test('a fast kind beats a heavier slow one', () => {
+  // The old rule took the heaviest model the card could hold, full stop. Here
+  // that would pin a machine to a 24 GB image model it renders slowly while it
+  // does music quickly — a worse outcome for the customer and for the owner.
+  const verdict = assessCommunityNode(
+    {
+      assessed: true,
+      online: true,
+      vramTotalMb: 49152,
+      canRun: ['audio', 'image'],
+      lanes: { audio: 'full', image: 'slow' },
+    },
+    CATALOGUE
+  );
+
+  assert.equal(verdict.lane, 'full');
+  assert.equal(verdict.modelKey, 'ace-step-1.5');
+});
+
+test('among equally fast kinds the heaviest still wins', () => {
+  const verdict = assessCommunityNode(
+    {
+      assessed: true,
+      online: true,
+      vramTotalMb: 49152,
+      canRun: ['audio', 'image'],
+      lanes: { audio: 'full', image: 'full' },
+    },
+    CATALOGUE
+  );
+
+  assert.equal(verdict.lane, 'full');
+  assert.equal(verdict.modelKey, 'qwen-image');
+});
+
+test('a lane given on trust is flagged, so nobody reads it as measured', () => {
+  const verdict = assessCommunityNode(
+    {
+      assessed: true,
+      online: true,
+      vramTotalMb: 16384,
+      canRun: ['audio'],
+      lanes: { audio: 'full' },
+      provisional: ['audio'],
+    },
+    CATALOGUE
+  );
+
+  assert.equal(verdict.status, 'eligible');
+  assert.equal(verdict.provisional, true);
+  assert.match(verdict.note, /รอบแรก/);
+});
+
+test('an offline machine keeps the lane it earned, not a default', () => {
+  const verdict = assessCommunityNode(
+    {
+      assessed: true,
+      online: false,
+      vramTotalMb: 24576,
+      canRun: ['video'],
+      lanes: { video: 'slow' },
+    },
+    CATALOGUE
+  );
+
+  assert.equal(verdict.status, 'offline');
+  assert.equal(verdict.modelKey, 'minimax-h3');
+  assert.equal(verdict.lane, 'slow');
+});

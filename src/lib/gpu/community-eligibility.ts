@@ -26,17 +26,38 @@ export interface NodeReport {
   assessed?: boolean;
   online?: boolean;
   vramTotalMb?: number;
-  /** Kinds of work the client measured itself able to do: image · video · upscale · embed. */
+  /** Kinds of work the client measured itself able to do: image · video · audio · upscale · embed. */
   canRun?: string[];
+  /**
+   * How fast each of those kinds is on this machine: `full` for work somebody
+   * is waiting on, `slow` for work sitting in a queue.
+   *
+   * Absent on a node that has not been re-measured since the client learned to
+   * report it, and absence means the fast lane — which is what this platform
+   * assumed about every node before lanes existed.
+   */
+  lanes?: Record<string, string>;
+  /** Kinds whose lane the node was given on trust and has not yet earned on real jobs. */
+  provisional?: string[];
 }
 
 export type EligibilityStatus = 'eligible' | 'unassessed' | 'offline' | 'no-matching-model';
+
+/** How quickly the assigned model runs here, and therefore who may be waiting on it. */
+export type Lane = 'full' | 'slow';
 
 export interface Eligibility {
   status: EligibilityStatus;
   /** Thai, and written to be shown to the machine's owner rather than to us. */
   note: string;
   modelKey: string | null;
+  /**
+   * `slow` means this machine really does the work and should be given it —
+   * just not with a customer watching a progress bar on the other end.
+   */
+  lane: Lane;
+  /** True while the lane is the node's opening assumption rather than a measured fact. */
+  provisional: boolean;
 }
 
 export function assessCommunityNode(
@@ -48,6 +69,8 @@ export function assessCommunityNode(
       status: 'unassessed',
       note: 'เครื่องยังไม่ผ่านการประเมิน — โปรแกรมจะวัดให้เองเมื่อ ComfyUI พร้อม',
       modelKey: null,
+      lane: 'full',
+      provisional: false,
     };
   }
 
@@ -57,6 +80,8 @@ export function assessCommunityNode(
       status: 'no-matching-model',
       note: 'ผลประเมินระบุว่าเครื่องนี้ยังทำงานประเภทใดไม่ได้',
       modelKey: null,
+      lane: 'full',
+      provisional: false,
     };
   }
 
@@ -91,27 +116,51 @@ export function assessCommunityNode(
             ).toFixed(0)} GB`
           : 'ยังไม่มีโมเดลในแคตตาล็อกที่ตรงกับงานที่เครื่องนี้รับได้',
       modelKey: null,
+      lane: 'full',
+      provisional: false,
     };
   }
 
-  // The heaviest model it can hold. A machine that can serve the demanding one
-  // can serve the light one too, and pinning it to the light one would waste
-  // the only capacity on the network able to do the hard job.
-  const best = candidates.reduce((max, entry) =>
+  // Fast work first, and only then the heaviest.
+  //
+  // The old rule was "the heaviest model it can hold", on the reasoning that a
+  // machine able to do the hard job should not be pinned to the easy one. That
+  // still holds inside a lane. Across lanes it does not: a card that is quick
+  // at music and four minutes slow at images should be given the music, not an
+  // image assignment that keeps a customer waiting because the image model
+  // happens to be the bigger one.
+  const laneOf = (kind: string): Lane => (node.lanes?.[kind] === 'slow' ? 'slow' : 'full');
+
+  const fast = candidates.filter((entry) => laneOf(entry.kind) === 'full');
+  const pool = fast.length > 0 ? fast : candidates;
+  const lane: Lane = fast.length > 0 ? 'full' : 'slow';
+
+  const best = pool.reduce((max, entry) =>
     entry.hardware.minVramMb > max.hardware.minVramMb ? entry : max
   );
+
+  const provisional = (node.provisional ?? []).includes(best.kind);
 
   if (!node.online) {
     return {
       status: 'offline',
       note: 'เครื่องผ่านการประเมินแล้ว แต่ตอนนี้ยังไม่ได้เชื่อมต่อ',
       modelKey: best.key,
+      lane,
+      provisional,
     };
   }
 
   return {
     status: 'eligible',
-    note: `พร้อมรับงาน ${best.name}`,
+    note:
+      lane === 'slow'
+        ? `พร้อมรับงาน ${best.name} — แต่ช้ากว่าที่คนนั่งรอจะยอม ส่งเฉพาะงานที่ไม่มีคนรอ`
+        : provisional
+          ? `พร้อมรับงาน ${best.name} — รอบแรก ยังไม่มีเวลาจริงมายืนยัน`
+          : `พร้อมรับงาน ${best.name}`,
     modelKey: best.key,
+    lane,
+    provisional,
   };
 }

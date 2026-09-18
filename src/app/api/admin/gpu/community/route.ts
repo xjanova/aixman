@@ -34,6 +34,11 @@ interface CommunityMeta {
   score?: number;
   tier?: string;
   canRun?: string[];
+  /** ต่องาน: "full" = เร็วพอให้คนนั่งรอ · "slow" = ส่งเฉพาะงานที่ไม่มีคนรอ */
+  lanes?: Record<string, string>;
+  /** เลนของโมเดลที่ถูกจับคู่ให้เครื่องนี้ */
+  lane?: string;
+  provisional?: boolean;
   eligibility?: string;
   note?: string;
   syncedAt?: string;
@@ -77,6 +82,11 @@ export async function GET() {
       score: meta.score ?? 0,
       tier: meta.tier ?? 'unrated',
       canRun: meta.canRun ?? [],
+      // ไม่มีข้อมูล = เร็วเต็มที่ ซึ่งคือสิ่งที่ระบบสมมติมาตลอดก่อนมีฟิลด์นี้
+      // และเป็นสภาพจริงของโหนดที่ยังไม่ได้อัปเดตไคลเอนต์
+      lanes: meta.lanes ?? {},
+      lane: meta.lane ?? 'full',
+      provisional: meta.provisional ?? false,
       eligibility: meta.eligibility ?? 'unknown',
       note: meta.note ?? null,
       syncedAt: meta.syncedAt ?? null,

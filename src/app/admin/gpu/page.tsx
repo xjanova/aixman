@@ -2328,6 +2328,10 @@ interface CommunityRow {
   score: number;
   tier: string;
   canRun: string[];
+  /** งานไหนเร็วพอให้คนนั่งรอ ("full") งานไหนต้องเป็นงานที่ไม่มีคนรอ ("slow") */
+  lanes?: Record<string, string>;
+  lane?: string;
+  provisional?: boolean;
   eligibility: string;
   note: string | null;
   syncedAt: string | null;
@@ -2444,9 +2448,28 @@ function CommunityNodes() {
                     )}
                   </td>
                   <td className="py-2 pr-3">
-                    {r.canRun.length > 0
-                      ? r.canRun.map((k) => KIND_LABEL[k] ?? k).join(", ")
-                      : <span className="text-muted">–</span>}
+                    {r.canRun.length > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {r.canRun.map((k) => (
+                          <span
+                            key={k}
+                            // งานที่เครื่องนี้ช้าต้องอ่านออกตั้งแต่ตาแรก ไม่ใช่ปนอยู่
+                            // ในรายการเดียวกับงานที่มันทำได้เร็ว
+                            className={
+                              r.lanes?.[k] === "slow"
+                                ? "rounded bg-warning/10 px-1.5 py-0.5 text-warning"
+                                : "rounded bg-surface px-1.5 py-0.5"
+                            }
+                            title={r.lanes?.[k] === "slow" ? "ช้ากว่าที่คนนั่งรอจะยอม — ส่งเฉพาะงานที่ไม่มีคนรอ" : undefined}
+                          >
+                            {KIND_LABEL[k] ?? k}
+                            {r.lanes?.[k] === "slow" && " ·ช้า"}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-muted">–</span>
+                    )}
                   </td>
                   <td className="py-2 pr-3">
                     <span
@@ -2460,6 +2483,14 @@ function CommunityNodes() {
                     >
                       {ELIGIBILITY_LABEL[r.eligibility] ?? r.eligibility}
                     </span>
+                    {r.provisional && (
+                      <span
+                        className="ml-1 text-xs text-muted"
+                        title="เครื่องได้เลนนี้มาแบบให้ไว้ก่อน ยังไม่มีเวลาจริงจากงานที่ทำมายืนยัน"
+                      >
+                        · รอบแรก
+                      </span>
+                    )}
                     {r.note && <div className="text-xs text-muted max-w-xs">{r.note}</div>}
                   </td>
                   <td className="py-2 pr-3">

@@ -49,6 +49,10 @@ interface NodePayload {
   score?: number;
   tier?: string;
   canRun?: string[];
+  /** Per-kind speed: `full` for work somebody waits on, `slow` for queued work. */
+  lanes?: Record<string, string>;
+  /** Kinds whose lane is still the node's opening assumption rather than a measured fact. */
+  provisional?: string[];
   ownerUserId?: number;
 }
 
@@ -95,6 +99,12 @@ export async function POST(request: NextRequest) {
         score: node.score ?? 0,
         tier: node.tier ?? 'unrated',
         canRun: node.canRun ?? [],
+        lanes: node.lanes ?? {},
+        // What the dispatcher filters on: `slow` is capacity for work nobody is
+        // waiting on, and handing it an impatient customer is the one mistake
+        // this whole field exists to prevent.
+        lane: verdict.lane,
+        provisional: verdict.provisional,
         eligibility: verdict.status,
         note: verdict.note,
         syncedAt: new Date().toISOString(),
@@ -115,6 +125,12 @@ export async function POST(request: NextRequest) {
         score: node.score ?? 0,
         tier: node.tier ?? 'unrated',
         canRun: node.canRun ?? [],
+        lanes: node.lanes ?? {},
+        // What the dispatcher filters on: `slow` is capacity for work nobody is
+        // waiting on, and handing it an impatient customer is the one mistake
+        // this whole field exists to prevent.
+        lane: verdict.lane,
+        provisional: verdict.provisional,
         eligibility: verdict.status,
         note: verdict.note,
         syncedAt: new Date().toISOString(),
