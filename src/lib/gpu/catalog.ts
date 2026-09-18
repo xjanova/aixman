@@ -580,8 +580,19 @@ const YUE2_CKPT: ModelDownload = {
  * the price is charged on that same number by `creditsForDuration`.
  */
 function yue2Duration(seconds: number): number {
-  return Math.min(240, Math.max(15, Math.round(seconds || 120)));
+  return Math.min(YUE2_MAX_SECONDS, Math.max(15, Math.round(seconds || 120)));
 }
+
+/**
+ * The ceiling offered for one song.
+ *
+ * 240 s was a guess that turned out to be shorter than the songs people bring:
+ * a four-and-a-half minute track had to be cut before it could be covered. The
+ * node itself allows 900 s; 330 s covers the ordinary pop song with margin and
+ * keeps the worst-case render on a rented card inside `jobTimeoutMinutes`
+ * (measured: 90 s of song = 47 GPU-seconds on a 3090, so ~0.5x real time).
+ */
+const YUE2_MAX_SECONDS = 330;
 
 /** Empty lyrics are what YuE2 reads as "instrumental" — no marker text. */
 function yue2Lyrics(p: CatalogJobParams): string {
@@ -620,7 +631,7 @@ const YUE2_MUSIC: CatalogEntry = {
   ],
   baselineSecondsPerUnit: 2,
   pricing: { creditsPerUnit: 12, costPerUnit: 0.05, durationCurve: { unitSeconds: 60, exponent: 1 } },
-  limits: { maxDuration: 240 },
+  limits: { maxDuration: YUE2_MAX_SECONDS },
 };
 
 const YUE2_COVER: CatalogEntry = {
@@ -654,7 +665,7 @@ const YUE2_COVER: CatalogEntry = {
   ],
   baselineSecondsPerUnit: 3,
   pricing: { creditsPerUnit: 15, costPerUnit: 0.06, durationCurve: { unitSeconds: 60, exponent: 1 } },
-  limits: { maxDuration: 240 },
+  limits: { maxDuration: YUE2_MAX_SECONDS },
 };
 
 export const MODEL_CATALOG: CatalogEntry[] = [MINIMAX_H3, ACE_STEP, QWEN_IMAGE, YUE2_MUSIC, YUE2_COVER];

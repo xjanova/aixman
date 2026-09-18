@@ -64,7 +64,7 @@ const VIDEO_ASPECTS = ["16:9", "9:16", "1:1"];
 const VIDEO_DURATIONS = [5, 10, 15, 20];
 
 /** Song lengths, filtered the same way against the music model's ceiling. */
-const AUDIO_DURATIONS = [30, 60, 120, 180];
+const AUDIO_DURATIONS = [30, 60, 120, 180, 240, 300];
 
 /** Style words a music model understands — the image chips mean nothing to it. */
 const MUSIC_TAG_CHIPS = [
