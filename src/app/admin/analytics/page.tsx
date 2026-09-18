@@ -19,9 +19,14 @@ interface DailyGeneration {
 
 interface TopModel {
   name: string;
-  modelId: string;
+  modelId: number;
   count: number;
-  creditsUsed: number;
+  /**
+   * Optional on purpose: this field was missing from the route for a while and
+   * `undefined.toLocaleString()` took the whole page down with it. Everything
+   * read from the API is treated as "may not be there yet".
+   */
+  creditsUsed?: number;
 }
 
 interface CreditSummary {
@@ -31,6 +36,8 @@ interface CreditSummary {
   revenue: number;
   cost: number;
   profit: number;
+  /** Blended package rate, so the page stops hardcoding 35. */
+  usdToThb?: number;
 }
 
 interface AnalyticsData {
@@ -70,8 +77,10 @@ export default function AnalyticsPage() {
     profit: 0,
   };
 
-  const maxDailyCount = Math.max(...dailyGenerations.map((d) => d.count), 1);
-  const maxModelCount = Math.max(...topModels.map((m) => m.count), 1);
+  const maxDailyCount = Math.max(...dailyGenerations.map((d) => d.count || 0), 1);
+  const maxModelCount = Math.max(...topModels.map((m) => m.count || 0), 1);
+  const usdToThb = creditSummary.usdToThb || 35;
+  const costThb = creditSummary.cost * usdToThb;
 
   const formatThb = (n: number) =>
     new Intl.NumberFormat("th-TH", {
@@ -244,7 +253,7 @@ export default function AnalyticsPage() {
                           <ImageIcon className="w-3 h-3" />{" "}
                           {model.count.toLocaleString()} |{" "}
                           <Coins className="w-3 h-3 text-warning" />{" "}
-                          {model.creditsUsed.toLocaleString()}
+                          {(model.creditsUsed ?? 0).toLocaleString()}
                         </span>
                       </div>
                       <div className="h-5 bg-surface-light rounded-lg overflow-hidden">
@@ -295,7 +304,7 @@ export default function AnalyticsPage() {
                               (creditSummary.revenue /
                                 Math.max(
                                   creditSummary.revenue,
-                                  creditSummary.cost * 35
+                                  costThb
                                 )) *
                                 100,
                               5
@@ -308,9 +317,11 @@ export default function AnalyticsPage() {
               </div>
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs text-muted">ต้นทุน (USD x35)</span>
+                  <span className="text-xs text-muted">
+                    ต้นทุน (USD ×{usdToThb.toFixed(0)})
+                  </span>
                   <span className="text-sm font-bold text-warning">
-                    {formatThb(creditSummary.cost * 35)}
+                    {formatThb(costThb)}
                   </span>
                 </div>
                 <div className="h-8 bg-surface-light rounded-lg overflow-hidden">
@@ -320,10 +331,10 @@ export default function AnalyticsPage() {
                       width: `${
                         creditSummary.cost > 0
                           ? Math.max(
-                              ((creditSummary.cost * 35) /
+                              ((costThb) /
                                 Math.max(
                                   creditSummary.revenue,
-                                  creditSummary.cost * 35
+                                  costThb
                                 )) *
                                 100,
                               5
