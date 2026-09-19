@@ -19,7 +19,7 @@
  * on the server.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /** Peaks are stored as min/max pairs per column so quiet passages still read. */
 type Peaks = { min: Float32Array; max: Float32Array };
@@ -197,7 +197,7 @@ export type AudioWaveProps = {
   /** Extension of the original, offered alongside WAV/MP3. */
   originalExt?: string;
   height?: number;
-  /** Start playing as soon as it is decoded. */
+  /** Start playing as soon as there is a URL — the decode is not waited on. */
   autoPlay?: boolean;
   /** Told whether sound is actually coming out, for cover art that reacts. */
   onPlayingChange?: (playing: boolean) => void;
@@ -218,7 +218,6 @@ export function AudioWave({
 
   const [buffer, setBuffer] = useState<AudioBuffer | null>(null);
   const [peaks, setPeaks] = useState<Peaks | null>(null);
-  const [playUrl, setPlayUrl] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -232,7 +231,6 @@ export function AudioWave({
     // costs a render pass, and the initial state is already the loading one.
     // Callers pass a `key` tied to the source so a new track remounts instead.
     let dead = false;
-    let objectUrl: string | null = null;
 
     void loadAudio(source).then((loaded) => {
       if (dead) return;
@@ -240,8 +238,6 @@ export function AudioWave({
         setStatus("error");
         return;
       }
-      objectUrl = URL.createObjectURL(loaded.blob);
-      setPlayUrl(objectUrl);
       setBuffer(loaded.decoded);
       setDuration(loaded.decoded.duration);
       const width = canvasRef.current?.clientWidth ?? 600;
@@ -251,9 +247,30 @@ export function AudioWave({
 
     return () => {
       dead = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [source]);
+
+  /**
+   * What <audio> plays, available before any decoding finishes.
+   *
+   * A string source is handed over as-is, so it streams from the route, which
+   * serves Range; a File becomes an object URL. Building the src out of the
+   * fully downloaded blob instead meant silence for as long as the download
+   * took — measured at 7.3 s for a 32 MB song on a fast line, against the
+   * plain <audio> this replaced, which had started playing immediately.
+   *
+   * Derived rather than stored: state set from an effect body costs a render
+   * pass, and there is nothing here render cannot work out for itself.
+   */
+  const blobUrl = useMemo(
+    () => (typeof source === "string" ? null : URL.createObjectURL(source)),
+    [source]
+  );
+  useEffect(() => {
+    if (!blobUrl) return;
+    return () => URL.revokeObjectURL(blobUrl);
+  }, [blobUrl]);
+  const playUrl = typeof source === "string" ? source : blobUrl;
 
   // ── Paint ──────────────────────────────────────────────────────────────
   const draw = useCallback(() => {
@@ -373,6 +390,7 @@ export function AudioWave({
     }
   };
 
+  const canPlay = playUrl !== null;
   const canConvert = status === "ready" && buffer !== null;
   const ratio = duration > 0 ? time / duration : 0;
 
@@ -386,13 +404,15 @@ export function AudioWave({
         <button
           type="button"
           onClick={toggle}
-          disabled={status !== "ready"}
+          // Gated on having something to play, not on the decode. The samples
+          // are only needed to draw and to convert; the sound is ready first.
+          disabled={!canPlay}
           aria-label={playing ? "หยุด" : "เล่น"}
           style={{
-            flexShrink: 0, width: 40, height: 40, borderRadius: "50%", cursor: status === "ready" ? "pointer" : "default",
+            flexShrink: 0, width: 40, height: 40, borderRadius: "50%", cursor: canPlay ? "pointer" : "default",
             border: "1px solid hsla(265,70%,65%,0.45)", background: "hsla(265,70%,60%,0.18)",
             color: "#e9d5ff", fontSize: 14, display: "grid", placeItems: "center",
-            opacity: status === "ready" ? 1 : 0.45, fontFamily: "inherit",
+            opacity: canPlay ? 1 : 0.45, fontFamily: "inherit",
           }}
         >
           {playing ? "❚❚" : "▶"}
