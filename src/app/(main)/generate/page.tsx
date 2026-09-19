@@ -417,6 +417,9 @@ const GENERATING_FRAME_MAX_H = "var(--gen-frame-h, min(460px, 44vh))";
  * chips, 9 prompt tags. Collapsing those to a single trigger row is what buys
  * the height back. Nothing is removed; it moves one click away.
  */
+/** Where a panel actually fits, worked out when it opens. */
+type Placement = { up: boolean; left: number; width: number; maxHeight: number };
+
 function Popover({
   id, open, onToggle, label, value, children, align = "left", width = 300,
 }: {
@@ -432,20 +435,69 @@ function Popover({
   const ref = useRef<HTMLDivElement>(null);
   const isOpen = open === id;
 
+  /**
+   * The panel used to open upward at a fixed width, always.
+   *
+   * That was right while every control sat low in one 336px-wide rail. In four
+   * columns they moved to the TOP of a 270px column against the right edge of
+   * the screen, and the same panel then opened off the top of the viewport —
+   * measured at -66px for the first one, so two thirds of it was simply gone —
+   * and hung 25px past the right edge. Both are decided here instead, from the
+   * room the trigger actually has when it is clicked.
+   */
+  const [place, setPlace] = useState<Placement>({ up: false, left: 0, width, maxHeight: 320 });
+
+  const measure = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    const t = el.getBoundingClientRect();
+    const gap = 8;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const w = Math.min(width, vw - gap * 2);
+    const above = t.top - gap;
+    const below = vh - t.bottom - gap;
+    // Downward by default; upward only when down cannot hold the panel and up
+    // has more room. Either way it is absolutely positioned, so neither
+    // direction can push the layout around — only fit decides.
+    const up = below < Math.min(320, above) && above > below;
+    // Hang from whichever edge was asked for, then keep it on screen.
+    const wanted = align === "right" ? t.right - w : t.left;
+    const clamped = Math.max(gap, Math.min(wanted, vw - w - gap));
+    setPlace({
+      up,
+      left: clamped - t.left,
+      width: w,
+      maxHeight: Math.min(320, Math.max(160, up ? above : below)),
+    });
+  }, [align, width]);
+
   useEffect(() => {
     if (!isOpen) return;
     const onDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onToggle(null);
     };
     document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [isOpen, onToggle]);
+    window.addEventListener("resize", measure);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      window.removeEventListener("resize", measure);
+    };
+  }, [isOpen, onToggle, measure]);
 
   return (
     <div ref={ref} style={{ position: "relative", flex: "1 1 132px", minWidth: "min(124px, 100%)" }}>
       <button
         type="button"
-        onClick={() => onToggle(isOpen ? null : id)}
+        onClick={() => {
+          if (isOpen) {
+            onToggle(null);
+            return;
+          }
+          // Measured before it is shown, so it never paints in the wrong place.
+          measure();
+          onToggle(id);
+        }}
         style={{
           width: "100%", padding: "9px 12px", borderRadius: 10, cursor: "pointer",
           background: isOpen ? `hsla(${220 + HUE},60%,50%,0.2)` : "rgba(2,6,23,0.5)",
@@ -463,12 +515,16 @@ function Popover({
       {isOpen && (
         <div
           style={{
-            position: "absolute", bottom: "calc(100% + 6px)",
-            [align]: 0, width, maxHeight: 320, overflowY: "auto",
+            position: "absolute",
+            ...(place.up ? { bottom: "calc(100% + 6px)" } : { top: "calc(100% + 6px)" }),
+            left: place.left,
+            width: place.width,
+            maxHeight: place.maxHeight,
+            overflowY: "auto",
             background: "rgba(15,23,42,0.97)", backdropFilter: "blur(20px)",
             border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12,
             padding: 12, zIndex: 40, boxShadow: "0 24px 48px -12px rgba(0,0,0,0.7)",
-          } as React.CSSProperties}
+          }}
         >
           {children}
         </div>
@@ -476,7 +532,6 @@ function Popover({
     </div>
   );
 }
-
 /**
  * A row of song-style chips.
  *
