@@ -423,7 +423,7 @@ function Popover({
   }, [isOpen, onToggle]);
 
   return (
-    <div ref={ref} style={{ position: "relative", flex: 1, minWidth: 0 }}>
+    <div ref={ref} style={{ position: "relative", flex: "1 1 132px", minWidth: "min(124px, 100%)" }}>
       <button
         type="button"
         onClick={() => onToggle(isOpen ? null : id)}
@@ -1419,7 +1419,7 @@ export default function GeneratePage() {
         {/* ── Compact control deck ─────────────────────────────────────
             Everything below is one-line triggers. Each opens upward so a
             panel near the bottom of the rail never pushes the layout. */}
-        <div style={{ display: "flex", gap: 6 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
           <Popover id="tags" open={openPanel} onToggle={setOpenPanel} label="+ แท็ก" width={286}>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
               {(tab === "audio" ? MUSIC_TAG_CHIPS : PROMPT_TAG_CHIPS).map((t) => {
@@ -1467,7 +1467,7 @@ export default function GeneratePage() {
         )}
 
         {/* Style + aspect on one row */}
-        <div style={{ display: "flex", gap: 6 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
           {stylesLoaded && styles.length > 0 && tab !== "edit" && tab !== "audio" && (
             <Popover id="style" open={openPanel} onToggle={setOpenPanel} label="สไตล์"
               value={selectedStyle ? (styles.find(s => s.id === selectedStyle)?.name ?? "") : "—"} width={286}>
@@ -1551,7 +1551,7 @@ export default function GeneratePage() {
         </div>
 
         {/* Count + advanced + reference on one row */}
-        <div style={{ display: "flex", gap: 6 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
           {/* Hidden when the model yields one output per order — offering 4
               would take payment for images it never renders. */}
           {tab === "image" && selectedModel?.maxOutputs !== 1 && (
@@ -1616,14 +1616,14 @@ export default function GeneratePage() {
             says which one, instead of leaving it to be inferred from whether an
             upload happens to be present. */}
         {tab === "video" && (
-          <div style={{ display: "flex", gap: 6 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
             {([
               { key: "t2v" as const, label: "ข้อความ → วิดีโอ", hint: "เริ่มจากคำอธิบายล้วน" },
               { key: "i2v" as const, label: "ภาพ → วิดีโอ", hint: "ทำให้ภาพที่มีอยู่เคลื่อนไหว" },
             ]).map((m) => (
               <button key={m.key} onClick={() => setVideoMode(m.key)}
                 style={{
-                  flex: 1, padding: "9px 10px", borderRadius: 10, cursor: "pointer", textAlign: "left",
+                  flex: "1 1 140px", minWidth: "min(132px, 100%)", padding: "9px 10px", borderRadius: 10, cursor: "pointer", textAlign: "left",
                   background: videoMode === m.key
                     ? `linear-gradient(135deg, hsla(${160 + HUE},70%,50%,0.22), hsla(${270 + HUE},70%,55%,0.28))`
                     : "rgba(255,255,255,0.04)",
@@ -1745,7 +1745,7 @@ export default function GeneratePage() {
 
         {/* Advanced + tips on one row. The tips used to be four stacked cards
             in the right rail; they are reference material, not controls. */}
-        <div style={{ display: "flex", gap: 6 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
           {/* Video keeps this panel too — steps and guidance mean nothing to a
               video endpoint, but seed does, and locking the whole panel away
               took reproducible clips with it. */}
