@@ -420,6 +420,27 @@ const GENERATING_FRAME_MAX_H = "var(--gen-frame-h, min(460px, 44vh))";
 /** Where a panel actually fits, worked out when it opens. */
 type Placement = { up: boolean; left: number; width: number; maxHeight: number };
 
+/**
+ * Artwork for the studio's five tabs, keyed by tab.
+ *
+ * Only files that are actually in public/studio-tabs belong here — a missing
+ * one falls back to a text pill, which is better than an <Image> pointed at a
+ * 404. Each is a 440px-wide PNG with its own Thai and English label drawn in,
+ * downscaled from a 2172px original: the button is ~190px on screen, so the
+ * full-size art was 1.5MB to draw something a tenth of that.
+ */
+/** The second line on each plate, matching what the artwork has drawn in. */
+const TAB_EN: Record<TabType, string> = {
+  image: "Image", video: "Video", edit: "Edit", lipsync: "Lip Sync", audio: "Music",
+};
+
+const TAB_ART: Partial<Record<TabType, string>> = {
+  video: "/studio-tabs/tab-video.png",
+  edit: "/studio-tabs/tab-edit.png",
+  lipsync: "/studio-tabs/tab-lipsync.png",
+  audio: "/studio-tabs/tab-music.png",
+};
+
 function Popover({
   id, open, onToggle, label, value, children, align = "left", width = 300,
 }: {
@@ -1454,8 +1475,13 @@ export default function GeneratePage() {
           one question, and the balance sits with the model that spends it. */}
       <aside className="rp-studio-jobs rp-scroll" style={{ borderRight: "1px solid rgba(255,255,255,0.06)", padding: 18, display: "flex", flexDirection: "column", gap: 12, background: "rgba(15,23,42,0.25)" }}>
 
-        {/* Tabs */}
-        <div style={{ display: "flex", gap: 4, padding: 4, background: "rgba(2,6,23,0.5)", borderRadius: 12, border: "1px solid rgba(255,255,255,0.05)" }}>
+        {/* The five things the studio makes.
+            Each one is a piece of art with its own label baked into it, and
+            they stack rather than sit side by side: at 3:1 in a 220px column,
+            five across would leave each 36px wide. A tab whose art has not
+            landed yet falls back to the plain pill, so the menu never waits
+            on a file. */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {([
             { key: "image" as TabType, label: "สร้างภาพ", icon: "▧" },
             { key: "video" as TabType, label: "สร้างวิดีโอ", icon: "▶" },
@@ -1464,30 +1490,46 @@ export default function GeneratePage() {
             { key: "audio" as TabType, label: "สร้างเพลง", icon: "♫" },
           ]).map(t => {
             const blocked = tabBlockedReason(t.key);
+            const disabled = blocked !== null && tab !== t.key;
+            const art = TAB_ART[t.key];
+            const pick = () => {
+              setTab(t.key); setResult(null); setNumOutputs(1);
+              // The audio upload is shared between lip-sync and the cover
+              // panel, and their limits differ by a factor of six: a four
+              // minute song accepted for a cover must not still be sitting
+              // there when the customer opens lip-sync, where the bill
+              // follows the track's length.
+              if (t.key !== tab) { setInputAudio(null); setInputAudioName(null); setInputAudioFile(null); }
+            };
+
+            if (art) {
+              return (
+                <button key={t.key} type="button" className="rp-tab-art"
+                  data-active={tab === t.key ? "true" : "false"}
+                  disabled={disabled} onClick={pick}
+                  title={blocked ?? t.label} aria-label={t.label}
+                  aria-current={tab === t.key ? "true" : undefined}>
+                  <Image src={art} alt={t.label} width={440} height={147} sizes="220px" priority={t.key === "image"} />
+                </button>
+              );
+            }
+
+            // Drawn to match the artwork beside it — same plate, same 3:1, same
+            // neon edge — so a tab still waiting on its art reads as part of
+            // the set rather than as the one that is missing.
             return (
-            <button key={t.key}
-              disabled={blocked !== null && tab !== t.key}
-              title={blocked ?? undefined}
-              onClick={() => {
-                setTab(t.key); setResult(null); setNumOutputs(1);
-                // The audio upload is shared between lip-sync and the cover
-                // panel, and their limits differ by a factor of six: a four
-                // minute song accepted for a cover must not still be sitting
-                // there when the customer opens lip-sync, where the bill
-                // follows the track's length.
-                if (t.key !== tab) { setInputAudio(null); setInputAudioName(null); setInputAudioFile(null); }
-              }}
-              style={{
-                flex: 1, padding: "8px 6px", borderRadius: 8, border: "none",
-                cursor: blocked !== null && tab !== t.key ? "not-allowed" : "pointer",
-                background: tab === t.key ? `linear-gradient(135deg, hsl(${160 + HUE},70%,50%), hsl(${270 + HUE},70%,55%))` : "transparent",
-                color: tab === t.key ? "#fff" : "rgba(226,232,240,0.6)",
-                // Dimmed, not hidden: the customer can see it exists, and the
-                // tooltip says why it is not available right now.
-                opacity: blocked !== null && tab !== t.key ? 0.38 : 1,
-                fontSize: 12, fontWeight: 500, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-              }}>
-              <span style={{ fontSize: 12 }}>{t.icon}</span>{t.label}
+            <button key={t.key} type="button" className="rp-tab-plate"
+              data-active={tab === t.key ? "true" : "false"}
+              disabled={disabled}
+              title={blocked ?? t.label}
+              onClick={pick}
+              aria-current={tab === t.key ? "true" : undefined}>
+              <span className="rp-tab-plate-icon" aria-hidden="true">{t.icon}</span>
+              <span className="rp-tab-plate-text">
+                <span className="rp-tab-plate-th">{t.label}</span>
+                <span className="rp-tab-plate-en">{TAB_EN[t.key]}</span>
+              </span>
+              <span className="rp-tab-plate-go" aria-hidden="true">&rsaquo;</span>
             </button>
             );
           })}
@@ -2536,6 +2578,70 @@ export default function GeneratePage() {
         .rp-studio-jobs > *,
         .rp-studio-input > *,
         .rp-studio-set > * { flex-shrink: 0; }
+        /* Tab artwork. The images are all equally bright, so the unselected
+           ones are held back and the chosen one lit, rather than relying on
+           the art to say which is active. */
+        .rp-tab-art {
+          display: block;
+          width: 100%;
+          padding: 0;
+          border: none;
+          background: transparent;
+          border-radius: 10px;
+          line-height: 0;
+          cursor: pointer;
+          filter: saturate(0.7) brightness(0.62);
+          transition: filter 220ms ease, transform 220ms ease;
+        }
+        .rp-tab-art :global(img) { width: 100%; height: auto; display: block; }
+        .rp-tab-art:hover:not(:disabled) {
+          filter: saturate(1.1) brightness(1.08) drop-shadow(0 0 13px hsla(190,90%,60%,0.5));
+          transform: translateY(-1px);
+        }
+        .rp-tab-art[data-active="true"] {
+          filter: saturate(1.15) brightness(1.15) drop-shadow(0 0 16px hsla(280,90%,65%,0.55));
+        }
+        .rp-tab-art:disabled {
+          filter: grayscale(0.75) brightness(0.4);
+          cursor: not-allowed;
+        }
+        /* The stand-in plate: same proportions and neon edge as the artwork. */
+        .rp-tab-plate {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          width: 100%;
+          aspect-ratio: 3 / 1;
+          padding: 0 12px;
+          border-radius: 12px;
+          cursor: pointer;
+          text-align: left;
+          font-family: inherit;
+          color: #e8eaf6;
+          border: 1.5px solid transparent;
+          background:
+            linear-gradient(rgba(2,6,23,0.92), rgba(2,6,23,0.92)) padding-box,
+            linear-gradient(120deg, hsl(280,85%,62%), hsl(190,90%,58%), hsl(160,80%,55%)) border-box;
+          filter: saturate(0.7) brightness(0.62);
+          transition: filter 220ms ease, transform 220ms ease;
+        }
+        .rp-tab-plate-icon { font-size: 22px; opacity: 0.9; flex-shrink: 0; }
+        .rp-tab-plate-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+        .rp-tab-plate-th { font-size: 15px; font-weight: 600; }
+        .rp-tab-plate-en { font-size: 10.5px; letter-spacing: 0.22em; text-transform: uppercase; opacity: 0.65; }
+        .rp-tab-plate-go { font-size: 18px; opacity: 0.75; flex-shrink: 0; }
+        .rp-tab-plate:hover:not(:disabled) {
+          filter: saturate(1.1) brightness(1.08) drop-shadow(0 0 13px hsla(190,90%,60%,0.5));
+          transform: translateY(-1px);
+        }
+        .rp-tab-plate[data-active="true"] {
+          filter: saturate(1.15) brightness(1.15) drop-shadow(0 0 16px hsla(280,90%,65%,0.55));
+        }
+        .rp-tab-plate:disabled { filter: grayscale(0.75) brightness(0.4); cursor: not-allowed; }
+        @media (prefers-reduced-motion: reduce) {
+          .rp-tab-art, .rp-tab-plate { transition: none; }
+          .rp-tab-art:hover:not(:disabled), .rp-tab-plate:hover:not(:disabled) { transform: none; }
+        }
         .rp-studio-center {
           min-height: 0;
           overflow-y: auto;
