@@ -2020,12 +2020,12 @@ export default function GeneratePage() {
             left the canvas too short to show the queue and its animation. It
             comes back, with the new result in it, when the job settles. */}
         {history.length > 0 && !isGenerating && (
-          <div style={{ marginTop: 32 }}>
+          <div style={{ marginTop: 20 }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
               <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em", textTransform: "uppercase" }}>· รุ่นก่อนหน้า (history)</div>
               <a href="/gallery" style={{ fontSize: 11, color: "#a5f3fc", textDecoration: "none", letterSpacing: "0.05em" }}>ดูทั้งหมด →</a>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(8, 1fr)", gap: 8 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(56px, 1fr))", gap: 8 }}>
               {history.slice(0, 16).map((g) => {
                 const src = g.thumbnailUrl || g.resultUrl;
                 const isVideo = g.type === "video" || g.resultUrl?.endsWith(".mp4");
@@ -2562,10 +2562,24 @@ export default function GeneratePage() {
           container-type: size;
           --gen-frame-h: min(460px, max(160px, calc(100cqh - 170px)));
         }
-        /* Four columns still fit here, just tighter. Past this they stop
-           fitting at all, which is the next rule. */
+        /* Four columns need ~1500px before the canvas — the whole point of the
+           page — starts losing. Measured at 1272px: chrome took 820px and the
+           result was left 452px, a third of the display. Below that the two
+           input-side columns stack into one instead, which buys the canvas
+           about 200px back and keeps it above half the width. */
         @media (max-width: 1500px) {
-          .rp-studio { grid-template-columns: 200px 340px minmax(0, 1fr) 270px; }
+          .rp-studio {
+            grid-template-columns: 340px minmax(0, 1fr) 270px;
+            grid-template-rows: auto minmax(0, 1fr);
+          }
+          .rp-studio-jobs {
+            grid-column: 1;
+            grid-row: 1;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+          }
+          .rp-studio-input { grid-column: 1; grid-row: 2; }
+          .rp-studio-center { grid-column: 2; grid-row: 1 / -1; }
+          .rp-studio-set { grid-column: 3; grid-row: 1 / -1; }
         }
         @media (max-width: 1180px) {
           /* Below this the four-column workspace stops being usable — let the
@@ -2574,9 +2588,14 @@ export default function GeneratePage() {
              columns run out of room sooner. */
           .rp-studio {
             grid-template-columns: 1fr;
+            grid-template-rows: none;
             height: auto;
             overflow: visible;
           }
+          .rp-studio-jobs,
+          .rp-studio-input,
+          .rp-studio-center,
+          .rp-studio-set { grid-column: auto; grid-row: auto; }
           .rp-studio-jobs,
           .rp-studio-input,
           .rp-studio-set {
