@@ -1391,9 +1391,13 @@ export default function GeneratePage() {
 
   // ─── RENDER ─────────────────────────────────────────────────────────
   return (
-    <div className={`rp-studio${tab === "audio" ? " rp-studio--lyrics" : ""}`} style={{ color: "#f1f5f9" }}>
-      {/* ═══ LEFT — controls ═══ */}
-      <aside className="rp-studio-left rp-scroll" style={{ borderRight: "1px solid rgba(255,255,255,0.06)", padding: 18, display: "flex", flexDirection: "column", gap: 12, background: "rgba(15,23,42,0.25)" }}>
+    <div className="rp-studio" style={{ color: "#f1f5f9" }}>
+
+      {/* ═══ JOB — which tool, which model, what it costs ═══
+          The rail used to carry all fifteen control groups at 336px wide,
+          which is what made every label truncate. Each column now answers
+          one question, and the balance sits with the model that spends it. */}
+      <aside className="rp-studio-jobs rp-scroll" style={{ borderRight: "1px solid rgba(255,255,255,0.06)", padding: 18, display: "flex", flexDirection: "column", gap: 12, background: "rgba(15,23,42,0.25)" }}>
 
         {/* Tabs */}
         <div style={{ display: "flex", gap: 4, padding: 4, background: "rgba(2,6,23,0.5)", borderRadius: 12, border: "1px solid rgba(255,255,255,0.05)" }}>
@@ -1498,6 +1502,21 @@ export default function GeneratePage() {
           </div>
         </Section>
 
+        {/* Credit balance — absorbs the right rail's credits card, including
+            its top-up link, into a single line. */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, fontSize: 12, color: "#94a3b8" }}>
+          <span style={{ color: "#fbbf24" }}>✦</span>
+          เครดิต <span style={{ fontWeight: 600, color: "#f1f5f9" }}>{creditBalance.toLocaleString()}</span>
+          <a href="/pricing" style={{ color: "#a5f3fc", textDecoration: "none", borderBottom: "1px dotted rgba(165,243,252,0.4)" }}>+ เติม</a>
+        </div>
+      </aside>
+
+      {/* ═══ INPUT — everything handed to the model ═══
+          Prompt, lyrics and every upload together, because "where do I put
+          my file" was the question this layout kept failing to answer. */}
+      <aside className="rp-studio-input rp-scroll" style={{ borderRight: "1px solid rgba(255,255,255,0.06)", padding: 18, display: "flex", flexDirection: "column", gap: 12, background: "rgba(15,23,42,0.18)" }}>
+
+
         {/* Prompt — the only element allowed to grow, so it absorbs whatever
             height the viewport has spare and the rail still fits one screen. */}
         <Section label={tab === "lipsync" ? "Prompt (ไม่บังคับ)" : tab === "audio" ? "สไตล์เพลง" : "Prompt"} grow>
@@ -1532,6 +1551,478 @@ export default function GeneratePage() {
             <span>{prompt.length.toLocaleString()} / 10,000</span>
           </div>
         </Section>
+
+        {tab === "audio" && (
+          <>
+
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 11, color: "#94a3b8", marginRight: 2 }}>เนื้อเพลง</span>
+                {SECTION_TAGS.map((tag) => (
+                  <button key={tag} type="button" disabled={instrumental}
+                    onClick={() => setLyrics((l) => `${l.replace(/\s*$/, "")}${l.trim() ? "\n\n" : ""}${tag}\n`.slice(0, 3000))}
+                    style={{
+                      padding: "3px 8px", borderRadius: 7, fontSize: 10.5,
+                      cursor: instrumental ? "default" : "pointer", opacity: instrumental ? 0.4 : 1,
+                      background: "hsla(265,60%,60%,0.12)", color: "#c4b5fd",
+                      border: "1px solid hsla(265,60%,60%,0.28)",
+                      fontFamily: "ui-monospace,monospace",
+                    }}>
+                    {tag}
+                  </button>
+                ))}
+                <label style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#94a3b8", cursor: "pointer" }}>
+                  <input type="checkbox" checked={instrumental} onChange={(e) => setInstrumental(e.target.checked)} />
+                  เพลงบรรเลง (ไม่มีเสียงร้อง)
+                </label>
+              </div>
+              <textarea value={lyrics} onChange={(e) => setLyrics(e.target.value.slice(0, 3000))}
+                disabled={instrumental}
+                placeholder={"[Verse]\nเขียนเนื้อร้องที่นี่\n\n[Chorus]\nท่อนฮุกที่อยากให้ติดหู"}
+                style={{
+                  ...xdrInputStyle, marginTop: 6, padding: 12, fontSize: 13, lineHeight: 1.5,
+                  resize: "none", flex: 1, minHeight: 260, opacity: instrumental ? 0.45 : 1,
+                }} />
+              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontSize: 10.5, color: "#64748b" }}>
+                <span>{instrumental ? "โหมดบรรเลง — เนื้อร้องที่พิมพ์ไว้จะถูกเก็บไว้เฉย ๆ" : "วงเล็บเหลี่ยมบอกโมเดลว่าเป็นท่อนอะไร"}</span>
+                <span style={{ fontFamily: "ui-monospace,monospace" }}>{lyrics.length.toLocaleString()} / 3,000</span>
+              </div>
+
+              {/* Exactly what the model will be told, composed by the same
+                  function the server uses. Shown because chips whose effect
+                  you cannot see are chips you cannot learn to use. */}
+              {styleSummary && (
+                <div style={{
+                  marginTop: 10, padding: "9px 11px", borderRadius: 10,
+                  background: "rgba(2,6,23,0.5)", border: "1px solid rgba(255,255,255,0.08)",
+                }}>
+                  <div style={{ fontSize: 10, letterSpacing: "0.1em", color: "#a5f3fc", marginBottom: 5, textTransform: "uppercase" }}>
+                    สไตล์ที่ส่งให้ AI
+                  </div>
+                  <div style={{ fontSize: 11, color: "#cbd5e1", lineHeight: 1.55, wordBreak: "break-word" }}>
+                    {styleSummary}
+                  </div>
+                </div>
+              )}
+          </>
+        )}
+
+        {/* Text→video or image→video.
+            The providers have always supported both; this is the control that
+            says which one, instead of leaving it to be inferred from whether an
+            upload happens to be present. */}
+        {tab === "video" && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {([
+              { key: "t2v" as const, label: "ข้อความ → วิดีโอ", hint: "เริ่มจากคำอธิบายล้วน" },
+              { key: "i2v" as const, label: "ภาพ → วิดีโอ", hint: "ทำให้ภาพที่มีอยู่เคลื่อนไหว" },
+            ]).map((m) => (
+              <button key={m.key} onClick={() => setVideoMode(m.key)}
+                style={{
+                  flex: "1 1 140px", minWidth: "min(132px, 100%)", padding: "9px 10px", borderRadius: 10, cursor: "pointer", textAlign: "left",
+                  background: videoMode === m.key
+                    ? `linear-gradient(135deg, hsla(${160 + HUE},70%,50%,0.22), hsla(${270 + HUE},70%,55%,0.28))`
+                    : "rgba(255,255,255,0.04)",
+                  color: videoMode === m.key ? "#fff" : "#94a3b8",
+                  border: videoMode === m.key
+                    ? `1px solid hsla(${220 + HUE},70%,60%,0.5)`
+                    : "1px solid rgba(255,255,255,0.08)",
+                }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600 }}>{m.label}</div>
+                <div style={{ fontSize: 10.5, opacity: 0.7, marginTop: 2 }}>{m.hint}</div>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Image upload — the edit source, or the video start frame when the
+            mode calls for one. */}
+        {(tab === "edit" ||
+          (tab === "video" && videoMode === "i2v") ||
+          (tab === "lipsync" && lipsyncNeeds === "image")) && (
+          <Section
+            label={
+              tab === "edit" ? "ภาพต้นฉบับ" : tab === "lipsync" ? "รูปหน้าคนที่จะให้พูด" : "ภาพเริ่มต้น"
+            }
+          >
+            {inputImagePreview ? (
+              <div style={{ position: "relative" }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={inputImagePreview} alt="Input" style={{ width: "100%", borderRadius: 10, maxHeight: 180, objectFit: "cover" }} />
+                <button onClick={() => { setInputImage(null); setInputImagePreview(null); }}
+                  style={{ position: "absolute", top: 8, right: 8, width: 26, height: 26, borderRadius: "50%", background: "rgba(0,0,0,0.65)", color: "#fff", border: "none", cursor: "pointer", fontSize: 14 }}>×</button>
+              </div>
+            ) : (
+              <label style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, borderRadius: 12, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#64748b", fontSize: 12, cursor: "pointer" }}>
+                <div style={{ fontSize: 22, marginBottom: 4 }}>↑</div>
+                อัปโหลดภาพ
+                <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => handleImageUpload(e)} />
+              </label>
+            )}
+          </Section>
+        )}
+
+        {/* Start frame on a text-only clip. The upload lives behind the mode
+            selector, so on t2v the box is simply absent with nothing saying
+            why. Show the affordance and let it flip the mode in one click. */}
+        {tab === "video" && videoMode === "t2v" && (
+          <Section label="ภาพเริ่มต้น">
+            <button type="button" onClick={() => setVideoMode("i2v")}
+              style={{ width: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, padding: 20, borderRadius: 12, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#64748b", fontSize: 12, cursor: "pointer", fontFamily: "inherit", textAlign: "center", lineHeight: 1.5 }}>
+              <div style={{ fontSize: 22, marginBottom: 2 }}>↑</div>
+              อยากให้คลิปเริ่มจากภาพของคุณ?
+              <span style={{ color: `hsl(${220 + HUE},70%,78%)` }}>กดที่นี่เพื่อสลับเป็นโหมด “ภาพ → วิดีโอ”</span>
+            </button>
+          </Section>
+        )}
+
+        {/* The frame the clip should end on — first-and-last-frame models only.
+            Optional: without it the model decides where the motion goes. */}
+        {offersLastFrame && (
+          <Section label="ภาพสุดท้าย (ไม่บังคับ)">
+            {inputImageEnd ? (
+              <div style={{ position: "relative" }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={inputImageEnd} alt="End frame" style={{ width: "100%", borderRadius: 10, maxHeight: 180, objectFit: "cover" }} />
+                <button onClick={() => setInputImageEnd(null)}
+                  style={{ position: "absolute", top: 8, right: 8, width: 26, height: 26, borderRadius: "50%", background: "rgba(0,0,0,0.65)", color: "#fff", border: "none", cursor: "pointer", fontSize: 14 }}>×</button>
+              </div>
+            ) : (
+              <label style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, borderRadius: 12, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#64748b", fontSize: 12, cursor: uploading === "image" ? "wait" : "pointer" }}>
+                <div style={{ fontSize: 22, marginBottom: 4 }}>{uploading === "image" ? "…" : "↑"}</div>
+                {uploading === "image" ? "กำลังอัปโหลด…" : "อัปโหลดภาพที่ต้องการให้คลิปจบ"}
+                <input type="file" accept="image/png,image/jpeg,image/webp" style={{ display: "none" }}
+                  disabled={uploading === "image"} onChange={handleEndFrameUpload} />
+              </label>
+            )}
+          </Section>
+        )}
+
+        {/* Why the end-frame box is not there. Without this the control just
+            vanishes on a model that cannot do first-and-last-frame, which
+            reads as a missing feature rather than a model limit. */}
+        {tab === "video" && videoMode === "i2v" && selectedModel?.video?.lastFrame !== true && (
+          <div style={{ fontSize: 11, lineHeight: 1.6, color: "#64748b", padding: "8px 10px", borderRadius: 8, background: "rgba(2,6,23,0.3)", border: "1px solid rgba(255,255,255,0.06)" }}>
+            โมเดลนี้กำหนด<span style={{ color: "#94a3b8" }}>ภาพสุดท้าย</span>ของคลิปไม่ได้ — ถ้าต้องการ ให้เลือกโมเดลที่รองรับ first-and-last-frame
+          </div>
+        )}
+
+        {/* Lip-sync inputs. Both are uploaded to R2 first and only their URLs
+            travel with the request, so what is held here is a link and a
+            filename rather than the bytes. */}
+        {tab === "lipsync" && lipsyncNeeds === "video" && (
+          <Section label="คลิปต้นฉบับที่จะพากย์ทับ">
+            <FilePick
+              value={sourceVideoName}
+              busy={uploading === "video"}
+              accept="video/mp4,video/webm,video/quicktime"
+              hint="อัปโหลดคลิป (MP4 / WebM)"
+              onPick={(e) => handleMediaUpload(e, "video")}
+              onClear={() => { setSourceVideo(null); setSourceVideoName(null); }}
+            />
+            <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
+              คลิปควรเห็นหน้าชัดและยาวไม่เกิน 40 วินาที · เสียงเดิมในคลิปจะถูกแทนที่ทั้งหมด
+            </div>
+          </Section>
+        )}
+
+        {tab === "lipsync" && (
+          <Section label="ไฟล์เสียงที่จะให้พูด">
+            <FilePick
+              value={inputAudioName}
+              busy={uploading === "audio"}
+              accept="audio/mpeg,audio/wav,audio/ogg,audio/flac,audio/mp4,audio/x-m4a"
+              hint="อัปโหลดเสียง (MP3 / WAV / M4A)"
+              onPick={(e) => handleMediaUpload(e, "audio")}
+              onClear={() => { setInputAudio(null); setInputAudioName(null); setInputAudioFile(null); }}
+            />
+            <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
+              พูดภาษาอะไรก็ได้รวมถึงไทย — โมเดลอ่านคลื่นเสียงเป็นรูปปาก ไม่ได้อ่านภาษา
+            </div>
+          </Section>
+        )}
+
+        {/* Cover mode: the model transcribes this song's melody and sings it
+            again in the style above. The upload path is the lip-sync one, so
+            the same size and length limits apply. */}
+        {musicOpts?.sourceSong && (
+          <Section label="เพลงต้นฉบับที่จะคัฟเวอร์">
+            {/* `coverSourceSeconds` is what a cover may start *from* — a
+                different number from what the model may sing, and set by the
+                12 MB upload cap rather than by the model. Floored, not
+                rounded: the cap is 5 min 30 s and `Math.round` advertised
+                "6 นาที", which is an invitation to pick a file the uploader
+                then rejects. Under-promise on a limit. */}
+            <FilePick
+              value={inputAudioName}
+              busy={uploading === "audio"}
+              accept="audio/mpeg,audio/wav,audio/ogg,audio/flac,audio/mp4,audio/x-m4a"
+              hint={`อัปโหลดเพลง MP3 (ไม่เกิน ${Math.floor(coverSourceSeconds / 60)} นาที, 12 MB)`}
+              onPick={(e) => handleMediaUpload(e, "audio", coverSourceSeconds)}
+              onClear={() => { setInputAudio(null); setInputAudioName(null); setInputAudioFile(null); }}
+            />
+            {inputAudioFile && (
+              <div style={{ marginTop: 10 }}>
+                {/* Keyed on the file itself: picking another track remounts
+                    the player rather than leaving the old waveform up. */}
+                <AudioWave
+                  key={`${inputAudioFile.name}:${inputAudioFile.size}:${inputAudioFile.lastModified}`}
+                  source={inputAudioFile}
+                  height={64}
+                />
+              </div>
+            )}
+            <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
+              AI ถอดเฉพาะ<strong style={{ color: "#94a3b8" }}>ทำนอง</strong>ออกมาแล้วร้องใหม่ทั้งเพลง — เสียงร้องเดิมไม่ได้ถูกนำมาใช้
+              ถ้าอยากได้คำร้องเดิม ให้พิมพ์ลงช่องเนื้อเพลง · WAV/FLAC ทั้งเพลงมักเกิน 12 MB ให้แปลงเป็น MP3 ก่อน
+            </div>
+          </Section>
+        )}
+      </aside>
+
+      {/* ═══ CENTER — canvas / result ═══ */}
+      <main className="rp-studio-center rp-scroll" style={{ padding: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Pill active>
+              {tab === "image" ? `ภาพ ${outputs} ใบ` : tab === "video" ? "วิดีโอ" : tab === "lipsync" ? "ลิปซิงค์" : tab === "audio" ? "เพลง" : "แก้ไขภาพ"}
+            </Pill>
+            {/* Variations is just another order, so it follows the button's rule. */}
+            <Pill disabled={cannotSubmit}
+              title={cannotSubmit && selectedModel?.canOrder === false ? (selectedModel.unavailableReason ?? undefined) : undefined}
+              onClick={() => { if (cannotSubmit) return; setSeed(Math.floor(Math.random() * 99999)); handleGenerate(); }}>Variations</Pill>
+            {tab === "image" && (
+              <Pill disabled={!upscaleAvailable}
+                title={upscaleAvailable ? undefined : "Upscale ยังไม่เปิดให้บริการ"}
+                onClick={() => upscaleAvailable && result?.id && handleUpscale()}>{isUpscaling ? "⟳ Upscale" : "Upscale"}</Pill>
+            )}
+            <Pill onClick={() => { window.location.href = "/gallery"; }}>History</Pill>
+          </div>
+          <div style={{ fontSize: 11, color: "#64748b", fontFamily: "ui-monospace,monospace" }}>
+            session · {session?.user?.name?.toLowerCase().replace(/\s+/g, "_") || "weaver"}
+          </div>
+        </div>
+
+        {/* Result canvas — the only element that flexes, so the workspace
+            fills the viewport exactly instead of overflowing it. */}
+        <div className="rp-studio-canvas rp-scroll" style={{
+          borderRadius: 18, padding: 20,
+          background: "rgba(15,23,42,0.45)",
+          border: "1px solid rgba(255,255,255,0.06)",
+          backdropFilter: "blur(18px)",
+        }}>
+          {isGenerating ? (
+            <div style={{ width: "100%" }}>
+              {/* Width follows the height cap, so the frame keeps its shape and
+                  always fits: one frame per output that is actually coming —
+                  a 2×2 grid fills the same box as a single frame. */}
+              <div style={{ width: `min(100%, calc(${GENERATING_FRAME_MAX_H} * ${aspectNumber(frameAspect)}))`, margin: "0 auto" }}>
+                {tab === "image" && outputs > 1 ? (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 10 }}>
+                    {Array.from({ length: outputs }).map((_, i) => (
+                      <StudioFrame key={i} index={i} seed={(i + 1) * 0.137} aspect={frameAspect} generating={true} progress={progress} />
+                    ))}
+                  </div>
+                ) : (
+                  <StudioFrame index={0} seed={0.42} aspect={frameAspect} generating={true} progress={progress} />
+                )}
+              </div>
+              <GeneratingStatus progress={progress} tab={tab} startedAt={genStartedAt} />
+            </div>
+          ) : result?.status === "completed" && result.resultUrl ? (
+            <div style={{ width: "100%" }}>
+              {result.resultUrls && result.resultUrls.length > 1 ? (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12, marginBottom: 16 }}>
+                  {result.resultUrls.map((url, i) => (
+                    <div key={i} style={{ position: "relative", borderRadius: 12, overflow: "hidden", border: "1px solid rgba(255,255,255,0.06)" }}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={url} alt={`Result ${i + 1}`} style={{ width: "100%", display: "block", objectFit: "contain" }} />
+                      <button onClick={() => handleDownload(url)}
+                        style={{ position: "absolute", top: 8, right: 8, width: 32, height: 32, borderRadius: 8, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", color: "#fff", border: "1px solid rgba(255,255,255,0.15)", cursor: "pointer", fontSize: 13 }}>↓</button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", marginBottom: 16, border: "1px solid rgba(255,255,255,0.06)" }}>
+                  {refImagePreview && tab === "image" ? (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12 }}>
+                      <div style={{ position: "relative" }}>
+                        <span style={{ position: "absolute", top: 8, left: 8, zIndex: 2, padding: "3px 8px", borderRadius: 999, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", fontSize: 10, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>ต้นฉบับ</span>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={refImagePreview} alt="Original" style={{ width: "100%", borderRadius: 12, opacity: 0.7, objectFit: "contain" }} />
+                      </div>
+                      <div style={{ position: "relative" }}>
+                        <span style={{ position: "absolute", top: 8, left: 8, zIndex: 2, padding: "3px 8px", borderRadius: 999, background: `hsla(${160 + HUE},70%,50%,0.3)`, backdropFilter: "blur(8px)", fontSize: 10, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>ผลลัพธ์</span>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={result.resultUrl} alt={prompt} style={{ width: "100%", borderRadius: 12, objectFit: "contain" }} />
+                      </div>
+                    </div>
+                  ) : AUDIO_EXT.test(result.resultUrl) ? (
+                    <AudioResult src={result.resultUrl} title={songTitle || "เพลงของคุณ"} genId={result.id} />
+                  ) : tab === "video" || result.resultUrl.endsWith(".mp4") ? (
+                    <video src={result.resultUrl} controls autoPlay loop style={{ width: "100%", borderRadius: 12, maxHeight: 600, margin: "0 auto", display: "block" }} />
+                  ) : (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={result.resultUrl} alt={prompt} style={{ width: "100%", borderRadius: 12, maxHeight: 600, objectFit: "contain", margin: "0 auto", display: "block" }} />
+                  )}
+                </div>
+              )}
+
+              {/* Action toolbar */}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <Pill onClick={() => handleDownload()}>↓ ดาวน์โหลด</Pill>
+                  <Pill active={isFavorited} onClick={handleFavorite}>{isFavorited ? "♥ บันทึกแล้ว" : "♡ บันทึก"}</Pill>
+                  <Pill onClick={handleShare}>⎋ แชร์</Pill>
+                  {tab !== "video" && !result.resultUrl.endsWith(".mp4") && !AUDIO_EXT.test(result.resultUrl) && (
+                    <Pill onClick={handleUpscale}>{isUpscaling ? "⟳ Upscaling..." : "⤢ Upscale"}</Pill>
+                  )}
+                </div>
+                <Pill onClick={() => setResult(null)}>↻ สร้างใหม่</Pill>
+              </div>
+
+              {/* Retention notice — stated at the moment of delivery, because a
+                  customer who is never told the window will lose work they
+                  assumed was permanent. */}
+              {result.daysLeft != null && (
+                <div style={{
+                  marginTop: 12, padding: "8px 12px", borderRadius: 10, fontSize: 12,
+                  background: result.daysLeft <= 3 ? "rgba(248,113,113,0.12)" : "rgba(148,163,184,0.10)",
+                  color: result.daysLeft <= 3 ? "#fca5a5" : "rgba(203,213,225,0.85)",
+                  display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+                }}>
+                  <span>
+                    {result.daysLeft <= 0
+                      ? "ไฟล์นี้หมดอายุแล้ว"
+                      : `เก็บไฟล์ไว้อีก ${result.daysLeft} วัน — กรุณาดาวน์โหลดเก็บไว้`}
+                  </span>
+                  {result.expiresAt && (
+                    <span style={{ opacity: 0.7 }}>
+                      (ถึง {new Date(result.expiresAt).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" })})
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* Generation info */}
+              <div style={{ display: "flex", alignItems: "center", gap: 16, marginTop: 14, fontSize: 11, color: "#64748b" }}>
+                {result.creditsUsed > 0 && <span>✦ {result.creditsUsed} เครดิต</span>}
+                {result.processingMs && <span>⌚ {(result.processingMs / 1000).toFixed(1)}s</span>}
+                <span style={{ color: "#34d399" }}>✓ สำเร็จ</span>
+              </div>
+            </div>
+          ) : result?.status === "failed" ? (
+            <div style={{ textAlign: "center" }}>
+              <div style={{ width: 80, height: 80, borderRadius: 20, background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)", display: "grid", placeItems: "center", margin: "0 auto 18px", fontSize: 36, color: "#fca5a5" }}>!</div>
+              <h3 style={{ fontSize: 22, fontWeight: 300, margin: "0 0 8px", color: "#fff" }}>สร้างไม่สำเร็จ</h3>
+              <p style={{ fontSize: 13, color: "rgba(203,213,225,0.7)", marginBottom: 18 }}>{result.error || "เกิดข้อผิดพลาด"}</p>
+              <button onClick={() => setResult(null)}
+                style={{ padding: "10px 22px", borderRadius: 10, background: `linear-gradient(135deg, hsl(${160 + HUE},70%,50%), hsl(${280 + HUE},70%,55%))`, color: "#fff", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 500 }}>
+                ลองอีกครั้ง
+              </button>
+            </div>
+          ) : (
+            <div style={{ width: "100%" }}>
+              {tab === "audio" ? (
+                // No sample songs to show yet — offer starting points instead,
+                // one tap to put a description in the prompt.
+                <div style={{ maxWidth: 560, margin: "0 auto", textAlign: "center" }}>
+                  <div style={{ fontSize: 44, marginBottom: 8, color: "#c4b5fd" }}>♫</div>
+                  <h3 style={{ fontSize: 22, fontWeight: 300, color: "#fff", margin: "0 0 6px" }}>สร้างเพลงของคุณเอง</h3>
+                  <p style={{ fontSize: 13, color: "rgba(203,213,225,0.7)", margin: "0 0 18px" }}>
+                    บอกแนวเพลงกับอารมณ์ ใส่เนื้อเพลงเองได้ หรือเว้นว่างไว้เป็นเพลงบรรเลง
+                  </p>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
+                    {MUSIC_STARTERS.map((s) => (
+                      <button key={s} type="button" onClick={() => setPrompt(s)}
+                        style={{ padding: "8px 14px", borderRadius: 999, fontSize: 12, cursor: "pointer", background: "rgba(255,255,255,0.05)", color: "#cbd5e1", border: "1px solid rgba(255,255,255,0.12)" }}>
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : tab === "image" ? (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 16 }}>
+                  {STUDIO_SAMPLES.image.map((s) => (
+                    <SampleFrame key={s.src} src={s.src} label={s.label} aspect={aspectRatio} />
+                  ))}
+                </div>
+              ) : (
+                <div style={{ aspectRatio: ASPECT_RATIO_CSS[aspectRatio] || "1/1", maxHeight: 520, margin: "0 auto" }}>
+                  {(STUDIO_SAMPLES[tab] || STUDIO_SAMPLES.edit).map((s) => (
+                    <SampleFrame key={s.src} src={s.src} label={s.label} aspect={aspectRatio} isVideo={tab === "video"} />
+                  ))}
+                </div>
+              )}
+              <p style={{ fontSize: 13, color: "rgba(203,213,225,0.55)", marginTop: 20, textAlign: "center" }}>
+                {tab === "audio" ? "" : "ตัวอย่างผลงานที่สร้างบนแพลตฟอร์มนี้ — "}เลือกโมเดล พิมพ์ prompt แล้วกด <span style={{ color: "#a5f3fc" }}>ทอ</span> เพื่อเริ่มสร้าง{tab === "video" ? "วิดีโอ" : tab === "edit" ? "การแก้ไข" : tab === "audio" ? "เพลง" : "ภาพ"}ของคุณเอง
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* History strip — recent generations. Stepped aside while a result
+            is being made: its two rows took ~420px of a one-screen layout and
+            left the canvas too short to show the queue and its animation. It
+            comes back, with the new result in it, when the job settles. */}
+        {history.length > 0 && !isGenerating && (
+          <div style={{ marginTop: 32 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em", textTransform: "uppercase" }}>· รุ่นก่อนหน้า (history)</div>
+              <a href="/gallery" style={{ fontSize: 11, color: "#a5f3fc", textDecoration: "none", letterSpacing: "0.05em" }}>ดูทั้งหมด →</a>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(8, 1fr)", gap: 8 }}>
+              {history.slice(0, 16).map((g) => {
+                const src = g.thumbnailUrl || g.resultUrl;
+                const isVideo = g.type === "video" || g.resultUrl?.endsWith(".mp4");
+                // A provider that hands back a real poster image keeps <img>.
+                const srcIsVideo = isVideo && !/\.(png|jpe?g|webp|gif|avif)(\?|$)/i.test(src ?? "");
+                // A song has nothing to draw; it gets a note on its own colour.
+                const isAudio = g.type === "audio" || AUDIO_EXT.test(src ?? "");
+                return (
+                  <button key={g.id} type="button" title={g.prompt}
+                    onClick={() => {
+                      setPrompt(g.prompt);
+                      setTab((g.type as TabType) ?? "image");
+                      document.querySelector(".rp-studio-center")?.scrollTo({ top: 0, behavior: "smooth" });
+                    }}
+                    style={{
+                      aspectRatio: "1",
+                      borderRadius: 8,
+                      padding: 0,
+                      overflow: "hidden",
+                      position: "relative",
+                      border: "1px solid rgba(255,255,255,0.05)",
+                      cursor: "pointer",
+                      background: `linear-gradient(135deg, hsl(${(g.id * 23 + HUE) % 360}, 50%, 15%), hsl(${(g.id * 23 + 60 + HUE) % 360}, 50%, 8%))`,
+                    }}>
+                    {/* A video's thumbnail is the video itself (rented-GPU jobs
+                        store the mp4 there), and <img> draws that as a broken
+                        icon. #t=0.1 makes the browser paint the first frame. */}
+                    {isAudio && (
+                      <AudioCover seed={g.prompt} bars={6} label={false} style={{ position: "absolute", inset: 0 }} />
+                    )}
+                    {src && !isAudio && srcIsVideo && (
+                      <video src={`${src}#t=0.1`} muted playsInline preload="metadata"
+                        style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", pointerEvents: "none" }} />
+                    )}
+                    {src && !isAudio && !srcIsVideo && (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={src} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                    )}
+                    {isVideo && (
+                      <span style={{ position: "absolute", bottom: 4, right: 4, fontSize: 9, color: "#fff", background: "rgba(0,0,0,0.6)", padding: "2px 5px", borderRadius: 4 }}>▶</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* ═══ SETTINGS — the knobs, and the button that spends them ═══ */}
+      <aside className="rp-studio-set rp-scroll" style={{ borderLeft: "1px solid rgba(255,255,255,0.06)", padding: 18, display: "flex", flexDirection: "column", gap: 12, background: "rgba(15,23,42,0.25)" }}>
+
 
         {/* ── Compact control deck ─────────────────────────────────────
             Everything below is one-line triggers. Each opens upward so a
@@ -1822,178 +2313,6 @@ export default function GeneratePage() {
           )}
         </div>
 
-        {/* Text→video or image→video.
-            The providers have always supported both; this is the control that
-            says which one, instead of leaving it to be inferred from whether an
-            upload happens to be present. */}
-        {tab === "video" && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {([
-              { key: "t2v" as const, label: "ข้อความ → วิดีโอ", hint: "เริ่มจากคำอธิบายล้วน" },
-              { key: "i2v" as const, label: "ภาพ → วิดีโอ", hint: "ทำให้ภาพที่มีอยู่เคลื่อนไหว" },
-            ]).map((m) => (
-              <button key={m.key} onClick={() => setVideoMode(m.key)}
-                style={{
-                  flex: "1 1 140px", minWidth: "min(132px, 100%)", padding: "9px 10px", borderRadius: 10, cursor: "pointer", textAlign: "left",
-                  background: videoMode === m.key
-                    ? `linear-gradient(135deg, hsla(${160 + HUE},70%,50%,0.22), hsla(${270 + HUE},70%,55%,0.28))`
-                    : "rgba(255,255,255,0.04)",
-                  color: videoMode === m.key ? "#fff" : "#94a3b8",
-                  border: videoMode === m.key
-                    ? `1px solid hsla(${220 + HUE},70%,60%,0.5)`
-                    : "1px solid rgba(255,255,255,0.08)",
-                }}>
-                <div style={{ fontSize: 12.5, fontWeight: 600 }}>{m.label}</div>
-                <div style={{ fontSize: 10.5, opacity: 0.7, marginTop: 2 }}>{m.hint}</div>
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* Image upload — the edit source, or the video start frame when the
-            mode calls for one. */}
-        {(tab === "edit" ||
-          (tab === "video" && videoMode === "i2v") ||
-          (tab === "lipsync" && lipsyncNeeds === "image")) && (
-          <Section
-            label={
-              tab === "edit" ? "ภาพต้นฉบับ" : tab === "lipsync" ? "รูปหน้าคนที่จะให้พูด" : "ภาพเริ่มต้น"
-            }
-          >
-            {inputImagePreview ? (
-              <div style={{ position: "relative" }}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={inputImagePreview} alt="Input" style={{ width: "100%", borderRadius: 10, maxHeight: 180, objectFit: "cover" }} />
-                <button onClick={() => { setInputImage(null); setInputImagePreview(null); }}
-                  style={{ position: "absolute", top: 8, right: 8, width: 26, height: 26, borderRadius: "50%", background: "rgba(0,0,0,0.65)", color: "#fff", border: "none", cursor: "pointer", fontSize: 14 }}>×</button>
-              </div>
-            ) : (
-              <label style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, borderRadius: 12, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#64748b", fontSize: 12, cursor: "pointer" }}>
-                <div style={{ fontSize: 22, marginBottom: 4 }}>↑</div>
-                อัปโหลดภาพ
-                <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => handleImageUpload(e)} />
-              </label>
-            )}
-          </Section>
-        )}
-
-        {/* Start frame on a text-only clip. The upload lives behind the mode
-            selector, so on t2v the box is simply absent with nothing saying
-            why. Show the affordance and let it flip the mode in one click. */}
-        {tab === "video" && videoMode === "t2v" && (
-          <Section label="ภาพเริ่มต้น">
-            <button type="button" onClick={() => setVideoMode("i2v")}
-              style={{ width: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, padding: 20, borderRadius: 12, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#64748b", fontSize: 12, cursor: "pointer", fontFamily: "inherit", textAlign: "center", lineHeight: 1.5 }}>
-              <div style={{ fontSize: 22, marginBottom: 2 }}>↑</div>
-              อยากให้คลิปเริ่มจากภาพของคุณ?
-              <span style={{ color: `hsl(${220 + HUE},70%,78%)` }}>กดที่นี่เพื่อสลับเป็นโหมด “ภาพ → วิดีโอ”</span>
-            </button>
-          </Section>
-        )}
-
-        {/* The frame the clip should end on — first-and-last-frame models only.
-            Optional: without it the model decides where the motion goes. */}
-        {offersLastFrame && (
-          <Section label="ภาพสุดท้าย (ไม่บังคับ)">
-            {inputImageEnd ? (
-              <div style={{ position: "relative" }}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={inputImageEnd} alt="End frame" style={{ width: "100%", borderRadius: 10, maxHeight: 180, objectFit: "cover" }} />
-                <button onClick={() => setInputImageEnd(null)}
-                  style={{ position: "absolute", top: 8, right: 8, width: 26, height: 26, borderRadius: "50%", background: "rgba(0,0,0,0.65)", color: "#fff", border: "none", cursor: "pointer", fontSize: 14 }}>×</button>
-              </div>
-            ) : (
-              <label style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, borderRadius: 12, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#64748b", fontSize: 12, cursor: uploading === "image" ? "wait" : "pointer" }}>
-                <div style={{ fontSize: 22, marginBottom: 4 }}>{uploading === "image" ? "…" : "↑"}</div>
-                {uploading === "image" ? "กำลังอัปโหลด…" : "อัปโหลดภาพที่ต้องการให้คลิปจบ"}
-                <input type="file" accept="image/png,image/jpeg,image/webp" style={{ display: "none" }}
-                  disabled={uploading === "image"} onChange={handleEndFrameUpload} />
-              </label>
-            )}
-          </Section>
-        )}
-
-        {/* Why the end-frame box is not there. Without this the control just
-            vanishes on a model that cannot do first-and-last-frame, which
-            reads as a missing feature rather than a model limit. */}
-        {tab === "video" && videoMode === "i2v" && selectedModel?.video?.lastFrame !== true && (
-          <div style={{ fontSize: 11, lineHeight: 1.6, color: "#64748b", padding: "8px 10px", borderRadius: 8, background: "rgba(2,6,23,0.3)", border: "1px solid rgba(255,255,255,0.06)" }}>
-            โมเดลนี้กำหนด<span style={{ color: "#94a3b8" }}>ภาพสุดท้าย</span>ของคลิปไม่ได้ — ถ้าต้องการ ให้เลือกโมเดลที่รองรับ first-and-last-frame
-          </div>
-        )}
-
-        {/* Lip-sync inputs. Both are uploaded to R2 first and only their URLs
-            travel with the request, so what is held here is a link and a
-            filename rather than the bytes. */}
-        {tab === "lipsync" && lipsyncNeeds === "video" && (
-          <Section label="คลิปต้นฉบับที่จะพากย์ทับ">
-            <FilePick
-              value={sourceVideoName}
-              busy={uploading === "video"}
-              accept="video/mp4,video/webm,video/quicktime"
-              hint="อัปโหลดคลิป (MP4 / WebM)"
-              onPick={(e) => handleMediaUpload(e, "video")}
-              onClear={() => { setSourceVideo(null); setSourceVideoName(null); }}
-            />
-            <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
-              คลิปควรเห็นหน้าชัดและยาวไม่เกิน 40 วินาที · เสียงเดิมในคลิปจะถูกแทนที่ทั้งหมด
-            </div>
-          </Section>
-        )}
-
-        {tab === "lipsync" && (
-          <Section label="ไฟล์เสียงที่จะให้พูด">
-            <FilePick
-              value={inputAudioName}
-              busy={uploading === "audio"}
-              accept="audio/mpeg,audio/wav,audio/ogg,audio/flac,audio/mp4,audio/x-m4a"
-              hint="อัปโหลดเสียง (MP3 / WAV / M4A)"
-              onPick={(e) => handleMediaUpload(e, "audio")}
-              onClear={() => { setInputAudio(null); setInputAudioName(null); setInputAudioFile(null); }}
-            />
-            <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
-              พูดภาษาอะไรก็ได้รวมถึงไทย — โมเดลอ่านคลื่นเสียงเป็นรูปปาก ไม่ได้อ่านภาษา
-            </div>
-          </Section>
-        )}
-
-        {/* Cover mode: the model transcribes this song's melody and sings it
-            again in the style above. The upload path is the lip-sync one, so
-            the same size and length limits apply. */}
-        {musicOpts?.sourceSong && (
-          <Section label="เพลงต้นฉบับที่จะคัฟเวอร์">
-            {/* `coverSourceSeconds` is what a cover may start *from* — a
-                different number from what the model may sing, and set by the
-                12 MB upload cap rather than by the model. Floored, not
-                rounded: the cap is 5 min 30 s and `Math.round` advertised
-                "6 นาที", which is an invitation to pick a file the uploader
-                then rejects. Under-promise on a limit. */}
-            <FilePick
-              value={inputAudioName}
-              busy={uploading === "audio"}
-              accept="audio/mpeg,audio/wav,audio/ogg,audio/flac,audio/mp4,audio/x-m4a"
-              hint={`อัปโหลดเพลง MP3 (ไม่เกิน ${Math.floor(coverSourceSeconds / 60)} นาที, 12 MB)`}
-              onPick={(e) => handleMediaUpload(e, "audio", coverSourceSeconds)}
-              onClear={() => { setInputAudio(null); setInputAudioName(null); setInputAudioFile(null); }}
-            />
-            {inputAudioFile && (
-              <div style={{ marginTop: 10 }}>
-                {/* Keyed on the file itself: picking another track remounts
-                    the player rather than leaving the old waveform up. */}
-                <AudioWave
-                  key={`${inputAudioFile.name}:${inputAudioFile.size}:${inputAudioFile.lastModified}`}
-                  source={inputAudioFile}
-                  height={64}
-                />
-              </div>
-            )}
-            <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
-              AI ถอดเฉพาะ<strong style={{ color: "#94a3b8" }}>ทำนอง</strong>ออกมาแล้วร้องใหม่ทั้งเพลง — เสียงร้องเดิมไม่ได้ถูกนำมาใช้
-              ถ้าอยากได้คำร้องเดิม ให้พิมพ์ลงช่องเนื้อเพลง · WAV/FLAC ทั้งเพลงมักเกิน 12 MB ให้แปลงเป็น MP3 ก่อน
-            </div>
-          </Section>
-        )}
-
         {/* Advanced + tips on one row. The tips used to be four stacked cards
             in the right rail; they are reference material, not controls. */}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
@@ -2114,313 +2433,7 @@ export default function GeneratePage() {
             <>ทอ ✦ {outputs > 1 ? `${outputs} ภาพ · ` : ""}{totalCredits || "—"} credits</>
           )}
         </button>
-
-        {/* Credit balance — absorbs the right rail's credits card, including
-            its top-up link, into a single line. */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, fontSize: 12, color: "#94a3b8" }}>
-          <span style={{ color: "#fbbf24" }}>✦</span>
-          เครดิต <span style={{ fontWeight: 600, color: "#f1f5f9" }}>{creditBalance.toLocaleString()}</span>
-          <a href="/pricing" style={{ color: "#a5f3fc", textDecoration: "none", borderBottom: "1px dotted rgba(165,243,252,0.4)" }}>+ เติม</a>
-        </div>
       </aside>
-
-      {/* ═══ CENTER — canvas / result ═══ */}
-      {/* The lyric sheet is the real input on the music tab, so it gets a
-          column rather than a 110px slot in the rail — a full song was being
-          read through a letterbox. */}
-      {tab === "audio" && (
-        <aside className="rp-studio-lyrics rp-scroll">
-
-              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                <span style={{ fontSize: 11, color: "#94a3b8", marginRight: 2 }}>เนื้อเพลง</span>
-                {SECTION_TAGS.map((tag) => (
-                  <button key={tag} type="button" disabled={instrumental}
-                    onClick={() => setLyrics((l) => `${l.replace(/\s*$/, "")}${l.trim() ? "\n\n" : ""}${tag}\n`.slice(0, 3000))}
-                    style={{
-                      padding: "3px 8px", borderRadius: 7, fontSize: 10.5,
-                      cursor: instrumental ? "default" : "pointer", opacity: instrumental ? 0.4 : 1,
-                      background: "hsla(265,60%,60%,0.12)", color: "#c4b5fd",
-                      border: "1px solid hsla(265,60%,60%,0.28)",
-                      fontFamily: "ui-monospace,monospace",
-                    }}>
-                    {tag}
-                  </button>
-                ))}
-                <label style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#94a3b8", cursor: "pointer" }}>
-                  <input type="checkbox" checked={instrumental} onChange={(e) => setInstrumental(e.target.checked)} />
-                  เพลงบรรเลง (ไม่มีเสียงร้อง)
-                </label>
-              </div>
-              <textarea value={lyrics} onChange={(e) => setLyrics(e.target.value.slice(0, 3000))}
-                disabled={instrumental}
-                placeholder={"[Verse]\nเขียนเนื้อร้องที่นี่\n\n[Chorus]\nท่อนฮุกที่อยากให้ติดหู"}
-                style={{
-                  ...xdrInputStyle, marginTop: 6, padding: 12, fontSize: 13, lineHeight: 1.5,
-                  resize: "none", flex: 1, minHeight: 260, opacity: instrumental ? 0.45 : 1,
-                }} />
-              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontSize: 10.5, color: "#64748b" }}>
-                <span>{instrumental ? "โหมดบรรเลง — เนื้อร้องที่พิมพ์ไว้จะถูกเก็บไว้เฉย ๆ" : "วงเล็บเหลี่ยมบอกโมเดลว่าเป็นท่อนอะไร"}</span>
-                <span style={{ fontFamily: "ui-monospace,monospace" }}>{lyrics.length.toLocaleString()} / 3,000</span>
-              </div>
-
-              {/* Exactly what the model will be told, composed by the same
-                  function the server uses. Shown because chips whose effect
-                  you cannot see are chips you cannot learn to use. */}
-              {styleSummary && (
-                <div style={{
-                  marginTop: 10, padding: "9px 11px", borderRadius: 10,
-                  background: "rgba(2,6,23,0.5)", border: "1px solid rgba(255,255,255,0.08)",
-                }}>
-                  <div style={{ fontSize: 10, letterSpacing: "0.1em", color: "#a5f3fc", marginBottom: 5, textTransform: "uppercase" }}>
-                    สไตล์ที่ส่งให้ AI
-                  </div>
-                  <div style={{ fontSize: 11, color: "#cbd5e1", lineHeight: 1.55, wordBreak: "break-word" }}>
-                    {styleSummary}
-                  </div>
-                </div>
-              )}
-        </aside>
-      )}
-
-      <main className="rp-studio-center rp-scroll" style={{ padding: 20 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <Pill active>
-              {tab === "image" ? `ภาพ ${outputs} ใบ` : tab === "video" ? "วิดีโอ" : tab === "lipsync" ? "ลิปซิงค์" : tab === "audio" ? "เพลง" : "แก้ไขภาพ"}
-            </Pill>
-            {/* Variations is just another order, so it follows the button's rule. */}
-            <Pill disabled={cannotSubmit}
-              title={cannotSubmit && selectedModel?.canOrder === false ? (selectedModel.unavailableReason ?? undefined) : undefined}
-              onClick={() => { if (cannotSubmit) return; setSeed(Math.floor(Math.random() * 99999)); handleGenerate(); }}>Variations</Pill>
-            {tab === "image" && (
-              <Pill disabled={!upscaleAvailable}
-                title={upscaleAvailable ? undefined : "Upscale ยังไม่เปิดให้บริการ"}
-                onClick={() => upscaleAvailable && result?.id && handleUpscale()}>{isUpscaling ? "⟳ Upscale" : "Upscale"}</Pill>
-            )}
-            <Pill onClick={() => { window.location.href = "/gallery"; }}>History</Pill>
-          </div>
-          <div style={{ fontSize: 11, color: "#64748b", fontFamily: "ui-monospace,monospace" }}>
-            session · {session?.user?.name?.toLowerCase().replace(/\s+/g, "_") || "weaver"}
-          </div>
-        </div>
-
-        {/* Result canvas — the only element that flexes, so the workspace
-            fills the viewport exactly instead of overflowing it. */}
-        <div className="rp-studio-canvas rp-scroll" style={{
-          borderRadius: 18, padding: 20,
-          background: "rgba(15,23,42,0.45)",
-          border: "1px solid rgba(255,255,255,0.06)",
-          backdropFilter: "blur(18px)",
-        }}>
-          {isGenerating ? (
-            <div style={{ width: "100%" }}>
-              {/* Width follows the height cap, so the frame keeps its shape and
-                  always fits: one frame per output that is actually coming —
-                  a 2×2 grid fills the same box as a single frame. */}
-              <div style={{ width: `min(100%, calc(${GENERATING_FRAME_MAX_H} * ${aspectNumber(frameAspect)}))`, margin: "0 auto" }}>
-                {tab === "image" && outputs > 1 ? (
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 10 }}>
-                    {Array.from({ length: outputs }).map((_, i) => (
-                      <StudioFrame key={i} index={i} seed={(i + 1) * 0.137} aspect={frameAspect} generating={true} progress={progress} />
-                    ))}
-                  </div>
-                ) : (
-                  <StudioFrame index={0} seed={0.42} aspect={frameAspect} generating={true} progress={progress} />
-                )}
-              </div>
-              <GeneratingStatus progress={progress} tab={tab} startedAt={genStartedAt} />
-            </div>
-          ) : result?.status === "completed" && result.resultUrl ? (
-            <div style={{ width: "100%" }}>
-              {result.resultUrls && result.resultUrls.length > 1 ? (
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12, marginBottom: 16 }}>
-                  {result.resultUrls.map((url, i) => (
-                    <div key={i} style={{ position: "relative", borderRadius: 12, overflow: "hidden", border: "1px solid rgba(255,255,255,0.06)" }}>
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={url} alt={`Result ${i + 1}`} style={{ width: "100%", display: "block", objectFit: "contain" }} />
-                      <button onClick={() => handleDownload(url)}
-                        style={{ position: "absolute", top: 8, right: 8, width: 32, height: 32, borderRadius: 8, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", color: "#fff", border: "1px solid rgba(255,255,255,0.15)", cursor: "pointer", fontSize: 13 }}>↓</button>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", marginBottom: 16, border: "1px solid rgba(255,255,255,0.06)" }}>
-                  {refImagePreview && tab === "image" ? (
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12 }}>
-                      <div style={{ position: "relative" }}>
-                        <span style={{ position: "absolute", top: 8, left: 8, zIndex: 2, padding: "3px 8px", borderRadius: 999, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", fontSize: 10, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>ต้นฉบับ</span>
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={refImagePreview} alt="Original" style={{ width: "100%", borderRadius: 12, opacity: 0.7, objectFit: "contain" }} />
-                      </div>
-                      <div style={{ position: "relative" }}>
-                        <span style={{ position: "absolute", top: 8, left: 8, zIndex: 2, padding: "3px 8px", borderRadius: 999, background: `hsla(${160 + HUE},70%,50%,0.3)`, backdropFilter: "blur(8px)", fontSize: 10, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>ผลลัพธ์</span>
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={result.resultUrl} alt={prompt} style={{ width: "100%", borderRadius: 12, objectFit: "contain" }} />
-                      </div>
-                    </div>
-                  ) : AUDIO_EXT.test(result.resultUrl) ? (
-                    <AudioResult src={result.resultUrl} title={songTitle || "เพลงของคุณ"} genId={result.id} />
-                  ) : tab === "video" || result.resultUrl.endsWith(".mp4") ? (
-                    <video src={result.resultUrl} controls autoPlay loop style={{ width: "100%", borderRadius: 12, maxHeight: 600, margin: "0 auto", display: "block" }} />
-                  ) : (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={result.resultUrl} alt={prompt} style={{ width: "100%", borderRadius: 12, maxHeight: 600, objectFit: "contain", margin: "0 auto", display: "block" }} />
-                  )}
-                </div>
-              )}
-
-              {/* Action toolbar */}
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <Pill onClick={() => handleDownload()}>↓ ดาวน์โหลด</Pill>
-                  <Pill active={isFavorited} onClick={handleFavorite}>{isFavorited ? "♥ บันทึกแล้ว" : "♡ บันทึก"}</Pill>
-                  <Pill onClick={handleShare}>⎋ แชร์</Pill>
-                  {tab !== "video" && !result.resultUrl.endsWith(".mp4") && !AUDIO_EXT.test(result.resultUrl) && (
-                    <Pill onClick={handleUpscale}>{isUpscaling ? "⟳ Upscaling..." : "⤢ Upscale"}</Pill>
-                  )}
-                </div>
-                <Pill onClick={() => setResult(null)}>↻ สร้างใหม่</Pill>
-              </div>
-
-              {/* Retention notice — stated at the moment of delivery, because a
-                  customer who is never told the window will lose work they
-                  assumed was permanent. */}
-              {result.daysLeft != null && (
-                <div style={{
-                  marginTop: 12, padding: "8px 12px", borderRadius: 10, fontSize: 12,
-                  background: result.daysLeft <= 3 ? "rgba(248,113,113,0.12)" : "rgba(148,163,184,0.10)",
-                  color: result.daysLeft <= 3 ? "#fca5a5" : "rgba(203,213,225,0.85)",
-                  display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
-                }}>
-                  <span>
-                    {result.daysLeft <= 0
-                      ? "ไฟล์นี้หมดอายุแล้ว"
-                      : `เก็บไฟล์ไว้อีก ${result.daysLeft} วัน — กรุณาดาวน์โหลดเก็บไว้`}
-                  </span>
-                  {result.expiresAt && (
-                    <span style={{ opacity: 0.7 }}>
-                      (ถึง {new Date(result.expiresAt).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" })})
-                    </span>
-                  )}
-                </div>
-              )}
-
-              {/* Generation info */}
-              <div style={{ display: "flex", alignItems: "center", gap: 16, marginTop: 14, fontSize: 11, color: "#64748b" }}>
-                {result.creditsUsed > 0 && <span>✦ {result.creditsUsed} เครดิต</span>}
-                {result.processingMs && <span>⌚ {(result.processingMs / 1000).toFixed(1)}s</span>}
-                <span style={{ color: "#34d399" }}>✓ สำเร็จ</span>
-              </div>
-            </div>
-          ) : result?.status === "failed" ? (
-            <div style={{ textAlign: "center" }}>
-              <div style={{ width: 80, height: 80, borderRadius: 20, background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)", display: "grid", placeItems: "center", margin: "0 auto 18px", fontSize: 36, color: "#fca5a5" }}>!</div>
-              <h3 style={{ fontSize: 22, fontWeight: 300, margin: "0 0 8px", color: "#fff" }}>สร้างไม่สำเร็จ</h3>
-              <p style={{ fontSize: 13, color: "rgba(203,213,225,0.7)", marginBottom: 18 }}>{result.error || "เกิดข้อผิดพลาด"}</p>
-              <button onClick={() => setResult(null)}
-                style={{ padding: "10px 22px", borderRadius: 10, background: `linear-gradient(135deg, hsl(${160 + HUE},70%,50%), hsl(${280 + HUE},70%,55%))`, color: "#fff", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 500 }}>
-                ลองอีกครั้ง
-              </button>
-            </div>
-          ) : (
-            <div style={{ width: "100%" }}>
-              {tab === "audio" ? (
-                // No sample songs to show yet — offer starting points instead,
-                // one tap to put a description in the prompt.
-                <div style={{ maxWidth: 560, margin: "0 auto", textAlign: "center" }}>
-                  <div style={{ fontSize: 44, marginBottom: 8, color: "#c4b5fd" }}>♫</div>
-                  <h3 style={{ fontSize: 22, fontWeight: 300, color: "#fff", margin: "0 0 6px" }}>สร้างเพลงของคุณเอง</h3>
-                  <p style={{ fontSize: 13, color: "rgba(203,213,225,0.7)", margin: "0 0 18px" }}>
-                    บอกแนวเพลงกับอารมณ์ ใส่เนื้อเพลงเองได้ หรือเว้นว่างไว้เป็นเพลงบรรเลง
-                  </p>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
-                    {MUSIC_STARTERS.map((s) => (
-                      <button key={s} type="button" onClick={() => setPrompt(s)}
-                        style={{ padding: "8px 14px", borderRadius: 999, fontSize: 12, cursor: "pointer", background: "rgba(255,255,255,0.05)", color: "#cbd5e1", border: "1px solid rgba(255,255,255,0.12)" }}>
-                        {s}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ) : tab === "image" ? (
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 16 }}>
-                  {STUDIO_SAMPLES.image.map((s) => (
-                    <SampleFrame key={s.src} src={s.src} label={s.label} aspect={aspectRatio} />
-                  ))}
-                </div>
-              ) : (
-                <div style={{ aspectRatio: ASPECT_RATIO_CSS[aspectRatio] || "1/1", maxHeight: 520, margin: "0 auto" }}>
-                  {(STUDIO_SAMPLES[tab] || STUDIO_SAMPLES.edit).map((s) => (
-                    <SampleFrame key={s.src} src={s.src} label={s.label} aspect={aspectRatio} isVideo={tab === "video"} />
-                  ))}
-                </div>
-              )}
-              <p style={{ fontSize: 13, color: "rgba(203,213,225,0.55)", marginTop: 20, textAlign: "center" }}>
-                {tab === "audio" ? "" : "ตัวอย่างผลงานที่สร้างบนแพลตฟอร์มนี้ — "}เลือกโมเดล พิมพ์ prompt แล้วกด <span style={{ color: "#a5f3fc" }}>ทอ</span> เพื่อเริ่มสร้าง{tab === "video" ? "วิดีโอ" : tab === "edit" ? "การแก้ไข" : tab === "audio" ? "เพลง" : "ภาพ"}ของคุณเอง
-              </p>
-            </div>
-          )}
-        </div>
-
-        {/* History strip — recent generations. Stepped aside while a result
-            is being made: its two rows took ~420px of a one-screen layout and
-            left the canvas too short to show the queue and its animation. It
-            comes back, with the new result in it, when the job settles. */}
-        {history.length > 0 && !isGenerating && (
-          <div style={{ marginTop: 32 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-              <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em", textTransform: "uppercase" }}>· รุ่นก่อนหน้า (history)</div>
-              <a href="/gallery" style={{ fontSize: 11, color: "#a5f3fc", textDecoration: "none", letterSpacing: "0.05em" }}>ดูทั้งหมด →</a>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(8, 1fr)", gap: 8 }}>
-              {history.slice(0, 16).map((g) => {
-                const src = g.thumbnailUrl || g.resultUrl;
-                const isVideo = g.type === "video" || g.resultUrl?.endsWith(".mp4");
-                // A provider that hands back a real poster image keeps <img>.
-                const srcIsVideo = isVideo && !/\.(png|jpe?g|webp|gif|avif)(\?|$)/i.test(src ?? "");
-                // A song has nothing to draw; it gets a note on its own colour.
-                const isAudio = g.type === "audio" || AUDIO_EXT.test(src ?? "");
-                return (
-                  <button key={g.id} type="button" title={g.prompt}
-                    onClick={() => {
-                      setPrompt(g.prompt);
-                      setTab((g.type as TabType) ?? "image");
-                      document.querySelector(".rp-studio-center")?.scrollTo({ top: 0, behavior: "smooth" });
-                    }}
-                    style={{
-                      aspectRatio: "1",
-                      borderRadius: 8,
-                      padding: 0,
-                      overflow: "hidden",
-                      position: "relative",
-                      border: "1px solid rgba(255,255,255,0.05)",
-                      cursor: "pointer",
-                      background: `linear-gradient(135deg, hsl(${(g.id * 23 + HUE) % 360}, 50%, 15%), hsl(${(g.id * 23 + 60 + HUE) % 360}, 50%, 8%))`,
-                    }}>
-                    {/* A video's thumbnail is the video itself (rented-GPU jobs
-                        store the mp4 there), and <img> draws that as a broken
-                        icon. #t=0.1 makes the browser paint the first frame. */}
-                    {isAudio && (
-                      <AudioCover seed={g.prompt} bars={6} label={false} style={{ position: "absolute", inset: 0 }} />
-                    )}
-                    {src && !isAudio && srcIsVideo && (
-                      <video src={`${src}#t=0.1`} muted playsInline preload="metadata"
-                        style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", pointerEvents: "none" }} />
-                    )}
-                    {src && !isAudio && !srcIsVideo && (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={src} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                    )}
-                    {isVideo && (
-                      <span style={{ position: "absolute", bottom: 4, right: 4, fontSize: 9, color: "#fff", background: "rgba(0,0,0,0.6)", padding: "2px 5px", borderRadius: 4 }}>▶</span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-      </main>
 
       <style jsx>{`
         @keyframes spin { to { transform: rotate(360deg); } }
@@ -2450,11 +2463,13 @@ export default function GeneratePage() {
            scrollbar, which normal-height screens never see. */
         .rp-studio {
           display: grid;
-          grid-template-columns: 336px 1fr;
+          grid-template-columns: 220px 380px minmax(0, 1fr) 300px;
           height: calc(100dvh - 80px);
           overflow: hidden;
         }
-        .rp-studio-left {
+        .rp-studio-jobs,
+        .rp-studio-input,
+        .rp-studio-set {
           min-height: 0;
           overflow-y: auto;
         }
@@ -2463,18 +2478,9 @@ export default function GeneratePage() {
            than a scrollbar. Pin them, and let the prompt (which carries an
            inline flex:1, and inline wins over this rule) be the only thing
            that gives. Past its min-height the rail scrolls instead. */
-        .rp-studio-left > * { flex-shrink: 0; }
-        /* Music tab only — the third column carries the lyrics editor. */
-        .rp-studio--lyrics { grid-template-columns: 336px 380px 1fr; }
-        .rp-studio-lyrics {
-          min-height: 0;
-          overflow-y: auto;
-          display: flex;
-          flex-direction: column;
-          padding: 18px;
-          border-right: 1px solid rgba(255,255,255,0.06);
-          background: rgba(15,23,42,0.18);
-        }
+        .rp-studio-jobs > *,
+        .rp-studio-input > *,
+        .rp-studio-set > * { flex-shrink: 0; }
         .rp-studio-center {
           min-height: 0;
           overflow-y: auto;
@@ -2501,31 +2507,30 @@ export default function GeneratePage() {
           container-type: size;
           --gen-frame-h: min(460px, max(160px, calc(100cqh - 170px)));
         }
-        @media (max-width: 1180px) {
-          .rp-studio { grid-template-columns: 300px 1fr; }
-          .rp-studio--lyrics { grid-template-columns: 300px 320px 1fr; }
+        /* Four columns still fit here, just tighter. Past this they stop
+           fitting at all, which is the next rule. */
+        @media (max-width: 1500px) {
+          .rp-studio { grid-template-columns: 200px 340px minmax(0, 1fr) 270px; }
         }
-        @media (max-width: 860px) {
-          /* Below this the two-pane workspace stops being usable — let the
-             page breathe and scroll normally instead of squeezing both. */
+        @media (max-width: 1180px) {
+          /* Below this the four-column workspace stops being usable — let the
+             page breathe and scroll normally instead of squeezing every rail.
+             It stacks earlier than the old two-pane layout did, because four
+             columns run out of room sooner. */
           .rp-studio {
             grid-template-columns: 1fr;
             height: auto;
             overflow: visible;
           }
-          .rp-studio-left {
+          .rp-studio-jobs,
+          .rp-studio-input,
+          .rp-studio-set {
             overflow: visible;
             border-right: none !important;
+            border-left: none !important;
             border-bottom: 1px solid rgba(255,255,255,0.06) !important;
           }
           .rp-studio-center { overflow: visible; }
-          /* Stacked: the editor keeps its own height instead of a column's. */
-          .rp-studio--lyrics { grid-template-columns: 1fr; }
-          .rp-studio-lyrics {
-            overflow: visible;
-            border-right: none;
-            border-bottom: 1px solid rgba(255,255,255,0.06);
-          }
           /* Here the canvas grows with its content, which a size container
              cannot do — fall back to the viewport for the frame cap. */
           .rp-studio-canvas {
