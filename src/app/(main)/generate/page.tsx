@@ -1954,12 +1954,15 @@ export default function GeneratePage() {
           <Section label="เพลงต้นฉบับที่จะคัฟเวอร์">
             {/* `coverSourceSeconds` is what a cover may start *from* — a
                 different number from what the model may sing, and set by the
-                12 MB upload cap rather than by the model. */}
+                12 MB upload cap rather than by the model. Floored, not
+                rounded: the cap is 5 min 30 s and `Math.round` advertised
+                "6 นาที", which is an invitation to pick a file the uploader
+                then rejects. Under-promise on a limit. */}
             <FilePick
               value={inputAudioName}
               busy={uploading === "audio"}
               accept="audio/mpeg,audio/wav,audio/ogg,audio/flac,audio/mp4,audio/x-m4a"
-              hint={`อัปโหลดเพลง MP3 (ไม่เกิน ${Math.round(coverSourceSeconds / 60)} นาที, 12 MB)`}
+              hint={`อัปโหลดเพลง MP3 (ไม่เกิน ${Math.floor(coverSourceSeconds / 60)} นาที, 12 MB)`}
               onPick={(e) => handleMediaUpload(e, "audio", coverSourceSeconds)}
               onClear={() => { setInputAudio(null); setInputAudioName(null); }}
             />
