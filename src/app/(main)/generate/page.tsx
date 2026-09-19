@@ -1236,7 +1236,7 @@ export default function GeneratePage() {
 
   // ─── RENDER ─────────────────────────────────────────────────────────
   return (
-    <div className="rp-studio" style={{ color: "#f1f5f9" }}>
+    <div className={`rp-studio${tab === "audio" ? " rp-studio--lyrics" : ""}`} style={{ color: "#f1f5f9" }}>
       {/* ═══ LEFT — controls ═══ */}
       <aside className="rp-studio-left rp-scroll" style={{ borderRight: "1px solid rgba(255,255,255,0.06)", padding: 18, display: "flex", flexDirection: "column", gap: 12, background: "rgba(15,23,42,0.25)" }}>
 
@@ -1359,44 +1359,6 @@ export default function GeneratePage() {
                     : "อธิบายภาพที่ต้องการ..."
             }
             style={{ ...xdrInputStyle, padding: 14, fontSize: 14, lineHeight: 1.5, resize: "none", flex: 1, minHeight: tab === "audio" ? 72 : 96 }} />
-          {/* Lyrics are their own field: the music model sings exactly this.
-              Left empty — or with the instrumental switch on — the song has no
-              vocal, which beats a voice humming invented syllables. */}
-          {tab === "audio" && (
-            <>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
-                <span style={{ fontSize: 11, color: "#94a3b8", marginRight: 2 }}>เนื้อเพลง</span>
-                {SECTION_TAGS.map((tag) => (
-                  <button key={tag} type="button" disabled={instrumental}
-                    onClick={() => setLyrics((l) => `${l.replace(/\s*$/, "")}${l.trim() ? "\n\n" : ""}${tag}\n`.slice(0, 3000))}
-                    style={{
-                      padding: "3px 8px", borderRadius: 7, fontSize: 10.5,
-                      cursor: instrumental ? "default" : "pointer", opacity: instrumental ? 0.4 : 1,
-                      background: "hsla(265,60%,60%,0.12)", color: "#c4b5fd",
-                      border: "1px solid hsla(265,60%,60%,0.28)",
-                      fontFamily: "ui-monospace,monospace",
-                    }}>
-                    {tag}
-                  </button>
-                ))}
-                <label style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#94a3b8", cursor: "pointer" }}>
-                  <input type="checkbox" checked={instrumental} onChange={(e) => setInstrumental(e.target.checked)} />
-                  เพลงบรรเลง (ไม่มีเสียงร้อง)
-                </label>
-              </div>
-              <textarea value={lyrics} onChange={(e) => setLyrics(e.target.value.slice(0, 3000))}
-                disabled={instrumental}
-                placeholder={"[Verse]\nเขียนเนื้อร้องที่นี่\n\n[Chorus]\nท่อนฮุกที่อยากให้ติดหู"}
-                style={{
-                  ...xdrInputStyle, marginTop: 6, padding: 12, fontSize: 13, lineHeight: 1.5,
-                  resize: "none", height: 110, opacity: instrumental ? 0.45 : 1,
-                }} />
-              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontSize: 10.5, color: "#64748b" }}>
-                <span>{instrumental ? "โหมดบรรเลง — เนื้อร้องที่พิมพ์ไว้จะถูกเก็บไว้เฉย ๆ" : "วงเล็บเหลี่ยมบอกโมเดลว่าเป็นท่อนอะไร"}</span>
-                <span style={{ fontFamily: "ui-monospace,monospace" }}>{lyrics.length.toLocaleString()} / 3,000</span>
-              </div>
-            </>
-          )}
           {/* The free Pollinations model does not understand Thai — it renders an
               unrelated image instead of failing, so warn before credits are spent. */}
           {selectedModel?.provider.slug === "pollinations" && THAI_CHARS.test(prompt) && (
@@ -1579,7 +1541,7 @@ export default function GeneratePage() {
               discarded without a word. The video start frame is its own control
               below, wired to the mode selector. */}
           {tab !== "video" && tab !== "audio" && (
-          <Popover id="ref" open={openPanel} onToggle={setOpenPanel} label="ภาพอ้างอิง"
+          <Popover id="ref" open={openPanel} onToggle={setOpenPanel} label="↑ ภาพอ้างอิง"
             value={refImagePreview ? "1" : "—"} width={286} align="right">
             {refImagePreview ? (
               <div style={{ position: "relative" }}>
@@ -1666,6 +1628,20 @@ export default function GeneratePage() {
           </Section>
         )}
 
+        {/* Start frame on a text-only clip. The upload lives behind the mode
+            selector, so on t2v the box is simply absent with nothing saying
+            why. Show the affordance and let it flip the mode in one click. */}
+        {tab === "video" && videoMode === "t2v" && (
+          <Section label="ภาพเริ่มต้น">
+            <button type="button" onClick={() => setVideoMode("i2v")}
+              style={{ width: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, padding: 20, borderRadius: 12, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#64748b", fontSize: 12, cursor: "pointer", fontFamily: "inherit", textAlign: "center", lineHeight: 1.5 }}>
+              <div style={{ fontSize: 22, marginBottom: 2 }}>↑</div>
+              อยากให้คลิปเริ่มจากภาพของคุณ?
+              <span style={{ color: `hsl(${220 + HUE},70%,78%)` }}>กดที่นี่เพื่อสลับเป็นโหมด “ภาพ → วิดีโอ”</span>
+            </button>
+          </Section>
+        )}
+
         {/* The frame the clip should end on — first-and-last-frame models only.
             Optional: without it the model decides where the motion goes. */}
         {offersLastFrame && (
@@ -1686,6 +1662,15 @@ export default function GeneratePage() {
               </label>
             )}
           </Section>
+        )}
+
+        {/* Why the end-frame box is not there. Without this the control just
+            vanishes on a model that cannot do first-and-last-frame, which
+            reads as a missing feature rather than a model limit. */}
+        {tab === "video" && videoMode === "i2v" && selectedModel?.video?.lastFrame !== true && (
+          <div style={{ fontSize: 11, lineHeight: 1.6, color: "#64748b", padding: "8px 10px", borderRadius: 8, background: "rgba(2,6,23,0.3)", border: "1px solid rgba(255,255,255,0.06)" }}>
+            โมเดลนี้กำหนด<span style={{ color: "#94a3b8" }}>ภาพสุดท้าย</span>ของคลิปไม่ได้ — ถ้าต้องการ ให้เลือกโมเดลที่รองรับ first-and-last-frame
+          </div>
         )}
 
         {/* Lip-sync inputs. Both are uploaded to R2 first and only their URLs
@@ -1874,6 +1859,46 @@ export default function GeneratePage() {
       </aside>
 
       {/* ═══ CENTER — canvas / result ═══ */}
+      {/* The lyric sheet is the real input on the music tab, so it gets a
+          column rather than a 110px slot in the rail — a full song was being
+          read through a letterbox. */}
+      {tab === "audio" && (
+        <aside className="rp-studio-lyrics rp-scroll">
+
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 11, color: "#94a3b8", marginRight: 2 }}>เนื้อเพลง</span>
+                {SECTION_TAGS.map((tag) => (
+                  <button key={tag} type="button" disabled={instrumental}
+                    onClick={() => setLyrics((l) => `${l.replace(/\s*$/, "")}${l.trim() ? "\n\n" : ""}${tag}\n`.slice(0, 3000))}
+                    style={{
+                      padding: "3px 8px", borderRadius: 7, fontSize: 10.5,
+                      cursor: instrumental ? "default" : "pointer", opacity: instrumental ? 0.4 : 1,
+                      background: "hsla(265,60%,60%,0.12)", color: "#c4b5fd",
+                      border: "1px solid hsla(265,60%,60%,0.28)",
+                      fontFamily: "ui-monospace,monospace",
+                    }}>
+                    {tag}
+                  </button>
+                ))}
+                <label style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#94a3b8", cursor: "pointer" }}>
+                  <input type="checkbox" checked={instrumental} onChange={(e) => setInstrumental(e.target.checked)} />
+                  เพลงบรรเลง (ไม่มีเสียงร้อง)
+                </label>
+              </div>
+              <textarea value={lyrics} onChange={(e) => setLyrics(e.target.value.slice(0, 3000))}
+                disabled={instrumental}
+                placeholder={"[Verse]\nเขียนเนื้อร้องที่นี่\n\n[Chorus]\nท่อนฮุกที่อยากให้ติดหู"}
+                style={{
+                  ...xdrInputStyle, marginTop: 6, padding: 12, fontSize: 13, lineHeight: 1.5,
+                  resize: "none", flex: 1, minHeight: 260, opacity: instrumental ? 0.45 : 1,
+                }} />
+              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontSize: 10.5, color: "#64748b" }}>
+                <span>{instrumental ? "โหมดบรรเลง — เนื้อร้องที่พิมพ์ไว้จะถูกเก็บไว้เฉย ๆ" : "วงเล็บเหลี่ยมบอกโมเดลว่าเป็นท่อนอะไร"}</span>
+                <span style={{ fontFamily: "ui-monospace,monospace" }}>{lyrics.length.toLocaleString()} / 3,000</span>
+              </div>
+        </aside>
+      )}
+
       <main className="rp-studio-center rp-scroll" style={{ padding: 20 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -2156,6 +2181,17 @@ export default function GeneratePage() {
            inline flex:1, and inline wins over this rule) be the only thing
            that gives. Past its min-height the rail scrolls instead. */
         .rp-studio-left > * { flex-shrink: 0; }
+        /* Music tab only — the third column carries the lyrics editor. */
+        .rp-studio--lyrics { grid-template-columns: 336px 380px 1fr; }
+        .rp-studio-lyrics {
+          min-height: 0;
+          overflow-y: auto;
+          display: flex;
+          flex-direction: column;
+          padding: 18px;
+          border-right: 1px solid rgba(255,255,255,0.06);
+          background: rgba(15,23,42,0.18);
+        }
         .rp-studio-center {
           min-height: 0;
           overflow-y: auto;
@@ -2184,6 +2220,7 @@ export default function GeneratePage() {
         }
         @media (max-width: 1180px) {
           .rp-studio { grid-template-columns: 300px 1fr; }
+          .rp-studio--lyrics { grid-template-columns: 300px 320px 1fr; }
         }
         @media (max-width: 860px) {
           /* Below this the two-pane workspace stops being usable — let the
@@ -2199,6 +2236,13 @@ export default function GeneratePage() {
             border-bottom: 1px solid rgba(255,255,255,0.06) !important;
           }
           .rp-studio-center { overflow: visible; }
+          /* Stacked: the editor keeps its own height instead of a column's. */
+          .rp-studio--lyrics { grid-template-columns: 1fr; }
+          .rp-studio-lyrics {
+            overflow: visible;
+            border-right: none;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+          }
           /* Here the canvas grows with its content, which a size container
              cannot do — fall back to the viewport for the frame cap. */
           .rp-studio-canvas {
