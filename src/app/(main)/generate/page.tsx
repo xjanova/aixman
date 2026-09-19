@@ -43,6 +43,7 @@ import {
 import { downloadGeneration, extensionOf, saveFavorite } from "@/lib/client-actions";
 import { nextQueueProgress, shownFraction, type QueueProgress, type QueueReading } from "@/lib/queue-progress";
 import { AUDIO_EXT, AudioCover, AudioResult } from "@/components/xdreamer/audio";
+import { AudioWave } from "@/components/xdreamer/audio-wave";
 
 const HUE = 70;
 
@@ -835,6 +836,15 @@ export default function GeneratePage() {
    */
   const [inputAudio, setInputAudio] = useState<string | null>(null);
   const [inputAudioName, setInputAudioName] = useState<string | null>(null);
+  /**
+   * The picked File itself, kept only so its waveform can be drawn.
+   *
+   * `inputAudio` is the R2 URL the request travels with, and R2 answers no
+   * `Access-Control-Allow-Origin` — so once the track is up there the browser
+   * can play it but can never read its samples. In the picker they are already
+   * in hand. That is the one moment a waveform is free.
+   */
+  const [inputAudioFile, setInputAudioFile] = useState<File | null>(null);
   const [sourceVideo, setSourceVideo] = useState<string | null>(null);
   const [sourceVideoName, setSourceVideoName] = useState<string | null>(null);
   const [uploading, setUploading] = useState<"audio" | "video" | "image" | null>(null);
@@ -1129,7 +1139,7 @@ export default function GeneratePage() {
       toast("error", "อัปโหลดไม่สำเร็จ", result.error);
       return;
     }
-    if (kind === "audio") { setInputAudio(result.url!); setInputAudioName(file.name); }
+    if (kind === "audio") { setInputAudio(result.url!); setInputAudioName(file.name); setInputAudioFile(file); }
     else { setSourceVideo(result.url!); setSourceVideoName(file.name); }
   };
 
@@ -1406,7 +1416,7 @@ export default function GeneratePage() {
                 // minute song accepted for a cover must not still be sitting
                 // there when the customer opens lip-sync, where the bill
                 // follows the track's length.
-                if (t.key !== tab) { setInputAudio(null); setInputAudioName(null); }
+                if (t.key !== tab) { setInputAudio(null); setInputAudioName(null); setInputAudioFile(null); }
               }}
               style={{
                 flex: 1, padding: "8px 6px", borderRadius: 8, border: "none",
@@ -1939,7 +1949,7 @@ export default function GeneratePage() {
               accept="audio/mpeg,audio/wav,audio/ogg,audio/flac,audio/mp4,audio/x-m4a"
               hint="อัปโหลดเสียง (MP3 / WAV / M4A)"
               onPick={(e) => handleMediaUpload(e, "audio")}
-              onClear={() => { setInputAudio(null); setInputAudioName(null); }}
+              onClear={() => { setInputAudio(null); setInputAudioName(null); setInputAudioFile(null); }}
             />
             <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
               พูดภาษาอะไรก็ได้รวมถึงไทย — โมเดลอ่านคลื่นเสียงเป็นรูปปาก ไม่ได้อ่านภาษา
@@ -1964,8 +1974,19 @@ export default function GeneratePage() {
               accept="audio/mpeg,audio/wav,audio/ogg,audio/flac,audio/mp4,audio/x-m4a"
               hint={`อัปโหลดเพลง MP3 (ไม่เกิน ${Math.floor(coverSourceSeconds / 60)} นาที, 12 MB)`}
               onPick={(e) => handleMediaUpload(e, "audio", coverSourceSeconds)}
-              onClear={() => { setInputAudio(null); setInputAudioName(null); }}
+              onClear={() => { setInputAudio(null); setInputAudioName(null); setInputAudioFile(null); }}
             />
+            {inputAudioFile && (
+              <div style={{ marginTop: 10 }}>
+                {/* Keyed on the file itself: picking another track remounts
+                    the player rather than leaving the old waveform up. */}
+                <AudioWave
+                  key={`${inputAudioFile.name}:${inputAudioFile.size}:${inputAudioFile.lastModified}`}
+                  source={inputAudioFile}
+                  height={64}
+                />
+              </div>
+            )}
             <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
               AI ถอดเฉพาะ<strong style={{ color: "#94a3b8" }}>ทำนอง</strong>ออกมาแล้วร้องใหม่ทั้งเพลง — เสียงร้องเดิมไม่ได้ถูกนำมาใช้
               ถ้าอยากได้คำร้องเดิม ให้พิมพ์ลงช่องเนื้อเพลง · WAV/FLAC ทั้งเพลงมักเกิน 12 MB ให้แปลงเป็น MP3 ก่อน
@@ -2238,7 +2259,7 @@ export default function GeneratePage() {
                       </div>
                     </div>
                   ) : AUDIO_EXT.test(result.resultUrl) ? (
-                    <AudioResult src={result.resultUrl} title={songTitle || "เพลงของคุณ"} />
+                    <AudioResult src={result.resultUrl} title={songTitle || "เพลงของคุณ"} genId={result.id} />
                   ) : tab === "video" || result.resultUrl.endsWith(".mp4") ? (
                     <video src={result.resultUrl} controls autoPlay loop style={{ width: "100%", borderRadius: 12, maxHeight: 600, margin: "0 auto", display: "block" }} />
                   ) : (

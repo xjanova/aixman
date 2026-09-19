@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * Songs have no picture of their own, so every place that shows a generation
  * — the studio result, gallery tiles, the detail dialog, history strips —
@@ -5,7 +7,8 @@
  * equaliser on top. Same seed, same colours, wherever the song appears.
  */
 
-import type { CSSProperties } from "react";
+import { useState, type CSSProperties } from "react";
+import { AudioWave } from "./audio-wave";
 
 /** A result URL that is a song rather than a still or a clip. */
 export const AUDIO_EXT = /\.(flac|mp3|wav|ogg|opus|m4a)(\?|$)/i;
@@ -48,14 +51,61 @@ export function AudioCover({ seed, bars = 14, animated = false, label = true, st
   );
 }
 
-/** Cover, title and a player — how a finished song is presented. */
-export function AudioResult({ src, title, autoPlay = true }: { src: string; title: string; autoPlay?: boolean }) {
+/** A song's text, cut down to something safe to hand a filesystem. */
+function fileBase(title: string): string {
+  const cleaned = title.replace(/[\\/:*?"<>|\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+  return cleaned.slice(0, 60) || "song";
+}
+
+/**
+ * Cover, title and a player — how a finished song is presented.
+ *
+ * `genId` routes the bytes through `/api/studio/audio/[id]`, which is the only
+ * way the browser can read them: R2 sends no CORS header, so the waveform and
+ * the WAV/MP3 downloads have nothing to work with otherwise. Without an id
+ * (an older row, or a URL from somewhere else) it falls back to the plain
+ * player, which only ever needed to *play* the URL.
+ */
+export function AudioResult({ src, title, genId, autoPlay = true }: {
+  src: string;
+  title: string;
+  genId?: number;
+  autoPlay?: boolean;
+}) {
+  // The equaliser follows what is actually coming out of the speakers. It used
+  // to run forever, so a paused song still looked like it was playing.
+  const [playing, setPlaying] = useState(false);
+  const ext = (src.split("?")[0].split(".").pop() || "flac").toLowerCase();
+
   return (
     <div style={{ maxWidth: 560, margin: "0 auto", borderRadius: 16, overflow: "hidden", border: "1px solid rgba(255,255,255,0.08)", background: "rgba(2,6,23,0.5)" }}>
-      <AudioCover seed={title} animated style={{ aspectRatio: "16/7" }} />
+      <AudioCover seed={title} animated={playing} style={{ aspectRatio: "16/7" }} />
       <div style={{ padding: 16 }}>
-        <div style={{ fontSize: 14, color: "#f1f5f9", marginBottom: 12, lineHeight: 1.45 }}>{title}</div>
-        <audio src={src} controls autoPlay={autoPlay} style={{ width: "100%" }} />
+        {genId ? (
+          <AudioWave
+            // Remounts on a different song, which is what resets the player.
+            key={genId}
+            source={`/api/studio/audio/${genId}`}
+            title={title}
+            downloadName={fileBase(title)}
+            originalExt={ext}
+            autoPlay={autoPlay}
+            onPlayingChange={setPlaying}
+          />
+        ) : (
+          <>
+            <div style={{ fontSize: 14, color: "#f1f5f9", marginBottom: 12, lineHeight: 1.45 }}>{title}</div>
+            <audio
+              src={src}
+              controls
+              autoPlay={autoPlay}
+              onPlay={() => setPlaying(true)}
+              onPause={() => setPlaying(false)}
+              onEnded={() => setPlaying(false)}
+              style={{ width: "100%" }}
+            />
+          </>
+        )}
       </div>
     </div>
   );
