@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import type { WorkerProfile } from './config';
 import { buildMiniMaxH3Workflow, frameLengthFor } from './workflows/minimax-h3';
 import { getCatalogEntry, type CatalogJobParams } from './catalog';
+import type { MusicStyleParams } from '@/lib/music-style';
 import { isAcceptedAudioSource, readAudioSource, readFrameSource } from './frame-input';
 import { PROGRESS_PATH } from './provision';
 import {
@@ -94,6 +95,14 @@ const SUBMIT_TIMEOUT_MS = 60_000;
 const POLL_TIMEOUT_MS = 20_000;
 /** Progress is read while a customer waits on the page — never make them wait on it. */
 const PROGRESS_TIMEOUT_MS = 4_000;
+/** How long a render download may go without a single byte before it is dead. */
+const DOWNLOAD_STALL_MS = 60_000;
+/**
+ * And the longest it may take even while bytes keep arriving. At the slowest
+ * tunnel worth waiting for (~50 KB/s) this still carries 45 MB, which is more
+ * than the longest song this catalogue can produce.
+ */
+const DOWNLOAD_CEILING_MS = 15 * 60_000;
 
 
 /**
@@ -158,7 +167,25 @@ export class WorkerClient {
    */
   async download(assetUrl: string): Promise<{ buffer: Buffer; contentType: string }> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 120_000);
+    // A *stall* timeout, not a total one. The old fixed 120 s cap was a
+    // bandwidth test dressed up as a health check: a 5-minute song is a 33 MB
+    // FLAC, so finishing inside it required 273 KB/s sustained out of a rented
+    // host's Cloudflare quick tunnel. Job #100 drew a slower machine, aborted
+    // at the 120 s mark with the render already sitting there finished, and
+    // did it twice — the customer was refunded for a song that existed.
+    //
+    // What actually says "this tunnel is dead" is silence, so that is what is
+    // measured: the clock restarts on every chunk that arrives. A stopped
+    // transfer still fails in 60 s; a slow one finishes.
+    let timer = setTimeout(() => controller.abort(), DOWNLOAD_STALL_MS);
+    const keepalive = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => controller.abort(), DOWNLOAD_STALL_MS);
+    };
+    // The backstop, in case bytes keep trickling forever: the worker is being
+    // paid for by the second while this runs.
+    const ceiling = setTimeout(() => controller.abort(), DOWNLOAD_CEILING_MS);
+    const startedAt = Date.now();
     try {
       const res = await fetch(assetUrl, {
         headers: this.authToken ? { Authorization: `Bearer ${this.authToken}` } : undefined,
@@ -166,12 +193,43 @@ export class WorkerClient {
         cache: 'no-store',
       });
       if (!res.ok) throw new Error(`Failed to download render (HTTP ${res.status})`);
+
+      const chunks: Buffer[] = [];
+      let bytes = 0;
+      if (res.body) {
+        const reader = res.body.getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            chunks.push(Buffer.from(value));
+            bytes += value.byteLength;
+            keepalive();
+          }
+        }
+      } else {
+        // No streaming body (a mocked fetch in tests, or a runtime that does
+        // not expose one) — the stall timer cannot help, the ceiling still can.
+        const whole = Buffer.from(await res.arrayBuffer());
+        chunks.push(whole);
+        bytes = whole.byteLength;
+      }
+
+      // Rendered bytes and the speed they arrived at. Without this the only
+      // evidence of a slow tunnel was a job that failed for no stated reason.
+      const seconds = Math.max(0.001, (Date.now() - startedAt) / 1000);
+      console.log(
+        `[gpu] downloaded render: ${(bytes / 1_048_576).toFixed(1)} MB in ${seconds.toFixed(1)}s ` +
+          `(${(bytes / 1024 / seconds).toFixed(0)} KB/s)`
+      );
+
       return {
-        buffer: Buffer.from(await res.arrayBuffer()),
+        buffer: Buffer.concat(chunks, bytes),
         contentType: res.headers.get('content-type') || 'video/mp4',
       };
     } finally {
       clearTimeout(timer);
+      clearTimeout(ceiling);
     }
   }
 
@@ -415,6 +473,13 @@ export class WorkerClient {
         // The staged name, never the URL the customer uploaded to.
         audioFilename: frames.audio,
         lyrics: typeof params.extra?.lyrics === 'string' ? params.extra.lyrics : undefined,
+        // The song controls the customer picked. Stored on the generation and
+        // carried here untouched — the catalogue entry is what turns them into
+        // the model's `[Tags]` line, so every client composes the same prompt.
+        music:
+          params.extra?.music && typeof params.extra.music === 'object'
+            ? (params.extra.music as MusicStyleParams)
+            : undefined,
         resolution: typeof params.extra?.resolution === 'string' ? params.extra.resolution : undefined,
         // What this worker actually has, not what the catalogue wishes it had.
         // Community nodes bring their own weights.

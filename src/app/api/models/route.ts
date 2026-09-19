@@ -39,13 +39,28 @@ const UNAVAILABLE_TEXT: Record<Exclude<Availability, 'ok'>, string> = {
  * already decide how the job is built, and a second copy in the database would
  * drift the moment a template changes.
  */
-function musicOptions(modelKey: string): { lyrics: boolean; sourceSong: boolean; maxDuration: number | null } | null {
+function musicOptions(modelKey: string): {
+  lyrics: boolean;
+  sourceSong: boolean;
+  maxDuration: number | null;
+  autoLength: boolean;
+  maxSourceSeconds: number | null;
+  controls: boolean;
+} | null {
   const entry = getCatalogEntry(modelKey);
   if (!entry || entry.outputKind !== 'audio') return null;
   return {
     lyrics: true,
     sourceSong: entry.needs?.audio === true,
     maxDuration: entry.limits?.maxDuration ?? null,
+    // The model picks the length: the studio hides its length control and the
+    // price stops depending on one.
+    autoLength: entry.music?.autoLength === true,
+    // What a cover may start from — a different number from what it may sing,
+    // and bounded by the upload cap rather than by the model.
+    maxSourceSeconds: entry.music?.maxSourceSeconds ?? entry.limits?.maxDuration ?? null,
+    // Whether the voice / genre / arrangement chips do anything here.
+    controls: entry.music?.controls === true,
   };
 }
 

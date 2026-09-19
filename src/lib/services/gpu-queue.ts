@@ -638,7 +638,24 @@ export class GpuQueue {
         })
       );
     } catch (error) {
-      await this.settleFailure(job, worker, `Failed to save render: ${(error as Error).message}`, true);
+      const message = (error as Error).message;
+      // The render finished — what failed was carrying it home. That is the
+      // tunnel's fault or R2's, never the model's, so it must not count
+      // towards the model's failure streak (same reasoning as the
+      // no-storage branch above).
+      await this.settleFailure(job, worker, `Failed to save render: ${message}`, true, {
+        countAgainstModel: false,
+      });
+      // And the machine goes. A tunnel that could not deliver these bytes will
+      // not deliver the retry's either: job #100 spent both of its attempts on
+      // one stalled worker and the customer got a refund instead of the song
+      // that was sitting there finished. Draining takes it out of
+      // `assignIdleWorkers` (which only looks at 'ready'), so the retry lands
+      // on a fresh rental. Ordered after settleFailure, which writes the
+      // worker row back from the copy it was handed.
+      await GpuWorkerManager.drain(worker.id, `Could not deliver a finished render: ${message}`).catch(
+        (err) => console.error('[gpu] could not drain a worker that failed to deliver:', (err as Error).message)
+      );
       return;
     }
 

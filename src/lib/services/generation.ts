@@ -11,6 +11,7 @@ import { fitFrame } from '@/lib/gpu/frame';
 import { getCatalogEntry, isAdminOnlyPreset } from '@/lib/gpu/catalog';
 import { isAcceptedAudioSource, isAcceptedFrameSource } from '@/lib/gpu/frame-input';
 import { creditsForDuration } from '@/lib/pricing';
+import { sanitizeMusicParams } from '@/lib/music-style';
 import { getGpuConfig } from '@/lib/gpu/config';
 import { GpuBalance, RENDERING_PAUSED_MESSAGE } from './gpu-balance';
 import { raiseAlert } from '@/lib/notify/alerts';
@@ -102,7 +103,18 @@ export class GenerationService {
     // Default to a short clip, not the longest the model allows. A song's
     // "short" is a different number: five seconds of music is not a render
     // anyone ordered, and the music tab always sends a length anyway.
-    const gpuDuration = bounded(request.params?.duration, request.type === 'audio' ? 60 : 5, model.maxDuration);
+    //
+    // …except on a model that decides its own length. YuE2 stops at its end
+    // token and is sized from the frames it produced, so `duration` there is a
+    // token budget, not an order — and a budget set from a client's number (or
+    // from the 60 s fallback when it sends none) is just a place for the song
+    // to get cut off. Those models always get their full budget; the price no
+    // longer depends on it either, since the entry carries no duration curve.
+    const catalogEntry = gpuModel ? getCatalogEntry(model.modelId) : undefined;
+    const gpuDuration =
+      catalogEntry?.music?.autoLength === true
+        ? catalogEntry.limits?.maxDuration ?? model.maxDuration ?? 0
+        : bounded(request.params?.duration, request.type === 'audio' ? 60 : 5, model.maxDuration);
 
     // A rented-GPU job is one render with one output, whatever count was asked
     // for — charging per requested output sold four images and delivered one.
@@ -112,7 +124,7 @@ export class GenerationService {
     // is what keeps the price on the same slope. Restricting this to 'video'
     // sold long songs at the one-minute price.
     const curve = gpuModel && (request.type === 'video' || request.type === 'audio')
-      ? getCatalogEntry(model.modelId)?.pricing.durationCurve
+      ? catalogEntry?.pricing.durationCurve
       : undefined;
     const requiredCredits = creditsForDuration(model.creditsPerUnit, curve, gpuDuration) * numOutputs;
 
@@ -129,8 +141,16 @@ export class GenerationService {
     if (gpuModel && options.isAdmin !== true && isAdminOnlyPreset(model.modelId, baseParams.resolution)) {
       delete baseParams.resolution;
     }
+    // Song controls are kept as the choices themselves, not as the sentence
+    // they compose into — the catalogue entry builds the model's `[Tags]` line
+    // from these at render time, so every client agrees, and a customer
+    // reopening the order still sees "หญิง / ลูกทุ่ง / 92 BPM".
+    const music = catalogEntry?.music?.controls === true ? sanitizeMusicParams(baseParams.music) : undefined;
+    delete baseParams.music;
+
     const storedParams: Record<string, unknown> = {
       ...baseParams,
+      ...(music ? { music } : {}),
       ...(request.inputAudio ? { inputAudio: request.inputAudio } : {}),
       ...(request.inputVideo ? { inputVideo: request.inputVideo } : {}),
       ...(request.inputImageEnd ? { inputImageEnd: request.inputImageEnd } : {}),

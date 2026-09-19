@@ -1,5 +1,11 @@
 import type { ParameterBinding, UiWorkflow } from './comfy-convert';
 import type { DurationCurve } from '@/lib/pricing';
+import {
+  composeMusicTags,
+  musicComplexity,
+  musicVariance,
+  type MusicStyleParams,
+} from '@/lib/music-style';
 import type { GpuArch } from './gpu-specs';
 import minimaxH3Template from './workflows/templates/minimax_h3_t2v.json';
 import aceStepTemplate from './workflows/templates/ace_step_1_5.json';
@@ -65,6 +71,13 @@ export interface CatalogJobParams {
   audioFilename?: string;
   /** Song lyrics (music models). Empty means an instrumental. */
   lyrics?: string;
+  /**
+   * Suno-style song controls: who sings, in what genre, at what tempo, with
+   * which instruments, how dense. Composed into the model's `[Tags]` text by
+   * `composeMusicTags`, except the two that are real node inputs —
+   * `complexity` picks `mode` and `variance` is `temperature`.
+   */
+  music?: MusicStyleParams;
   /** Output resolution preset id from `CatalogEntry.video.resolutions`. */
   resolution?: string;
   /**
@@ -144,6 +157,24 @@ export interface CatalogEntry {
     firstFrame?: boolean;
     lastFrame?: boolean;
     resolutions?: VideoResolutionOption[];
+  };
+  /**
+   * Music controls for an audio model, sent to the studio by `/api/models`.
+   *
+   * `autoLength` is the important one. YuE2 stops at its own end token and the
+   * latent is sized from the frames it actually produced, so a song already
+   * ends where the song ends — *unless* the token budget runs out first, and
+   * that budget is `max_duration`. Letting a customer pick 300 s therefore did
+   * not buy a 300 s song, it only decided where the song got cut off. With
+   * `autoLength` nobody picks: the model gets `limits.maxDuration` worth of
+   * budget and finishes the song it was writing.
+   */
+  music?: {
+    autoLength?: boolean;
+    /** Longest song a cover may start from, in seconds; see the upload cap. */
+    maxSourceSeconds?: number;
+    /** The studio draws the chips and sliders only where they do something. */
+    controls?: boolean;
   };
   /** Rough seconds of render per output second, for the first ETA before history exists. */
   baselineSecondsPerUnit: number;
@@ -584,31 +615,58 @@ const YUE2_CKPT: ModelDownload = {
 };
 
 /**
- * Seconds of song to ask for.
+ * The token budget a song gets, in seconds.
  *
- * `max_duration` is a ceiling, not a target: the model stops at its own
- * terminator and the node docs say long prompts shorten it further. Feeding it
- * the customer's requested length therefore sets the *most* they can get, and
- * the price is charged on that same number by `creditsForDuration`.
+ * Nobody chooses this any more. `max_duration` never was a target — the node's
+ * own tooltip says "generation can stop earlier", the tokenizer converts it to
+ * `max_duration * 25` tokens, and `EmptyYuE2LatentAudio.seconds` is wired from
+ * the frames the model actually produced. So the song's real length is decided
+ * by the model, and the only thing this number ever did was decide whether it
+ * got to *finish*: too low and `_generate` hits its budget before the end
+ * token, which is a track that stops mid-phrase. Job #100 asked for 300 s.
+ *
+ * `YUE2_MAX_SECONDS` is what everyone gets now, and it is deliberately far
+ * past any ordinary song. It costs nothing when unused: the model stops when
+ * it stops, and 480 s of budget on a 3.5-minute song renders in exactly the
+ * time 3.5 minutes of song renders in.
  */
-function yue2Duration(seconds: number): number {
-  return Math.min(YUE2_MAX_SECONDS, Math.max(15, Math.round(seconds || 120)));
+function yue2Duration(): number {
+  return YUE2_MAX_SECONDS;
 }
 
 /**
- * The ceiling offered for one song.
+ * The budget one song gets, in seconds — not a length anyone is sold.
  *
- * 240 s was a guess that turned out to be shorter than the songs people bring:
- * a four-and-a-half minute track had to be cut before it could be covered. The
- * node itself allows 900 s; 330 s covers the ordinary pop song with margin and
- * keeps the worst-case render on a rented card inside `jobTimeoutMinutes`
- * (measured: 90 s of song = 47 GPU-seconds on a 3090, so ~0.5x real time).
+ * 240 was a guess, then 330; both were short enough to cut real songs off. The
+ * node allows 900 and the 24,576-token context allows about 940, so 480 is not
+ * near any limit — it is chosen so the worst case still lands inside
+ * `jobTimeoutMinutes` (measured ~0.4x real time on a 3090: 300 s of song took
+ * 113 GPU-seconds, so 480 s of song is about 3 minutes of render).
  */
-const YUE2_MAX_SECONDS = 330;
+const YUE2_MAX_SECONDS = 480;
+
+/**
+ * Longest song a cover may start from.
+ *
+ * Bounded by the 12 MB upload cap rather than by the model: an MP3 at 320 kbps
+ * runs 12 MB at about five minutes, and the studio's hint says so.
+ */
+const YUE2_MAX_SOURCE_SECONDS = 330;
 
 /** Empty lyrics are what YuE2 reads as "instrumental" — no marker text. */
 function yue2Lyrics(p: CatalogJobParams): string {
+  if (p.music?.instrumental === true) return '';
   return (p.lyrics ?? '').trim();
+}
+
+/**
+ * The `[Tags]` text: what the customer typed, plus what they picked.
+ *
+ * Kept here rather than in the studio so every client — web, mobile, a future
+ * API caller — turns the same choices into the same prompt.
+ */
+function yue2Style(p: CatalogJobParams): string {
+  return composeMusicTags(p.prompt, p.music);
 }
 
 const YUE2_MUSIC: CatalogEntry = {
@@ -628,11 +686,18 @@ const YUE2_MUSIC: CatalogEntry = {
     // style and lyrics go to both passes: the score writer plans to them, and
     // the singer is conditioned on them again. Binding only one leaves the
     // other singing the template's demo song.
-    { nodeId: '33_24', input: 'style', value: p.prompt },
+    { nodeId: '33_24', input: 'style', value: yue2Style(p) },
     { nodeId: '33_24', input: 'lyrics', value: yue2Lyrics(p) },
-    { nodeId: '33_25', input: 'style', value: p.prompt },
+    { nodeId: '33_25', input: 'style', value: yue2Style(p) },
     { nodeId: '33_25', input: 'lyrics', value: yue2Lyrics(p) },
-    { nodeId: '33_25', input: 'max_duration', value: yue2Duration(p.durationSeconds) },
+    { nodeId: '33_25', input: 'max_duration', value: yue2Duration() },
+    // How dense the arrangement is, as the model sees it: `full` writes a
+    // chord-annotated score for the band to play, `melody` writes the tune
+    // alone. Both passes must agree — they share one instruction string.
+    { nodeId: '33_24', input: 'mode', value: musicComplexity(p.music?.complexity).mode },
+    { nodeId: '33_25', input: 'mode', value: musicComplexity(p.music?.complexity).mode },
+    // How far it may wander from the obvious take.
+    { nodeId: '33_25', input: 'temperature', value: musicVariance(p.music?.variance) },
     // Three seeds, one song: score, singer, and the sampler that decodes it.
     // Leaving any of them on the template's constant makes a "new" seed return
     // a near-identical track.
@@ -642,8 +707,13 @@ const YUE2_MUSIC: CatalogEntry = {
     { nodeId: '10', input: 'filename_prefix', value: 'audio/aixman', optional: true },
   ],
   baselineSecondsPerUnit: 2,
-  pricing: { creditsPerUnit: 12, costPerUnit: 0.05, durationCurve: { unitSeconds: 60, exponent: 1 } },
+  // Flat per song. Length is no longer a thing anyone picks, so there is
+  // nothing to price it by: `lengthFactor` falls back to 1 and the ETA becomes
+  // the median of past songs, which is the right estimate when every song gets
+  // the same budget.
+  pricing: { creditsPerUnit: 20, costPerUnit: 0.05 },
   limits: { maxDuration: YUE2_MAX_SECONDS },
+  music: { autoLength: true, controls: true },
 };
 
 const YUE2_COVER: CatalogEntry = {
@@ -662,12 +732,17 @@ const YUE2_COVER: CatalogEntry = {
   hardware: { minVramMb: 16384, diskGb: 70, gpuModels: [], minArch: 'ampere', minCudaVersion: '13.0' },
   needs: { audio: true },
   bind: (p) => [
-    { nodeId: '33_25', input: 'style', value: p.prompt },
+    { nodeId: '33_25', input: 'style', value: yue2Style(p) },
     // A cover can keep the original words (the customer types them) or be sung
     // on vowels when left empty — the model never hears the source vocal, only
     // its melody, so nothing supplies lyrics by itself.
     { nodeId: '33_25', input: 'lyrics', value: yue2Lyrics(p) },
-    { nodeId: '33_25', input: 'max_duration', value: yue2Duration(p.durationSeconds) },
+    { nodeId: '33_25', input: 'max_duration', value: yue2Duration() },
+    // `mode` stays on the template's `melody`, whatever density was asked for:
+    // SheetSage2 already supplies the score, and the official template and the
+    // node's own tooltip both pin melody for covers. Here the density slider
+    // reaches the arrangement through the tags only.
+    { nodeId: '33_25', input: 'temperature', value: musicVariance(p.music?.variance) },
     { nodeId: '33_25', input: 'seed', value: p.seed },
     { nodeId: '33_34', input: 'seed', value: p.seed, optional: true },
     // LoadAudio sits outside the subgraph; the name is what `stageAudio` put in
@@ -676,8 +751,9 @@ const YUE2_COVER: CatalogEntry = {
     { nodeId: '10', input: 'filename_prefix', value: 'audio/aixman', optional: true },
   ],
   baselineSecondsPerUnit: 3,
-  pricing: { creditsPerUnit: 15, costPerUnit: 0.06, durationCurve: { unitSeconds: 60, exponent: 1 } },
+  pricing: { creditsPerUnit: 20, costPerUnit: 0.06 },
   limits: { maxDuration: YUE2_MAX_SECONDS },
+  music: { autoLength: true, controls: true, maxSourceSeconds: YUE2_MAX_SOURCE_SECONDS },
 };
 
 

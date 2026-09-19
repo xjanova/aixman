@@ -2,6 +2,8 @@
 // Core Types for AIXMAN AI Generation Platform
 // ============================================================
 
+import type { MusicStyleParams } from '@/lib/music-style';
+
 export type GenerationType = 'image' | 'video' | 'edit' | 'audio';
 export type GenerationStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
 export type CreditTransactionType = 'purchase' | 'usage' | 'refund' | 'bonus' | 'admin_adjust';
@@ -53,6 +55,12 @@ export interface GenerationParams {
   numOutputs?: number;
   /** Song lyrics for music models; omitted for an instrumental. */
   lyrics?: string;
+  /**
+   * Song direction for music models — who sings, genre, tempo, instruments,
+   * how dense. Stored as the choices; `composeMusicTags` turns them into the
+   * model's prompt server-side so every client composes the same one.
+   */
+  music?: MusicStyleParams;
   /**
    * Resolution preset id for a video model that offers presets (GPU catalogue
    * `video.resolutions`, e.g. H3's '720p'); the model's default when omitted.

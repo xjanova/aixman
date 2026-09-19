@@ -47,6 +47,12 @@ interface AIModel {
     lyrics: boolean;
     sourceSong: boolean;
     maxDuration: number | null;
+    /** The model decides how long the song is — no length control is drawn. */
+    autoLength?: boolean;
+    /** Longest song a cover may start from; bounded by the upload cap. */
+    maxSourceSeconds?: number | null;
+    /** Whether the voice / genre / arrangement controls apply to this model. */
+    controls?: boolean;
   } | null;
 }
 

@@ -22,6 +22,24 @@ import Image from "next/image";
 import { useAppStore } from "@/lib/store/app-store";
 import { useToast } from "@/components/ui/toast-provider";
 import { creditsForDuration } from "@/lib/pricing";
+import {
+  composeMusicTags,
+  musicComplexity,
+  MUSIC_AGES,
+  MUSIC_BPM_MAX,
+  MUSIC_BPM_MIN,
+  MUSIC_COMPLEXITY_DEFAULT,
+  MUSIC_GENRES,
+  MUSIC_INSTRUMENTS,
+  MUSIC_LANGUAGES,
+  MUSIC_MOODS,
+  MUSIC_TIMBRES,
+  MUSIC_VARIANCE_DEFAULT,
+  MUSIC_VARIANCE_MAX,
+  MUSIC_VARIANCE_MIN,
+  MUSIC_VOCALS,
+  type MusicStyleParams,
+} from "@/lib/music-style";
 import { downloadGeneration, extensionOf, saveFavorite } from "@/lib/client-actions";
 import { nextQueueProgress, shownFraction, type QueueProgress, type QueueReading } from "@/lib/queue-progress";
 import { AUDIO_EXT, AudioCover, AudioResult } from "@/components/xdreamer/audio";
@@ -459,6 +477,96 @@ function Popover({
 }
 
 /**
+ * A row of song-style chips.
+ *
+ * Single-select rows clear on a second click: the model is happiest when it is
+ * told less rather than told something wrong, so "no opinion" has to stay
+ * reachable once an opinion has been given. Multi-select rows stop accepting
+ * new picks at `max` — past three moods or six instruments the tags start
+ * eating the song's own token budget (they share one 24,576-token context).
+ */
+function ChipRow({
+  label, options, value, onChange, max, disabled, hint,
+}: {
+  label: string;
+  options: { id: string; label: string }[];
+  value: string | string[] | undefined;
+  onChange: (next: string | string[] | undefined) => void;
+  max?: number;
+  disabled?: boolean;
+  hint?: string;
+}) {
+  const multi = Array.isArray(value) || typeof max === "number";
+  const picked = Array.isArray(value) ? value : value ? [value] : [];
+  const full = multi && typeof max === "number" && picked.length >= max;
+
+  const toggle = (id: string) => {
+    if (disabled) return;
+    if (!multi) {
+      onChange(picked[0] === id ? undefined : id);
+      return;
+    }
+    const next = picked.includes(id) ? picked.filter((p) => p !== id) : full ? picked : [...picked, id];
+    onChange(next.length > 0 ? next : undefined);
+  };
+
+  return (
+    <div style={{ opacity: disabled ? 0.4 : 1 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+        <span style={{ fontSize: 11, color: "#94a3b8" }}>{label}</span>
+        {hint && <span style={{ fontSize: 10, color: "#64748b" }}>{hint}</span>}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+        {options.map((o) => {
+          const on = picked.includes(o.id);
+          // A chip that cannot be added any more is dimmed rather than hidden,
+          // so the list does not reshuffle under the cursor at the limit.
+          const blocked = !on && full;
+          return (
+            <button key={o.id} type="button" disabled={disabled} onClick={() => toggle(o.id)}
+              style={{
+                padding: "5px 9px", borderRadius: 8, fontSize: 11.5, fontFamily: "inherit",
+                cursor: disabled ? "default" : blocked ? "not-allowed" : "pointer",
+                background: on ? `hsla(${220 + HUE},60%,50%,0.28)` : "rgba(255,255,255,0.04)",
+                color: on ? "#fff" : blocked ? "#475569" : "#94a3b8",
+                border: `1px solid ${on ? `hsla(${220 + HUE},70%,60%,0.55)` : "rgba(255,255,255,0.08)"}`,
+              }}>
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** A labelled slider whose current value is spelled out, not left as a number. */
+function StyleSlider({
+  label, value, min, max, step, format, onChange, disabled,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  format: (v: number) => string;
+  onChange: (v: number) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div style={{ opacity: disabled ? 0.4 : 1 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+        <span style={{ fontSize: 11, color: "#94a3b8" }}>{label}</span>
+        <span style={{ fontSize: 11, color: `hsl(${220 + HUE},70%,78%)`, fontWeight: 600 }}>{format(value)}</span>
+      </div>
+      <input type="range" min={min} max={max} step={step} value={value} disabled={disabled}
+        onChange={(e) => onChange(Number(e.target.value))}
+        style={{ width: "100%", accentColor: `hsl(${220 + HUE},70%,60%)`, cursor: disabled ? "default" : "pointer" }} />
+    </div>
+  );
+}
+
+/**
  * Empty-state tile showing a real frame made on this platform.
  *
  * Deliberately NOT used for the generating state — a placeholder standing in
@@ -750,6 +858,24 @@ export default function GeneratePage() {
    * get one without losing what they typed.
    */
   const [instrumental, setInstrumental] = useState(false);
+  /**
+   * The song's direction: who sings it, in what genre, with what behind them.
+   *
+   * Held as the choices, never as the sentence — `composeMusicTags` on the
+   * server turns them into the model's `[Tags]` line, so the studio and the
+   * mobile app cannot drift into building different prompts from the same
+   * picks. `instrumental` is folded in only at submit time, because it is a
+   * switch the customer can flip back and forth without losing the rest.
+   */
+  const [musicStyle, setMusicStyle] = useState<MusicStyleParams>({
+    complexity: MUSIC_COMPLEXITY_DEFAULT,
+    variance: MUSIC_VARIANCE_DEFAULT,
+  });
+  const setMusicField = useCallback(
+    <K extends keyof MusicStyleParams>(key: K, value: MusicStyleParams[K]) =>
+      setMusicStyle((s) => ({ ...s, [key]: value })),
+    []
+  );
 
   useEffect(() => { if (session === null) router.push("/login"); }, [session, router]);
   useEffect(() => { fetchModels(); fetchStyles(); fetchTemplates(); fetchCredits(); }, [fetchModels, fetchStyles, fetchTemplates, fetchCredits]);
@@ -890,6 +1016,19 @@ export default function GeneratePage() {
   const musicOpts = tab === "audio" ? selectedModel?.music ?? null : null;
   /** A cover has nothing to cover until the customer uploads the song. */
   const missingSourceSong = musicOpts?.sourceSong === true && !inputAudio;
+  /** Longest source track a cover accepts — the upload cap, not the model's. */
+  const coverSourceSeconds = musicOpts?.maxSourceSeconds ?? musicOpts?.maxDuration ?? 240;
+  /**
+   * The tag line the model will actually receive, shown before the order.
+   *
+   * Built with the same function the server builds it with, so what the
+   * customer reads here is what YuE2 reads under `[Tags]` — chips that only
+   * *looked* like they did something would be worse than no chips at all.
+   */
+  const styleSummary =
+    musicOpts?.controls && prompt.trim()
+      ? composeMusicTags(prompt, { ...musicStyle, instrumental })
+      : "";
 
   /**
    * One source of truth for whether the button can fire. It used to be spelled
@@ -1157,7 +1296,10 @@ export default function GeneratePage() {
         // Lip-sync sends none of the three. Its length is set by the voice
         // track, and the adapter derives the frame count from the model
         // row's own ceiling rather than from anything chosen here.
-        duration: tab === "video" || music ? duration : undefined,
+        // …and none from a music model that sets its own length: the server
+        // gives it the full token budget, so anything sent here could only
+        // shorten the song.
+        duration: tab === "video" || (music && !musicOpts?.autoLength) ? duration : undefined,
         // The music model is a distilled turbo with its own fixed step count.
         steps: tab === "video" || tab === "lipsync" || music ? undefined : steps,
         cfgScale: tab === "video" || tab === "lipsync" || music ? undefined : guidance,
@@ -1166,6 +1308,9 @@ export default function GeneratePage() {
         // sending no lyrics at all — which is exactly what the models read as
         // "no vocal".
         lyrics: music && !instrumental ? lyrics.trim() || undefined : undefined,
+        // The choices, not the prompt they compose into: the server builds the
+        // `[Tags]` line so every client builds the same one.
+        music: musicOpts?.controls ? { ...musicStyle, instrumental } : undefined,
       },
     });
     if (sent.kind === "network") {
@@ -1468,8 +1613,11 @@ export default function GeneratePage() {
           )}
 
           {/* Clip length. `ai_models.max_duration` is the ceiling — offering a
-              20s option on a model that tops out at 5 just buys a failed job. */}
-          {(tab === "video" || tab === "audio") && (
+              20s option on a model that tops out at 5 just buys a failed job.
+              Hidden entirely on a model that decides its own length: there the
+              number was never a length anyone received, only the point at which
+              the song got cut off. */}
+          {(tab === "video" || (tab === "audio" && !musicOpts?.autoLength)) && (
             <Popover id="duration" open={openPanel} onToggle={setOpenPanel} label="ความยาว"
               value={`${duration}s`} width={200} align="right">
               <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(durationChoices.length, 4)},1fr)`, gap: 6 }}>
@@ -1488,6 +1636,97 @@ export default function GeneratePage() {
                     )}
                   </button>
                 ))}
+              </div>
+            </Popover>
+          )}
+
+          {/* ── Song direction ─────────────────────────────────────────────
+              Three panels rather than one: the official YuE2 template asks for
+              language, genre, vocal, tempo, instruments and mood, which is far
+              more than fits one popover, and they are chosen at different
+              moments — the genre first, the voice next, the arrangement last.
+              Every chip here ends up in the model's `[Tags]` line; the two
+              sliders do not, they are real node inputs. */}
+          {musicOpts?.controls && (
+            <Popover id="genre" open={openPanel} onToggle={setOpenPanel} label="แนวเพลง"
+              value={MUSIC_GENRES.find((g) => g.id === musicStyle.genre)?.label ?? "อิสระ"} width={320}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                <ChipRow label="แนวเพลง" options={MUSIC_GENRES} value={musicStyle.genre}
+                  onChange={(v) => setMusicField("genre", v as string | undefined)}
+                  hint="กดซ้ำเพื่อยกเลิก" />
+                <ChipRow label="ภาษาที่ร้อง" options={MUSIC_LANGUAGES} value={musicStyle.language}
+                  disabled={instrumental}
+                  onChange={(v) => setMusicField("language", v as string | undefined)} />
+                <ChipRow label="อารมณ์" options={MUSIC_MOODS} value={musicStyle.moods ?? []} max={3}
+                  onChange={(v) => setMusicField("moods", v as string[] | undefined)}
+                  hint={`เลือกได้ ${musicStyle.moods?.length ?? 0}/3`} />
+              </div>
+            </Popover>
+          )}
+
+          {musicOpts?.controls && (
+            <Popover id="voice" open={openPanel} onToggle={setOpenPanel} label="เสียงร้อง"
+              value={instrumental ? "บรรเลง" : MUSIC_VOCALS.find((v) => v.id === musicStyle.vocal)?.label ?? "อิสระ"}
+              width={300}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                {instrumental && (
+                  <div style={{ fontSize: 11, color: "#fbbf24", lineHeight: 1.5 }}>
+                    เปิดโหมดเพลงบรรเลงอยู่ — ตัวเลือกเสียงร้องถูกปิดไว้ ปลดได้ที่ช่องเนื้อเพลง
+                  </div>
+                )}
+                <ChipRow label="ผู้ร้อง" options={MUSIC_VOCALS} value={musicStyle.vocal} disabled={instrumental}
+                  onChange={(v) => setMusicField("vocal", v as string | undefined)} />
+                <ChipRow label="ช่วงวัย" options={MUSIC_AGES} value={musicStyle.age} disabled={instrumental}
+                  onChange={(v) => setMusicField("age", v as string | undefined)} />
+                <ChipRow label="ลักษณะเสียง" options={MUSIC_TIMBRES} value={musicStyle.timbre} disabled={instrumental}
+                  onChange={(v) => setMusicField("timbre", v as string | undefined)} />
+              </div>
+            </Popover>
+          )}
+
+          {musicOpts?.controls && (
+            <Popover id="arrange" open={openPanel} onToggle={setOpenPanel} label="ดนตรี"
+              value={musicComplexity(musicStyle.complexity).label} width={320} align="right">
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                <ChipRow label="เครื่องดนตรี" options={MUSIC_INSTRUMENTS} value={musicStyle.instruments ?? []} max={6}
+                  onChange={(v) => setMusicField("instruments", v as string[] | undefined)}
+                  hint={`เลือกได้ ${musicStyle.instruments?.length ?? 0}/6`} />
+
+                {/* Tempo is off by default: an unasked-for BPM is a constraint
+                    the model did not need, and a wrong one fights the lyrics. */}
+                <div>
+                  <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 11, color: "#94a3b8", marginBottom: 6, cursor: "pointer" }}>
+                    <input type="checkbox" checked={musicStyle.bpm !== undefined}
+                      onChange={(e) => setMusicField("bpm", e.target.checked ? 100 : undefined)} />
+                    กำหนดจังหวะเอง {musicStyle.bpm === undefined && <span style={{ color: "#64748b" }}>(ปล่อยให้ AI เลือก)</span>}
+                  </label>
+                  {musicStyle.bpm !== undefined && (
+                    <StyleSlider label="จังหวะ" value={musicStyle.bpm} min={MUSIC_BPM_MIN} max={MUSIC_BPM_MAX} step={2}
+                      format={(v) => `${v} BPM`} onChange={(v) => setMusicField("bpm", v)} />
+                  )}
+                </div>
+
+                {/* Real node inputs, not tags: density picks YuE2's `mode`
+                    (chord-annotated score vs melody only) and variety is its
+                    sampling temperature. */}
+                <StyleSlider label="ความซับซ้อนของดนตรี" value={musicStyle.complexity ?? MUSIC_COMPLEXITY_DEFAULT}
+                  min={1} max={5} step={1}
+                  format={(v) => musicComplexity(v).label}
+                  onChange={(v) => setMusicField("complexity", v)} />
+
+                <StyleSlider label="ความแปลกใหม่" value={musicStyle.variance ?? MUSIC_VARIANCE_DEFAULT}
+                  min={MUSIC_VARIANCE_MIN} max={MUSIC_VARIANCE_MAX} step={0.05}
+                  format={(v) => (v < 0.85 ? `ปลอดภัย ${v.toFixed(2)}` : v > 1.15 ? `กล้าเสี่ยง ${v.toFixed(2)}` : `สมดุล ${v.toFixed(2)}`)}
+                  onChange={(v) => setMusicField("variance", v)} />
+
+                <button type="button"
+                  onClick={() => setMusicStyle({ complexity: MUSIC_COMPLEXITY_DEFAULT, variance: MUSIC_VARIANCE_DEFAULT })}
+                  style={{
+                    padding: "7px 0", borderRadius: 8, fontSize: 11.5, fontFamily: "inherit", cursor: "pointer",
+                    background: "rgba(255,255,255,0.04)", color: "#94a3b8", border: "1px solid rgba(255,255,255,0.08)",
+                  }}>
+                  ล้างตัวเลือกทั้งหมด
+                </button>
               </div>
             </Popover>
           )}
@@ -1713,12 +1952,15 @@ export default function GeneratePage() {
             the same size and length limits apply. */}
         {musicOpts?.sourceSong && (
           <Section label="เพลงต้นฉบับที่จะคัฟเวอร์">
+            {/* `coverSourceSeconds` is what a cover may start *from* — a
+                different number from what the model may sing, and set by the
+                12 MB upload cap rather than by the model. */}
             <FilePick
               value={inputAudioName}
               busy={uploading === "audio"}
               accept="audio/mpeg,audio/wav,audio/ogg,audio/flac,audio/mp4,audio/x-m4a"
-              hint={`อัปโหลดเพลง MP3 (ไม่เกิน ${Math.round((musicOpts.maxDuration ?? 240) / 60)} นาที, 12 MB)`}
-              onPick={(e) => handleMediaUpload(e, "audio", musicOpts.maxDuration ?? 240)}
+              hint={`อัปโหลดเพลง MP3 (ไม่เกิน ${Math.round(coverSourceSeconds / 60)} นาที, 12 MB)`}
+              onPick={(e) => handleMediaUpload(e, "audio", coverSourceSeconds)}
               onClear={() => { setInputAudio(null); setInputAudioName(null); }}
             />
             <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
@@ -1896,6 +2138,23 @@ export default function GeneratePage() {
                 <span>{instrumental ? "โหมดบรรเลง — เนื้อร้องที่พิมพ์ไว้จะถูกเก็บไว้เฉย ๆ" : "วงเล็บเหลี่ยมบอกโมเดลว่าเป็นท่อนอะไร"}</span>
                 <span style={{ fontFamily: "ui-monospace,monospace" }}>{lyrics.length.toLocaleString()} / 3,000</span>
               </div>
+
+              {/* Exactly what the model will be told, composed by the same
+                  function the server uses. Shown because chips whose effect
+                  you cannot see are chips you cannot learn to use. */}
+              {styleSummary && (
+                <div style={{
+                  marginTop: 10, padding: "9px 11px", borderRadius: 10,
+                  background: "rgba(2,6,23,0.5)", border: "1px solid rgba(255,255,255,0.08)",
+                }}>
+                  <div style={{ fontSize: 10, letterSpacing: "0.1em", color: "#a5f3fc", marginBottom: 5, textTransform: "uppercase" }}>
+                    สไตล์ที่ส่งให้ AI
+                  </div>
+                  <div style={{ fontSize: 11, color: "#cbd5e1", lineHeight: 1.55, wordBreak: "break-word" }}>
+                    {styleSummary}
+                  </div>
+                </div>
+              )}
         </aside>
       )}
 

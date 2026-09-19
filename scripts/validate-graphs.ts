@@ -49,6 +49,25 @@ function jobParams(entry: CatalogEntry): CatalogJobParams {
     lyrics: '[Verse]\nvalidation lyrics',
     audioFilename: entry.needs?.audio ? AUDIO_STUB : undefined,
     imageFilename: entry.video?.firstFrame ? 'example.png' : undefined,
+    // A full set of song controls, so the run covers the composed `[Tags]`
+    // path and the two that are real node inputs: `complexity` picks YuE2's
+    // `mode` (a combo — ComfyUI rejects a value outside its options) and
+    // `variance` is its `temperature` (a float with a range). Leaving these
+    // unset let a binding that names a wrong input pass validation unnoticed.
+    music: entry.music?.controls
+      ? {
+          vocal: 'duet',
+          age: 'young',
+          timbre: 'warm',
+          genre: 'luktung',
+          language: 'th',
+          moods: ['nostalgic', 'hopeful'],
+          instruments: ['phin', 'khaen', 'drums'],
+          bpm: 96,
+          complexity: 5,
+          variance: 1.25,
+        }
+      : undefined,
   };
 }
 
