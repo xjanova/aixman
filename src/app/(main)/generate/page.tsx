@@ -426,8 +426,10 @@ type Placement = { up: boolean; left: number; width: number; maxHeight: number }
  * Only files that are actually in public/studio-tabs belong here — a missing
  * one falls back to a text pill, which is better than an <Image> pointed at a
  * 404. Each is a 440px-wide PNG with its own Thai and English label drawn in,
- * downscaled from a 2172px original: the button is ~190px on screen, so the
- * full-size art was 1.5MB to draw something a tenth of that.
+ * downscaled from a ~2,000px original: the button is ~190px on screen, so the
+ * full-size art was 1.5MB to draw something a tenth of that. Downscale with
+ * premultiplied alpha — these plates are transparent around a neon edge, and
+ * a plain resize drags the transparent black into the glow.
  */
 /** The second line on each plate, matching what the artwork has drawn in. */
 const TAB_EN: Record<TabType, string> = {
@@ -435,6 +437,7 @@ const TAB_EN: Record<TabType, string> = {
 };
 
 const TAB_ART: Partial<Record<TabType, string>> = {
+  image: "/studio-tabs/tab-image.png",
   video: "/studio-tabs/tab-video.png",
   edit: "/studio-tabs/tab-edit.png",
   lipsync: "/studio-tabs/tab-lipsync.png",
