@@ -43,6 +43,7 @@ import {
   ToggleRight,
   Trash2,
   Wand2,
+  Workflow,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -79,6 +80,7 @@ const CATEGORY_ICON: Record<CategoryId, LucideIcon> = {
   notify: Bell,
   mobile: Smartphone,
   generation: Wand2,
+  workflows: Workflow,
   rate_limit: Gauge,
   integration: Plug,
   system: Database,
@@ -93,6 +95,7 @@ const CATEGORY_COLOR: Record<CategoryId, string> = {
   notify: "#f472b6",
   mobile: "#22d3ee",
   generation: "#94a3b8",
+  workflows: "#f0abfc",
   rate_limit: "#94a3b8",
   integration: "#94a3b8",
   system: "#64748b",

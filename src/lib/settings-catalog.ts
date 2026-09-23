@@ -22,6 +22,7 @@ export type CategoryId =
   | 'notify'
   | 'mobile'
   | 'generation'
+  | 'workflows'
   | 'rate_limit'
   | 'integration'
   | 'system'
@@ -61,6 +62,7 @@ export const SETTING_CATEGORIES: SettingCategory[] = [
   { id: 'notify', label: 'การแจ้งเตือน', description: 'Telegram แจ้งยอดเงินและรายงานประจำวัน' },
   { id: 'mobile', label: 'แอปมือถือ', description: 'บังคับอัปเดตแอป XDreamer' },
   { id: 'generation', label: 'การสร้างงาน', description: 'ค่าเริ่มต้นของสตูดิโอ (ส่วนใหญ่ยังไม่ได้เชื่อมกับระบบ)' },
+  { id: 'workflows', label: 'Workflow และผู้ช่วยพรอมต์', description: 'ค่าปรับแต่ง workflow ComfyUI และผู้ช่วยเขียนพรอมต์ AI — แก้ได้ที่หน้า Workflow ComfyUI' },
   { id: 'rate_limit', label: 'จำกัดการใช้งาน', description: 'เพดานความถี่ (ยังไม่ได้เชื่อมกับระบบ)' },
   { id: 'integration', label: 'เชื่อมต่อภายนอก', description: 'บริการภายนอก (ยังไม่ได้เชื่อมกับระบบ)' },
   { id: 'system', label: 'ข้อมูลระบบ', description: 'ค่าที่ระบบบันทึกเอง — ดูได้อย่างเดียว' },
@@ -68,6 +70,7 @@ export const SETTING_CATEGORIES: SettingCategory[] = [
 ];
 
 const GPU_PAGE = { href: '/admin/gpu', label: 'แก้ที่หน้า GPU' };
+const WORKFLOW_PAGE = { href: '/admin/workflows', label: 'แก้ที่หน้า Workflow ComfyUI' };
 const UNUSED_TIP = 'ยังไม่มีโค้ดส่วนไหนอ่านค่านี้ — เปลี่ยนแล้วไม่มีผลกับระบบ';
 
 export const SETTINGS_CATALOG: Record<string, SettingMeta> = {
@@ -207,6 +210,15 @@ export const SETTINGS_CATALOG: Record<string, SettingMeta> = {
     input: 'text',
   },
 
+  // ── Workflow และผู้ช่วยพรอมต์ ─────────────────────────────────────────
+  prompt_enhancer_provider: { label: 'ผู้ช่วยพรอมต์ · ผู้ให้บริการ', tip: 'auto = ใช้เจ้าแรกที่มีคีย์ (OpenAI → MiniMax → BytePlus) · off = ใช้กฎพื้นฐานอย่างเดียว', category: 'workflows', input: 'text', managedAt: WORKFLOW_PAGE },
+  prompt_enhancer_model: { label: 'ผู้ช่วยพรอมต์ · ชื่อโมเดล', tip: 'เว้นว่าง = ใช้ค่าเริ่มต้นของผู้ให้บริการ', category: 'workflows', input: 'text', managedAt: WORKFLOW_PAGE },
+  prompt_enhancer_h3_context_ir: { label: 'ผู้ช่วยพรอมต์ · ใช้ H3-Context-IR ของ MiniMax', tip: 'สำหรับ MiniMax H3 ที่เช่าเครื่องรันเอง ใช้ระบบเรียบเรียงพรอมต์ทางการของ MiniMax (ต้องมีคีย์ MiniMax)', category: 'workflows', input: 'boolean', managedAt: WORKFLOW_PAGE },
+  prompt_enhancer_hourly_limit: { label: 'ผู้ช่วยพรอมต์ · จำกัดต่อคนต่อชั่วโมง', tip: '0 = ปิดสำหรับลูกค้า (แอดมินใช้ได้เสมอ)', category: 'workflows', input: 'number', managedAt: WORKFLOW_PAGE },
+  prompt_enhancer_instructions_image: { label: 'ผู้ช่วยพรอมต์ · คำสั่งสำหรับภาพ', tip: 'เว้นว่าง = ใช้คำสั่งในตัว', category: 'workflows', input: 'text', managedAt: WORKFLOW_PAGE },
+  prompt_enhancer_instructions_video: { label: 'ผู้ช่วยพรอมต์ · คำสั่งสำหรับวิดีโอ', tip: 'เว้นว่าง = ใช้คำสั่งในตัว', category: 'workflows', input: 'text', managedAt: WORKFLOW_PAGE },
+  prompt_enhancer_instructions_audio: { label: 'ผู้ช่วยพรอมต์ · คำสั่งสำหรับเพลง', tip: 'เว้นว่าง = ใช้คำสั่งในตัว', category: 'workflows', input: 'text', managedAt: WORKFLOW_PAGE },
+
   // ── การสร้างงาน (ยังไม่ได้เชื่อม) ─────────────────────────────────────
   max_prompt_length: { label: 'ความยาวพรอมต์สูงสุด', tip: `${UNUSED_TIP} — เพดานจริง 10,000 ตัวอักษรอยู่ในโค้ด`, category: 'generation', input: 'number', unit: 'ตัวอักษร', unused: true },
   max_concurrent_generations: { label: 'สร้างพร้อมกันสูงสุดต่อคน', tip: UNUSED_TIP, category: 'generation', input: 'number', unused: true },
@@ -245,10 +257,29 @@ export const PRESENCE_PREFIX = 'gpu_presence_';
 /** `gpu_prewarm_demand_<model>`: a customer with credits just arrived (studio-presence.ts). */
 export const PREWARM_DEMAND_PREFIX = 'gpu_prewarm_demand_';
 
+/** Keys /admin/workflows writes per model (workflow-overrides.ts). */
+const WORKFLOW_KEY_LABELS: [prefix: string, label: string, tip: string, readOnly: boolean][] = [
+  ['wf_override_', 'ค่าปรับแต่ง workflow', 'ค่าที่แอดมินปรับให้ workflow ComfyUI ของโมเดลนี้ (มีเวอร์ชันและย้อนกลับได้)', false],
+  ['wf_history_', 'ประวัติการปรับ workflow', 'เวอร์ชันก่อนหน้าของค่าปรับแต่ง เก็บ 20 เวอร์ชันล่าสุดไว้ย้อนกลับ', false],
+  ['wf_schema_', 'schema โหนดจากเครื่องจริง', 'รายการโหนดของ ComfyUI ที่เครื่องเช่าส่งมา ใช้ตรวจกราฟก่อนบันทึกโดยไม่ต้องเช่าเครื่อง — ระบบบันทึกเอง', true],
+  ['wf_last_graph_', 'กราฟล่าสุดที่ส่งเข้าเครื่อง', 'กราฟ API ที่งานล่าสุดของโมเดลนี้ส่งเข้า ComfyUI จริง — ระบบบันทึกเอง', true],
+];
+
 /** Metadata for a key, including the generated presence keys. Null for unknown keys. */
 export function settingMeta(key: string): SettingMeta | null {
   const known = SETTINGS_CATALOG[key];
   if (known) return known;
+  for (const [prefix, label, tip, readOnly] of WORKFLOW_KEY_LABELS) {
+    if (key.startsWith(prefix)) {
+      return {
+        label: `${label} · ${key.slice(prefix.length)}`,
+        tip,
+        category: 'workflows',
+        input: 'json',
+        ...(readOnly ? { readOnly: true } : { managedAt: WORKFLOW_PAGE }),
+      };
+    }
+  }
   if (key.startsWith(PRESENCE_PREFIX)) {
     return {
       label: `ลูกค้าเปิดสตูดิโอล่าสุด · ${key.slice(PRESENCE_PREFIX.length)}`,
