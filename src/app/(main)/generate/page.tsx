@@ -70,7 +70,202 @@ const aspectRatios = [
   { value: "9:16", label: "9:16", w: 768,  h: 1344 },
   { value: "4:3",  label: "4:3",  w: 1152, h: 896 },
   { value: "3:2",  label: "3:2",  w: 1216, h: 832 },
+  // Portrait photo shapes — the ones social posts and prints actually use.
+  // SDXL-standard buckets, so providers that want multiples of 64 accept them.
+  { value: "3:4",  label: "3:4",  w: 896,  h: 1152 },
+  { value: "2:3",  label: "2:3",  w: 832,  h: 1216 },
 ];
+
+/**
+ * Building blocks for a picture prompt, grouped by what they control. Each
+ * inserts the English phrase image models were trained on; the Thai label is
+ * only there to be read.
+ */
+const IMAGE_BUILDER: { label: string; items: { th: string; en: string }[] }[] = [
+  { label: "สไตล์ภาพ", items: [
+    { th: "ภาพถ่ายสมจริง", en: "photorealistic photograph" },
+    { th: "ภาพนิ่งจากหนัง", en: "cinematic film still" },
+    { th: "อนิเมะ", en: "anime illustration, clean line art" },
+    { th: "3D เรนเดอร์", en: "3D render, soft global illumination" },
+    { th: "สีน้ำ", en: "watercolor painting" },
+    { th: "สีน้ำมัน", en: "oil painting, visible brush strokes" },
+    { th: "ไอโซเมตริก", en: "isometric illustration" },
+    { th: "โปสเตอร์", en: "graphic poster design, bold typography" },
+  ] },
+  { label: "แสง", items: [
+    { th: "โกลเด้นอาวร์", en: "golden hour sunlight" },
+    { th: "ไฟสตูดิโอนุ่ม", en: "soft studio softbox lighting" },
+    { th: "นีออนยามค่ำ", en: "neon-lit night, reflections on wet street" },
+    { th: "แสงขอบ", en: "dramatic rim light" },
+    { th: "ลำแสงทะลุหมอก", en: "volumetric god rays through haze" },
+    { th: "โทนมืดดราม่า", en: "moody low-key lighting" },
+  ] },
+  { label: "มุมกล้อง / เลนส์", items: [
+    { th: "พอร์ตเทรต 85mm", en: "close-up portrait, 85mm lens, shallow depth of field" },
+    { th: "มุมกว้าง 24mm", en: "wide-angle 24mm shot" },
+    { th: "มาโคร", en: "macro shot, extreme detail" },
+    { th: "มุมสูงโดรน", en: "aerial drone view" },
+    { th: "มุมต่ำ", en: "low-angle hero shot" },
+    { th: "มุมบนวางราบ", en: "top-down flat lay" },
+  ] },
+  { label: "สีและบรรยากาศ", items: [
+    { th: "พาสเทล", en: "soft pastel palette" },
+    { th: "สีสด", en: "vibrant saturated colors" },
+    { th: "ขาวดำ", en: "black and white, high contrast" },
+    { th: "ทีลแอนด์ออเรนจ์", en: "teal and orange color grade" },
+    { th: "โทนฟิล์ม", en: "warm analog film tones, subtle grain" },
+  ] },
+  { label: "ความคมชัด", items: [
+    { th: "รายละเอียดสูง", en: "highly detailed" },
+    { th: "โฟกัสคม", en: "sharp focus" },
+    { th: "8K", en: "8k" },
+    { th: "HDR", en: "HDR" },
+  ] },
+];
+
+/**
+ * The same for a clip, as whole sentences: video models read camera direction
+ * as an action in the description ("The camera pushes in…"), and the camera
+ * vocabulary is the one MiniMax's prompting guide for H3 defines.
+ */
+const VIDEO_BUILDER: { label: string; items: { th: string; en: string }[] }[] = [
+  { label: "การเคลื่อนกล้อง", items: [
+    { th: "ดันเข้าช้าๆ", en: "The camera pushes in slowly toward the subject." },
+    { th: "ถอยออกเผยฉาก", en: "The camera pulls out slowly to reveal the whole scene." },
+    { th: "แพนไปทางขวา", en: "The camera pans right across the scene." },
+    { th: "เลื่อนข้างตาม", en: "The camera trucks left alongside the subject." },
+    { th: "เงยขึ้นฟ้า", en: "The camera tilts up from the ground to the sky." },
+    { th: "โคจรรอบตัว", en: "An arc shot circles around the subject." },
+    { th: "ติดตามผู้แสดง", en: "A tracking shot follows the subject as they move." },
+    { th: "กล้องนิ่ง", en: "Static shot, the camera holds perfectly still." },
+    { th: "มุมมองสายตา", en: "POV shot through the character's eyes." },
+    { th: "ถือกล้องสั่นนิดๆ", en: "Handheld camera with a slight natural shake." },
+    { th: "โดรนบินผ่าน", en: "Aerial drone shot gliding slowly over the landscape." },
+    { th: "ซูมเข้าใบหน้า", en: "The lens zooms in on the subject's face." },
+  ] },
+  { label: "ขนาดภาพ", items: [
+    { th: "ไกลเห็นทั้งฉาก", en: "Wide establishing shot." },
+    { th: "ครึ่งตัว", en: "Medium shot." },
+    { th: "ใกล้ใบหน้า", en: "Close-up shot." },
+    { th: "ใกล้มาก", en: "Extreme close-up." },
+  ] },
+  { label: "สไตล์และแสง", items: [
+    { th: "หนังฟอร์มยักษ์", en: "Live-action, cinematic, anamorphic lens, shallow depth of field." },
+    { th: "อนิเมะ 2D", en: "2D-animated, anime style." },
+    { th: "3D CG", en: "3D CG animation." },
+    { th: "ฟิล์มเก่า", en: "Vintage film look with soft grain." },
+    { th: "โกลเด้นอาวร์", en: "Warm golden hour light." },
+    { th: "นีออนกลางคืน", en: "Neon-lit night with wet reflections." },
+  ] },
+  { label: "เสียง (โมเดลที่มีเสียงในตัว)", items: [
+    { th: "เสียงบรรยากาศจริง", en: "Natural ambient sound matching the scene." },
+    { th: "ออร์เคสตรา", en: "Background score: sweeping orchestral strings that build slowly." },
+    { th: "อิเล็กทรอนิกส์", en: "Background score: pulsing electronic beat at a fast tempo." },
+    { th: "ไม่มีดนตรี", en: "No background music." },
+  ] },
+];
+
+/** Jobs one studio may have rendering at once. Each is a paid order of its own. */
+const MAX_PARALLEL_JOBS = 3;
+
+/** One order in the tray above the canvas. */
+interface TrayJob {
+  id: number;
+  tab: TabType;
+  prompt: string;
+  aspect: string;
+  startedAt: number;
+  status: "running" | "completed" | "failed";
+  progress: QueueProgress | null;
+  result: GenerationResult | null;
+}
+
+/**
+ * The server answers some refusals in English (the mobile app matches on the
+ * text, so it stays). A customer reads them here in Thai.
+ */
+function localizeOrderError(message: string): string {
+  const credits = /Insufficient credits\. Need (\d+), have (\d+)/i.exec(message);
+  if (credits) return `เครดิตไม่พอ — งานนี้ใช้ ${credits[1]} เครดิต แต่มีอยู่ ${credits[2]} เครดิต`;
+  if (/Model not available/i.test(message)) return "โมเดลนี้ปิดให้บริการชั่วคราว";
+  if (/temporarily unavailable/i.test(message)) return "บริการไม่ว่างชั่วคราว ลองใหม่ในอีกสักครู่";
+  if (/Prompt is required/i.test(message)) return "กรุณาพิมพ์ prompt ก่อน";
+  if (/Generation failed/i.test(message)) return "สร้างไม่สำเร็จ ลองใหม่อีกครั้ง";
+  return message;
+}
+
+type EnhanceOutcome =
+  | { ok: true; prompt: string; source: string; engine?: string }
+  | { ok: false; error: string };
+
+/** "✨ ปรับพรอมต์ด้วย AI" — errors as values, like every request helper here. */
+async function requestEnhance(body: Record<string, unknown>): Promise<EnhanceOutcome> {
+  try {
+    const res = await fetch("/api/studio/enhance-prompt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: data.error || "ปรับพรอมต์ไม่สำเร็จ" };
+    if (typeof data.prompt !== "string" || !data.prompt.trim()) return { ok: false, error: "AI ไม่ได้ส่งพรอมต์กลับมา" };
+    return { ok: true, prompt: data.prompt, source: String(data.source ?? ""), engine: data.engine };
+  } catch {
+    return { ok: false, error: "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้" };
+  }
+}
+
+/** A dropped or pasted picture as the data URL the image slots hold. */
+function fileToDataUrl(file: File): Promise<string | null> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * The time, for event handlers. Out here because React Compiler cannot always
+ * tell a handler from render code and reports `Date.now()` inside one as an
+ * impure call during render — the same false positive `pickResolution` notes —
+ * and a component with a compiler error loses auto-memoization entirely.
+ */
+function clockNow(): number {
+  return Date.now();
+}
+
+/** Largest picture the server reads back for a rented worker (MAX_BYTES.image). */
+const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+
+/**
+ * What the customer was writing, kept across a reload. Per browser only —
+ * a convenience, never the record of an order.
+ */
+const DRAFT_KEY = "xdr-studio-draft-v1";
+interface StudioDraft {
+  tab?: TabType;
+  prompt?: string;
+  negativePrompt?: string;
+  lyrics?: string;
+  aspectRatio?: string;
+}
+function readDraft(): StudioDraft {
+  if (typeof window === "undefined") return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(DRAFT_KEY) ?? "{}");
+    return parsed && typeof parsed === "object" ? (parsed as StudioDraft) : {};
+  } catch {
+    return {};
+  }
+}
+function writeDraft(draft: StudioDraft): void {
+  try {
+    window.localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+  } catch {
+    // Private window or storage full — losing a draft is not worth an error.
+  }
+}
 
 /**
  * The ratios the video providers accept. Kling, Luma and Replicate take an
@@ -109,11 +304,6 @@ const MUSIC_STARTERS = [
 /** Used to warn when a Thai prompt is sent to an English-only model. */
 const THAI_CHARS = /\p{Script=Thai}/u;
 
-const PROMPT_TAG_CHIPS = [
-  "cinematic lighting", "8k", "volumetric", "aurora", "jade",
-  "hyperreal", "studio light", "bokeh", "golden hour",
-];
-
 interface GenerationResult {
   id: number;
   status: string;
@@ -132,6 +322,22 @@ interface HistoryItem {
   id: number;
   type: string;
   prompt: string;
+  negativePrompt?: string | null;
+  /** `ai_models.id` it was made with, for "use these settings again". */
+  modelDbId?: number;
+  /** The order's settings (aspect, length, quality…), whitelisted by the gallery API. */
+  remix?: {
+    aspectRatio?: string;
+    resolution?: string;
+    quality?: string;
+    duration?: number;
+    numOutputs?: number;
+    steps?: number;
+    cfgScale?: number;
+    strength?: number;
+    lyrics?: string;
+    music?: MusicStyleParams;
+  } | null;
   resultUrl?: string;
   thumbnailUrl?: string;
   createdAt: string;
@@ -389,7 +595,7 @@ function FilePick({
 }
 
 const ASPECT_RATIO_CSS: Record<string, string> = {
-  "1:1": "1/1", "16:9": "16/9", "9:16": "9/16", "4:3": "4/3", "3:2": "3/2",
+  "1:1": "1/1", "16:9": "16/9", "9:16": "9/16", "4:3": "4/3", "3:2": "3/2", "3:4": "3/4", "2:3": "2/3",
 };
 
 /** "16:9" → 1.78; anything unparseable is square. */
@@ -867,16 +1073,43 @@ export default function GeneratePage() {
     models, fetchModels, modelsLoaded,
     styles, fetchStyles, stylesLoaded,
     templates, fetchTemplates,
-    creditBalance, fetchCredits,
+    creditBalance, creditsLoaded, fetchCredits,
     isGenerating, setIsGenerating,
   } = useAppStore();
 
-  const [tab, setTab] = useState<TabType>("image");
+  // What was being written before a reload. Read once, in an initializer: the
+  // page renders nothing until the session loads, so there is no server HTML
+  // for a restored value to disagree with.
+  const [draft0] = useState(readDraft);
+  const [tab, setTab] = useState<TabType>(() => (draft0.tab && draft0.tab in TAB_EN ? draft0.tab : "image"));
   const [selectedModelId, setSelectedModelId] = useState<number | null>(null);
-  const [prompt, setPrompt] = useState("");
-  const [negativePrompt, setNegativePrompt] = useState("");
+  const [prompt, setPrompt] = useState(() => (typeof draft0.prompt === "string" ? draft0.prompt.slice(0, 10_000) : ""));
+  const [negativePrompt, setNegativePrompt] = useState(() => (typeof draft0.negativePrompt === "string" ? draft0.negativePrompt : ""));
   const [selectedStyle, setSelectedStyle] = useState<number | null>(null);
-  const [aspectRatio, setAspectRatio] = useState("1:1");
+  const [aspectRatio, setAspectRatio] = useState(() =>
+    draft0.aspectRatio && draft0.aspectRatio in ASPECT_RATIO_CSS ? draft0.aspectRatio : "1:1"
+  );
+  /** Quality mode the customer picked; null = the model's default. */
+  const [qualityId, setQualityId] = useState<string | null>(null);
+  /** "✨ ปรับพรอมต์ด้วย AI": in flight, the prompt it replaced (for ↶), and where it came from. */
+  const [enhancing, setEnhancing] = useState(false);
+  const [promptBeforeEnhance, setPromptBeforeEnhance] = useState<string | null>(null);
+  const [enhanceNote, setEnhanceNote] = useState<string | null>(null);
+  /**
+   * Orders in the tray: the one on the canvas and any still rendering behind
+   * it. A rented-GPU render can take minutes, and nobody should have to watch
+   * one finish before ordering the next.
+   */
+  const [jobs, setJobs] = useState<TrayJob[]>([]);
+  /** Which order the canvas shows. The ref is what pollers read; the state is what renders. */
+  const focusRef = useRef<number | null>(null);
+  const [focusId, setFocusId] = useState<number | null>(null);
+  /** When the last order was sent — a double click must not buy two. */
+  const lastSubmitRef = useRef(0);
+  /** A history item opened on the canvas, so its settings can be reused. */
+  const [viewing, setViewing] = useState<HistoryItem | null>(null);
+  /** A file is being dragged over the studio. */
+  const [dragging, setDragging] = useState(false);
   /** Which compact control panel is open — only ever one at a time. */
   const [openPanel, setOpenPanel] = useState<string | null>(null);
   const [inputImage, setInputImage] = useState<string | null>(null);
@@ -939,7 +1172,7 @@ export default function GeneratePage() {
    *  provider default regardless of what the model could do. */
   const [duration, setDuration] = useState(5);
   /** Song lyrics for the music tab; empty asks for an instrumental. */
-  const [lyrics, setLyrics] = useState("");
+  const [lyrics, setLyrics] = useState(() => (typeof draft0.lyrics === "string" ? draft0.lyrics.slice(0, 3000) : ""));
   const [songTitle, setSongTitle] = useState("");
   /**
    * Instrumental switch. Separate from "lyrics are empty" on purpose: a
@@ -1056,9 +1289,22 @@ export default function GeneratePage() {
    * job, and the count only ever reaches the server from the image tab.
    */
   const outputs = tab === "image" ? Math.min(numOutputs, selectedModel?.maxOutputs ?? numOutputs) : 1;
-  /** One output's price — the same formula GenerationService charges with. */
+  /** Quality modes this model offers the viewer, and the one in force. */
+  const qualityModes = selectedModel?.quality?.length ? selectedModel.quality : null;
+  const activeQuality = qualityModes
+    ? qualityModes.find((m) => m.id === qualityId) ?? qualityModes.find((m) => m.isDefault) ?? qualityModes[0]
+    : null;
+  /**
+   * One output's price — the same formula GenerationService charges with,
+   * rounded up after the quality multiplier exactly as the server does.
+   */
   const creditsFor = (seconds: number | null) =>
-    selectedModel ? creditsForDuration(selectedModel.creditsPerUnit, selectedModel.durationCurve, seconds) : 0;
+    selectedModel
+      ? Math.ceil(
+          creditsForDuration(selectedModel.creditsPerUnit, selectedModel.durationCurve, seconds) *
+            (activeQuality?.creditsMultiplier ?? 1)
+        )
+      : 0;
 
   /** Which second file the chosen lip-sync model animates — a clip, or a still. */
   const lipsyncNeeds: "image" | "video" =
@@ -1125,8 +1371,9 @@ export default function GeneratePage() {
    * three had already drifted: `disabled` checked `canOrder`, the other two did
    * not, so a model pulled back for tuning still rendered as clickable.
    */
+  const runningJobs = jobs.filter((j) => j.status === "running").length;
   const cannotSubmit =
-    isGenerating ||
+    runningJobs >= MAX_PARALLEL_JOBS ||
     !selectedModelId ||
     selectedModel?.canOrder === false ||
     (tab !== "lipsync" && !prompt.trim()) ||
@@ -1197,7 +1444,11 @@ export default function GeneratePage() {
     // without it the change event never fires a second time.
     e.target.value = "";
     if (!file) return;
+    await uploadMediaFile(file, kind, maxSeconds);
+  };
 
+  /** The upload itself, shared by the pickers and a file dropped on the studio. */
+  const uploadMediaFile = async (file: File, kind: "audio" | "video", maxSeconds: number) => {
     setUploading(kind);
 
     const seconds = await probeDuration(file, kind);
@@ -1237,6 +1488,33 @@ export default function GeneratePage() {
     setInputImageEnd(result.url!);
   };
 
+  /**
+   * Record how an order ended — in its tray entry always, on the canvas only
+   * when the canvas is showing it. An order that finishes behind another one
+   * says so in its toast instead of jumping onto the screen.
+   */
+  const settleJob = useCallback((id: number, outcome: GenerationResult) => {
+    const ok = outcome.status === "completed";
+    const onCanvas = focusRef.current === id;
+    setJobs((js) => js.map((j) => (j.id === id ? { ...j, status: ok ? "completed" : "failed", progress: null, result: outcome } : j)));
+    if (onCanvas) {
+      setResult(outcome);
+      setIsGenerating(false);
+      setProgress(null);
+    }
+    fetchCredits();
+    if (ok) {
+      fetchHistory();
+      toast(
+        "success",
+        onCanvas ? "สร้างสำเร็จ!" : "งานที่สั่งไว้เสร็จแล้ว",
+        `ใช้ ${outcome.creditsUsed} เครดิต${onCanvas ? "" : " · กดที่แถบงานเหนือแคนวาสเพื่อดู"}`,
+      );
+    } else {
+      toast("error", "สร้างไม่สำเร็จ", outcome.error ? localizeOrderError(outcome.error) : "เกิดข้อผิดพลาด");
+    }
+  }, [setIsGenerating, fetchCredits, fetchHistory, toast]);
+
   const pollResult = useCallback(async (generationId: number) => {
     // API-backed providers answer within a few minutes. GPU-backed ones rent a
     // machine first, and on a cold host that means installing ComfyUI and
@@ -1269,19 +1547,23 @@ export default function GeneratePage() {
       consecutiveErrors = 0;
       const data = read.data;
 
+      // Progress lands on the order's tray entry always, and on the canvas
+      // only while the canvas is showing this order.
       if (data.gpu) {
         const gpu = data.gpu;
         sawGpu = true;
         rendering = gpu.stage === "rendering";
         deadlineMs = GPU_DEADLINE_MS;
         const at = Date.now();
-        setProgress((prev) => nextQueueProgress(prev, gpu, at));
+        setJobs((js) => js.map((j) => (j.id === generationId ? { ...j, progress: nextQueueProgress(j.progress, gpu, at) } : j)));
+        if (focusRef.current === generationId) setProgress((prev) => nextQueueProgress(prev, gpu, at));
       } else if (sawGpu) {
-        setProgress(null);
+        setJobs((js) => js.map((j) => (j.id === generationId ? { ...j, progress: null } : j)));
+        if (focusRef.current === generationId) setProgress(null);
       }
 
       if (data.status === "completed") {
-        setResult({
+        settleJob(generationId, {
           id: data.id, status: "completed",
           resultUrl: data.resultUrl,
           resultUrls: data.resultUrls
@@ -1291,34 +1573,74 @@ export default function GeneratePage() {
           creditsUsed: data.creditsUsed, processingMs: data.processingMs,
           expiresAt: data.expiresAt, daysLeft: data.daysLeft,
         });
-        setIsGenerating(false); setProgress(null); fetchCredits(); fetchHistory();
-        toast("success", "สร้างสำเร็จ!", `ใช้ ${data.creditsUsed} เครดิต`);
         return;
       }
       if (data.status === "failed") {
-        setResult({ id: data.id, status: "failed", creditsUsed: 0, error: data.errorMessage ?? undefined });
-        setIsGenerating(false); setProgress(null); fetchCredits();
-        toast("error", "สร้างไม่สำเร็จ", data.errorMessage || "เกิดข้อผิดพลาด");
+        settleJob(generationId, { id: data.id, status: "failed", creditsUsed: 0, error: data.errorMessage ?? undefined });
         return;
       }
     }
 
-    setIsGenerating(false); setProgress(null);
-    // The job is still running server-side and the credits are already spent —
-    // telling the user to "try again" here would charge them twice for one clip.
+    // Stopped watching. The job is still running server-side and the credits
+    // are already spent — telling the user to "try again" here would charge
+    // them twice for one clip.
+    setJobs((js) => js.filter((j) => j.id !== generationId));
+    if (focusRef.current === generationId) {
+      focusRef.current = null;
+      setFocusId(null);
+      setIsGenerating(false);
+      setProgress(null);
+    }
     toast(
       "info",
       "ยังสร้างไม่เสร็จ",
       "งานยังทำงานอยู่เบื้องหลัง ผลลัพธ์จะขึ้นในแกลเลอรีเมื่อเสร็จ ไม่ต้องสั่งสร้างใหม่",
     );
     fetchHistory();
-  }, [setIsGenerating, fetchCredits, fetchHistory, toast]);
+  }, [setIsGenerating, fetchHistory, toast, settleJob]);
 
-  const handleGenerate = async () => {
+  /** Put one tray order on the canvas: its progress while it runs, its result once done. */
+  const focusJob = (job: TrayJob) => {
+    focusRef.current = job.id;
+    setFocusId(job.id);
+    setViewing(null);
+    setIsFavorited(false);
+    if (job.status === "running") {
+      setResult(null);
+      setProgress(job.progress);
+      setGenStartedAt(job.startedAt);
+      setIsGenerating(true);
+    } else {
+      setIsGenerating(false);
+      setProgress(null);
+      setResult(job.result);
+    }
+  };
+
+  /** Clear the canvas without touching orders still rendering in the tray. */
+  const clearCanvas = () => {
+    focusRef.current = null;
+    setFocusId(null);
+    setViewing(null);
+    setResult(null);
+    setIsGenerating(false);
+    setProgress(null);
+  };
+
+  /**
+   * `overrides.seed` is for Variations: it used to set the seed field and then
+   * order, but the order read the field from before the click — so with a seed
+   * locked, "Variations" rendered the very same picture again.
+   */
+  const handleGenerate = async (overrides: { seed?: number } = {}) => {
     // Lip-sync is driven by the uploaded voice, not by text, so it is the one
     // mode that may legitimately run with an empty prompt.
-    if (!selectedModelId || isGenerating) return;
+    if (!selectedModelId) return;
     if (tab !== "lipsync" && !prompt.trim()) return;
+    if (runningJobs >= MAX_PARALLEL_JOBS) {
+      toast("info", `กำลังสร้างอยู่ ${MAX_PARALLEL_JOBS} งานแล้ว`, "รอให้งานใดงานหนึ่งเสร็จก่อน แล้วค่อยสั่งเพิ่ม");
+      return;
+    }
     if (missingStartFrame) {
       toast("error", "ยังไม่ได้เลือกภาพเริ่มต้น", "โหมดภาพ → วิดีโอ ต้องอัปโหลดภาพก่อน");
       return;
@@ -1339,8 +1661,28 @@ export default function GeneratePage() {
       toast("error", "ยังไม่ได้อัปโหลดเพลงต้นฉบับ", "โหมดคัฟเวอร์ต้องมีเพลงให้ AI ถอดทำนองก่อน");
       return;
     }
+    // One click, one order. The page used to lock for the whole render, which
+    // is what stopped a double click buying two; now that orders can overlap,
+    // it has to be stopped on purpose.
+    const clickedAt = clockNow();
+    if (clickedAt - lastSubmitRef.current < 1500) return;
+    lastSubmitRef.current = clickedAt;
+
+    // On the tray at once, under a placeholder id, so the canvas shows it
+    // while the request is out — an API model can take half a minute to
+    // answer the POST itself.
+    const pendingId = -clickedAt;
+    const jobAspect = tab === "audio" ? "1:1" : aspectRatio;
+    setJobs((js) => [
+      { id: pendingId, tab, prompt: prompt.trim(), aspect: jobAspect, startedAt: clickedAt, status: "running", progress: null, result: null },
+      ...js.filter((j) => j.status === "running"),
+      ...js.filter((j) => j.status !== "running").slice(0, 6),
+    ]);
+    focusRef.current = pendingId;
+    setFocusId(pendingId);
+    setViewing(null);
     setIsGenerating(true); setResult(null); setIsFavorited(false);
-    setProgress(null); setGenStartedAt(Date.now());
+    setProgress(null); setGenStartedAt(clickedAt);
     const ar = aspectRatios.find((a) => a.value === aspectRatio);
     // On video the mode decides: text→video must not smuggle a start frame in,
     // or the provider silently switches endpoint behind the customer's back.
@@ -1376,6 +1718,9 @@ export default function GeneratePage() {
         // default when it is absent or not offered for the frame shape
         // (h3RenderPlan), which is the same preset the popover shows as chosen.
         resolution: resolution ?? undefined,
+        // Priced by the server at this mode's multiplier — the same sum the
+        // button shows. Only a mode this viewer may use is honoured.
+        quality: activeQuality?.id,
         strength: refImage && tab === "image" ? strength : undefined,
         numOutputs: tab === "image" ? outputs : undefined,
         // Every video adapter reads `duration`; none of them read steps or
@@ -1392,7 +1737,7 @@ export default function GeneratePage() {
         // The music model is a distilled turbo with its own fixed step count.
         steps: tab === "video" || tab === "lipsync" || music ? undefined : steps,
         cfgScale: tab === "video" || tab === "lipsync" || music ? undefined : guidance,
-        seed: seed ?? undefined,
+        seed: overrides.seed ?? seed ?? undefined,
         // Instrumental wins over whatever is in the box, and is expressed by
         // sending no lyrics at all — which is exactly what the models read as
         // "no vocal".
@@ -1402,25 +1747,237 @@ export default function GeneratePage() {
         music: musicOpts?.controls ? { ...musicStyle, instrumental } : undefined,
       },
     });
-    if (sent.kind === "network") {
-      setIsGenerating(false);
-      toast("error", "เกิดข้อผิดพลาด", "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้");
-      return;
-    }
-    if (sent.kind === "rejected") {
-      setIsGenerating(false);
-      toast("error", "เกิดข้อผิดพลาด", sent.error);
+    if (sent.kind !== "ok") {
+      setJobs((js) => js.filter((j) => j.id !== pendingId));
+      if (focusRef.current === pendingId) {
+        focusRef.current = null;
+        setFocusId(null);
+        setIsGenerating(false);
+      }
+      toast("error", "เกิดข้อผิดพลาด", sent.kind === "network" ? "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้" : localizeOrderError(sent.error));
       return;
     }
     const data = sent.data;
-    if (data.status === "completed") {
-      setResult(data); setIsGenerating(false); fetchCredits(); fetchHistory();
-      toast("success", "สร้างสำเร็จ!", `ใช้ ${data.creditsUsed} เครดิต`);
-    } else if (data.status === "failed") {
-      setResult(data); setIsGenerating(false); fetchCredits();
-      toast("error", "สร้างไม่สำเร็จ", data.error || "เกิดข้อผิดพลาด");
-    } else { pollResult(data.id); }
+    // The placeholder becomes the real order.
+    setJobs((js) => js.map((j) => (j.id === pendingId ? { ...j, id: data.id } : j)));
+    if (focusRef.current === pendingId) {
+      focusRef.current = data.id;
+      setFocusId(data.id);
+    }
+    if (data.status === "completed" || data.status === "failed") settleJob(data.id, data);
+    else pollResult(data.id);
   };
+
+  /** "✨ ปรับพรอมต์ด้วย AI": rewrite what was typed into what this model reads best. */
+  const handleEnhance = async () => {
+    const text = prompt.trim();
+    if (!text || enhancing) return;
+    setEnhancing(true);
+    setEnhanceNote(null);
+    // Only MiniMax's Context-IR (self-hosted H3) looks at the frames; nothing
+    // else is sent megabytes it would ignore.
+    const h3Frames = selectedModel?.modelId === "minimax-h3" && tab === "video" && videoMode === "i2v";
+    const out = await requestEnhance({
+      prompt: text,
+      tab,
+      modelId: selectedModelId,
+      videoMode: tab === "video" ? videoMode : undefined,
+      duration: tab === "video" ? duration : undefined,
+      aspectRatio: tab === "audio" ? undefined : aspectRatio,
+      firstFrame: h3Frames ? inputImage ?? undefined : undefined,
+      lastFrame: h3Frames ? inputImageEnd ?? undefined : undefined,
+    });
+    setEnhancing(false);
+    if (!out.ok) {
+      toast("error", "ปรับพรอมต์ไม่สำเร็จ", out.error);
+      return;
+    }
+    setPromptBeforeEnhance(text);
+    setPrompt(out.prompt.slice(0, 10_000));
+    setEnhanceNote(
+      out.source === "context-ir"
+        ? "เรียบเรียงด้วย H3-Context-IR ของ MiniMax"
+        : out.source === "llm"
+          ? `เรียบเรียงด้วย AI${out.engine ? ` · ${out.engine}` : ""}`
+          : "ปรับแบบพื้นฐาน (ผู้ช่วย AI ยังไม่ได้เชื่อมต่อ)"
+    );
+  };
+
+  const undoEnhance = () => {
+    if (promptBeforeEnhance === null) return;
+    setPrompt(promptBeforeEnhance);
+    setPromptBeforeEnhance(null);
+    setEnhanceNote(null);
+  };
+
+  /** A clip builder phrase goes in as a sentence; a picture one as a comma-joined tag. */
+  const addPromptSentence = (text: string) => {
+    setPrompt((p) => {
+      const trimmed = p.trim();
+      if (!trimmed) return text;
+      if (trimmed.toLowerCase().includes(text.toLowerCase())) return trimmed;
+      return `${trimmed}${/[.!?]$/.test(trimmed) ? "" : "."} ${text}`;
+    });
+  };
+
+  /** Ctrl/⌘+Enter orders from any of the text fields. */
+  const onSubmitKey = (e: React.KeyboardEvent) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      if (!cannotSubmit) void handleGenerate();
+    }
+  };
+
+  /** Open a finished piece from the history strip on the canvas. */
+  const viewHistory = (g: HistoryItem) => {
+    focusRef.current = null;
+    setFocusId(null);
+    setIsGenerating(false);
+    setProgress(null);
+    setIsFavorited(false);
+    setViewing(g);
+    setResult({
+      id: g.id,
+      status: "completed",
+      resultUrl: g.resultUrl ?? g.thumbnailUrl,
+      resultUrls: g.resultUrl ? [g.resultUrl] : undefined,
+      thumbnailUrl: g.thumbnailUrl,
+      creditsUsed: 0,
+    });
+    document.querySelector(".rp-studio-center")?.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  /**
+   * Put a past order back — model, prompt, shape, length, quality, song —
+   * ready to order again with a fresh seed. The history strip used to restore
+   * only the prompt, leaving the customer to rebuild everything else from
+   * memory.
+   */
+  const remixFrom = (g: HistoryItem) => {
+    const nextTab: TabType = g.type === "video" || g.type === "edit" || g.type === "audio" ? g.type : "image";
+    const model = models.find((m) => m.id === g.modelDbId);
+    const r = g.remix ?? {};
+    setTab(nextTab);
+    clearCanvas();
+    setPrompt(g.prompt ?? "");
+    setNegativePrompt(g.negativePrompt ?? "");
+    setPromptBeforeEnhance(null);
+    setEnhanceNote(null);
+    if (model && model.canOrder !== false) setSelectedModelId(model.id);
+    if (r.aspectRatio && r.aspectRatio in ASPECT_RATIO_CSS) setAspectRatio(r.aspectRatio);
+    if (typeof r.duration === "number") setDuration(r.duration);
+    if (r.resolution) setResolution(r.resolution);
+    setQualityId(r.quality ?? null);
+    if (typeof r.numOutputs === "number") setNumOutputs(Math.min(4, Math.max(1, Math.round(r.numOutputs))));
+    if (nextTab === "audio") {
+      if (typeof r.lyrics === "string") setLyrics(r.lyrics.slice(0, 3000));
+      if (r.music) {
+        setMusicStyle({ complexity: MUSIC_COMPLEXITY_DEFAULT, variance: MUSIC_VARIANCE_DEFAULT, ...r.music });
+        setInstrumental(r.music.instrumental === true);
+      }
+    }
+    toast(
+      "info",
+      "โหลดการตั้งค่าเดิมแล้ว",
+      model ? `${model.name} — กดทอเพื่อสร้างอีกครั้งด้วย seed ใหม่` : "โมเดลเดิมไม่มีแล้ว — ใช้โมเดลที่เลือกอยู่แทน",
+    );
+  };
+
+  /** Carry a finished picture into the next step: animate it, edit it, or reference it. */
+  const carryResultTo = (target: "video" | "edit" | "ref", url: string) => {
+    clearCanvas();
+    if (target === "video") {
+      setTab("video");
+      setVideoMode("i2v");
+      setInputImage(url);
+      setInputImagePreview(url);
+      setInputImageEnd(null);
+      toast("info", "ใส่เป็นภาพเริ่มต้นของคลิปแล้ว", "อธิบายว่าอยากให้ภาพเคลื่อนไหวอย่างไร แล้วกดทอ");
+    } else if (target === "edit") {
+      setTab("edit");
+      setInputImage(url);
+      setInputImagePreview(url);
+      toast("info", "ใส่เป็นภาพต้นฉบับแล้ว", "พิมพ์ว่าต้องการแก้อะไรในภาพ");
+    } else {
+      setTab("image");
+      setRefImage(url);
+      setRefImagePreview(url);
+      toast("info", "ใส่เป็นภาพอ้างอิงแล้ว", "ปรับความเข้มได้ที่ปุ่ม ↑ ภาพอ้างอิง");
+    }
+  };
+
+  /**
+   * A file pasted or dropped anywhere on the studio goes where this tab takes
+   * one: a picture into the tab's image slot, a voice or a song into its
+   * upload (with the same length checks as the pickers).
+   */
+  const acceptFile = async (file: File) => {
+    if (file.type.startsWith("audio/") || file.type.startsWith("video/")) {
+      const kind = file.type.startsWith("audio/") ? "audio" : "video";
+      if (kind === "audio" && tab === "lipsync") return uploadMediaFile(file, "audio", MAX_INPUT_SECONDS);
+      if (kind === "audio" && musicOpts?.sourceSong) return uploadMediaFile(file, "audio", coverSourceSeconds);
+      if (kind === "video" && tab === "lipsync" && lipsyncNeeds === "video") return uploadMediaFile(file, "video", MAX_INPUT_SECONDS);
+      toast(
+        "info",
+        "แท็บนี้ไม่ได้ใช้ไฟล์ชนิดนี้",
+        kind === "audio" ? "ไฟล์เสียงใช้ได้ที่แท็บลิปซิงค์ หรือโมเดลคัฟเวอร์เพลง" : "คลิปใช้ได้ที่แท็บลิปซิงค์",
+      );
+      return;
+    }
+    if (!file.type.startsWith("image/")) {
+      toast("error", "ไฟล์ชนิดนี้ใช้ไม่ได้", "รองรับภาพ เสียง และวิดีโอ");
+      return;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      toast("error", "ไฟล์ภาพใหญ่เกินไป", "รองรับไม่เกิน 12 MB");
+      return;
+    }
+    const url = await fileToDataUrl(file);
+    if (!url) {
+      toast("error", "อ่านไฟล์ภาพไม่ได้");
+      return;
+    }
+    if (tab === "image") {
+      setRefImage(url); setRefImagePreview(url);
+      toast("success", "ใส่เป็นภาพอ้างอิงแล้ว");
+    } else if (tab === "edit") {
+      setInputImage(url); setInputImagePreview(url);
+      toast("success", "ใส่เป็นภาพต้นฉบับแล้ว");
+    } else if (tab === "video") {
+      setVideoMode("i2v"); setInputImage(url); setInputImagePreview(url);
+      toast("success", "ใส่เป็นภาพเริ่มต้นของคลิปแล้ว");
+    } else if (tab === "lipsync" && lipsyncNeeds === "image") {
+      setInputImage(url); setInputImagePreview(url);
+      toast("success", "ใส่เป็นรูปหน้าคนที่จะให้พูดแล้ว");
+    } else {
+      toast("info", "แท็บนี้ไม่ได้ใช้ภาพ");
+    }
+  };
+
+  // Ctrl+V a picture anywhere on the page — the quickest way in for a
+  // screenshot. Plain text is left to go wherever it was being pasted. The
+  // listener is added once and reads the latest handler through a ref, which
+  // is refreshed after every render (never during one).
+  const acceptFileRef = useRef(acceptFile);
+  useEffect(() => {
+    acceptFileRef.current = acceptFile;
+  });
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const file = Array.from(e.clipboardData?.files ?? []).find((f) => f.type.startsWith("image/"));
+      if (!file) return;
+      e.preventDefault();
+      void acceptFileRef.current(file);
+    };
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+  }, []);
+
+  // Keep what is being written across a reload (this browser only).
+  useEffect(() => {
+    const t = setTimeout(() => writeDraft({ tab, prompt, negativePrompt, lyrics, aspectRatio }), 400);
+    return () => clearTimeout(t);
+  }, [tab, prompt, negativePrompt, lyrics, aspectRatio]);
 
   const handleDownload = async (url?: string) => {
     const downloadUrl = url || result?.resultUrl;
@@ -1464,13 +2021,55 @@ export default function GeneratePage() {
   };
 
   const totalCredits = creditsFor(tab === "video" || tab === "audio" ? duration : null) * outputs;
+  /** The balance is known and this order costs more than it. The server is still the judge. */
+  const shortOfCredits = creditsLoaded && totalCredits > 0 && creditBalance < totalCredits;
   /** A song has no picture shape; its in-progress frame is square. */
   const frameAspect = tab === "audio" ? "1:1" : aspectRatio;
+  /** The tray order on the canvas, if the canvas is showing one. */
+  const focusedJob = jobs.find((j) => j.id === focusId) ?? null;
+  /** Shape and kind of what the canvas shows — the focused order's, not the form's current values. */
+  const canvasAspect = focusedJob?.aspect ?? frameAspect;
+  const canvasTab = focusedJob?.tab ?? tab;
+  const resultUrl = result?.resultUrl ?? "";
+  const resultKind = viewing?.type ?? canvasTab;
+  const resultIsAudio = AUDIO_EXT.test(resultUrl);
+  const resultIsVideo =
+    !resultIsAudio && (resultKind === "video" || resultKind === "lipsync" || /\.(mp4|webm|mov)(\?|$)/i.test(resultUrl));
+  const resultIsImage = !!resultUrl && !resultIsAudio && !resultIsVideo;
   if (!session) return null;
 
   // ─── RENDER ─────────────────────────────────────────────────────────
   return (
-    <div className="rp-studio" style={{ color: "#f1f5f9" }}>
+    <div className="rp-studio" style={{ color: "#f1f5f9" }}
+      // A file dropped anywhere lands where this tab takes one (acceptFile).
+      onDragOver={(e) => {
+        if (!e.dataTransfer.types.includes("Files")) return;
+        e.preventDefault();
+        if (!dragging) setDragging(true);
+      }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false);
+      }}
+      onDrop={(e) => {
+        if (!e.dataTransfer.types.includes("Files")) return;
+        e.preventDefault();
+        setDragging(false);
+        const file = e.dataTransfer.files?.[0];
+        if (file) void acceptFile(file);
+      }}>
+
+      {dragging && (
+        <div className="rp-drop-hint" aria-hidden="true">
+          <div>
+            <div style={{ fontSize: 34, marginBottom: 6 }}>⤓</div>
+            {tab === "image" ? "วางภาพเพื่อใช้เป็นภาพอ้างอิง"
+              : tab === "edit" ? "วางภาพที่ต้องการแก้ไข"
+                : tab === "video" ? "วางภาพเพื่อเริ่มคลิปจากภาพนี้"
+                  : tab === "lipsync" ? "วางไฟล์เสียง คลิป หรือรูปหน้าคน"
+                    : "วางเพลงต้นฉบับ (โหมดคัฟเวอร์)"}
+          </div>
+        </div>
+      )}
 
       {/* ═══ JOB — which tool, which model, what it costs ═══
           The rail used to carry all fifteen control groups at 336px wide,
@@ -1620,7 +2219,11 @@ export default function GeneratePage() {
         {/* Prompt — the only element allowed to grow, so it absorbs whatever
             height the viewport has spare and the rail still fits one screen. */}
         <Section label={tab === "lipsync" ? "Prompt (ไม่บังคับ)" : tab === "audio" ? "สไตล์เพลง" : "Prompt"} grow>
-          <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)}
+          {/* Read-only while ✨ works: its answer replaces the box, and would
+              silently drop anything typed in the meantime (Context-IR can take
+              a minute). */}
+          <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} onKeyDown={onSubmitKey}
+            readOnly={enhancing} aria-busy={enhancing}
             placeholder={
               tab === "lipsync"
                 ? lipsyncNeeds === "image"
@@ -1632,7 +2235,7 @@ export default function GeneratePage() {
                     ? "แนวเพลง อารมณ์ เครื่องดนตรี เสียงร้อง เช่น ป๊อปไทยสดใส เสียงร้องหญิง กีตาร์โปร่ง จังหวะเร็ว"
                     : "อธิบายภาพที่ต้องการ..."
             }
-            style={{ ...xdrInputStyle, padding: 14, fontSize: 14, lineHeight: 1.5, resize: "none", flex: 1, minHeight: tab === "audio" ? 72 : 96 }} />
+            style={{ ...xdrInputStyle, padding: 14, fontSize: 14, lineHeight: 1.5, resize: "none", flex: 1, minHeight: tab === "audio" ? 72 : 96, opacity: enhancing ? 0.6 : 1 }} />
           {/* The free Pollinations model does not understand Thai — it renders an
               unrelated image instead of failing, so warn before credits are spent. */}
           {selectedModel?.provider.slug === "pollinations" && THAI_CHARS.test(prompt) && (
@@ -1643,6 +2246,38 @@ export default function GeneratePage() {
             }}>
               โมเดลฟรีอ่านภาษาไทยไม่ออก — จะได้ภาพที่ไม่ตรงกับที่พิมพ์ กรุณาพิมพ์ prompt เป็นภาษาอังกฤษ หรือเลือกโมเดลแบบเสียเครดิต
             </div>
+          )}
+          {/* The prompt assistant: short idea in, the model's own format out.
+              The result replaces the box's text where the customer can read
+              and edit it — and ↶ puts back what they wrote. */}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+            <button type="button" onClick={handleEnhance} disabled={enhancing || !prompt.trim()}
+              title={tab === "video" && selectedModel?.modelId === "minimax-h3"
+                ? "เรียบเรียงเป็นโครงช็อต กล้อง และเสียง ตามรูปแบบที่ MiniMax H3 ถูกฝึกมา"
+                : "ให้ AI ขยายไอเดียสั้น ๆ เป็นพรอมต์ที่โมเดลเข้าใจดีที่สุด"}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 9,
+                fontSize: 12, fontFamily: "inherit", fontWeight: 600,
+                cursor: enhancing || !prompt.trim() ? "default" : "pointer",
+                opacity: !prompt.trim() && !enhancing ? 0.45 : 1,
+                background: `linear-gradient(135deg, hsla(${280 + HUE},75%,55%,0.28), hsla(${190 + HUE},80%,50%,0.22))`,
+                color: "#f5f3ff", border: `1px solid hsla(${280 + HUE},70%,65%,0.45)`,
+              }}>
+              <span className={enhancing ? "xdr-motion" : undefined} style={enhancing ? { display: "inline-block", animation: "spin 1.2s linear infinite" } : undefined}>✨</span>
+              {enhancing
+                ? (tab === "video" && selectedModel?.modelId === "minimax-h3" ? "กำลังเรียบเรียงฉาก… (อาจถึง 1 นาที)" : "กำลังเรียบเรียง…")
+                : tab === "audio" ? "ช่วยเขียนสไตล์เพลง" : "ปรับพรอมต์ด้วย AI"}
+            </button>
+            {promptBeforeEnhance !== null && !enhancing && (
+              <button type="button" onClick={undoEnhance}
+                style={{ padding: "7px 10px", borderRadius: 9, fontSize: 11.5, fontFamily: "inherit", cursor: "pointer", background: "rgba(255,255,255,0.04)", color: "#94a3b8", border: "1px solid rgba(255,255,255,0.1)" }}>
+                ↶ ใช้ข้อความเดิม
+              </button>
+            )}
+            <span style={{ marginLeft: "auto", fontSize: 10.5, color: "#475569" }} title="สั่งสร้างจากช่องพิมพ์ได้เลย">Ctrl/⌘ + Enter = ทอ</span>
+          </div>
+          {enhanceNote && (
+            <div style={{ fontSize: 10.5, color: "#a78bfa", marginTop: 5 }}>✦ {enhanceNote} — แก้ต่อได้ตามใจ</div>
           )}
           {/* Live prompt stats — replaces the right rail's "รายละเอียด prompt"
               card in one line instead of three stacked rows. */}
@@ -1675,7 +2310,7 @@ export default function GeneratePage() {
                   เพลงบรรเลง (ไม่มีเสียงร้อง)
                 </label>
               </div>
-              <textarea value={lyrics} onChange={(e) => setLyrics(e.target.value.slice(0, 3000))}
+              <textarea value={lyrics} onChange={(e) => setLyrics(e.target.value.slice(0, 3000))} onKeyDown={onSubmitKey}
                 disabled={instrumental}
                 placeholder={"[Verse]\nเขียนเนื้อร้องที่นี่\n\n[Chorus]\nท่อนฮุกที่อยากให้ติดหู"}
                 style={{
@@ -1889,7 +2524,7 @@ export default function GeneratePage() {
             {/* Variations is just another order, so it follows the button's rule. */}
             <Pill disabled={cannotSubmit}
               title={cannotSubmit && selectedModel?.canOrder === false ? (selectedModel.unavailableReason ?? undefined) : undefined}
-              onClick={() => { if (cannotSubmit) return; setSeed(Math.floor(Math.random() * 99999)); handleGenerate(); }}>Variations</Pill>
+              onClick={() => { if (cannotSubmit) return; handleGenerate({ seed: Math.floor(Math.random() * 2_147_483_647) }); }}>Variations</Pill>
             {tab === "image" && (
               <Pill disabled={!upscaleAvailable}
                 title={upscaleAvailable ? undefined : "Upscale ยังไม่เปิดให้บริการ"}
@@ -1901,6 +2536,58 @@ export default function GeneratePage() {
             session · {session?.user?.name?.toLowerCase().replace(/\s+/g, "_") || "weaver"}
           </div>
         </div>
+
+        {/* The order tray: every order placed from this page, newest first.
+            Orders render side by side (up to MAX_PARALLEL_JOBS); the canvas
+            shows the one picked here. */}
+        {jobs.length > 0 && (
+          <div className="rp-tray" role="list" aria-label="งานที่สั่ง">
+            {jobs.map((j) => {
+              const on = j.id === focusId;
+              const fraction = j.status === "running" && j.progress?.stage === "rendering" ? shownFraction(j.progress, j.progress.at) : null;
+              const thumb = j.result?.thumbnailUrl || j.result?.resultUrl;
+              const isAudio = j.tab === "audio" || AUDIO_EXT.test(thumb ?? "");
+              const isVideoThumb = !isAudio && (j.tab === "video" || j.tab === "lipsync" || /\.(mp4|webm|mov)(\?|$)/i.test(thumb ?? ""));
+              return (
+                <button key={j.id} type="button" role="listitem" onClick={() => focusJob(j)} title={j.prompt || "งานลิปซิงค์"}
+                  className="rp-tray-item" data-active={on ? "true" : "false"} data-status={j.status}>
+                  <span className="rp-tray-thumb">
+                    {j.status === "completed" && thumb && !isAudio ? (
+                      isVideoThumb ? (
+                        <video src={`${thumb}#t=0.1`} muted playsInline preload="metadata" />
+                      ) : (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={thumb} alt="" loading="lazy" />
+                      )
+                    ) : j.status === "completed" && isAudio ? (
+                      <span style={{ fontSize: 16 }}>♫</span>
+                    ) : j.status === "failed" ? (
+                      <span style={{ color: "#fca5a5", fontWeight: 700 }}>!</span>
+                    ) : (
+                      <span className="rp-tray-spin" aria-hidden="true" />
+                    )}
+                  </span>
+                  <span className="rp-tray-text">
+                    <span className="rp-tray-prompt">{j.prompt || "ลิปซิงค์"}</span>
+                    <span className="rp-tray-state">
+                      {j.status === "completed" ? "เสร็จแล้ว"
+                        : j.status === "failed" ? "ไม่สำเร็จ · คืนเครดิต"
+                          : j.id < 0 ? "กำลังส่ง…"
+                            : j.progress?.stage === "queued" && (j.progress.position ?? 0) > 0 ? `รอคิว ${j.progress.position}`
+                              : fraction != null ? `กำลังสร้าง ${Math.floor(fraction * 100)}%` : "กำลังสร้าง…"}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+            {jobs.some((j) => j.status !== "running") && (
+              <button type="button" className="rp-tray-clear"
+                onClick={() => setJobs((js) => js.filter((j) => j.status === "running" || j.id === focusId))}>
+                ล้างที่เสร็จแล้ว
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Result canvas — the only element that flexes, so the workspace
             fills the viewport exactly instead of overflowing it. */}
@@ -1915,18 +2602,23 @@ export default function GeneratePage() {
               {/* Width follows the height cap, so the frame keeps its shape and
                   always fits: one frame per output that is actually coming —
                   a 2×2 grid fills the same box as a single frame. */}
-              <div style={{ width: `min(100%, calc(${GENERATING_FRAME_MAX_H} * ${aspectNumber(frameAspect)}))`, margin: "0 auto" }}>
-                {tab === "image" && outputs > 1 ? (
+              <div style={{ width: `min(100%, calc(${GENERATING_FRAME_MAX_H} * ${aspectNumber(canvasAspect)}))`, margin: "0 auto" }}>
+                {canvasTab === "image" && tab === "image" && outputs > 1 ? (
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 10 }}>
                     {Array.from({ length: outputs }).map((_, i) => (
-                      <StudioFrame key={i} index={i} seed={(i + 1) * 0.137} aspect={frameAspect} generating={true} progress={progress} />
+                      <StudioFrame key={i} index={i} seed={(i + 1) * 0.137} aspect={canvasAspect} generating={true} progress={progress} />
                     ))}
                   </div>
                 ) : (
-                  <StudioFrame index={0} seed={0.42} aspect={frameAspect} generating={true} progress={progress} />
+                  <StudioFrame index={0} seed={0.42} aspect={canvasAspect} generating={true} progress={progress} />
                 )}
               </div>
-              <GeneratingStatus progress={progress} tab={tab} startedAt={genStartedAt} />
+              <GeneratingStatus progress={progress} tab={canvasTab} startedAt={genStartedAt} />
+              {runningJobs < MAX_PARALLEL_JOBS && (
+                <div style={{ textAlign: "center", fontSize: 11, color: "rgba(165,243,252,0.6)", marginTop: 8 }}>
+                  สั่งงานถัดไปต่อได้เลย — ระบบทำพร้อมกันได้ {MAX_PARALLEL_JOBS} งาน
+                </div>
+              )}
             </div>
           ) : result?.status === "completed" && result.resultUrl ? (
             <div style={{ width: "100%" }}>
@@ -1943,7 +2635,7 @@ export default function GeneratePage() {
                 </div>
               ) : (
                 <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", marginBottom: 16, border: "1px solid rgba(255,255,255,0.06)" }}>
-                  {refImagePreview && tab === "image" ? (
+                  {refImagePreview && tab === "image" && !viewing ? (
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12 }}>
                       <div style={{ position: "relative" }}>
                         <span style={{ position: "absolute", top: 8, left: 8, zIndex: 2, padding: "3px 8px", borderRadius: 999, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", fontSize: 10, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>ต้นฉบับ</span>
@@ -1958,7 +2650,7 @@ export default function GeneratePage() {
                     </div>
                   ) : AUDIO_EXT.test(result.resultUrl) ? (
                     <AudioResult src={result.resultUrl} title={songTitle || "เพลงของคุณ"} genId={result.id} />
-                  ) : tab === "video" || result.resultUrl.endsWith(".mp4") ? (
+                  ) : resultIsVideo ? (
                     <video src={result.resultUrl} controls autoPlay loop style={{ width: "100%", borderRadius: 12, maxHeight: 600, margin: "0 auto", display: "block" }} />
                   ) : (
                     // eslint-disable-next-line @next/next/no-img-element
@@ -1973,12 +2665,29 @@ export default function GeneratePage() {
                   <Pill onClick={() => handleDownload()}>↓ ดาวน์โหลด</Pill>
                   <Pill active={isFavorited} onClick={handleFavorite}>{isFavorited ? "♥ บันทึกแล้ว" : "♡ บันทึก"}</Pill>
                   <Pill onClick={handleShare}>⎋ แชร์</Pill>
-                  {tab !== "video" && !result.resultUrl.endsWith(".mp4") && !AUDIO_EXT.test(result.resultUrl) && (
+                  {resultIsImage && (
                     <Pill onClick={handleUpscale}>{isUpscaling ? "⟳ Upscaling..." : "⤢ Upscale"}</Pill>
                   )}
                 </div>
-                <Pill onClick={() => setResult(null)}>↻ สร้างใหม่</Pill>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {viewing && <Pill onClick={() => remixFrom(viewing)}>↺ ใช้การตั้งค่านี้</Pill>}
+                  <Pill onClick={clearCanvas}>↻ สร้างใหม่</Pill>
+                </div>
               </div>
+
+              {/* The next step for a finished picture — the chain a creator
+                  actually follows: still → clip, still → edit, still → the
+                  reference for the next still. */}
+              {resultIsImage && (
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+                  <span style={{ fontSize: 11, color: "#64748b", alignSelf: "center" }}>ใช้ภาพนี้ต่อ:</span>
+                  <Pill onClick={() => carryResultTo("video", result.resultUrl as string)}
+                    disabled={tabBlockedReason("video") !== null} title={tabBlockedReason("video") ?? "เปิดแท็บวิดีโอ ใส่ภาพนี้เป็นเฟรมแรก"}>▶ ทำเป็นวิดีโอ</Pill>
+                  <Pill onClick={() => carryResultTo("edit", result.resultUrl as string)}
+                    disabled={tabBlockedReason("edit") !== null} title={tabBlockedReason("edit") ?? "เปิดแท็บแก้ไขภาพ"}>✦ แก้ไขภาพนี้</Pill>
+                  <Pill onClick={() => carryResultTo("ref", result.resultUrl as string)} title="สร้างภาพใหม่โดยอ้างอิงภาพนี้">⎘ ใช้เป็นภาพอ้างอิง</Pill>
+                </div>
+              )}
 
               {/* Retention notice — stated at the moment of delivery, because a
                   customer who is never told the window will lose work they
@@ -2014,8 +2723,8 @@ export default function GeneratePage() {
             <div style={{ textAlign: "center" }}>
               <div style={{ width: 80, height: 80, borderRadius: 20, background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)", display: "grid", placeItems: "center", margin: "0 auto 18px", fontSize: 36, color: "#fca5a5" }}>!</div>
               <h3 style={{ fontSize: 22, fontWeight: 300, margin: "0 0 8px", color: "#fff" }}>สร้างไม่สำเร็จ</h3>
-              <p style={{ fontSize: 13, color: "rgba(203,213,225,0.7)", marginBottom: 18 }}>{result.error || "เกิดข้อผิดพลาด"}</p>
-              <button onClick={() => setResult(null)}
+              <p style={{ fontSize: 13, color: "rgba(203,213,225,0.7)", marginBottom: 18 }}>{result.error ? localizeOrderError(result.error) : "เกิดข้อผิดพลาด"}</p>
+              <button onClick={clearCanvas}
                 style={{ padding: "10px 22px", borderRadius: 10, background: `linear-gradient(135deg, hsl(${160 + HUE},70%,50%), hsl(${280 + HUE},70%,55%))`, color: "#fff", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 500 }}>
                 ลองอีกครั้ง
               </button>
@@ -2079,12 +2788,10 @@ export default function GeneratePage() {
                 // A song has nothing to draw; it gets a note on its own colour.
                 const isAudio = g.type === "audio" || AUDIO_EXT.test(src ?? "");
                 return (
-                  <button key={g.id} type="button" title={g.prompt}
-                    onClick={() => {
-                      setPrompt(g.prompt);
-                      setTab((g.type as TabType) ?? "image");
-                      document.querySelector(".rp-studio-center")?.scrollTo({ top: 0, behavior: "smooth" });
-                    }}
+                  <button key={g.id} type="button" title={`${g.prompt}\n— กดเพื่อดู แล้วใช้การตั้งค่าเดิมสร้างใหม่ได้`}
+                    // Opens the piece on the canvas; "↺ ใช้การตั้งค่านี้" there
+                    // puts the whole order back (model, shape, length…).
+                    onClick={() => viewHistory(g)}
                     style={{
                       aspectRatio: "1",
                       borderRadius: 8,
@@ -2128,21 +2835,57 @@ export default function GeneratePage() {
             Everything below is one-line triggers. Each opens upward so a
             panel near the bottom of the rail never pushes the layout. */}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-          <Popover id="tags" open={openPanel} onToggle={setOpenPanel} label="+ แท็ก" width={286}>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {(tab === "audio" ? MUSIC_TAG_CHIPS : PROMPT_TAG_CHIPS).map((t) => {
-                const already = prompt.toLowerCase().includes(t.toLowerCase());
-                return (
-                  <button key={t} type="button" onClick={() => addPromptTag(t)}
-                    style={{
-                      padding: "5px 10px", borderRadius: 999, fontSize: 11, cursor: "pointer",
-                      background: already ? `hsla(${220 + HUE},60%,50%,0.18)` : "rgba(255,255,255,0.05)",
-                      color: already ? "#a5f3fc" : "#94a3b8",
-                      border: already ? `1px solid hsla(${220 + HUE},70%,60%,0.4)` : "1px solid rgba(255,255,255,0.1)",
-                    }}>+ {t}</button>
-                );
-              })}
-            </div>
+          {/* Prompt builder. Pictures get their vocabulary as comma-joined
+              phrases; clips get camera and shot direction as sentences (the
+              form video models read it in); songs keep their tag chips. */}
+          <Popover id="tags" open={openPanel} onToggle={setOpenPanel}
+            label={tab === "audio" ? "+ แท็ก" : tab === "video" || tab === "lipsync" ? "🎥 กล้องและฉาก" : "✦ ตัวช่วยพรอมต์"}
+            // No wider than the settings column: the rail scrolls, so a panel
+            // that overhangs its box is clipped rather than drawn over the canvas.
+            width={286}>
+            {tab === "audio" ? (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {MUSIC_TAG_CHIPS.map((t) => {
+                  const already = prompt.toLowerCase().includes(t.toLowerCase());
+                  return (
+                    <button key={t} type="button" onClick={() => addPromptTag(t)}
+                      style={{
+                        padding: "5px 10px", borderRadius: 999, fontSize: 11, cursor: "pointer",
+                        background: already ? `hsla(${220 + HUE},60%,50%,0.18)` : "rgba(255,255,255,0.05)",
+                        color: already ? "#a5f3fc" : "#94a3b8",
+                        border: already ? `1px solid hsla(${220 + HUE},70%,60%,0.4)` : "1px solid rgba(255,255,255,0.1)",
+                      }}>+ {t}</button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {(tab === "video" || tab === "lipsync" ? VIDEO_BUILDER : IMAGE_BUILDER).map((group) => (
+                  <div key={group.label}>
+                    <div style={{ fontSize: 10.5, letterSpacing: "0.08em", color: "#a5f3fc", marginBottom: 6 }}>{group.label}</div>
+                    <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                      {group.items.map((item) => {
+                        const already = prompt.toLowerCase().includes(item.en.toLowerCase());
+                        const sentence = tab === "video" || tab === "lipsync";
+                        return (
+                          <button key={item.en} type="button" title={item.en}
+                            onClick={() => (sentence ? addPromptSentence(item.en) : addPromptTag(item.en))}
+                            style={{
+                              padding: "5px 9px", borderRadius: 999, fontSize: 11, cursor: "pointer", fontFamily: "inherit",
+                              background: already ? `hsla(${220 + HUE},60%,50%,0.18)` : "rgba(255,255,255,0.05)",
+                              color: already ? "#a5f3fc" : "#cbd5e1",
+                              border: already ? `1px solid hsla(${220 + HUE},70%,60%,0.4)` : "1px solid rgba(255,255,255,0.1)",
+                            }}>{already ? "✓ " : "+ "}{item.th}</button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+                <div style={{ fontSize: 10.5, color: "#64748b", lineHeight: 1.5 }}>
+                  ชี้ที่ปุ่มเพื่อดูข้อความภาษาอังกฤษที่จะเติมลงพรอมต์ · โมเดลส่วนใหญ่อ่านคำศัพท์ภาพยนตร์/ถ่ายภาพภาษาอังกฤษได้แม่นที่สุด
+                </div>
+              </div>
+            )}
           </Popover>
 
           {/* The templates, the negative prompt, the image styles, the aspect
@@ -2189,6 +2932,37 @@ export default function GeneratePage() {
                       border: selectedStyle === s.id ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
                     }}>{s.name}</button>
                 ))}
+              </div>
+            </Popover>
+          )}
+
+          {/* Quality modes — only where the model offers a real choice (Qwen-
+              Image: Lightning vs the full model). Each carries its price
+              multiplier, and the button's total already includes it. */}
+          {qualityModes && qualityModes.length > 1 && (
+            <Popover id="quality" open={openPanel} onToggle={setOpenPanel} label="คุณภาพ"
+              value={activeQuality?.label ?? "—"} width={290}>
+              <div style={{ display: "grid", gap: 6 }}>
+                {qualityModes.map((m) => {
+                  const on = activeQuality?.id === m.id;
+                  return (
+                    <button key={m.id} type="button" onClick={() => { setQualityId(m.id); setOpenPanel(null); }}
+                      style={{
+                        textAlign: "left", padding: "9px 11px", borderRadius: 9, cursor: "pointer", fontFamily: "inherit",
+                        background: on ? `hsla(${220 + HUE},60%,50%,0.25)` : "rgba(255,255,255,0.04)",
+                        color: on ? "#fff" : "#94a3b8",
+                        border: on ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
+                      }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5, fontWeight: 600 }}>
+                        <span>{m.label}{m.adminOnly ? " · ทดลอง (เห็นเฉพาะแอดมิน)" : ""}</span>
+                        <span style={{ color: "#fbbf24", fontSize: 11, whiteSpace: "nowrap" }}>
+                          {m.creditsMultiplier === 1 ? "ราคาปกติ" : `×${m.creditsMultiplier} เครดิต`}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 11, opacity: 0.85, marginTop: 3, lineHeight: 1.45 }}>{m.description}</div>
+                    </button>
+                  );
+                })}
               </div>
             </Popover>
           )}
@@ -2463,9 +3237,13 @@ export default function GeneratePage() {
                 "เนื้อเพลงแบ่งท่อนด้วย [verse] [chorus] [bridge] — ประโยคสั้นร้องชัดกว่า",
                 "เว้นเนื้อเพลงว่างไว้ = เพลงบรรเลง เหมาะกับดนตรีประกอบคลิป",
               ] : [
-                "ระบุ subject และอารมณ์ให้ชัด เช่น 'หญิงสาวยืนกลางทุ่งดอกไม้ โทนสีพาสเทล'",
-                "เพิ่ม style keywords เช่น cinematic, hyperreal, jade tones, volumetric",
-                "ใช้ aspect 16:9 สำหรับ wallpaper, 9:16 สำหรับโซเชียล",
+                "พิมพ์ไอเดียสั้น ๆ แล้วกด ✨ ปรับพรอมต์ด้วย AI — ระบบเรียบเรียงให้ตรงรูปแบบที่โมเดลนั้นเข้าใจดีที่สุด แก้ต่อได้ก่อนสั่ง",
+                tab === "video"
+                  ? "ปุ่ม 🎥 กล้องและฉาก เติมการเคลื่อนกล้อง ขนาดภาพ และแสงเป็นประโยคที่โมเดลวิดีโออ่านเข้าใจ"
+                  : "ปุ่ม ✦ ตัวช่วยพรอมต์ เติมคำศัพท์ช่างภาพ: สไตล์ แสง เลนส์ สี",
+                "วางภาพ (Ctrl+V) หรือลากไฟล์มาวางตรงไหนก็ได้ ระบบใส่ให้ในช่องที่แท็บนี้ใช้",
+                "สั่งต่อกันได้ถึง 3 งานพร้อมกัน ดูทุกงานที่แถบเหนือแคนวาส · Ctrl/⌘+Enter = ทอ",
+                "ได้ภาพที่ชอบแล้ว กด ▶ ทำเป็นวิดีโอ เพื่อใช้เป็นเฟรมแรกของคลิปได้ทันที",
                 "img2img: ความเข้ม 0.5–0.7 = balance, > 0.8 = ตามภาพอ้างอิงมาก",
               ]).map((tip, i) => (
                 <div key={i} style={{ display: "flex", gap: 8 }}>
@@ -2514,23 +3292,38 @@ export default function GeneratePage() {
           </div>
         )}
 
-        {/* Generate Button */}
-        <button onClick={handleGenerate}
+        {/* Said before the order, not after the server refuses it. The
+            server stays the judge — a balance topped up in another tab is
+            read fresh there — so the button is not locked by this. */}
+        {shortOfCredits && (
+          <div style={{
+            marginTop: "auto", padding: "10px 12px", borderRadius: 10, fontSize: 12, lineHeight: 1.5,
+            background: "rgba(248,113,113,0.1)", color: "#fca5a5", border: "1px solid rgba(248,113,113,0.28)",
+          }}>
+            เครดิตไม่พอสำหรับงานนี้ — ต้องใช้ {totalCredits.toLocaleString()} มีอยู่ {creditBalance.toLocaleString()}{" "}
+            <a href="/pricing" style={{ color: "#fecaca", fontWeight: 600, whiteSpace: "nowrap" }}>เติมเครดิต →</a>
+          </div>
+        )}
+
+        {/* Generate Button. It no longer locks while a render runs: orders
+            queue side by side in the tray, up to MAX_PARALLEL_JOBS. */}
+        <button onClick={() => handleGenerate()}
           disabled={cannotSubmit}
           style={{
-            marginTop: "auto", padding: 16, borderRadius: 12,
+            marginTop: shortOfCredits ? 0 : "auto", padding: 16, borderRadius: 12,
             background: `linear-gradient(135deg, hsl(${160 + HUE},70%,45%), hsl(${280 + HUE},70%,55%))`,
             color: "#fff", border: "none", fontSize: 15, fontWeight: 600,
             cursor: cannotSubmit ? "not-allowed" : "pointer",
             opacity: cannotSubmit ? 0.6 : 1,
             boxShadow: `0 10px 24px -8px hsla(${270 + HUE},70%,50%,0.55)`,
           }}>
-          {isGenerating ? (
-            progress?.stage === "queued" && (progress.position ?? 0) > 0 ? `⟳ รอคิว • คิวที่ ${progress.position}`
-              : progress?.stage === "rendering" && progress.fraction != null ? `⟳ กำลังทอ... ${Math.floor((shownFraction(progress, progress.at) ?? 0) * 100)}%`
-              : "⟳ กำลังทอ..."
+          {runningJobs >= MAX_PARALLEL_JOBS ? (
+            `⟳ กำลังสร้าง ${runningJobs} งาน — รอให้เสร็จก่อน`
           ) : (
-            <>ทอ ✦ {outputs > 1 ? `${outputs} ภาพ · ` : ""}{totalCredits || "—"} credits</>
+            <>
+              ทอ ✦ {outputs > 1 ? `${outputs} ภาพ · ` : ""}{totalCredits || "—"} credits
+              {runningJobs > 0 && <span style={{ display: "block", fontSize: 11, fontWeight: 500, opacity: 0.85, marginTop: 2 }}>กำลังสร้างอยู่ {runningJobs} งาน · สั่งเพิ่มได้</span>}
+            </>
           )}
         </button>
       </aside>
@@ -2650,6 +3443,106 @@ export default function GeneratePage() {
           overflow-y: auto;
           display: flex;
           flex-direction: column;
+        }
+        /* Order tray — one row, scrolls sideways rather than pushing the
+           canvas down when there are many. */
+        .rp-tray {
+          display: flex;
+          gap: 8px;
+          overflow-x: auto;
+          padding-bottom: 6px;
+          margin-bottom: 12px;
+          flex-shrink: 0;
+          scrollbar-width: thin;
+        }
+        .rp-tray-item {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          min-width: 168px;
+          max-width: 220px;
+          padding: 6px 10px 6px 6px;
+          border-radius: 11px;
+          cursor: pointer;
+          text-align: left;
+          font-family: inherit;
+          color: #e2e8f0;
+          background: rgba(15,23,42,0.55);
+          border: 1px solid rgba(255,255,255,0.08);
+          transition: border-color 160ms ease, background 160ms ease;
+        }
+        .rp-tray-item:hover { background: rgba(30,41,59,0.7); }
+        .rp-tray-item[data-active="true"] {
+          border-color: hsla(290,80%,65%,0.6);
+          background: hsla(260,60%,30%,0.35);
+        }
+        .rp-tray-item[data-status="failed"] { border-color: rgba(248,113,113,0.35); }
+        .rp-tray-thumb {
+          width: 38px;
+          height: 38px;
+          border-radius: 8px;
+          flex-shrink: 0;
+          overflow: hidden;
+          display: grid;
+          place-items: center;
+          background: linear-gradient(135deg, hsl(250,45%,18%), hsl(200,45%,12%));
+        }
+        .rp-tray-thumb :global(img),
+        .rp-tray-thumb :global(video) {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          display: block;
+          pointer-events: none;
+        }
+        .rp-tray-spin {
+          width: 18px;
+          height: 18px;
+          border-radius: 50%;
+          border: 2px solid rgba(165,243,252,0.25);
+          border-top-color: #a5f3fc;
+          animation: spin 900ms linear infinite;
+        }
+        .rp-tray-text { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+        .rp-tray-prompt {
+          font-size: 11.5px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .rp-tray-state { font-size: 10.5px; color: #94a3b8; }
+        .rp-tray-item[data-status="completed"] .rp-tray-state { color: #34d399; }
+        .rp-tray-item[data-status="failed"] .rp-tray-state { color: #fca5a5; }
+        .rp-tray-clear {
+          flex-shrink: 0;
+          padding: 0 12px;
+          border-radius: 11px;
+          font-size: 11px;
+          font-family: inherit;
+          cursor: pointer;
+          color: #94a3b8;
+          background: transparent;
+          border: 1px dashed rgba(255,255,255,0.14);
+        }
+        /* Drop target over the whole studio while a file is dragged in. */
+        .rp-drop-hint {
+          position: fixed;
+          inset: 12px;
+          z-index: 60;
+          display: grid;
+          place-items: center;
+          text-align: center;
+          font-size: 16px;
+          font-weight: 600;
+          color: #e0f2fe;
+          border-radius: 20px;
+          border: 2px dashed hsla(190,90%,65%,0.7);
+          background: rgba(3,6,18,0.72);
+          backdrop-filter: blur(4px);
+          pointer-events: none;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .rp-tray-spin { animation: none; }
         }
         /* The canvas block is the flexible one; header + history keep their
            natural height so they are always on screen. */

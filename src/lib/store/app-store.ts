@@ -54,6 +54,20 @@ interface AIModel {
     /** Whether the voice / genre / arrangement controls apply to this model. */
     controls?: boolean;
   } | null;
+  /**
+   * Quality modes (rented-GPU models, e.g. Qwen-Image เร็ว / คุณภาพสูง), each
+   * priced at the base price times its multiplier — the same sum
+   * GenerationService charges. Null when the model has none.
+   */
+  quality?: {
+    id: string;
+    label: string;
+    description: string;
+    creditsMultiplier: number;
+    isDefault: boolean;
+    /** Visible because the viewer is an admin; customers do not see it yet. */
+    adminOnly?: boolean;
+  }[] | null;
 }
 
 interface AIStyle {
@@ -82,6 +96,8 @@ interface AppState {
 
   // Credits
   creditBalance: number;
+  /** A balance has been read at least once — 0 before that means "unknown", not "empty". */
+  creditsLoaded: boolean;
   setCreditBalance: (v: number) => void;
   fetchCredits: () => Promise<void>;
 
@@ -110,13 +126,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   setIsGenerating: (v) => set({ isGenerating: v }),
 
   creditBalance: 0,
+  creditsLoaded: false,
   setCreditBalance: (v) => set({ creditBalance: v }),
   fetchCredits: async () => {
     try {
       const res = await fetch('/api/credits');
       if (res.ok) {
         const data = await res.json();
-        set({ creditBalance: data.balance ?? 0 });
+        set({ creditBalance: data.balance ?? 0, creditsLoaded: true });
       }
     } catch {}
   },

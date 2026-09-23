@@ -5,6 +5,28 @@ import { daysUntil } from '@/lib/services/retention';
 import { publicProvider } from '@/lib/public-provider';
 import type { Prisma } from '@/generated/prisma/client';
 
+/**
+ * The settings an order was placed with, for the studio's "use these settings
+ * again". Whitelisted: `params` also holds the customer's uploads (audio,
+ * video, end frame), and those are not settings — they are files the
+ * retention sweep deletes on its own schedule.
+ */
+function remixParams(params: unknown): Record<string, unknown> | null {
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return null;
+  const p = params as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of ['aspectRatio', 'resolution', 'quality'] as const) {
+    if (typeof p[key] === 'string' && (p[key] as string).length <= 40) out[key] = p[key];
+  }
+  for (const key of ['width', 'height', 'duration', 'numOutputs', 'steps', 'cfgScale', 'strength'] as const) {
+    if (typeof p[key] === 'number' && Number.isFinite(p[key])) out[key] = p[key];
+  }
+  if (typeof p.lyrics === 'string') out.lyrics = p.lyrics.slice(0, 3000);
+  // Already sanitised to known ids when the order was stored (music-style.ts).
+  if (p.music && typeof p.music === 'object' && !Array.isArray(p.music)) out.music = p.music;
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 export async function GET(request: NextRequest) {
   const userId = await getCurrentUserId();
   if (!userId) {
@@ -86,6 +108,11 @@ export async function GET(request: NextRequest) {
       type: g.type,
       status: g.status,
       prompt: g.prompt,
+      negativePrompt: g.negativePrompt,
+      // The model row and the settings, so the studio can put the whole order
+      // back ("ใช้การตั้งค่านี้อีกครั้ง") rather than only its prompt.
+      modelDbId: g.modelId,
+      remix: remixParams(g.params),
       resultUrl: g.resultUrl,
       resultUrls: g.resultUrls,
       thumbnailUrl: g.thumbnailUrl,
