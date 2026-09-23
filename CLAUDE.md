@@ -280,6 +280,60 @@ mocked `fetch` built from the vendor's documented responses before a real key.
 utilisation, and profit. Profit uses *worker uptime* cost, not per-job cost —
 warmup and idle are real spend that no single job carries.
 
+## Workflow control room (`/admin/workflows`) — graphs editable without a deploy
+
+**One builder.** `workflow-build.ts#buildJobGraph` turns entry + order into the
+graph ComfyUI gets. Workers call it with their live `/object_info`; the admin
+dry run calls it with the stored schema (a live worker's `wf_schema_<model>`,
+captured on submit, laid over the vendored `workflows/schema/baseline-v0.36.0.json`).
+Never build a graph any other way — the dry run would stop telling the truth.
+
+- **Tunables** (`tunables.ts`): each catalogue entry declares its knobs; its own
+  `bind`/`inject` reads them via `tunableReader`, and every default is what
+  shipped before (a test pins this). Stored values are always coerced — out of
+  range falls back to the default, never reaches ComfyUI.
+- **Overrides live in `ai_settings`** (group `workflows`: `wf_override_<model>`,
+  `wf_history_<model>` = 20 versions), not a table: a skipped migration must not
+  stop renders. Rollback saves a *new* version.
+- **Rollout is the safety catch.** A saved override starts `admin`: only orders
+  an admin placed (`payload.adminRun`, set server-side from `isAdmin`) render
+  with it; `all` is a separate step. Three failures in a row demote a model.
+- Save = sanitize + dry-run validate; refused with 422 unless forced. Admin node
+  inputs bind *after* the catalogue's and only warn when they miss (catalogue
+  bindings still throw). A custom API graph that fails validation on a real
+  worker falls back to the catalogue graph and raises `workflow-fallback`.
+- Every submit stores the exact graph sent (`wf_last_graph_<model>`, has the
+  customer's prompt — admin-only).
+- **Quality modes** (`qualityModes`, e.g. Qwen เร็ว/คุณภาพสูง): price is
+  `ceil(base × multiplier)` in both GenerationService and the studio. A mode
+  flagged `adminOnly` is invisible *and* unorderable for customers
+  (`pickQualityMode`) until an admin makes it public on the page.
+- Model facts the catalogue now applies (sources in the code): Qwen-Image renders
+  at its native canvas per shape + the README's positive-magic suffix; its
+  quality mode is the template's own non-Lightning branch (20 steps, cfg 4).
+  H3 gets the keyframe instruction line MiniMax's prompting guide requires for
+  first/last-frame orders, rebuilt from the frames the order actually has.
+- When `COMFYUI_REF` moves: `npx tsx scripts/validate-graphs.ts` (every quality
+  mode, every tunable moved, every frame mode) and regenerate the baseline with
+  `scripts/dump-baseline-schema.ts`. Offline: `npx tsx --test src/lib/gpu/__tests__/workflows.test.mts`.
+
+## Prompt assistant (✨ in the studio)
+
+`/api/studio/enhance-prompt` → `services/prompt-enhancer.ts`. Order: MiniMax's
+own **H3-Context-IR API** for self-hosted H3 when a MiniMax key is in the pool
+(H3-Base was trained on its output format and has no substitute) → a chat model
+from the account pool (`auto`: OpenAI → MiniMax → BytePlus; Pollinations only
+when chosen — it is a third party) → model-aware rules, so it never fails. Free
+to customers, limited per hour (`prompt_enhancer_hourly_limit`); settings and a
+test button live on the same admin page. Thinking models get
+`reasoning_effort: low` — Pollinations' free tier caps output at 1,500 tokens
+and spent all of it reasoning over the H3 brief (empty answer) without it.
+
+**Studio orders overlap** (tray above the canvas, `MAX_PARALLEL_JOBS` = 3). The
+old page-wide lock was what stopped double orders; now a 1.5 s guard does —
+keep it. A history item opens on the canvas; "ใช้การตั้งค่านี้" restores the
+order from the gallery API's whitelisted `remix` fields (never upload URLs).
+
 ## Credit System
 
 - Separate from wallet, stored in `ai_user_credits`
