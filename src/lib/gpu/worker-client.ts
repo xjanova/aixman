@@ -6,14 +6,6 @@ import type { MusicStyleParams } from '@/lib/music-style';
 import { isAcceptedAudioSource, readAudioSource, readFrameSource } from './frame-input';
 import { PROGRESS_PATH } from './provision';
 import {
-  bindParameters,
-  convertUiWorkflowToApi,
-  describeUnmatched,
-  injectNodes,
-  pruneByClass,
-  pruneUnreachable,
-} from './comfy-convert';
-import {
   cacheSchema,
   clearSchema,
   getCachedSchema,
@@ -21,6 +13,10 @@ import {
   type ComfyGraph,
   type ComfyObjectInfo,
 } from './comfy-validate';
+import { applyWorkflowVars, buildJobGraph, schemaSubset, templateClasses } from './workflow-build';
+import type { EffectiveWorkflow } from './workflow-overrides';
+
+export { applyWorkflowVars };
 
 /**
  * HTTP client for the inference server running inside a rented container.
@@ -45,10 +41,35 @@ export interface WorkerJobParams {
   seed: number;
   inputImage?: string;
   extra?: Record<string, unknown>;
+  /**
+   * An admin placed the order. An override still in 'admin' rollout
+   * (workflow-overrides.ts) renders only these jobs.
+   */
+  adminRun?: boolean;
 }
 
 export interface SubmitResult {
   externalJobId: string;
+  /** The graph ComfyUI accepted, after validation — for /admin/workflows. */
+  graph?: ComfyGraph;
+  /** Non-fatal adjustments and admin overrides that did not land. */
+  warnings?: string[];
+  /** Rendered from an admin's custom graph. */
+  custom?: boolean;
+  /**
+   * Why the admin's custom graph was not used on this machine (it failed
+   * validation here), when the catalogue's graph was sent in its place.
+   */
+  fellBack?: string;
+  /** The part of this worker's schema the model's workflow needs — for dry runs. */
+  schema?: ComfyObjectInfo;
+}
+
+/** A graph ready to validate, and what the admin page should know about it. */
+interface Built {
+  graph: unknown;
+  warnings: string[];
+  custom: boolean;
 }
 
 /** Frame stills uploaded into the worker's ComfyUI input dir, by filename. */
@@ -135,7 +156,13 @@ export class WorkerClient {
      * tell which official template to convert, and falls back to the built-in
      * MiniMax H3 graph.
      */
-    private readonly modelKey?: string
+    private readonly modelKey?: string,
+    /**
+     * The admin's override as it applies to this job (tunables, node inputs,
+     * prompt affixes, custom graph), resolved by the queue. Null or absent: the
+     * catalogue as shipped. Only submission reads it; polling needs none.
+     */
+    private readonly workflow?: EffectiveWorkflow | null
   ) {}
 
   private url(path: string): string {
@@ -438,10 +465,11 @@ export class WorkerClient {
   private async buildGraph(
     params: WorkerJobParams,
     objectInfo: ComfyObjectInfo,
-    frames: StagedFrames = {}
-  ): Promise<unknown> {
+    frames: StagedFrames = {},
+    options: { ignoreCustom?: boolean } = {}
+  ): Promise<Built> {
     if (this.profile.workflow) {
-      return applyWorkflowVars(this.profile.workflow, {
+      const graph = applyWorkflowVars(this.profile.workflow, {
         prompt: params.prompt,
         negative_prompt: params.negativePrompt ?? '',
         width: params.width,
@@ -453,11 +481,12 @@ export class WorkerClient {
         input_image: params.inputImage ?? '',
         ...(params.extra || {}),
       });
+      return { graph, warnings: [], custom: true };
     }
 
     const entry = this.modelKey ? getCatalogEntry(this.modelKey) : undefined;
     if (entry) {
-      const jobParams: CatalogJobParams = {
+      const jobParams: Omit<CatalogJobParams, 'tuning'> = {
         prompt: params.prompt,
         negativePrompt: params.negativePrompt,
         width: params.width,
@@ -481,37 +510,18 @@ export class WorkerClient {
             ? (params.extra.music as MusicStyleParams)
             : undefined,
         resolution: typeof params.extra?.resolution === 'string' ? params.extra.resolution : undefined,
+        // Priced by GenerationService, which only stores a mode this customer
+        // may use — so it is rendered as stored.
+        quality: typeof params.extra?.quality === 'string' ? params.extra.quality : undefined,
         // What this worker actually has, not what the catalogue wishes it had.
         // Community nodes bring their own weights.
         checkpoints: checkpointsOf(objectInfo),
       };
-
-      let graph = convertUiWorkflowToApi(entry.template, objectInfo);
-      if (entry.inject) graph = injectNodes(graph, entry.inject(jobParams));
-      // Bind before pruning: pruning cascades through dependants, so redirecting
-      // a path first is what stops the cascade from eating it. The schema lets
-      // `connect` bindings wire sockets the template left open (H3's frames).
-      const bound = bindParameters(graph, entry.bind(jobParams), objectInfo);
-
-      // A binding that misses leaves the *template's demo value* in place — the
-      // customer would be charged for a render of the sample prompt. Fail loudly
-      // instead; the job refunds and the model drops back to 'tuning'.
-      if (bound.unmatched.length > 0) {
-        throw new Error(
-          `Workflow for "${entry.key}" does not accept: ${describeUnmatched(bound.unmatched)}. ` +
-            'The template or the node signatures have changed — the catalogue binding needs updating. ' +
-            'Refusing to render with the template default values.'
-        );
-      }
-
-      graph = bound.graph;
-      if (entry.prune?.length) graph = pruneByClass(graph, entry.prune);
-      // Helpers whose output a binding replaced are now dead weight that can
-      // still fail validation — drop everything no output depends on.
-      return pruneUnreachable(graph, objectInfo);
+      const workflow = options.ignoreCustom && this.workflow ? { ...this.workflow, customGraph: null } : this.workflow;
+      return buildJobGraph(entry, objectInfo, jobParams, workflow ?? null, frames);
     }
 
-    return buildMiniMaxH3Workflow({
+    const graph = buildMiniMaxH3Workflow({
       prompt: params.prompt,
       width: params.width,
       height: params.height,
@@ -520,6 +530,7 @@ export class WorkerClient {
       seed: params.seed,
       steps: typeof params.extra?.steps === 'number' ? params.extra.steps : undefined,
     });
+    return { graph, warnings: [], custom: false };
   }
 
   private async submitComfy(params: WorkerJobParams): Promise<SubmitResult> {
@@ -528,12 +539,28 @@ export class WorkerClient {
     // Check the graph against what this worker actually provides before
     // spending render time on it. Also catches half-downloaded weights.
     let graph: ComfyGraph;
+    let built: Built;
+    let fellBack: string | undefined;
+    const warnings: string[] = [];
     try {
       const frames = await this.stageFrames(params, objectInfo);
-      const rawGraph = await this.buildGraph(params, objectInfo, frames);
-      const validated = validateGraph(rawGraph as ComfyGraph, objectInfo);
+      built = await this.buildGraph(params, objectInfo, frames);
+      let validated;
+      try {
+        validated = validateGraph(built.graph as ComfyGraph, objectInfo);
+      } catch (error) {
+        // An admin's custom graph that this machine cannot run must not cost
+        // the customer their render: send the catalogue's graph instead and
+        // let the queue tell the admin. Only a custom graph from the override
+        // store falls back — a profile graph has no catalogue path behind it.
+        if (!built.custom || !this.workflow?.customGraph) throw error;
+        fellBack = (error as Error).message;
+        built = await this.buildGraph(params, objectInfo, frames, { ignoreCustom: true });
+        validated = validateGraph(built.graph as ComfyGraph, objectInfo);
+      }
       graph = validated.graph;
-      for (const warning of validated.warnings) {
+      warnings.push(...built.warnings, ...validated.warnings);
+      for (const warning of warnings) {
         console.warn(`[gpu] workflow adjusted — ${warning}`);
       }
     } catch (error) {
@@ -567,7 +594,20 @@ export class WorkerClient {
     }
     if (!data.prompt_id) throw new Error('ComfyUI returned no prompt_id');
 
-    return { externalJobId: data.prompt_id };
+    // What an admin needs to replay this offline: the classes the template
+    // converts through (including helpers the prune removed) and the ones sent.
+    const entry = this.modelKey ? getCatalogEntry(this.modelKey) : undefined;
+    const classes = new Set(Object.values(graph).map((n) => n.class_type));
+    if (entry) for (const cls of templateClasses(entry)) classes.add(cls);
+
+    return {
+      externalJobId: data.prompt_id,
+      graph,
+      warnings,
+      custom: built.custom && !fellBack,
+      fellBack,
+      schema: schemaSubset(objectInfo, classes),
+    };
   }
 
   private async pollComfy(promptId: string): Promise<PollOutcome> {
@@ -713,40 +753,6 @@ export class WorkerClient {
     if (assetUrls.length === 0) return { state: 'failed', error: 'Worker completed but returned no output' };
     return { state: 'completed', assetUrls };
   }
-}
-
-// --------------------------------------------------------------------
-// Workflow templating
-// --------------------------------------------------------------------
-
-/**
- * Substitute `{{name}}` placeholders throughout a ComfyUI graph.
- *
- * A string that is *exactly* a placeholder adopts the value's real type, so
- * `"width": "{{width}}"` becomes the number 768 rather than the string "768" —
- * ComfyUI rejects string-typed numeric inputs.
- */
-export function applyWorkflowVars(graph: unknown, vars: Record<string, unknown>): unknown {
-  const exact = /^\{\{\s*([a-zA-Z0-9_]+)\s*\}\}$/;
-
-  const walk = (node: unknown): unknown => {
-    if (typeof node === 'string') {
-      const match = node.match(exact);
-      if (match) {
-        return Object.prototype.hasOwnProperty.call(vars, match[1]) ? vars[match[1]] : node;
-      }
-      return node.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (whole, key: string) =>
-        Object.prototype.hasOwnProperty.call(vars, key) ? String(vars[key]) : whole
-      );
-    }
-    if (Array.isArray(node)) return node.map(walk);
-    if (node && typeof node === 'object') {
-      return Object.fromEntries(Object.entries(node as Record<string, unknown>).map(([k, v]) => [k, walk(v)]));
-    }
-    return node;
-  };
-
-  return walk(graph);
 }
 
 function mediaKindOf(filename: string): 'video' | 'image' | 'audio' | undefined {

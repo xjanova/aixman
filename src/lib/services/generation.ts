@@ -13,6 +13,7 @@ import { isAcceptedAudioSource, isAcceptedFrameSource } from '@/lib/gpu/frame-in
 import { creditsForDuration } from '@/lib/pricing';
 import { sanitizeMusicParams } from '@/lib/music-style';
 import { getGpuConfig } from '@/lib/gpu/config';
+import { getStoredWorkflow, pickQualityMode } from '@/lib/gpu/workflow-overrides';
 import { GpuBalance, RENDERING_PAUSED_MESSAGE } from './gpu-balance';
 import { raiseAlert } from '@/lib/notify/alerts';
 
@@ -126,7 +127,21 @@ export class GenerationService {
     const curve = gpuModel && (request.type === 'video' || request.type === 'audio')
       ? catalogEntry?.pricing.durationCurve
       : undefined;
-    const requiredCredits = creditsForDuration(model.creditsPerUnit, curve, gpuDuration) * numOutputs;
+    // A quality mode (Qwen-Image "คุณภาพสูง") costs more GPU and is priced by
+    // its multiplier. Only a mode this caller may use is honoured — a mode still
+    // being tried by admins falls back to the default for everyone else — and
+    // the one chosen is stored, so the render and the price cannot disagree.
+    const qualityMode = catalogEntry?.qualityModes?.length
+      ? pickQualityMode(
+          catalogEntry,
+          await getStoredWorkflow(model.modelId).catch(() => null),
+          request.params?.quality,
+          options.isAdmin === true
+        )
+      : null;
+    const requiredCredits =
+      Math.ceil(creditsForDuration(model.creditsPerUnit, curve, gpuDuration) * (qualityMode?.creditsMultiplier ?? 1)) *
+      numOutputs;
 
     // Uploaded inputs are folded into params so they are persisted with the
     // row. `ai_generations` has an `inputImage` column but no audio or video
@@ -147,6 +162,9 @@ export class GenerationService {
     // reopening the order still sees "หญิง / ลูกทุ่ง / 92 BPM".
     const music = catalogEntry?.music?.controls === true ? sanitizeMusicParams(baseParams.music) : undefined;
     delete baseParams.music;
+    // The mode priced above, or nothing for a model without modes.
+    delete baseParams.quality;
+    if (qualityMode) baseParams.quality = qualityMode.id;
 
     const storedParams: Record<string, unknown> = {
       ...baseParams,
@@ -247,6 +265,8 @@ export class GenerationService {
           seed: request.params?.seed ?? Math.floor(Math.random() * 2_147_483_647),
           inputImage: request.inputImage,
           extra: storedParams,
+          // An override still in admin rollout renders only admins' orders.
+          adminRun: options.isAdmin === true,
         },
       });
 

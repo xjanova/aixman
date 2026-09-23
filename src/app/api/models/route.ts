@@ -8,6 +8,7 @@ import { getGpuConfig } from '@/lib/gpu/config';
 import { GpuBalance } from '@/lib/services/gpu-balance';
 import { isStorageConfigured } from '@/lib/storage/r2';
 import { isInHouse, publicProvider } from '@/lib/public-provider';
+import { getAllStoredWorkflows, visibleQualityModes } from '@/lib/gpu/workflow-overrides';
 
 /**
  * Public model list for the studio and the mobile app.
@@ -64,6 +65,24 @@ function musicOptions(modelKey: string): {
   };
 }
 
+function qualityOptions(
+  modelKey: string,
+  stored: Parameters<typeof visibleQualityModes>[1],
+  admin: boolean
+): { id: string; label: string; description: string; creditsMultiplier: number; isDefault: boolean; adminOnly: boolean }[] | null {
+  const modes = visibleQualityModes(getCatalogEntry(modelKey), stored, admin);
+  if (modes.length === 0) return null;
+  return modes.map((m) => ({
+    id: m.id,
+    label: m.label,
+    description: m.description,
+    creditsMultiplier: m.creditsMultiplier,
+    isDefault: m.isDefault === true,
+    // Lets the studio mark a mode only an admin can see as a test.
+    adminOnly: m.adminOnly === true,
+  }));
+}
+
 /** From the provider's keys: can any of them take a request right now? */
 function fromAccounts(blocks: (AccountBlock | null)[]): Availability {
   if (blocks.some((b) => b === null)) return 'ok';
@@ -75,7 +94,7 @@ function fromAccounts(blocks: (AccountBlock | null)[]): Availability {
 
 export async function GET() {
   const now = new Date();
-  const [models, admin, accounts, gpuCfg] = await Promise.all([
+  const [models, admin, accounts, gpuCfg, workflows] = await Promise.all([
     prisma.aiModel.findMany({
       where: { isActive: true },
       include: { provider: { select: { id: true, name: true, slug: true, logo: true, isActive: true } } },
@@ -95,6 +114,9 @@ export async function GET() {
       },
     }),
     getGpuConfig(),
+    // Quality-mode prices and visibility an admin set on /admin/workflows. A
+    // failed read shows the catalogue's own modes rather than no model list.
+    getAllStoredWorkflows().catch(() => new Map()),
   ]);
 
   // Vendor balance too low to rent (gpu-balance.ts): a model with no machine
@@ -175,6 +197,10 @@ export async function GET() {
         // customer's words, and whether it starts from a song they upload.
         // Null for anything that is not a rented-GPU audio model.
         music: inHouse ? musicOptions(m.modelId) : null,
+        // Quality modes the studio may offer (Qwen-Image เร็ว / คุณภาพสูง), each
+        // with the multiplier GenerationService prices it at. Null when the
+        // model has none; admin-only modes reach admins only.
+        quality: inHouse ? qualityOptions(m.modelId, workflows.get(m.modelId) ?? null, admin) : null,
         // 'tuning' stays orderable for admins — running it is how it gets
         // proven. 'unavailable' is not orderable by anyone: it would fail.
         status,

@@ -3,8 +3,16 @@ import prisma, { SLOW_DB_TX } from '@/lib/db';
 import { Prisma } from '@/generated/prisma/client';
 import type { AiGpuJob, AiGpuWorker } from '@/generated/prisma/client';
 import { getGpuConfig, getWorkerProfile, type GpuBudgetConfig } from '@/lib/gpu/config';
-import { isAdminOnlyPreset } from '@/lib/gpu/catalog';
-import { WorkerClient, type WorkerJobParams } from '@/lib/gpu/worker-client';
+import { getCatalogEntry, isAdminOnlyPreset } from '@/lib/gpu/catalog';
+import { WorkerClient, type SubmitResult, type WorkerJobParams } from '@/lib/gpu/worker-client';
+import {
+  effectiveWorkflow,
+  getSchemaSnapshot,
+  getStoredWorkflow,
+  saveLastGraph,
+  saveSchemaSnapshot,
+  type EffectiveWorkflow,
+} from '@/lib/gpu/workflow-overrides';
 import { GpuWorkerManager } from './gpu-worker';
 import { GpuBalance, INSUFFICIENT_BALANCE_GRACE_MS, RENDERING_PAUSED_MESSAGE } from './gpu-balance';
 import { maybeSendDailyReport } from './gpu-report';
@@ -35,6 +43,14 @@ const LIVE_WORKER_STATUSES = ['provisioning', 'warming', 'ready', 'busy', 'drain
 
 /** Pause before the one retry of recording a render that was just submitted. */
 const RECORD_RETRY_MS = 2_000;
+
+/**
+ * How often a model's stored schema is refreshed from a live worker. The node
+ * set cannot change while a ComfyUI version is pinned, so once a process has
+ * stored one per model it only needs a periodic refresh.
+ */
+const SCHEMA_REFRESH_MS = 6 * 60 * 60_000;
+const schemaSavedAt = new Map<string, number>();
 
 /** Job failure reason when the vendor balance cannot rent; `userFacingError` matches it. */
 const RENDERING_PAUSED_PREFIX = 'Rendering paused';
@@ -458,13 +474,17 @@ export class GpuQueue {
     if (!worker.endpoint) throw new Error('Worker has no reachable endpoint');
 
     const profile = await getWorkerProfile(job.modelKey);
+    const payload = job.payload as unknown as WorkerJobParams;
+    const workflow = await this.workflowFor(job.modelKey, payload.adminRun === true);
     const client = new WorkerClient(
       worker.endpoint,
       profile,
       GpuWorkerManager.readAuthToken(worker),
-      job.modelKey
+      job.modelKey,
+      workflow
     );
-    const { externalJobId } = await client.submit(job.payload as unknown as WorkerJobParams);
+    const submitted = await client.submit(payload);
+    const { externalJobId } = submitted;
 
     // From here the GPU is rendering, so recording it must survive a slow
     // moment of the database. A throw used to put the job back in the queue
@@ -509,6 +529,81 @@ export class GpuQueue {
         ],
       });
       throw error;
+    }
+
+    // What was sent, for /admin/workflows. After the job is recorded and never
+    // awaited: a slow settings write must not hold the tick.
+    void this.rememberSubmission(job, worker, submitted, workflow, payload.adminRun === true).catch((error) =>
+      console.error(`[gpu] could not store the submitted graph for ${job.modelKey}:`, (error as Error).message)
+    );
+  }
+
+  /**
+   * The admin's override as it applies to this job — or the catalogue as
+   * shipped when there is none, it is switched off, or it is still being tried
+   * by admins only and this is a customer's order. A settings read that fails
+   * must not stop a render, so it falls back to the catalogue too.
+   */
+  private static async workflowFor(modelKey: string, adminRun: boolean): Promise<EffectiveWorkflow | null> {
+    const entry = getCatalogEntry(modelKey);
+    if (!entry) return null;
+    const stored = await getStoredWorkflow(modelKey).catch((error) => {
+      console.error(`[gpu] could not read the workflow override for ${modelKey}:`, (error as Error).message);
+      return null;
+    });
+    return effectiveWorkflow(entry, stored, adminRun);
+  }
+
+  private static async rememberSubmission(
+    job: AiGpuJob,
+    worker: AiGpuWorker,
+    submitted: SubmitResult,
+    workflow: EffectiveWorkflow | null,
+    adminRun: boolean
+  ): Promise<void> {
+    if (submitted.fellBack) {
+      raiseAlert({
+        type: 'workflow-fallback',
+        key: job.modelKey,
+        level: 'warning',
+        title: `กราฟกำหนดเองของ ${job.modelKey} ใช้กับเครื่องจริงไม่ได้ — ระบบใช้ workflow มาตรฐานแทน`,
+        lines: [
+          `งาน #${job.generationId} · เครื่อง #${worker.id} (${worker.gpuModel ?? worker.providerSlug})`,
+          `สาเหตุ: ${submitted.fellBack.slice(0, 300)}`,
+          'ลูกค้าไม่เสียงาน แต่กราฟที่แก้ไว้ยังไม่ถูกใช้ — ตรวจที่หน้า Workflow ComfyUI',
+        ],
+        path: '/admin/workflows',
+        cooldownMs: 6 * 60 * 60_000,
+      });
+    }
+    if (!submitted.graph) return;
+
+    await saveLastGraph(job.modelKey, {
+      capturedAt: new Date().toISOString(),
+      generationId: job.generationId,
+      jobId: job.id,
+      workerId: worker.id,
+      gpuModel: worker.gpuModel,
+      overrideVersion: workflow?.version ?? null,
+      adminRun,
+      custom: submitted.custom === true,
+      warnings: submitted.warnings ?? [],
+      graph: submitted.graph,
+    });
+
+    const last = schemaSavedAt.get(job.modelKey) ?? 0;
+    if (submitted.schema && Date.now() - last > SCHEMA_REFRESH_MS) {
+      schemaSavedAt.set(job.modelKey, Date.now());
+      const existing = await getSchemaSnapshot(job.modelKey);
+      // Keep a fresh one; replace anything older than the refresh window.
+      if (!existing || existing.source !== 'worker' || Date.now() - Date.parse(existing.capturedAt) > SCHEMA_REFRESH_MS) {
+        await saveSchemaSnapshot(job.modelKey, {
+          capturedAt: new Date().toISOString(),
+          source: 'worker',
+          gpuModel: worker.gpuModel,
+          classes: submitted.schema,
+        });
+      }
     }
   }
 

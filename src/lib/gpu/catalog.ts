@@ -7,6 +7,14 @@ import {
   type MusicStyleParams,
 } from '@/lib/music-style';
 import type { GpuArch } from './gpu-specs';
+import {
+  SAMPLER_OPTIONS,
+  SCHEDULER_OPTIONS,
+  tunableReader,
+  type QualityMode,
+  type TunableValue,
+  type WorkflowTunable,
+} from './tunables';
 import minimaxH3Template from './workflows/templates/minimax_h3_t2v.json';
 import aceStepTemplate from './workflows/templates/ace_step_1_5.json';
 import qwenImageTemplate from './workflows/templates/qwen_image.json';
@@ -92,6 +100,14 @@ export interface CatalogJobParams {
    * even true. An entry that can serve community capacity picks from this.
    */
   checkpoints?: string[];
+  /**
+   * The entry's tunables for this job: its declared defaults, overlaid with
+   * whatever an admin set in /admin/workflows. Read through `tunableReader`,
+   * which falls back to the default for anything missing or out of range.
+   */
+  tuning?: Record<string, TunableValue>;
+  /** Quality mode id, for entries that declare `qualityModes`. */
+  quality?: string;
 }
 
 /** A resolution the studio may offer for a video model, per aspect ratio. */
@@ -120,6 +136,24 @@ export interface CatalogEntry {
   /** Thai copy shown to the customer. */
   description: string;
   template: UiWorkflow;
+  /**
+   * Where the vendored template came from — shown on /admin/workflows and used
+   * for its export, so an admin can open the same file in ComfyUI.
+   */
+  source?: { file: string; title: string; url?: string };
+  /**
+   * Knobs an admin may turn from /admin/workflows without a deploy. The entry's
+   * own bind/inject reads them (`tunableReader`), because what a knob means is
+   * this entry's business: Qwen-Image's "quality steps" is a switch, a step
+   * count and a cfg at once.
+   */
+  tunables?: WorkflowTunable[];
+  /**
+   * Quality modes the studio may offer. The chosen id reaches bind as
+   * `p.quality`, and GenerationService multiplies the price by the mode's
+   * `creditsMultiplier` (which an admin can change, along with who sees it).
+   */
+  qualityModes?: QualityMode[];
   downloads: ModelDownload[];
   hardware: {
     minVramMb: number;
@@ -241,6 +275,188 @@ const MINIMAX_H3_TURBO_SAMPLER = 'euler';
 /** H3 generates at 24 fps; its frame-count grid is defined in those frames. */
 const MINIMAX_H3_FPS = 24;
 
+/**
+ * H3's knobs. The sampler, shifts and step counts default to what each turbo
+ * LoRA was distilled for (the table above) — they are exposed so an admin can
+ * experiment, and flagged `risky` because nothing downstream would notice a
+ * wrong one except the picture.
+ */
+const H3_TUNABLES: WorkflowTunable[] = [
+  {
+    id: 'promptStructure',
+    label: 'โครงพรอมต์ตามคู่มือทางการของ H3',
+    group: 'prompt',
+    type: 'choice',
+    default: 'frames',
+    options: [
+      { value: 'frames', label: 'ใส่บรรทัดอ้างอิงภาพเมื่อมีเฟรมแรก/สุดท้าย (แนะนำ)' },
+      { value: 'full', label: 'ห่อพรอมต์เป็น 3 ช่องแบบ Context-IR ทุกงาน' },
+      { value: 'off', label: 'ส่งพรอมต์ตามที่ลูกค้าพิมพ์ ไม่เติมอะไร' },
+    ],
+    help:
+      'H3-Base ถูกฝึกกับพรอมต์ที่ผ่าน H3-Context-IR ของ MiniMax (ไม่ได้เปิดซอร์ส) — คู่มือทางการกำหนดให้โหมดภาพแรก/ภาพแรก+สุดท้าย ' +
+      'ขึ้นต้นด้วยบรรทัดบอกว่าภาพไหนอยู่วินาทีไหน "เสมอ" · โหมด 3 ช่องจะห่อพรอมต์ที่ยังไม่มีโครงเป็น integrated_multimodal_description / ' +
+      'overall_soundscape / non_diegetic_music — ถ้าลูกค้ากด "ปรับพรอมต์ด้วย AI" ในสตูดิโอ พรอมต์จะมีโครงครบอยู่แล้วและระบบจะไม่ห่อซ้ำ',
+  },
+  {
+    id: 'soundscapeDefault',
+    label: 'overall_soundscape เริ่มต้น',
+    group: 'prompt',
+    type: 'text',
+    maxLength: 600,
+    default: 'Natural ambient sound and physical action sounds that match what happens on screen.',
+    help: 'ใช้เฉพาะโหมด "ห่อ 3 ช่อง" กับพรอมต์ที่ยังไม่มีโครง · เขียนเป็นภาษาอังกฤษ 1–4 ประโยค ตามคู่มือ',
+  },
+  {
+    id: 'musicDefault',
+    label: 'non_diegetic_music เริ่มต้น',
+    group: 'prompt',
+    type: 'text',
+    maxLength: 400,
+    default: 'N/A',
+    help: 'ดนตรีประกอบที่ตัวละครไม่ได้ยิน ใช้เฉพาะโหมด "ห่อ 3 ช่อง" · N/A = ไม่มีดนตรีประกอบ (เสียงบรรยากาศยังอยู่)',
+  },
+  {
+    id: 'sampler',
+    label: 'Sampler',
+    group: 'sampler',
+    type: 'choice',
+    default: MINIMAX_H3_TURBO_SAMPLER,
+    options: SAMPLER_OPTIONS,
+    risky: true,
+    help: 'workflow turbo ของ ModelTC ใช้ euler แทน res_multistep ของเทมเพลตฐาน — เปลี่ยนเพื่อทดลองเท่านั้น',
+  },
+  {
+    id: 'loraStrength',
+    label: 'ความแรง Turbo LoRA',
+    group: 'sampler',
+    type: 'float',
+    default: 1,
+    min: 0.5,
+    max: 1.2,
+    step: 0.05,
+    risky: true,
+    help: 'LoRA เร่งความเร็วถูกกลั่นมาที่ 1.0 — ต่ำกว่านี้ภาพจะดิบขึ้นเพราะสเต็ปไม่พอสำหรับโมเดลฐาน',
+  },
+  {
+    id: 'steps768',
+    label: 'สเต็ป · LoRA 768p (แนวนอน)',
+    group: 'advanced',
+    type: 'int',
+    default: H3_TURBO_768P.steps,
+    min: 2,
+    max: 12,
+    risky: true,
+    help: 'ModelTC กลั่น LoRA 768p ไว้ที่ 4 สเต็ปพอดี — ค่าอื่นยังเรนเดอร์ได้แต่คุณภาพจะหลุดโดยไม่มีอะไรเตือน',
+  },
+  {
+    id: 'stepsMixed',
+    label: 'สเต็ป · LoRA แนวตั้ง/จัตุรัส',
+    group: 'advanced',
+    type: 'int',
+    default: H3_TURBO_MIXED.steps,
+    min: 4,
+    max: 16,
+    risky: true,
+    help: 'LoRA mixed-aspect ถูกกลั่นไว้ที่ 8 สเต็ป',
+  },
+  {
+    id: 'shiftVideo768',
+    label: 'Sigma shift วิดีโอ · 768p',
+    group: 'advanced',
+    type: 'float',
+    default: H3_TURBO_768P.shiftVideo,
+    min: 1,
+    max: 20,
+    step: 0.5,
+    risky: true,
+    help: 'ตามตารางสเปกของ ModelTC: 768p ใช้ 6 (ตัวอย่าง workflow ของเขาเองใส่ 12 ซึ่งผิด)',
+  },
+  {
+    id: 'shiftVideoMixed',
+    label: 'Sigma shift วิดีโอ · แนวตั้ง/จัตุรัส',
+    group: 'advanced',
+    type: 'float',
+    default: H3_TURBO_MIXED.shiftVideo,
+    min: 1,
+    max: 20,
+    step: 0.5,
+    risky: true,
+    help: 'ตามตารางสเปกของ ModelTC: LoRA mixed-aspect ใช้ 12',
+  },
+  {
+    id: 'shiftAudio',
+    label: 'Sigma shift เสียง',
+    group: 'advanced',
+    type: 'float',
+    default: H3_TURBO_768P.shiftAudio,
+    min: 1,
+    max: 12,
+    step: 0.5,
+    risky: true,
+    help: 'LoRA ทั้งสองตัวใช้ 3',
+  },
+];
+
+const H3 = tunableReader(H3_TUNABLES);
+
+/**
+ * The first line the official prompting guide puts in front of a keyframe task
+ * (VIDEO_PROMPT_WRITING_GUIDE_base_en.md, §2.1 — "always uses"), or '' for
+ * text-to-video. It tells H3-Base which picture sits at which second, and the
+ * guide's FL2VA case aligns the last picture with the clip's effective length
+ * written to exactly two decimals.
+ */
+function h3FrameInstruction(p: CatalogJobParams): string {
+  if (p.imageFilename && p.lastImageFilename) {
+    const seconds = (minimaxFrameLength(p.durationSeconds, MINIMAX_H3_FPS) / MINIMAX_H3_FPS).toFixed(2);
+    return (
+      'How the reference pictures align with the target video — Picture 1 (from Shot 1) aligns with the 0.00-second mark ' +
+      `of the target video; Picture 2 (from Shot 1) aligns with the ${seconds}-second mark of the target video.`
+    );
+  }
+  if (p.imageFilename) {
+    return 'For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.';
+  }
+  return '';
+}
+
+/** A prompt that already carries the official fields — written by our enhancer or by hand. */
+const H3_STRUCTURED = /integrated_multimodal_description\s*:/i;
+/** A prompt that already opens with a keyframe instruction. */
+const H3_INSTRUCTED = /^\s*(For the target video, at|How the reference pictures align)/i;
+
+/**
+ * The text H3-Base receives.
+ *
+ * MiniMax's own pipeline never hands H3-Base the customer's words: its
+ * Context-IR rewrites them first into the structure the model was trained on,
+ * and the model card calls that step "critical to the quality of the final
+ * output". This does the part of it that needs no language model — the
+ * keyframe instruction, and (by choice) the three-field frame — and leaves a
+ * prompt that is already structured alone.
+ */
+export function h3Prompt(p: CatalogJobParams): string {
+  const raw = p.prompt.trim();
+  const mode = H3.str(p.tuning, 'promptStructure');
+  if (mode === 'off') return raw;
+
+  let body = raw;
+  if (mode === 'full' && !H3_STRUCTURED.test(raw)) {
+    body =
+      `integrated_multimodal_description: [Shot 1] ${raw}\n\n` +
+      `overall_soundscape: ${H3.str(p.tuning, 'soundscapeDefault').trim() || 'N/A'}\n\n` +
+      `non_diegetic_music: ${H3.str(p.tuning, 'musicDefault').trim() || 'N/A'}`;
+  }
+  // A prompt may arrive with an instruction line already (from the enhancer,
+  // or typed by hand) written for a different set of frames than this job
+  // has — an image-to-video prompt ordered as text-to-video points at a
+  // picture that is not there. The line is always rebuilt from the job.
+  if (H3_INSTRUCTED.test(body)) body = body.replace(/^\s*[^\n]*\n+/, '').trim();
+  const lead = h3FrameInstruction(p);
+  return lead ? `${lead}\n\n${body}` : body;
+}
+
 /** Round to the model's size step, falling back when the input is unusable. */
 function snap(value: number, step: number, fallback: number): number {
   const n = Number.isFinite(value) && value > 0 ? value : fallback;
@@ -356,6 +572,12 @@ const MINIMAX_H3: CatalogEntry = {
   outputKind: 'video',
   description: 'วิดีโอพร้อมเสียงในตัว คุณภาพสูงสุดในกลุ่ม • ใช้เวลาสร้างนานกว่าโมเดลอื่น',
   template: minimaxH3Template as UiWorkflow,
+  source: {
+    file: 'minimax_h3_t2v.json',
+    title: 'video_minimax_h3_t2v (Comfy-Org) + Turbo LoRA ของ ModelTC',
+    url: 'https://github.com/Comfy-Org/workflow_templates/blob/main/templates/video_minimax_h3_t2v.json',
+  },
+  tunables: H3_TUNABLES,
   downloads: [
     // Pruned INT8 — the bf16 original is 66 GB and needs 4× H100.
     { repo: 'Comfy-Org/MiniMax-H3', file: 'diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors', dest: 'diffusion_models', bytes: 20_970_379_616 },
@@ -390,21 +612,24 @@ const MINIMAX_H3: CatalogEntry = {
   inject: (p) => {
     const plan = h3RenderPlan(p.width, p.height, p.resolution);
     const { turbo } = plan;
+    const landscape = turbo === H3_TURBO_768P;
     const nodes: Record<string, { class_type: string; inputs: Record<string, unknown> }> = {
       '105_119': {
         class_type: 'LoraLoaderModelOnly',
         inputs: {
           model: ['105_6', 0],
           lora_name: turbo.lora,
-          strength_model: 1,
+          strength_model: H3.num(p.tuning, 'loraStrength'),
         },
       },
       '105_120': {
         class_type: 'MiniMaxH3SigmaShift',
         inputs: {
           model: ['105_119', 0],
-          shift_video: turbo.shiftVideo,
-          shift_audio: turbo.shiftAudio,
+          // The distilled values (turbo.shiftVideo / shiftAudio) are the
+          // tunables' defaults; an admin override lands here.
+          shift_video: H3.num(p.tuning, landscape ? 'shiftVideo768' : 'shiftVideoMixed'),
+          shift_audio: H3.num(p.tuning, 'shiftAudio'),
         },
       },
     };
@@ -443,9 +668,10 @@ const MINIMAX_H3: CatalogEntry = {
       // Re-point CreateVideo's frames at the resize; the VAEDecode stays its input.
       ...(plan.output ? [{ nodeId: '105_91', input: 'images', value: [H3_RESIZE_NODE, 0] }] : []),
     ];
+    const landscape = plan.turbo === H3_TURBO_768P;
     return [
       ...frames,
-      { nodeId: '105_104', input: 'prompt', value: p.prompt },
+      { nodeId: '105_104', input: 'prompt', value: h3Prompt(p) },
       // Sized for the chosen LoRA, in the node's 32 px steps (ComfyUI does not
       // enforce step, the model does).
       { nodeId: '105_104', input: 'width', value: plan.width },
@@ -461,9 +687,10 @@ const MINIMAX_H3: CatalogEntry = {
       // the output looking wrong.
       { nodeId: '105_16', input: 'model', value: ['105_120', 0] },
       { nodeId: '105_9', input: 'model', value: ['105_120', 0] },
-      // Fixed per LoRA, not taken from `p.steps`.
-      { nodeId: '105_9', input: 'steps', value: plan.turbo.steps },
-      { nodeId: '105_17', input: 'sampler_name', value: MINIMAX_H3_TURBO_SAMPLER },
+      // Fixed per LoRA, not taken from `p.steps` — only an admin's tunable
+      // moves it, and its default is the LoRA's own count.
+      { nodeId: '105_9', input: 'steps', value: H3.num(p.tuning, landscape ? 'steps768' : 'stepsMixed') },
+      { nodeId: '105_17', input: 'sampler_name', value: H3.str(p.tuning, 'sampler') },
 
       // Cosmetic: the template's own defaults are fine if these ever move.
       { nodeId: '105_91', input: 'fps', value: MINIMAX_H3_FPS, optional: true },
@@ -497,6 +724,51 @@ function minimaxFrameLength(durationSeconds: number, fps: number): number {
 // Template: audio_ace_step_1_5_split.json. Flat graph, so ids are as authored.
 // The lightest model in the catalogue by a wide margin — it runs happily on the
 // cheapest card available, which is what makes audio cheap to sell.
+const ACE_TUNABLES: WorkflowTunable[] = [
+  {
+    id: 'steps',
+    label: 'สเต็ป',
+    group: 'quality',
+    type: 'int',
+    default: 8,
+    min: 4,
+    max: 50,
+    risky: true,
+    help: 'acestep v1.5 turbo ถูกกลั่นมาที่ 8 สเต็ป — เพิ่มแล้วช้าลงโดยไม่ได้ดีขึ้นเสมอไป',
+  },
+  {
+    id: 'shift',
+    label: 'Sigma shift (ModelSamplingAuraFlow)',
+    group: 'sampler',
+    type: 'float',
+    default: 3,
+    min: 1,
+    max: 10,
+    step: 0.5,
+    help: 'ค่าตามเทมเพลตทางการคือ 3',
+  },
+  {
+    id: 'sampler',
+    label: 'Sampler',
+    group: 'sampler',
+    type: 'choice',
+    default: 'euler',
+    options: SAMPLER_OPTIONS,
+    help: 'เทมเพลตทางการใช้ euler',
+  },
+  {
+    id: 'scheduler',
+    label: 'Scheduler',
+    group: 'sampler',
+    type: 'choice',
+    default: 'simple',
+    options: SCHEDULER_OPTIONS,
+    help: 'เทมเพลตทางการใช้ simple',
+  },
+];
+
+const ACE = tunableReader(ACE_TUNABLES);
+
 const ACE_STEP: CatalogEntry = {
   key: 'ace-step-1.5',
   name: 'ACE-Step 1.5 (เพลง/เสียง)',
@@ -504,6 +776,12 @@ const ACE_STEP: CatalogEntry = {
   outputKind: 'audio',
   description: 'สร้างเพลงและเสียงจากคำอธิบาย • เบาที่สุด เร็วและถูกที่สุดในระบบ',
   template: aceStepTemplate as UiWorkflow,
+  source: {
+    file: 'ace_step_1_5.json',
+    title: 'audio_ace_step_1_5_split (Comfy-Org)',
+    url: 'https://github.com/Comfy-Org/workflow_templates/blob/main/templates/audio_ace_step_1_5_split.json',
+  },
+  tunables: ACE_TUNABLES,
   downloads: [
     { repo: 'Comfy-Org/ace_step_1.5_ComfyUI_files', file: 'split_files/diffusion_models/acestep_v1.5_turbo.safetensors', dest: 'diffusion_models', bytes: 4_787_825_604 },
     { repo: 'Comfy-Org/ace_step_1.5_ComfyUI_files', file: 'split_files/text_encoders/qwen_0.6b_ace15.safetensors', dest: 'text_encoders', bytes: 1_191_588_248 },
@@ -533,7 +811,13 @@ const ACE_STEP: CatalogEntry = {
     { nodeId: '94', input: ['duration'], value: aceDuration(p.durationSeconds) },
     { nodeId: '3', input: ['seed', 'noise_seed'], value: p.seed },
     { nodeId: '94', input: ['seed'], value: p.seed },
-    { nodeId: '3', input: 'steps', value: p.steps ?? 8, optional: true },
+    // A distilled turbo: the step count is the admin's tunable, never a
+    // client's number — the studio sends none for music, and a caller that
+    // did would only slow the render down.
+    { nodeId: '3', input: 'steps', value: ACE.num(p.tuning, 'steps'), optional: true },
+    { nodeId: '3', input: 'sampler_name', value: ACE.str(p.tuning, 'sampler'), optional: true },
+    { nodeId: '3', input: 'scheduler', value: ACE.str(p.tuning, 'scheduler'), optional: true },
+    { nodeId: '78', input: 'shift', value: ACE.num(p.tuning, 'shift'), optional: true },
     { nodeId: '107', input: 'filename_prefix', value: 'audio/aixman', optional: true },
   ],
   baselineSecondsPerUnit: 3,
@@ -550,6 +834,178 @@ function aceDuration(seconds: number): number {
 // ---------------------------------------------------------------------------
 // Template: image_qwen_image.json. Only SaveImage (60) sits outside the
 // subgraph (76); everything else converts to `76_*` ids.
+//
+// The template carries both of Qwen-Image's paths behind one boolean (76_86):
+// Lightning (LoRA 76_73, 8 steps from 76_79, cfg 1 from 76_81) and the full
+// model (20 steps from 76_84, cfg 4 from 76_85). Its own VRAM table times them
+// at 34 s and 71 s on a warm RTX 4090D — the "quality" mode below is that
+// second path, priced at twice the first.
+
+/**
+ * Qwen-Image's native canvases, from the official model card and the table in
+ * the template's own note (node 77). The model renders best at the sizes it
+ * was trained on; the studio's generic 1344x768 was being fitted down to about
+ * one megapixel. 1140 is the card's number for 4:3 — the latent needs
+ * multiples of 16, so it is snapped when used.
+ */
+const QWEN_BUCKETS: { w: number; h: number }[] = [
+  { w: 1328, h: 1328 },
+  { w: 1664, h: 928 },
+  { w: 928, h: 1664 },
+  { w: 1472, h: 1140 },
+  { w: 1140, h: 1472 },
+  { w: 1584, h: 1056 },
+  { w: 1056, h: 1584 },
+];
+
+/** The official "positive magic" appended to every English prompt in Qwen-Image's README. */
+const QWEN_MAGIC_EN = ', Ultra HD, 4K, cinematic composition.';
+
+/** The native canvas whose shape is closest to the requested one (on a log scale). */
+export function nearestBucket(width: number, height: number, buckets: { w: number; h: number }[]): { w: number; h: number } {
+  const w = Number.isFinite(width) && width > 0 ? width : 1;
+  const h = Number.isFinite(height) && height > 0 ? height : 1;
+  const want = Math.log(w / h);
+  return buckets.reduce((best, b) => (Math.abs(Math.log(b.w / b.h) - want) < Math.abs(Math.log(best.w / best.h) - want) ? b : best));
+}
+
+const QWEN_QUALITY_MODES: QualityMode[] = [
+  {
+    id: 'fast',
+    label: 'เร็ว',
+    description: 'Lightning 8 สเต็ป — ภาพดีในไม่กี่วินาที เหมาะกับงานทั่วไป',
+    creditsMultiplier: 1,
+    isDefault: true,
+  },
+  {
+    id: 'quality',
+    label: 'คุณภาพสูง',
+    description: 'โมเดลเต็มไม่ผ่าน LoRA เร่ง — รายละเอียด ผิว และตัวอักษรคมกว่า ใช้เวลาราว 2 เท่า',
+    creditsMultiplier: 2,
+    adminOnly: true,
+  },
+];
+
+const QWEN_TUNABLES: WorkflowTunable[] = [
+  {
+    id: 'nativeResolution',
+    label: 'ใช้ความละเอียดตามที่โมเดลฝึกมา',
+    group: 'quality',
+    type: 'bool',
+    default: true,
+    help: 'เลือกขนาดทางการที่ใกล้สัดส่วนที่ลูกค้าสั่งที่สุด (เช่น 16:9 → 1664×928, 1:1 → 1328×1328) แทนการย่อให้เหลือราว 1 ล้านพิกเซล',
+  },
+  {
+    id: 'magicSuffix',
+    label: 'ต่อท้าย "positive magic" ทางการ',
+    group: 'prompt',
+    type: 'bool',
+    default: true,
+    help: 'README ของ Qwen-Image ต่อท้ายทุกพรอมต์ด้วยข้อความนี้ — ช่วยเรื่องความคมและองค์ประกอบภาพ',
+  },
+  {
+    id: 'magicText',
+    label: 'ข้อความ positive magic',
+    group: 'prompt',
+    type: 'text',
+    maxLength: 300,
+    default: QWEN_MAGIC_EN,
+    help: 'ค่าทางการ: ", Ultra HD, 4K, cinematic composition."',
+  },
+  {
+    id: 'negativeDefault',
+    label: 'Negative prompt เมื่อลูกค้าเว้นว่าง',
+    group: 'prompt',
+    type: 'text',
+    maxLength: 600,
+    default: '',
+    help: 'README ทางการใช้ช่องว่าง (ไม่ตัดอะไรออก) — ใส่เพิ่มได้ เช่น "blurry, watermark" ใช้เฉพาะโหมดคุณภาพสูง เพราะ Lightning ใช้ cfg 1 ซึ่งไม่อ่าน negative',
+  },
+  {
+    id: 'fastSteps',
+    label: 'สเต็ป · โหมดเร็ว (Lightning)',
+    group: 'quality',
+    type: 'int',
+    default: 8,
+    min: 4,
+    max: 16,
+    risky: true,
+    help: 'LoRA Lightning ถูกกลั่นมาที่ 8 สเต็ปพอดี',
+  },
+  {
+    id: 'qualitySteps',
+    label: 'สเต็ป · โหมดคุณภาพสูง',
+    group: 'quality',
+    type: 'int',
+    default: 20,
+    min: 10,
+    max: 60,
+    help: 'เทมเพลตทางการใช้ 20 · โน้ตในเทมเพลตแนะนำ 50 ถ้าอยากได้ค่าตามต้นฉบับ Qwen (ช้ากว่าราว 2.5 เท่า)',
+  },
+  {
+    id: 'qualityCfg',
+    label: 'CFG · โหมดคุณภาพสูง',
+    group: 'quality',
+    type: 'float',
+    default: 4,
+    min: 1,
+    max: 8,
+    step: 0.5,
+    help: 'ค่าตามเทมเพลตและ README ทางการ (true_cfg_scale 4.0)',
+  },
+  {
+    id: 'shift',
+    label: 'Sigma shift (ModelSamplingAuraFlow)',
+    group: 'sampler',
+    type: 'float',
+    default: 3.1,
+    min: 1,
+    max: 8,
+    step: 0.1,
+    help: 'ค่าตามเทมเพลตทางการคือ 3.1',
+  },
+  {
+    id: 'sampler',
+    label: 'Sampler',
+    group: 'sampler',
+    type: 'choice',
+    default: 'euler',
+    options: SAMPLER_OPTIONS,
+    help: 'เทมเพลตทางการใช้ euler',
+  },
+  {
+    id: 'scheduler',
+    label: 'Scheduler',
+    group: 'sampler',
+    type: 'choice',
+    default: 'simple',
+    options: SCHEDULER_OPTIONS,
+    help: 'เทมเพลตทางการใช้ simple',
+  },
+];
+
+const QWEN = tunableReader(QWEN_TUNABLES);
+
+/** The customer's words plus the official suffix, unless they already end with it. */
+function qwenPrompt(p: CatalogJobParams): string {
+  const text = p.prompt.trim();
+  if (!QWEN.bool(p.tuning, 'magicSuffix')) return text;
+  const magic = QWEN.str(p.tuning, 'magicText').trim();
+  // Compared without the leading comma and trailing full stop, so a prompt
+  // that already ends with the suffix (an enhanced one, a template) keeps one.
+  const core = (s: string) => s.replace(/^[,\s]+/, '').replace(/[.\s]+$/, '').toLowerCase();
+  if (!core(magic) || core(text).endsWith(core(magic))) return text;
+  return `${text.replace(/[.\s]+$/, '')}${magic.startsWith(',') ? '' : ', '}${magic}`;
+}
+
+function qwenSize(p: CatalogJobParams): { width: number; height: number } {
+  if (!QWEN.bool(p.tuning, 'nativeResolution')) {
+    return { width: snap(p.width, 16, 1328), height: snap(p.height, 16, 1328) };
+  }
+  const b = nearestBucket(p.width, p.height, QWEN_BUCKETS);
+  return { width: snap(b.w, 16, 1328), height: snap(b.h, 16, 1328) };
+}
+
 const QWEN_IMAGE: CatalogEntry = {
   key: 'qwen-image',
   name: 'Qwen-Image',
@@ -557,6 +1013,13 @@ const QWEN_IMAGE: CatalogEntry = {
   outputKind: 'image',
   description: 'สร้างภาพนิ่งคุณภาพสูง เก่งเรื่องตัวอักษรทั้งไทยและอังกฤษ • ใช้ LoRA 8 สเต็ป เร็วกว่าปกติมาก',
   template: qwenImageTemplate as UiWorkflow,
+  source: {
+    file: 'qwen_image.json',
+    title: 'image_qwen_image (Comfy-Org)',
+    url: 'https://github.com/Comfy-Org/workflow_templates/blob/main/templates/image_qwen_image.json',
+  },
+  tunables: QWEN_TUNABLES,
+  qualityModes: QWEN_QUALITY_MODES,
   downloads: [
     { repo: 'Comfy-Org/Qwen-Image_ComfyUI', file: 'split_files/diffusion_models/qwen_image_fp8_e4m3fn.safetensors', dest: 'diffusion_models', bytes: 20_430_635_136 },
     { repo: 'Comfy-Org/Qwen-Image_ComfyUI', file: 'split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors', dest: 'text_encoders', bytes: 9_384_670_680 },
@@ -565,29 +1028,43 @@ const QWEN_IMAGE: CatalogEntry = {
     { repo: 'lightx2v/Qwen-Image-Lightning', file: 'Qwen-Image-Lightning-8steps-V1.0.safetensors', dest: 'loras', bytes: 1_698_951_104 },
   ],
   hardware: { minVramMb: 24576, diskGb: 90, gpuModels: [], minArch: 'ampere' },
-  bind: (p) => [
-    // 6 and 7 are positive and negative. Binding by id rather than by class is
-    // deliberate — two CLIPTextEncode nodes are indistinguishable by type and
-    // swapping them silently inverts the prompt.
-    { nodeId: '76_6', input: 'text', value: p.prompt },
-    { nodeId: '76_7', input: 'text', value: p.negativePrompt ?? '' },
-    // Qwen-Image's latent patches need multiples of 16.
-    { nodeId: '76_58', input: 'width', value: snap(p.width, 16, 1328) },
-    { nodeId: '76_58', input: 'height', value: snap(p.height, 16, 1328) },
-    { nodeId: '76_3', input: ['seed', 'noise_seed'], value: p.seed },
-    // The template ships with its Lightning switch OFF: the model path skips the
-    // LoRA and cfg comes out at 4. Left that way, forcing 8 steps renders the
-    // base model undercooked at the wrong cfg — valid to ComfyUI, visibly bad.
-    // This one boolean moves model and cfg onto the Lightning branch together.
-    { nodeId: '76_86', input: 'value', value: true },
-    // Distilled to 8; the switch would pick 8 too, but pinning it means a
-    // caller-supplied step count cannot drag it off the distilled schedule.
-    { nodeId: '76_3', input: 'steps', value: 8 },
-    { nodeId: '60', input: 'filename_prefix', value: 'image/aixman', optional: true },
-  ],
+  bind: (p) => {
+    const lightning = p.quality !== 'quality';
+    const size = qwenSize(p);
+    const negative = p.negativePrompt?.trim() ? p.negativePrompt : QWEN.str(p.tuning, 'negativeDefault');
+    return [
+      // 6 and 7 are positive and negative. Binding by id rather than by class is
+      // deliberate — two CLIPTextEncode nodes are indistinguishable by type and
+      // swapping them silently inverts the prompt.
+      { nodeId: '76_6', input: 'text', value: qwenPrompt(p) },
+      { nodeId: '76_7', input: 'text', value: negative },
+      // Qwen-Image's latent patches need multiples of 16.
+      { nodeId: '76_58', input: 'width', value: size.width },
+      { nodeId: '76_58', input: 'height', value: size.height },
+      { nodeId: '76_3', input: ['seed', 'noise_seed'], value: p.seed },
+      // The template ships with its Lightning switch OFF: the model path skips
+      // the LoRA and cfg comes out at 4. Left that way, forcing 8 steps renders
+      // the base model undercooked at the wrong cfg — valid to ComfyUI, visibly
+      // bad. This one boolean moves model and cfg onto the chosen branch
+      // together; quality mode is the switch left off on purpose.
+      { nodeId: '76_86', input: 'value', value: lightning },
+      // Pinned per mode, so a caller-supplied step count cannot drag Lightning
+      // off its distilled schedule.
+      { nodeId: '76_3', input: 'steps', value: lightning ? QWEN.num(p.tuning, 'fastSteps') : QWEN.num(p.tuning, 'qualitySteps') },
+      // Lightning keeps the switch's cfg (1). The full model takes the tunable,
+      // written over the switch's wire.
+      ...(lightning ? [] : [{ nodeId: '76_3', input: 'cfg', value: QWEN.num(p.tuning, 'qualityCfg') }]),
+      { nodeId: '76_3', input: 'sampler_name', value: QWEN.str(p.tuning, 'sampler') },
+      { nodeId: '76_3', input: 'scheduler', value: QWEN.str(p.tuning, 'scheduler') },
+      { nodeId: '76_66', input: 'shift', value: QWEN.num(p.tuning, 'shift') },
+      { nodeId: '60', input: 'filename_prefix', value: 'image/aixman', optional: true },
+    ];
+  },
   baselineSecondsPerUnit: 12,
   pricing: { creditsPerUnit: 3, costPerUnit: 0.02 },
-  limits: { maxWidth: 1328, maxHeight: 1328 },
+  // The largest native canvas (QWEN_BUCKETS). The bind picks the canvas from
+  // the requested *shape*, so rows created before this still render natively.
+  limits: { maxWidth: 1664, maxHeight: 1664 },
 };
 
 // ---------------------------------------------------------------------------
@@ -630,8 +1107,8 @@ const YUE2_CKPT: ModelDownload = {
  * it stops, and 480 s of budget on a 3.5-minute song renders in exactly the
  * time 3.5 minutes of song renders in.
  */
-function yue2Duration(): number {
-  return YUE2_MAX_SECONDS;
+function yue2Duration(p: CatalogJobParams): number {
+  return YUE2.num(p.tuning, 'budgetSeconds');
 }
 
 /**
@@ -652,6 +1129,34 @@ const YUE2_MAX_SECONDS = 480;
  * runs 12 MB at about five minutes, and the studio's hint says so.
  */
 const YUE2_MAX_SOURCE_SECONDS = 330;
+
+const YUE2_TUNABLES: WorkflowTunable[] = [
+  {
+    id: 'budgetSeconds',
+    label: 'งบความยาวเพลง (วินาที)',
+    group: 'quality',
+    type: 'int',
+    default: YUE2_MAX_SECONDS,
+    min: 120,
+    max: 900,
+    risky: true,
+    help:
+      'ไม่ใช่ความยาวที่ขาย — โมเดลหยุดเองเมื่อเพลงจบ ค่านี้แค่กันไม่ให้เพลงถูกตัดกลางท่อน · ' +
+      '480 ถูกเลือกให้กรณีแย่สุดยังจบภายในเวลาจำกัดของงาน ตั้งสูงกว่านี้ต้องเพิ่มเวลาจำกัดงานที่หน้า GPU ด้วย',
+  },
+  {
+    id: 'decodeSteps',
+    label: 'สเต็ปถอดเสียง (KSampler)',
+    group: 'quality',
+    type: 'int',
+    default: 32,
+    min: 8,
+    max: 64,
+    help: 'สเต็ปของ KSampler ที่แปลงผลลัพธ์เป็นเสียง 48 kHz — เทมเพลตทางการใช้ 32',
+  },
+];
+
+const YUE2 = tunableReader(YUE2_TUNABLES);
 
 /** Empty lyrics are what YuE2 reads as "instrumental" — no marker text. */
 function yue2Lyrics(p: CatalogJobParams): string {
@@ -676,6 +1181,12 @@ const YUE2_MUSIC: CatalogEntry = {
   outputKind: 'audio',
   description: 'แต่งเพลงเต็มเพลงพร้อมเสียงร้องจากเนื้อร้องที่เขียนเอง • วางโครงทำนองก่อนแล้วค่อยร้อง คุณภาพระดับ 48 kHz',
   template: yue2Text2MusicTemplate as UiWorkflow,
+  source: {
+    file: 'yue2_text2music.json',
+    title: 'audio_yue2_text2music (Comfy-Org)',
+    url: 'https://github.com/Comfy-Org/workflow_templates/blob/main/templates/audio_yue2_text2music.json',
+  },
+  tunables: YUE2_TUNABLES,
   downloads: [YUE2_CKPT],
   // Weights are 3.7 GiB, but the run is dominated by the autoregressive pass
   // over a song-length sequence: a 90 s song needed ~7 GB of working memory on
@@ -690,7 +1201,7 @@ const YUE2_MUSIC: CatalogEntry = {
     { nodeId: '33_24', input: 'lyrics', value: yue2Lyrics(p) },
     { nodeId: '33_25', input: 'style', value: yue2Style(p) },
     { nodeId: '33_25', input: 'lyrics', value: yue2Lyrics(p) },
-    { nodeId: '33_25', input: 'max_duration', value: yue2Duration() },
+    { nodeId: '33_25', input: 'max_duration', value: yue2Duration(p) },
     // How dense the arrangement is, as the model sees it: `full` writes a
     // chord-annotated score for the band to play, `melody` writes the tune
     // alone. Both passes must agree — they share one instruction string.
@@ -704,6 +1215,7 @@ const YUE2_MUSIC: CatalogEntry = {
     { nodeId: '33_24', input: 'seed', value: p.seed },
     { nodeId: '33_25', input: 'seed', value: p.seed },
     { nodeId: '33_34', input: 'seed', value: p.seed, optional: true },
+    { nodeId: '33_8', input: 'steps', value: YUE2.num(p.tuning, 'decodeSteps'), optional: true },
     { nodeId: '10', input: 'filename_prefix', value: 'audio/aixman', optional: true },
   ],
   baselineSecondsPerUnit: 2,
@@ -723,6 +1235,12 @@ const YUE2_COVER: CatalogEntry = {
   outputKind: 'audio',
   description: 'อัปโหลดเพลงแล้วให้ AI เรียบเรียงใหม่ตามแนวที่สั่ง • ถอดทำนองจากเพลงต้นฉบับแล้วร้องใหม่ทั้งเพลง',
   template: yue2MusicCoverTemplate as UiWorkflow,
+  source: {
+    file: 'yue2_music_cover.json',
+    title: 'audio_yue2_music_cover (Comfy-Org)',
+    url: 'https://github.com/Comfy-Org/workflow_templates/blob/main/templates/audio_yue2_music_cover.json',
+  },
+  tunables: YUE2_TUNABLES,
   downloads: [
     YUE2_CKPT,
     // SheetSage2 is the transcriber; without it the cover graph has no score to
@@ -737,7 +1255,7 @@ const YUE2_COVER: CatalogEntry = {
     // on vowels when left empty — the model never hears the source vocal, only
     // its melody, so nothing supplies lyrics by itself.
     { nodeId: '33_25', input: 'lyrics', value: yue2Lyrics(p) },
-    { nodeId: '33_25', input: 'max_duration', value: yue2Duration() },
+    { nodeId: '33_25', input: 'max_duration', value: yue2Duration(p) },
     // `mode` stays on the template's `melody`, whatever density was asked for:
     // SheetSage2 already supplies the score, and the official template and the
     // node's own tooltip both pin melody for covers. Here the density slider
@@ -745,6 +1263,7 @@ const YUE2_COVER: CatalogEntry = {
     { nodeId: '33_25', input: 'temperature', value: musicVariance(p.music?.variance) },
     { nodeId: '33_25', input: 'seed', value: p.seed },
     { nodeId: '33_34', input: 'seed', value: p.seed, optional: true },
+    { nodeId: '33_8', input: 'steps', value: YUE2.num(p.tuning, 'decodeSteps'), optional: true },
     // LoadAudio sits outside the subgraph; the name is what `stageAudio` put in
     // the worker's input dir, never a URL.
     { nodeId: '45', input: 'audio', value: p.audioFilename ?? '' },
@@ -796,6 +1315,43 @@ function pickCheckpoint(available: string[] | undefined): string {
   return sdxl ?? files[0];
 }
 
+const SDXL_TUNABLES: WorkflowTunable[] = [
+  {
+    id: 'maxSteps',
+    label: 'สเต็ปสูงสุด',
+    group: 'quality',
+    type: 'int',
+    default: 20,
+    min: 8,
+    max: 40,
+    help: 'การ์ดบ้านช้าที่สุดในเครือข่าย และสเต็ปคือตัวที่กินเวลาตรงตัว — 20 คือจุดที่ SDXL เลิกดีขึ้นให้เห็น ผู้สั่งขอน้อยกว่านี้ได้ แต่ไม่เกิน',
+  },
+  {
+    id: 'cfg',
+    label: 'CFG',
+    group: 'sampler',
+    type: 'float',
+    default: 6.5,
+    min: 1,
+    max: 12,
+    step: 0.5,
+    help: 'SDXL ทั่วไปดีที่ 5–7',
+  },
+  { id: 'sampler', label: 'Sampler', group: 'sampler', type: 'choice', default: 'dpmpp_2m', options: SAMPLER_OPTIONS, help: 'dpmpp_2m + karras คือคู่มาตรฐานของ SDXL' },
+  { id: 'scheduler', label: 'Scheduler', group: 'sampler', type: 'choice', default: 'karras', options: SCHEDULER_OPTIONS, help: 'karras ให้รายละเอียดดีในสเต็ปน้อย' },
+  {
+    id: 'negativeDefault',
+    label: 'Negative prompt เมื่อลูกค้าเว้นว่าง',
+    group: 'prompt',
+    type: 'text',
+    maxLength: 600,
+    default: 'lowres, blurry, worst quality, low quality, jpeg artifacts, watermark, signature, text, deformed, bad anatomy, extra fingers, extra limbs',
+    help: 'SDXL (CLIP) ได้ประโยชน์จาก negative มากกว่าโมเดลรุ่นใหม่ — ใช้เฉพาะงานที่ลูกค้าไม่ได้ใส่ negative เอง',
+  },
+];
+
+const SDXL = tunableReader(SDXL_TUNABLES);
+
 const SDXL_COMMUNITY: CatalogEntry = {
   key: 'sdxl-community',
   name: 'SDXL (เครื่องชุมชน)',
@@ -803,6 +1359,8 @@ const SDXL_COMMUNITY: CatalogEntry = {
   outputKind: 'image',
   description: 'สร้างภาพนิ่งด้วย SDXL บนการ์ดจอที่คนแชร์มา — คิวธรรมดา ไม่ใช่งานด่วน',
   template: { nodes: [], links: [] } as UiWorkflow,
+  source: { file: '(เขียนในโค้ด)', title: 'กราฟ API 7 โหนดที่เขียนตรงในแคตตาล็อก — ไม่มีเทมเพลต UI' },
+  tunables: SDXL_TUNABLES,
   downloads: [
     { repo: 'stabilityai/stable-diffusion-xl-base-1.0', file: 'sd_xl_base_1.0.safetensors', dest: 'checkpoints', bytes: 6_938_040_682 },
   ],
@@ -813,7 +1371,10 @@ const SDXL_COMMUNITY: CatalogEntry = {
   inject: (p) => ({
     '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: pickCheckpoint(p.checkpoints) } },
     '2': { class_type: 'CLIPTextEncode', inputs: { clip: ['1', 1], text: p.prompt } },
-    '3': { class_type: 'CLIPTextEncode', inputs: { clip: ['1', 1], text: p.negativePrompt ?? '' } },
+    '3': {
+      class_type: 'CLIPTextEncode',
+      inputs: { clip: ['1', 1], text: p.negativePrompt?.trim() ? p.negativePrompt : SDXL.str(p.tuning, 'negativeDefault') },
+    },
     '4': { class_type: 'EmptyLatentImage', inputs: { width: snap(p.width, 8, 1024), height: snap(p.height, 8, 1024), batch_size: 1 } },
     '5': {
       class_type: 'KSampler',
@@ -821,12 +1382,13 @@ const SDXL_COMMUNITY: CatalogEntry = {
         model: ['1', 0], positive: ['2', 0], negative: ['3', 0], latent_image: ['4', 0],
         seed: p.seed,
         // Home cards are the slowest thing on this network and steps are the
-        // one dial that costs time linearly. 20 is where SDXL stops visibly
-        // improving; a caller may ask for fewer, never for more.
-        steps: Math.min(p.steps ?? 20, 20),
-        cfg: 6.5,
-        sampler_name: 'dpmpp_2m',
-        scheduler: 'karras',
+        // one dial that costs time linearly. The ceiling is an admin tunable
+        // (20, where SDXL stops visibly improving); a caller may ask for
+        // fewer, never for more.
+        steps: Math.min(p.steps ?? SDXL.num(p.tuning, 'maxSteps'), SDXL.num(p.tuning, 'maxSteps')),
+        cfg: SDXL.num(p.tuning, 'cfg'),
+        sampler_name: SDXL.str(p.tuning, 'sampler'),
+        scheduler: SDXL.str(p.tuning, 'scheduler'),
         denoise: 1.0,
       },
     },
