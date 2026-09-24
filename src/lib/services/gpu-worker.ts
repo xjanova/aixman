@@ -11,7 +11,7 @@ import {
   type WorkerProfile,
 } from '@/lib/gpu/config';
 import type { AiGpuWorker, Prisma } from '@/generated/prisma/client';
-import { MODEL_CATALOG, getCatalogEntry, downloadBytes, isCommunityModel } from '@/lib/gpu/catalog';
+import { MODEL_CATALOG, getCatalogEntry, downloadBytes, isCommunityModel, isCommunityOnlyModel } from '@/lib/gpu/catalog';
 import { cardFamily, isEligibleGpu } from '@/lib/gpu/gpu-specs';
 import { FUNDING_MARGIN, fundedOffers, offerKey, rankOffers, type RankedOffer } from '@/lib/gpu/offer-picker';
 import { buildComfyUiStartScript, LOG_PATH, READY_PATH, renderEnvExports } from '@/lib/gpu/provision';
@@ -987,6 +987,12 @@ export class GpuWorkerManager {
     backlog: { queued: number; oldestQueuedAt: Date | null },
     opts: { prewarm?: boolean } = {}
   ): Promise<CapacityResult> {
+    // A model built for home PCs only is never rented for (owner decision D5):
+    // a 1-credit image does not pay for a datacentre boot. Its jobs wait for a
+    // GPUxMINE machine and are refunded after a short grace (failStuckQueued).
+    if (isCommunityOnlyModel(modelKey)) {
+      return { reason: 'Community-only model: never rented, waiting for a GPUxMINE machine' };
+    }
     if (!cfg.enabled) {
       return { reason: 'GPU rental is disabled (gpu_enabled = false)' };
     }
@@ -1274,7 +1280,8 @@ export class GpuWorkerManager {
     const [penalties] = await Promise.all([this.penalizedOffers()]);
 
     const models = [];
-    for (const entry of MODEL_CATALOG) {
+    // A community-only model is never rented, so its market is nothing to show.
+    for (const entry of MODEL_CATALOG.filter((e) => !isCommunityOnlyModel(e.key))) {
       const profile = await getWorkerProfile(entry.key);
       try {
         const found = await withTimeout(
@@ -1343,6 +1350,7 @@ export class GpuWorkerManager {
   static async rentTestMachine(slug: GpuProviderSlug, modelKey: string): Promise<AiGpuWorker> {
     const cfg = await getGpuConfig();
     if (!getCatalogEntry(modelKey)) throw new Error('ไม่รู้จักโมเดลนี้');
+    if (isCommunityOnlyModel(modelKey)) throw new Error('โมเดลนี้รันบนเครื่องชุมชน (GPUxMINE) เท่านั้น — ไม่เช่าเครื่องให้');
     if (!isStorageConfigured()) throw new Error('ยังไม่ได้ตั้งค่า R2 — งานที่เรนเดอร์จะหายไปพร้อมเครื่อง');
 
     const liveCount = await prisma.aiGpuWorker.count({ where: { ...RENTED_ONLY, status: { in: LIVE_STATUSES } } });

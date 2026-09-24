@@ -19,3 +19,9 @@ would be unsafe (e.g. would drop legacy tables that still hold data).
   for GPU rental (SimplePod → self-hosted MiniMax H3).
 - `20260925_gpu_community_dispatch.sql` — `ai_gpu_jobs.avoid_worker_ids` (JSON):
   community machines a job already failed on, so its retry goes elsewhere.
+- `20260925b_content_tier.sql` — `content_tier` on `ai_generations` and
+  `ai_gpu_jobs` (general | adult | blocked | unknown, default `unknown`),
+  `ai_gpu_jobs.has_input_media` and `ai_gpu_jobs.node_purged_at`, plus an index
+  on `ai_gpu_jobs (status, completed_at)`. Community machines only ever get
+  `general` jobs with nothing uploaded; a delivered community job is purged
+  from the node. Apply before the code that reads the columns starts.

@@ -3,6 +3,7 @@ import { getCurrentUserId, isAdmin } from '@/lib/auth';
 import { GenerationService } from '@/lib/services/generation';
 import { keyFromPublicUrl } from '@/lib/storage/r2';
 import { RENDERING_PAUSED_MESSAGE } from '@/lib/services/gpu-balance';
+import { isOrderRefused } from '@/lib/services/order-refusal';
 import type { GenerationRequest } from '@/types';
 
 const MAX_PROMPT_LENGTH = 10000;
@@ -94,6 +95,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(result);
   } catch (error) {
     const message = (error as Error).message;
+
+    // Refused before any credit moved, in Thai the customer can act on:
+    // forbidden content (terms §6), or an order a community-only model
+    // cannot take (content-tier.ts, community-dispatch.ts).
+    if (isOrderRefused(error)) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: error.httpStatus });
+    }
 
     // Only expose known user-facing error messages
     if (message.includes('Insufficient credits')) {

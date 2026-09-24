@@ -3,12 +3,16 @@ import prisma, { SLOW_DB_TX } from '@/lib/db';
 import { Prisma } from '@/generated/prisma/client';
 import type { AiGpuJob, AiGpuWorker } from '@/generated/prisma/client';
 import { getGpuConfig, getWorkerProfile, type GpuBudgetConfig } from '@/lib/gpu/config';
-import { getCatalogEntry, inPool, isAdminOnlyPreset, isCommunityModel } from '@/lib/gpu/catalog';
-import { WorkerClient, type SubmitResult, type WorkerJobParams } from '@/lib/gpu/worker-client';
+import { getCatalogEntry, inPool, isAdminOnlyPreset, isCommunityModel, isCommunityOnlyModel } from '@/lib/gpu/catalog';
+import { WorkerClient, purgeCommunityJob, type SubmitResult, type WorkerJobParams } from '@/lib/gpu/worker-client';
 import {
   COMMUNITY_PROVIDER_SLUGS,
+  COMMUNITY_SAFE_JOB,
+  communityQueueGraceMs,
   isNodeRefusal,
   laneOf,
+  payloadHasInputMedia,
+  pickClaimCandidate,
   planSubmitFailure,
   rankCommunityCandidates,
   readAvoidList,
@@ -17,6 +21,7 @@ import {
   stageLabel,
   withAvoided,
 } from '@/lib/gpu/community-dispatch';
+import { isCommunitySafe, readContentTier, type ContentTier } from '@/lib/safety/content-tier';
 import {
   effectiveWorkflow,
   getSchemaSnapshot,
@@ -77,6 +82,30 @@ const schemaSavedAt = new Map<string, number>();
 /** Job failure reason when the vendor balance cannot rent; `userFacingError` matches it. */
 const RENDERING_PAUSED_PREFIX = 'Rendering paused';
 
+/** Why a community-only model's jobs are waiting rather than renting. */
+const COMMUNITY_ONLY_REASON = 'Community-only model: nothing is rented, waiting for a GPUxMINE machine';
+/** Job failure reasons for community-only models; `userFacingError` matches both. */
+const NO_COMMUNITY_MACHINE_PREFIX = 'No community machine took this job within';
+const PRIVATE_FOR_COMMUNITY_PREFIX = 'Not community-safe';
+
+/**
+ * A delivered community job is purged from its node right away; one the node
+ * did not confirm is asked again, while the node is up, for this long.
+ */
+const PURGE_RETRY_WINDOW_MS = 24 * 3_600_000;
+/** Left alone this long after delivery: the first attempt is still in flight. */
+const PURGE_RETRY_AFTER_MS = 2 * 60_000;
+/** At most this many retries per tick, all at once, each bounded by the client's timeout. */
+const PURGE_SWEEP_BATCH = 10;
+/**
+ * One job is asked again at most this often, so a node that keeps answering
+ * 503 cannot hold the sweep's batch for a day while other jobs wait.
+ */
+const PURGE_RETRY_EVERY_MS = 10 * 60_000;
+/** When this process last asked a node to purge each job (job id → ms). */
+const purgeAttemptedAt = new Map<number, number>();
+let purgeSweepRunning = false;
+
 /** Warn admins once a day when today's GPU spend reaches this share of the budget. */
 const BUDGET_WARN_AT = 0.8;
 /** This many terminal job failures inside the window is worth an alert. */
@@ -101,11 +130,22 @@ export interface EnqueueParams {
   modelKey: string;
   payload: WorkerJobParams;
   priority?: number;
+  /** From the order's words (content-tier.ts). Missing reads as 'unknown': never community-safe. */
+  contentTier?: ContentTier;
+  /** The customer attached media. Also read from the payload, so it cannot be forgotten. */
+  hasInputMedia?: boolean;
 }
 
 export class GpuQueue {
   /** Add a generation to the queue. The next tick picks it up. */
-  static async enqueue({ generationId, modelKey, payload, priority = 50 }: EnqueueParams): Promise<AiGpuJob> {
+  static async enqueue({
+    generationId,
+    modelKey,
+    payload,
+    priority = 50,
+    contentTier,
+    hasInputMedia,
+  }: EnqueueParams): Promise<AiGpuJob> {
     return prisma.aiGpuJob.create({
       data: {
         generationId,
@@ -113,6 +153,8 @@ export class GpuQueue {
         priority,
         status: 'queued',
         payload: payload as unknown as Prisma.InputJsonValue,
+        contentTier: readContentTier(contentTier),
+        hasInputMedia: hasInputMedia === true || payloadHasInputMedia(payload),
       },
     });
   }
@@ -198,10 +240,23 @@ export class GpuQueue {
     report.completed = polled.completed;
     report.failed = polled.failed;
 
+    // Not awaited: each purge may take two client timeouts, and the tick's
+    // lease has renting still to fit in. A privacy clean-up can wait a tick;
+    // it is never worth failing one over.
+    if (!purgeSweepRunning) {
+      purgeSweepRunning = true;
+      void this.purgeDeliveredOnNodes()
+        .catch((error) => console.error('[gpu] community purge sweep failed:', (error as Error).message))
+        .finally(() => {
+          purgeSweepRunning = false;
+        });
+    }
+
     const dispatched = await this.dispatchQueued(cfg);
     report.dispatched = dispatched.dispatched;
     report.failed += dispatched.failed;
-    if (dispatched.reason) report.reason = dispatched.reason;
+    const why = dispatched.reason ?? dispatched.communityReason;
+    if (why) report.reason = why;
 
     report.failed += await this.failStuckQueued(cfg, dispatched.reason);
 
@@ -265,7 +320,7 @@ export class GpuQueue {
 
   private static async dispatchQueued(
     cfg: GpuBudgetConfig
-  ): Promise<{ dispatched: number; failed: number; reason?: string }> {
+  ): Promise<{ dispatched: number; failed: number; reason?: string; communityReason?: string }> {
     const pending = await prisma.aiGpuJob.groupBy({
       by: ['modelKey'],
       where: { status: 'queued' },
@@ -281,16 +336,40 @@ export class GpuQueue {
     let dispatched = 0;
     let failed = 0;
     let reason: string | undefined;
+    // Kept apart so a community model served first cannot hide why a rented
+    // model's jobs are not moving (failStuckQueued quotes `reason` to them).
+    let communityReason: string | undefined;
 
     for (const group of pending) {
       const modelKey = group.modelKey;
+      const communityOnly = isCommunityOnlyModel(modelKey);
+
+      // 0. A community-only model has no machine for private work at all: a
+      //    job no community node may take is refunded now, not after a wait.
+      //    New orders are refused before charging (GenerationService); these
+      //    are rows written before the gate, or by a path that skipped it.
+      let waiting = group._count._all;
+      if (communityOnly) {
+        const refunded = await this.failPrivateCommunityJobs(modelKey);
+        failed += refunded;
+        waiting -= refunded;
+        if (waiting <= 0) continue;
+      }
 
       // 1. Machines already up take what they can.
-      const assigned = await this.assignIdleWorkers(modelKey, group._count._all);
+      const assigned = await this.assignIdleWorkers(modelKey, waiting);
       dispatched += assigned.dispatched;
       failed += assigned.failed;
       const queued = assigned.remaining;
       if (queued <= 0) continue;
+
+      // Nothing is ever rented for a community-only model (owner decision
+      // D5): the jobs wait for a home PC, and failStuckQueued refunds them
+      // after GPUXMINE_COMMUNITY_QUEUE_GRACE_MIN if none takes them.
+      if (communityOnly) {
+        communityReason ??= COMMUNITY_ONLY_REASON;
+        continue;
+      }
 
       // 2. Jobs still waiting: rent another machine if that finishes them
       //    sooner (or if this model has none) — see addCapacity.
@@ -321,7 +400,7 @@ export class GpuQueue {
       }
     }
 
-    return { dispatched, failed, reason };
+    return { dispatched, failed, reason, communityReason };
   }
 
   /**
@@ -455,13 +534,29 @@ export class GpuQueue {
       if (reserved.count === 0) continue;
       const held: AiGpuWorker = { ...worker, status: 'busy' };
 
-      const claim = await this.claimNextJob(modelKey, worker.id);
+      const claim = await this.claimNextJob(modelKey, worker.id, isCommunity);
       if (!claim.job) {
         await prisma.aiGpuWorker.updateMany({ where: { id: worker.id, status: 'busy' }, data: { status: 'ready' } });
         if (!claim.anyQueued) return { dispatched, failed, remaining: 0 };
-        // What is left has all failed on this machine before.
+        // What is left has all failed on this machine before, or is not for
+        // a community machine.
         if (isCommunity && lane === 'full') fullRowsBlocked = true;
         continue;
+      }
+      // The claim filtered on the job's columns; the payload is the last word.
+      // A job carrying the customer's upload never leaves for a home PC, even
+      // if its row was written without the flag.
+      if (isCommunity) {
+        const media = payloadHasInputMedia(claim.job.payload);
+        if (media || !isCommunitySafe(claim.job)) {
+          await this.unclaim(claim.job, 'Not sent to a community machine: private content or an upload');
+          await prisma.aiGpuWorker.updateMany({ where: { id: worker.id, status: 'busy' }, data: { status: 'ready' } });
+          // Recorded, so the next claim's filter skips it without loading it.
+          if (media && !claim.job.hasInputMedia) {
+            await prisma.aiGpuJob.update({ where: { id: claim.job.id }, data: { hasInputMedia: true } }).catch(() => {});
+          }
+          continue;
+        }
       }
       queued -= 1;
       try {
@@ -507,6 +602,14 @@ export class GpuQueue {
     console.log(`[gpu] ${job.modelKey}: community node #${worker.id} refused job ${job.id} (${stage}) — requeued`);
   }
 
+  /** Hand a claimed, never-submitted job back to the queue with its attempt returned. */
+  private static async unclaim(job: AiGpuJob, why: string): Promise<void> {
+    await prisma.aiGpuJob.updateMany({
+      where: { id: job.id, status: 'assigned' },
+      data: { status: 'queued', workerId: null, startedAt: null, attempts: { decrement: 1 }, errorMessage: why.slice(0, 1000) },
+    });
+  }
+
   /** Whether the fast lane has anything to do — checked before taking the lock. */
   static async hasFastWork(): Promise<boolean> {
     const n = await prisma.aiGpuJob.count({ where: { status: { in: ['queued', 'running'] } } });
@@ -550,21 +653,31 @@ export class GpuQueue {
    */
   private static async claimNextJob(
     modelKey: string,
-    workerId: number
+    workerId: number,
+    community: boolean
   ): Promise<{ job: AiGpuJob | null; anyQueued: boolean }> {
+    // A community machine is shown only what it may take (general content,
+    // nothing uploaded — owner decision D4), so an adult order at the head of
+    // the queue cannot hide the general one behind it from the scan.
     const queued = await prisma.aiGpuJob.findMany({
-      where: { status: 'queued', modelKey },
+      where: { status: 'queued', modelKey, ...(community ? COMMUNITY_SAFE_JOB : {}) },
       orderBy: [{ priority: 'desc' }, { queuedAt: 'asc' }],
       take: CLAIM_SCAN,
-      select: { id: true, avoidWorkerIds: true },
+      select: { id: true, avoidWorkerIds: true, contentTier: true, hasInputMedia: true },
     });
-    if (queued.length === 0) return { job: null, anyQueued: false };
-    // Not a job that already failed on this machine.
-    const candidate = queued.find((j) => !readAvoidList(j.avoidWorkerIds).includes(workerId));
+    if (queued.length === 0) {
+      // "Nothing for this machine" is not "nothing queued": the rest may be
+      // for a rented machine, which still has to be asked (or rented).
+      const anyQueued = community ? (await prisma.aiGpuJob.count({ where: { status: 'queued', modelKey } })) > 0 : false;
+      return { job: null, anyQueued };
+    }
+    // Not a job that already failed on this machine, and never a private one
+    // on a community machine.
+    const candidate = pickClaimCandidate(queued, workerId, community);
     if (!candidate) return { job: null, anyQueued: true };
 
     const claimed = await prisma.aiGpuJob.updateMany({
-      where: { id: candidate.id, status: 'queued' },
+      where: { id: candidate.id, status: 'queued', ...(community ? COMMUNITY_SAFE_JOB : {}) },
       data: {
         status: 'assigned',
         workerId,
@@ -931,6 +1044,17 @@ export class GpuQueue {
       });
     }, SLOW_DB_TX);
 
+    // The render is in R2 and delivered: a home PC is told to forget the job
+    // (the customer's prompt is in its ComfyUI history, the image in its
+    // output folder). Only now — deleting the history before the delivery was
+    // recorded would make a retried settle read the render as lost. Not
+    // awaited, and it never throws: the customer has their render whatever
+    // the node answers, and a node that did not confirm is asked again by
+    // purgeDeliveredOnNodes while it is up.
+    if (GpuWorkerManager.isCommunity(worker.providerSlug) && job.externalJobId) {
+      void this.purgeOnNode(job.id, job.externalJobId, worker, true);
+    }
+
     // Fix the retention window at delivery time, same as the synchronous path.
     const { RetentionService } = await import('./retention');
     await RetentionService.stampExpiry(job.generationId, now);
@@ -938,6 +1062,81 @@ export class GpuQueue {
     // First success is what promotes a self-hosted model out of 'tuning'.
     if (generation?.modelId) await ModelReadiness.recordSuccess(generation.modelId);
     return true;
+  }
+
+  /**
+   * Ask a community node to delete one job's files and history (contract C5)
+   * and, when `track`, record that it did. Never throws.
+   */
+  private static async purgeOnNode(
+    jobId: number,
+    promptId: string,
+    worker: Pick<AiGpuWorker, 'id' | 'endpoint' | 'authToken'>,
+    track: boolean
+  ): Promise<boolean> {
+    const workerId = worker.id;
+    if (!worker.endpoint) return false;
+    try {
+      const outcome = await purgeCommunityJob(worker.endpoint, GpuWorkerManager.readAuthToken(worker), promptId);
+      if (!outcome.done) {
+        console.warn(`[gpu] job ${jobId}: community node #${workerId} has not purged it yet — ${outcome.detail}`);
+        return false;
+      }
+      if (track) {
+        await prisma.aiGpuJob.updateMany({ where: { id: jobId, nodePurgedAt: null }, data: { nodePurgedAt: new Date() } });
+      }
+      if (outcome.files === 'unsupported' && outcome.history === 'deleted') {
+        console.log(`[gpu] job ${jobId}: node #${workerId} deleted the history; its build has no /aixman/purge for the files`);
+      } else if (outcome.detail) {
+        // A permanent "no" — asking again would get the same answer.
+        console.warn(`[gpu] job ${jobId}: node #${workerId} refused part of the purge, not asking again — ${outcome.detail}`);
+      }
+      return true;
+    } catch (error) {
+      console.warn(`[gpu] job ${jobId}: purge on node #${workerId} failed:`, (error as Error).message);
+      return false;
+    }
+  }
+
+  /**
+   * Retry the purge of community jobs delivered in the last day that their
+   * node never confirmed — it went offline, paused, or dropped the call.
+   * Only nodes that are up (ready/busy) are asked, so a relay that is down
+   * costs nothing; a handful per tick, all at once, each call bounded.
+   */
+  private static async purgeDeliveredOnNodes(): Promise<void> {
+    const now = Date.now();
+    // Asked within the last PURGE_RETRY_EVERY_MS: skipped in the query itself,
+    // so jobs a node keeps failing cannot crowd out the ones behind them.
+    const recent: number[] = [];
+    for (const [id, at] of purgeAttemptedAt) {
+      if (now - at >= PURGE_RETRY_EVERY_MS) purgeAttemptedAt.delete(id);
+      else recent.push(id);
+    }
+    const due = await prisma.aiGpuJob.findMany({
+      where: {
+        status: 'completed',
+        nodePurgedAt: null,
+        ...(recent.length > 0 ? { id: { notIn: recent } } : {}),
+        externalJobId: { not: null },
+        completedAt: { gte: new Date(now - PURGE_RETRY_WINDOW_MS), lte: new Date(now - PURGE_RETRY_AFTER_MS) },
+        worker: {
+          providerSlug: { in: [...COMMUNITY_PROVIDER_SLUGS] },
+          status: { in: ['ready', 'busy'] },
+          endpoint: { not: null },
+        },
+      },
+      include: { worker: true },
+      orderBy: { completedAt: 'asc' },
+      take: PURGE_SWEEP_BATCH,
+    });
+    for (const job of due) purgeAttemptedAt.set(job.id, now);
+    await Promise.allSettled(
+      due.map(async (job) => {
+        if (!job.worker || !job.externalJobId) return;
+        await this.purgeOnNode(job.id, job.externalJobId, job.worker, true);
+      })
+    );
   }
 
   /**
@@ -963,6 +1162,13 @@ export class GpuQueue {
     const cardFault = community
       ? false
       : await GpuWorkerManager.noteRenderFailure(job.modelKey, worker, message).catch(() => false);
+
+    // Whatever became of the render, the customer's prompt sits in that home
+    // PC's ComfyUI history: ask it to forget the job, once, without waiting.
+    // (A node that is offline keeps it until its own clean-up.)
+    if (worker && community && job.externalJobId) {
+      void this.purgeOnNode(job.id, job.externalJobId, worker, false);
+    }
 
     if (worker) {
       await prisma.aiGpuWorker.update({
@@ -1095,6 +1301,31 @@ export class GpuQueue {
   }
 
   /**
+   * Refund every queued job of a community-only model that no community
+   * machine may take: adult or unreadable words, or a customer's upload
+   * (owner decision D4). The model has no other pool, so waiting would only
+   * hold the customer's credits until the stale sweep.
+   */
+  private static async failPrivateCommunityJobs(modelKey: string): Promise<number> {
+    const jobs = await prisma.aiGpuJob.findMany({
+      where: { status: 'queued', modelKey, OR: [{ contentTier: { not: 'general' } }, { hasInputMedia: true }] },
+    });
+    for (const job of jobs) {
+      const what = job.hasInputMedia ? `an upload (content tier ${job.contentTier})` : `content tier ${job.contentTier}`;
+      // The order is at fault, not the model — keep it on sale.
+      await this.settleFailure(
+        job,
+        null,
+        `${PRIVATE_FOR_COMMUNITY_PREFIX}: ${what}, and ${modelKey} runs only on community machines`,
+        false,
+        { countAgainstModel: false }
+      );
+    }
+    if (jobs.length > 0) console.log(`[gpu] ${modelKey}: refunded ${jobs.length} job(s) no community machine may take`);
+    return jobs.length;
+  }
+
+  /**
    * Refund jobs that have waited too long for a machine that never came.
    *
    * Transient vendor errors, an empty market or a spent budget all leave jobs
@@ -1110,37 +1341,38 @@ export class GpuQueue {
   private static async failStuckQueued(cfg: GpuBudgetConfig, reason: string | undefined): Promise<number> {
     const balance = await GpuBalance.read(cfg);
     const paused = balance.state === 'insufficient';
-    const allowanceMs = paused
+    const rentalAllowanceMs = paused
       ? INSUFFICIENT_BALANCE_GRACE_MS
       : (cfg.warmupTimeoutMinutes + cfg.jobTimeoutMinutes) * 60_000;
-    const cutoff = new Date(Date.now() - allowanceMs);
+    // A community-only model rents nothing, so there is no boot to wait out:
+    // its jobs get a short grace for a home PC to come back (owner decision
+    // D5), whatever the vendor balance says.
+    const communityAllowanceMs = communityQueueGraceMs();
+    const now = Date.now();
+    const cutoff = new Date(now - Math.min(rentalAllowanceMs, communityAllowanceMs));
     const stale = await prisma.aiGpuJob.findMany({
       where: { status: 'queued', queuedAt: { lt: cutoff } },
     });
     if (stale.length === 0) return 0;
 
     let failed = 0;
+    let communityFailed = 0;
     const serving = new Map<string, boolean>();
-    // While paused, a machine rented just before the money ran out is still on
-    // its way and will take these jobs — the same test as GpuBalance.pausesModel.
-    const servingStatuses = paused ? ['provisioning', 'warming', 'ready', 'busy'] : ['ready', 'busy'];
     for (const job of stale) {
+      const communityOnly = isCommunityOnlyModel(job.modelKey);
+      const allowanceMs = communityOnly ? communityAllowanceMs : rentalAllowanceMs;
+      if (now - job.queuedAt.getTime() < allowanceMs) continue;
+
       // A machine this job already failed on will never be offered it again,
       // so it is not "serving" this job — without this a job that failed on
       // the only home node would wait for it forever with the credits held.
-      // Home nodes count only for models they may run.
+      // Home nodes count only for models they may run, and only for work
+      // they may be given (general, nothing uploaded).
       const avoid = readAvoidList(job.avoidWorkerIds);
-      const key = `${job.modelKey}|${avoid.join(',')}`;
+      const community = isCommunityModel(job.modelKey) && isCommunitySafe(job);
+      const key = `${job.modelKey}|${community}|${avoid.join(',')}`;
       if (!serving.has(key)) {
-        const count = await prisma.aiGpuWorker.count({
-          where: {
-            modelKey: job.modelKey,
-            status: { in: servingStatuses },
-            ...(isCommunityModel(job.modelKey) ? {} : RENTED_ONLY),
-            ...(avoid.length > 0 ? { id: { notIn: avoid } } : {}),
-          },
-        });
-        serving.set(key, count > 0);
+        serving.set(key, await this.anyMachineServing(job.modelKey, { rented: !communityOnly, community, paused, avoid }));
       }
       if (serving.get(key)) continue;
 
@@ -1148,14 +1380,18 @@ export class GpuQueue {
       await this.settleFailure(
         job,
         null,
-        paused
-          ? `${RENDERING_PAUSED_PREFIX} — provider balance $${(balance.usd ?? 0).toFixed(2)} cannot rent a machine (waited ${minutes} min)`
-          : `No suitable GPU available within ${minutes} min${reason ? `: ${reason}` : ''}`,
+        communityOnly
+          ? `${NO_COMMUNITY_MACHINE_PREFIX} ${minutes} min`
+          : paused
+            ? `${RENDERING_PAUSED_PREFIX} — provider balance $${(balance.usd ?? 0).toFixed(2)} cannot rent a machine (waited ${minutes} min)`
+            : `No suitable GPU available within ${minutes} min${reason ? `: ${reason}` : ''}`,
         false,
-        // Market shortage, a spent budget or an empty balance says nothing about the model.
+        // Market shortage, a spent budget, an empty balance or owners who
+        // are all away says nothing about the model.
         { countAgainstModel: false }
       );
-      failed += 1;
+      if (communityOnly) communityFailed += 1;
+      else failed += 1;
     }
     if (failed > 0) {
       raiseAlert({
@@ -1169,7 +1405,43 @@ export class GpuQueue {
         ],
       });
     }
-    return failed;
+    if (communityFailed > 0) {
+      raiseAlert({
+        type: 'stuck-refund',
+        key: 'community',
+        level: 'warning',
+        title: `งานโมเดลเครื่องชุมชนไม่มีเครื่องรับภายใน ${Math.round(communityAllowanceMs / 60_000)} นาที — ยกเลิกและคืนเครดิต ${communityFailed} งาน`,
+        lines: [
+          'ไม่มีเครื่อง GPUxMINE ที่พร้อมรับงานโมเดลนี้ (ออฟไลน์ / เจ้าของพักการแชร์ / ติดงานของตัวเอง) — โมเดลเครื่องชุมชนไม่เช่าเครื่องแทน',
+          'ดูสถานะรายเครื่องที่ แอดมิน → GPU → เครื่องชุมชน',
+        ],
+      });
+    }
+    return failed + communityFailed;
+  }
+
+  /**
+   * Whether any machine that may take this job is taking work: rented ones
+   * (up, or on their way while the balance is paused — the same test as
+   * GpuBalance.pausesModel) and community ones that are up. A warming home
+   * PC is paused or offline, not on its way.
+   */
+  private static async anyMachineServing(
+    modelKey: string,
+    opts: { rented: boolean; community: boolean; paused: boolean; avoid: number[] }
+  ): Promise<boolean> {
+    const pools: Prisma.AiGpuWorkerWhereInput[] = [];
+    if (opts.rented) {
+      pools.push({ ...RENTED_ONLY, status: { in: opts.paused ? ['provisioning', 'warming', 'ready', 'busy'] : ['ready', 'busy'] } });
+    }
+    if (opts.community) {
+      pools.push({ providerSlug: { in: [...COMMUNITY_PROVIDER_SLUGS] }, status: { in: ['ready', 'busy'] } });
+    }
+    if (pools.length === 0) return false;
+    const count = await prisma.aiGpuWorker.count({
+      where: { modelKey, OR: pools, ...(opts.avoid.length > 0 ? { id: { notIn: opts.avoid } } : {}) },
+    });
+    return count > 0;
   }
 
   // ----------------------------------------------------------------
@@ -1212,6 +1484,15 @@ function userFacingError(technical: string): string {
   // queued ahead, rendering had simply stopped until someone paid.
   if (technical.startsWith(RENDERING_PAUSED_PREFIX) || /balance too low/i.test(technical)) {
     return RENDERING_PAUSED_MESSAGE + REFUNDED;
+  }
+  // A community-only model (its name says เครื่องชุมชน, so saying so here
+  // gives nothing away): no home PC took the job, or the job was never one a
+  // home PC may be given.
+  if (technical.startsWith(NO_COMMUNITY_MACHINE_PREFIX)) {
+    return 'ตอนนี้ไม่มีเครื่องชุมชนว่างรับงานโมเดลนี้ กรุณาลองใหม่ภายหลัง หรือเลือกโมเดลอื่น' + REFUNDED;
+  }
+  if (technical.startsWith(PRIVATE_FOR_COMMUNITY_PREFIX)) {
+    return 'โมเดลเครื่องชุมชนรับเฉพาะงานเนื้อหาทั่วไปที่ไม่มีไฟล์แนบ กรุณาเลือกโมเดลอื่น' + REFUNDED;
   }
   // Checked before the rest: it quotes the last vendor reason, which can itself
   // contain "timeout" or "budget" and would otherwise be misread below.

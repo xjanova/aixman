@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { isAdmin } from '@/lib/auth';
 import prisma from '@/lib/db';
 import { communityCatalogue } from '@/lib/gpu/catalog';
-import { readCommunityMeta } from '@/lib/gpu/community-dispatch';
+import { communityQueueGraceMs, readCommunityMeta } from '@/lib/gpu/community-dispatch';
 import { relayBaseUrl, relayHealth } from '@/lib/gpu/gpuxmine';
 import { isStorageConfigured } from '@/lib/storage/r2';
 import { GpuWorkerManager } from '@/lib/services/gpu-worker';
@@ -36,6 +36,8 @@ export async function GET() {
     relayUrlFromEnv: Boolean(process.env.GPUXMINE_RELAY_URL),
     webhookSecretSet: Boolean(process.env.XMAN_WEBHOOK_SECRET),
     r2Configured: isStorageConfigured(),
+    // GPUXMINE_COMMUNITY_QUEUE_GRACE_MIN: a community-only job no node takes is refunded after this.
+    communityQueueGraceMinutes: communityQueueGraceMs() / 60_000,
   };
   if (!config.webhookSecretSet) {
     problems.push('ยังไม่ได้ตั้ง XMAN_WEBHOOK_SECRET — XMAN Studio ส่งเครื่องเข้ามาไม่ได้ (ต้องตรงกับ AIXMAN_WEBHOOK_SECRET ฝั่ง XMAN Studio)');
@@ -133,6 +135,20 @@ export async function GET() {
   } else if (serving === 0) {
     problems.push(`มีเครื่องชุมชน ${rows.length} เครื่อง แต่ไม่มีเครื่องไหนพร้อมรับงาน — ดูคอลัมน์ lastError ของแต่ละเครื่อง`);
   }
+  // The privacy page promises a delivered job is deleted from the node. One
+  // the node has not confirmed is asked again while it is up (GpuQueue).
+  const unpurged = await prisma.aiGpuJob.count({
+    where: {
+      status: 'completed',
+      nodePurgedAt: null,
+      externalJobId: { not: null },
+      completedAt: { gte: new Date(Date.now() - 24 * 3_600_000) },
+      worker: { providerSlug: PROVIDER_SLUG },
+    },
+  });
+  if (unpurged > 0) {
+    warnings.push(`งานที่ส่งมอบแล้ว ${unpurged} งานใน 24 ชม. ยังไม่ได้รับการยืนยันว่าลบออกจากเครื่องชุมชน — ระบบสั่งลบซ้ำเองเมื่อเครื่องออนไลน์`);
+  }
   const offRelay = workers.filter((w) => w.endpoint && !w.endpointOnRelay).length;
   if (offRelay > 0) {
     warnings.push(`${offRelay} เครื่องมี endpoint ที่ไม่ได้ขึ้นต้นด้วย ${relayUrl}/w/ — GPUXMINE_RELAY_URL ของ aixman กับ XMAN Studio อาจไม่ตรงกัน`);
@@ -153,5 +169,6 @@ export async function GET() {
     models,
     queue: queued.map((q) => ({ modelKey: q.modelKey, queued: q._count._all, oldestQueuedAt: q._min.queuedAt })),
     workers: { total: rows.length, byStatus, rows: workers },
+    privacy: { unpurgedDelivered24h: unpurged },
   });
 }

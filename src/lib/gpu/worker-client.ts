@@ -130,6 +130,108 @@ const DOWNLOAD_CEILING_MS = 15 * 60_000;
  * rename or delete checkpoints at any time; a rented container cannot.
  */
 export const COMMUNITY_SCHEMA_TTL_MS = 10 * 60_000;
+/** Each of the two purge calls. A node that cannot answer in this is asked again later. */
+const PURGE_TIMEOUT_MS = 10_000;
+
+export interface PurgeOutcome {
+  /** Nothing is left worth asking again for. */
+  done: boolean;
+  /**
+   * `/aixman/purge`: `purged`; `unsupported` (a node build without it);
+   * `refused` (a permanent no — asking again changes nothing); `failed`
+   * (offline, paused, no answer — ask again).
+   */
+  files: 'purged' | 'unsupported' | 'refused' | 'failed';
+  /** `POST /history {delete}`, with the same meanings. */
+  history: 'deleted' | 'refused' | 'failed';
+  /** For the log when anything was not simply done. */
+  detail?: string;
+}
+
+type PurgeCall = { status: number; body: string } | { error: string };
+
+/** A 4xx that is the same answer however often it is asked (a malformed id, a path the relay's allowlist refuses). */
+function permanentRefusal(call: { status: number; body: string }): boolean {
+  if (call.status === 403) return call.body.includes('path-not-allowed');
+  return [400, 404, 405, 409, 413, 422, 501].includes(call.status);
+}
+
+/**
+ * What the two purge answers add up to. Only an answer that may change is
+ * asked again: a node without `/aixman/purge` (404/405/501) or an id the
+ * relay refuses is settled as it is, so a node cannot keep one job in the
+ * retry sweep for a day by answering nonsense. Offline, paused (503), a
+ * refused token (401/403) or silence is asked again.
+ */
+export function readPurgeOutcome(files: PurgeCall, history: PurgeCall): PurgeOutcome {
+  const filesState: PurgeOutcome['files'] =
+    'error' in files
+      ? 'failed'
+      : files.status >= 200 && files.status < 300
+        ? 'purged'
+        : [404, 405, 501].includes(files.status)
+          ? 'unsupported'
+          : permanentRefusal(files)
+            ? 'refused'
+            : 'failed';
+  const historyState: PurgeOutcome['history'] =
+    'error' in history
+      ? 'failed'
+      : history.status >= 200 && history.status < 300
+        ? 'deleted'
+        : permanentRefusal(history)
+          ? 'refused'
+          : 'failed';
+  const done = filesState !== 'failed' && historyState !== 'failed';
+  const clean = filesState !== 'refused' && historyState === 'deleted';
+  const describe = (call: PurgeCall) => ('error' in call ? call.error : `HTTP ${call.status}`);
+  return {
+    done,
+    files: filesState,
+    history: historyState,
+    ...(done && clean ? {} : { detail: `purge: ${describe(files)} · history: ${describe(history)}`.slice(0, 300) }),
+  };
+}
+
+/**
+ * Ask a community node to forget a job it ran: its output files, the inputs
+ * it staged, and its ComfyUI history entry, which holds the customer's prompt
+ * (contract C5). Called once the render is safely in R2.
+ *
+ * `/aixman/purge` goes first: the node finds the job's files through its
+ * history, so deleting the history first would leave it nothing to go on.
+ * `POST /history {delete}` follows either way — it is stock ComfyUI, so a
+ * node too old to have `/aixman/purge` still loses the prompt text.
+ *
+ * Never throws; see readPurgeOutcome for what `done` means.
+ */
+export async function purgeCommunityJob(endpoint: string, authToken: string | undefined, promptId: string): Promise<PurgeOutcome> {
+  const post = async (path: string, body: unknown): Promise<PurgeCall> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PURGE_TIMEOUT_MS);
+    try {
+      const res = await fetch(`${endpoint.replace(/\/+$/, '')}${path}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+        cache: 'no-store',
+      });
+      return { status: res.status, body: (await res.text().catch(() => '')).slice(0, 500) };
+    } catch (error) {
+      return { error: (error as Error).message };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const files = await post('/aixman/purge', { prompt_id: promptId });
+  const history = await post('/history', { delete: [promptId] });
+  return readPurgeOutcome(files, history);
+}
 
 export interface WorkerClientOptions {
   /**

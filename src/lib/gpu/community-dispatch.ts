@@ -15,6 +15,8 @@
  * GpuQueue carry them out.
  */
 
+import { isCommunitySafe, type ContentTier } from '@/lib/safety/content-tier';
+
 /** Providers whose rows are community machines rather than rentals (exposure `pool-relay`). */
 export const COMMUNITY_PROVIDER_SLUGS: readonly string[] = ['gpuxmine'];
 
@@ -202,6 +204,56 @@ export function withAvoided(value: unknown, workerId: number): number[] {
   const list = readAvoidList(value).filter((id) => id !== workerId);
   list.push(workerId);
   return list.slice(-AVOID_LIST_LIMIT);
+}
+
+// ---------------------------------------------------------------------------
+// Which jobs a community machine may take (owner decision D4)
+// ---------------------------------------------------------------------------
+
+/** Payload fields that carry something the customer uploaded (WorkerJobParams + its `extra`). */
+const INPUT_MEDIA_FIELDS = ['inputImage', 'inputImageEnd', 'inputAudio', 'inputVideo'] as const;
+
+/**
+ * Whether a queued job's payload carries a customer's upload — a first or
+ * last frame, a reference song, a clip. Read from the payload itself so a job
+ * enqueued without the flag is still caught.
+ */
+export function payloadHasInputMedia(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object') return false;
+  const p = payload as Record<string, unknown>;
+  const extra = p.extra && typeof p.extra === 'object' ? (p.extra as Record<string, unknown>) : {};
+  return INPUT_MEDIA_FIELDS.some((field) => {
+    const value = p[field] ?? extra[field];
+    return typeof value === 'string' && value.trim() !== '';
+  });
+}
+
+/** Job columns the claim decides on. */
+export interface ClaimRow {
+  id: number;
+  avoidWorkerIds: unknown;
+  contentTier: string | null;
+  hasInputMedia: boolean | null;
+}
+
+/** The Prisma filter for jobs a community machine may be handed (mirrors isCommunitySafe). */
+export const COMMUNITY_SAFE_JOB: { contentTier: ContentTier; hasInputMedia: boolean } = {
+  contentTier: 'general',
+  hasInputMedia: false,
+};
+
+/**
+ * The queued job (already in claim order) this machine should take, or null.
+ * Never one that failed on this machine before; and for a community machine,
+ * only general content with nothing the customer uploaded. The query already
+ * filters on the same columns — this is the rule, and the last word.
+ */
+export function pickClaimCandidate<T extends ClaimRow>(queued: readonly T[], workerId: number, community: boolean): T | null {
+  return (
+    queued.find(
+      (job) => !readAvoidList(job.avoidWorkerIds).includes(workerId) && (!community || isCommunitySafe(job))
+    ) ?? null
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -427,4 +479,70 @@ export function rankCommunityCandidates<T extends CommunityCandidate>(rows: read
  */
 export function slowLaneOpen(idleFullRows: number, fullRowsBlocked: boolean): boolean {
   return idleFullRows === 0 || fullRowsBlocked;
+}
+
+// ---------------------------------------------------------------------------
+// Orders for a community-only model (owner decision D5)
+// ---------------------------------------------------------------------------
+
+/**
+ * How long a community-only job may wait with no machine taking work before
+ * it is refunded. Nothing is rented for these models, so there is no boot to
+ * wait out — only an owner who may come back. GPUXMINE_COMMUNITY_QUEUE_GRACE_MIN,
+ * default 5 minutes, 1 to 120.
+ */
+export function communityQueueGraceMs(env: Record<string, string | undefined> = process.env): number {
+  const minutes = Number(env.GPUXMINE_COMMUNITY_QUEUE_GRACE_MIN);
+  const bounded = Number.isFinite(minutes) && minutes > 0 ? Math.min(120, Math.max(1, minutes)) : 5;
+  return Math.round(bounded * 60_000);
+}
+
+/** Statuses of a community row that count as "there is a machine for this order". */
+export const COMMUNITY_ORDERABLE_STATUSES: readonly string[] = ['ready', 'busy', 'warming'];
+
+/**
+ * Whether one community row counts as a machine that may serve a new order:
+ * up, busy, or warming (paused or briefly offline — its owner may be back in
+ * a minute), and not held out for a reason of its own (retired, suspended,
+ * not eligible, matched to a model it may not run).
+ */
+export function communityRowMayServe(row: { status: string; endpoint: string | null; metadata: unknown }): boolean {
+  if (!COMMUNITY_ORDERABLE_STATUSES.includes(row.status)) return false;
+  if (!row.endpoint) return false;
+  return communityHoldReason(readCommunityMeta(row.metadata)) === null;
+}
+
+export type CommunityOrderRefusal = 'adult' | 'unreadable' | 'input-media' | 'no-machine';
+
+/**
+ * Why an order for a community-only model is refused before any credit
+ * moves, or null to take it. Such a model has no other pool: a job no
+ * community machine may take would only wait out the grace and be refunded.
+ */
+export function communityOrderRefusal(order: {
+  contentTier: ContentTier;
+  hasInputMedia: boolean;
+  machineAvailable: boolean;
+}): CommunityOrderRefusal | null {
+  if (order.hasInputMedia) return 'input-media';
+  if (order.contentTier === 'adult' || order.contentTier === 'blocked') return 'adult';
+  if (order.contentTier !== 'general') return 'unreadable';
+  if (!order.machineAvailable) return 'no-machine';
+  return null;
+}
+
+const COMMUNITY_REFUSAL_MESSAGE: Record<CommunityOrderRefusal, string> = {
+  adult:
+    'โมเดลนี้ประมวลผลบนเครื่องของผู้ร่วมแบ่งปัน (GPUxMINE) จึงรับเฉพาะงานเนื้อหาทั่วไป — คำสั่งนี้มีเนื้อหาสำหรับผู้ใหญ่ กรุณาเลือกโมเดลอื่น ระบบไม่ได้หักเครดิต',
+  unreadable:
+    'โมเดลนี้ประมวลผลบนเครื่องของผู้ร่วมแบ่งปัน (GPUxMINE) จึงรับเฉพาะคำสั่งที่ระบบตรวจได้ว่าเป็นเนื้อหาทั่วไป — กรุณาเขียนคำสั่งเป็นภาษาไทยหรืออังกฤษ หรือเลือกโมเดลอื่น ระบบไม่ได้หักเครดิต',
+  'input-media':
+    'โมเดลนี้ประมวลผลบนเครื่องของผู้ร่วมแบ่งปัน (GPUxMINE) จึงไม่รับไฟล์ที่อัปโหลด เพื่อไม่ให้ภาพหรือข้อมูลส่วนตัวของคุณออกไปนอกเครื่องที่เราดูแลเอง — กรุณาเอาไฟล์แนบออก หรือเลือกโมเดลอื่น ระบบไม่ได้หักเครดิต',
+  'no-machine':
+    'ตอนนี้ยังไม่มีเครื่องชุมชนออนไลน์รับงานโมเดลนี้ กรุณาลองใหม่ภายหลัง หรือเลือกโมเดลอื่น ระบบไม่ได้หักเครดิต',
+};
+
+/** Thai for the customer whose order for a community-only model was refused. */
+export function communityRefusalMessage(refusal: CommunityOrderRefusal): string {
+  return COMMUNITY_REFUSAL_MESSAGE[refusal];
 }

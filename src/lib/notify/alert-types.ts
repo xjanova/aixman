@@ -47,6 +47,7 @@ export const ALERT_TYPES: AlertType[] = [
   { id: 'stuck-refund', level: 'warning', title: 'งานรอเครื่องนานเกินกำหนด — ยกเลิกและคืนเครดิต', when: 'เมื่อมีงานถูกคืนเครดิต (สรุปไม่เกินชั่วโมงละครั้ง)' },
   { id: 'failure-burst', level: 'warning', title: 'งานล้มตั้งแต่ 3 งานขึ้นไปใน 30 นาที', when: 'ซ้ำได้ทุก 1 ชม.' },
   { id: 'orphans', level: 'warning', title: 'พบเครื่องตกค้างที่ระบบไม่ได้ติดตาม — ปิดให้แล้ว', when: 'ทุกครั้งที่กวาดเจอ' },
+  { id: 'content-blocked', level: 'warning', title: 'ปฏิเสธคำสั่งที่เข้าข่ายเนื้อหาต้องห้าม (ข้อกำหนด ข้อ 6) — ไม่หักเครดิต ไม่เก็บคำสั่ง', when: 'ต่อบัญชี ไม่เกินทุก 1 ชม.' },
   { id: 'workflow-fallback', level: 'warning', title: 'กราฟ ComfyUI ที่แอดมินแก้ใช้กับเครื่องจริงไม่ได้ — ใช้ workflow มาตรฐานแทน (ลูกค้าไม่เสียงาน)', when: 'ต่อโมเดล ไม่เกินทุก 6 ชม.' },
   // For the record.
   { id: 'emergency-stop', level: 'info', title: 'แอดมินกด "หยุดทั้งหมด"', when: 'ทุกครั้ง' },

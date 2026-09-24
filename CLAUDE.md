@@ -308,6 +308,25 @@ assessment). Rules that must not regress (`src/lib/gpu/community-dispatch.ts`,
   revives `metadata.adminRetired` (admin → เครื่องชุมชน → ปลดเครื่อง / คืนสถานะ).
 - `GET /api/admin/gpu/community/health` is the go-live check (webhook secret,
   R2, relay reachable, sdxl-community readiness, per-node lastError).
+- **Content gate (D4, `src/lib/safety/content-tier.ts`).** Every order's words
+  (prompt, negative, style suffix, lyrics) are classified before charging:
+  `general | adult | blocked | unknown`, stored on `ai_generations` and
+  `ai_gpu_jobs.content_tier` (+ `has_input_media`). `blocked` (terms §6: minors,
+  real people, sexual violence, …) is refused for *every* model with a Thai
+  `OrderRefusedError` (422). A community row is only ever handed
+  `general` + no upload — the claim filters on the columns and re-checks the
+  payload. Lexicon, deliberately one-sided: a false "adult" only keeps a job
+  off home PCs. Sexual words in the *negative* prompt never make an order adult.
+- **Community-only models (D5, `pools: ['community']`).** Never rented
+  (`addCapacity`, pre-warm, test rental all refuse). The order is refused
+  before charging when it is not community-safe or no community row for the
+  model is ready/busy/warming (and not held); a queued job no node takes is
+  refunded after `GPUXMINE_COMMUNITY_QUEUE_GRACE_MIN` (default 5).
+- **Purge (C5).** After the R2 copy and the delivery transaction, aixman calls
+  `POST /aixman/purge {prompt_id}` then `POST /history {delete:[id]}` on the
+  node (purge first — the node finds the files through its history). Never
+  awaited by delivery; `ai_gpu_jobs.node_purged_at` records the confirmation,
+  and the tick retries unconfirmed jobs (last 24 h, nodes ready/busy, 10 a tick).
 
 `npm test` runs every `__tests__/*.test.mts` under plain Node 22.7+
 (`--experimental-transform-types` + `scripts/alias-loader.mjs`, which also

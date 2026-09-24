@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { GenerationService } from "@/lib/services/generation";
+import { isOrderRefused } from "@/lib/services/order-refusal";
 
 export async function POST(req: NextRequest) {
   try {
@@ -78,10 +79,14 @@ export async function POST(req: NextRequest) {
       prompt: original.prompt || "enhance details and upscale, high resolution",
       inputImage: original.resultUrl,
       params,
-    });
+    }, { inputIsOwnRender: true });
 
     return NextResponse.json(result);
   } catch (error) {
+    // Refused before charging, in Thai the customer can act on (content-tier.ts).
+    if (isOrderRefused(error)) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: error.httpStatus });
+    }
     console.error("Upscale error:", error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "เกิดข้อผิดพลาดในการ Upscale" },

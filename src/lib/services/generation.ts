@@ -8,7 +8,7 @@ import { ModelReadiness, TUNING_MESSAGE } from './model-readiness';
 import { persistAssetSafe, isStorageConfigured } from '@/lib/storage/r2';
 import type { GenerationRequest, GenerationResult, ProviderSlug } from '@/types';
 import { fitFrame } from '@/lib/gpu/frame';
-import { getCatalogEntry, isAdminOnlyPreset } from '@/lib/gpu/catalog';
+import { getCatalogEntry, isAdminOnlyPreset, isCommunityOnlyModel } from '@/lib/gpu/catalog';
 import { isAcceptedAudioSource, isAcceptedFrameSource } from '@/lib/gpu/frame-input';
 import { creditsForDuration } from '@/lib/pricing';
 import { sanitizeMusicParams } from '@/lib/music-style';
@@ -16,6 +16,15 @@ import { getGpuConfig } from '@/lib/gpu/config';
 import { getStoredWorkflow, pickQualityMode } from '@/lib/gpu/workflow-overrides';
 import { GpuBalance, RENDERING_PAUSED_MESSAGE } from './gpu-balance';
 import { raiseAlert } from '@/lib/notify/alerts';
+import { BLOCKED_LABEL, blockedMessage, classifyContent, type ContentAssessment } from '@/lib/safety/content-tier';
+import {
+  COMMUNITY_ORDERABLE_STATUSES,
+  COMMUNITY_PROVIDER_SLUGS,
+  communityOrderRefusal,
+  communityRefusalMessage,
+  communityRowMayServe,
+} from '@/lib/gpu/community-dispatch';
+import { OrderRefusedError } from './order-refusal';
 
 /**
  * Generation Service
@@ -28,7 +37,15 @@ export class GenerationService {
   static async generate(
     userId: number,
     request: GenerationRequest,
-    options: { isAdmin?: boolean } = {}
+    options: {
+      isAdmin?: boolean;
+      /**
+       * The attached image is one of this customer's own finished renders (an
+       * upscale), not a photo they uploaded: "clothes off an attached photo"
+       * does not apply to it. It still never goes to a community machine.
+       */
+      inputIsOwnRender?: boolean;
+    } = {}
   ): Promise<GenerationResult> {
     // 1. Get the model and provider info
     const model = await prisma.aiModel.findUnique({
@@ -51,6 +68,23 @@ export class GenerationService {
       throw new Error(TUNING_MESSAGE);
     }
 
+    // What the order asks for, from its words, before anything is charged
+    // (owner decision D4). Terms §6 content is refused here for every model
+    // and every provider; the tier is stored with the order and decides
+    // whether a GPUxMINE home PC may ever see it. A style's suffix and song
+    // lyrics are words the model reads too.
+    const styleSuffix = request.styleId ? await this.getStyleSuffix(request.styleId) : '';
+    const hasInputMedia = [request.inputImage, request.inputImageEnd, request.inputAudio, request.inputVideo].some(
+      (v) => typeof v === 'string' && v.trim() !== ''
+    );
+    const content = classifyContent({
+      prompt: request.prompt,
+      negativePrompt: request.negativePrompt,
+      extraText: [styleSuffix, typeof request.params?.lyrics === 'string' ? request.params.lyrics : undefined],
+      hasInputMedia: hasInputMedia && options.inputIsOwnRender !== true,
+    });
+    if (content.tier === 'blocked') this.refuseBlocked(userId, model.name, content);
+
     // A rented-GPU render has to be copied to R2 before the machine goes, and
     // the queue will not rent without it. Refuse here, before credits move,
     // instead of charging and refunding a tick later.
@@ -68,9 +102,29 @@ export class GenerationService {
 
     // The vendor balance cannot rent a machine and none is running for this
     // model: an order now would only wait out the grace and be refunded.
-    // Refuse it up front instead (gpu-balance.ts).
+    // Refuse it up front instead (gpu-balance.ts). A community-only model is
+    // never paused this way — nothing is rented for it.
     if (gpuModel && (await GpuBalance.pausesModel(await getGpuConfig(), model.modelId))) {
       throw new Error(RENDERING_PAUSED_MESSAGE);
+    }
+
+    // A model that only runs on GPUxMINE home PCs has no rental to fall back
+    // on (owner decision D5). Refuse, before charging, an order no community
+    // machine may take (adult, unreadable, or carrying an upload — D4), or
+    // one that has no machine to go to right now.
+    if (gpuModel && isCommunityOnlyModel(model.modelId)) {
+      const refusal = communityOrderRefusal({
+        contentTier: content.tier,
+        hasInputMedia,
+        machineAvailable: await this.communityMachineAvailable(model.modelId),
+      });
+      if (refusal) {
+        throw new OrderRefusedError(
+          communityRefusalMessage(refusal),
+          `community-${refusal}`,
+          refusal === 'no-machine' ? 503 : 422
+        );
+      }
     }
 
     // A rented worker gets its frame stills from *our server*, which reads them
@@ -222,6 +276,7 @@ export class GenerationService {
           inputImage: request.inputImage,
           creditsUsed: requiredCredits,
           accountPoolId: account.id,
+          contentTier: content.tier,
         },
       });
 
@@ -243,7 +298,6 @@ export class GenerationService {
     // machine and run the model on it. Queue the job and return immediately;
     // GpuQueue rents, dispatches, and settles the generation asynchronously.
     if (gpuModel) {
-      const styleSuffix = request.styleId ? await this.getStyleSuffix(request.styleId) : '';
       // Imported lazily: GpuQueue imports this class back for refunds, and a
       // static cycle would leave one of the two undefined at module init.
       const { GpuQueue } = await import('./gpu-queue');
@@ -253,6 +307,10 @@ export class GenerationService {
       await GpuQueue.enqueue({
         generationId: generation.id,
         modelKey: model.modelId,
+        // Copied onto the job for the claim: a community machine only ever
+        // gets general work with nothing uploaded.
+        contentTier: content.tier,
+        hasInputMedia,
         payload: {
           prompt: request.prompt + styleSuffix,
           negativePrompt: request.negativePrompt,
@@ -305,7 +363,7 @@ export class GenerationService {
 
       const providerParams = {
         modelId: model.modelId,
-        prompt: request.prompt + (request.styleId ? await this.getStyleSuffix(request.styleId) : ''),
+        prompt: request.prompt + styleSuffix,
         negativePrompt: request.negativePrompt,
         width: request.params?.width || model.maxWidth || 1024,
         height: request.params?.height || model.maxHeight || 1024,
@@ -464,6 +522,49 @@ export class GenerationService {
         error: (error as Error).message,
       };
     }
+  }
+
+  /**
+   * Refuse an order terms §6 forbids, before anything is charged. Admins hear
+   * about it (once an hour per account) with the category, never the words:
+   * the alert goes to a Telegram chat, and the customer's prompt stays here.
+   */
+  private static refuseBlocked(userId: number, modelName: string, content: ContentAssessment): never {
+    const category = content.blocked ?? 'minor-sexual';
+    console.warn(`[safety] refused an order: user #${userId}, ${modelName}, ${category} (${content.reasons.join(', ')})`);
+    raiseAlert({
+      type: 'content-blocked',
+      key: String(userId),
+      level: 'warning',
+      title: `ปฏิเสธคำสั่งที่เข้าข่ายเนื้อหาต้องห้าม — ผู้ใช้ #${userId}`,
+      lines: [
+        `หมวด: ${BLOCKED_LABEL[category]}`,
+        `โมเดล: ${modelName}`,
+        'ไม่ได้หักเครดิต · ไม่ได้บันทึกคำสั่งไว้ — ถ้าเกิดซ้ำจากบัญชีเดิม ให้ตรวจบัญชีนั้นที่ XMAN Studio',
+      ],
+      path: '/admin/generations',
+    });
+    throw new OrderRefusedError(blockedMessage(category), 'content-blocked', 422);
+  }
+
+  /**
+   * Whether a GPUxMINE machine for this model is up, busy, or warming (paused
+   * or briefly offline — its owner may be back in a minute) and not held out
+   * of the pool. An order for a community-only model with none would only
+   * wait out the grace and be refunded.
+   */
+  private static async communityMachineAvailable(modelKey: string): Promise<boolean> {
+    const rows = await prisma.aiGpuWorker.findMany({
+      where: {
+        modelKey,
+        providerSlug: { in: [...COMMUNITY_PROVIDER_SLUGS] },
+        status: { in: [...COMMUNITY_ORDERABLE_STATUSES] },
+        terminatedAt: null,
+      },
+      select: { status: true, endpoint: true, metadata: true },
+      take: 500,
+    });
+    return rows.some(communityRowMayServe);
   }
 
   /**

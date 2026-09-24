@@ -302,6 +302,11 @@ model AiGeneration {
   // gallery can say "คืนเครดิตแล้ว" without re-deriving it from the
   // transaction log on every read.
   creditsRefunded Int      @default(0) @map("credits_refunded")
+  // general | adult | blocked | unknown — what the order's words ask for,
+  // read by src/lib/safety/content-tier.ts before any credit moved (owner
+  // decision D4). Rows older than the column are 'unknown'
+  // (db/migrations/20260925b_content_tier.sql).
+  contentTier    String    @default("unknown") @map("content_tier") @db.VarChar(16)
   // When the stored media is scheduled for deletion, and when it actually went.
   // Users are told this up front so they download what they want to keep.
   expiresAt      DateTime? @map("expires_at")
@@ -483,6 +488,16 @@ model AiGpuJob {
   // retry goes to another node instead of the same home PC that just failed
   // it (db/migrations/20260925_gpu_community_dispatch.sql).
   avoidWorkerIds Json?    @map("avoid_worker_ids")
+  // The generation's content tier, copied here so the claim can filter on it.
+  // A community (GPUxMINE) machine is only ever given 'general' work with no
+  // customer upload (hasInputMedia) — personal data stays on machines we
+  // control (db/migrations/20260925b_content_tier.sql).
+  contentTier   String    @default("unknown") @map("content_tier") @db.VarChar(16)
+  hasInputMedia Boolean   @default(false) @map("has_input_media")
+  // When a community node confirmed it forgot this job (its outputs and its
+  // ComfyUI history entry, contract C5). Null on rented jobs: those machines
+  // are ours and are destroyed.
+  nodePurgedAt  DateTime? @map("node_purged_at")
   resultUrl     String?   @map("result_url") @db.MediumText
   errorMessage  String?   @map("error_message") @db.Text
   // Wall-clock GPU seconds this job occupied, for honest per-job costing.
@@ -498,6 +513,8 @@ model AiGpuJob {
 
   @@index([status, priority, queuedAt])
   @@index([workerId, status])
+  // The purge retry sweep reads the last day's completed jobs.
+  @@index([status, completedAt])
   @@map("ai_gpu_jobs")
 }
 

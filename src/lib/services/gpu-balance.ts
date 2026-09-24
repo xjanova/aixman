@@ -1,5 +1,6 @@
 import prisma from '@/lib/db';
 import type { GpuBudgetConfig } from '@/lib/gpu/config';
+import { isCommunityOnlyModel } from '@/lib/gpu/catalog';
 import { notifyAdminsWithCard } from '@/lib/notify/telegram';
 import { balanceThresholds, classifyBalance as classify, decideAlert, type BalanceState } from './gpu-balance-rules';
 
@@ -324,6 +325,8 @@ export class GpuBalance {
    * A machine still running keeps taking jobs until the vendor stops it.
    */
   static async pausesModel(cfg: GpuBudgetConfig, modelKey: string): Promise<boolean> {
+    // Nothing is rented for a community-only model, so no vendor balance can pause it.
+    if (isCommunityOnlyModel(modelKey)) return false;
     if ((await this.read(cfg)).state !== 'insufficient') return false;
     const live = await prisma.aiGpuWorker.count({
       where: { modelKey, status: { in: ['provisioning', 'warming', 'ready', 'busy'] } },
