@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node --experimental-transform-types --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/alias-loader.mjs --test \"src/**/__tests__/*.test.mts\""
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.1",
