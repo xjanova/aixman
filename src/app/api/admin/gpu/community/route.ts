@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdmin } from '@/lib/auth';
 import prisma from '@/lib/db';
+import type { Prisma } from '@/generated/prisma/client';
 import { encrypt } from '@/lib/utils/encryption';
-import { MODEL_CATALOG, getCatalogEntry } from '@/lib/gpu/catalog';
+import { communityCatalogue, getCatalogEntry, inPool } from '@/lib/gpu/catalog';
+import { readCommunityMeta } from '@/lib/gpu/community-dispatch';
 
 /**
  * Enlist a GPUxMINE community node, or retire one.
@@ -17,41 +19,31 @@ import { MODEL_CATALOG, getCatalogEntry } from '@/lib/gpu/catalog';
  * asks which vendor it came from — which is why a PC in somebody's bedroom can
  * join the same queue as a rented A100 without touching the dispatch path.
  *
- * M1 stand-in: the operator runs this by hand after enrolling the node on the
- * relay. The self-service flow (XMAN ID, benchmark, automatic enlistment) lands
- * with M2/M5 and will call the same write.
+ * Nodes normally arrive through XMAN Studio (POST /api/gpux/nodes). This route
+ * is the operator's hand on them: a manual enlist for testing, a retirement
+ * that a later push from XMAN Studio cannot undo (`metadata.adminRetired`),
+ * and a restore that can.
  */
 
 export const dynamic = 'force-dynamic';
 
 const PROVIDER_SLUG = 'gpuxmine';
 
-/** What XMAN Studio wrote into `metadata` when it last pushed this node across. */
-interface CommunityMeta {
-  source?: string;
-  ownerUserId?: number | null;
-  label?: string | null;
-  score?: number;
-  tier?: string;
-  canRun?: string[];
-  /** ต่องาน: "full" = เร็วพอให้คนนั่งรอ · "slow" = ส่งเฉพาะงานที่ไม่มีคนรอ */
-  lanes?: Record<string, string>;
-  /** เลนของโมเดลที่ถูกจับคู่ให้เครื่องนี้ */
-  lane?: string;
-  provisional?: boolean;
-  eligibility?: string;
-  note?: string;
-  syncedAt?: string;
-}
-
-export async function GET() {
+/**
+ * Every community row, flattened for the admin screen. Retired rows are left
+ * out unless `?terminated=1`: a retired node is exactly what an admin needs to
+ * find when an owner asks why they stopped getting work.
+ */
+export async function GET(request: NextRequest) {
   if (!(await isAdmin())) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
+  const showTerminated = new URL(request.url).searchParams.get('terminated') === '1';
   const rows = await prisma.aiGpuWorker.findMany({
-    where: { providerSlug: PROVIDER_SLUG, terminatedAt: null },
-    orderBy: { rentedAt: 'desc' },
+    where: { providerSlug: PROVIDER_SLUG, ...(showTerminated ? {} : { terminatedAt: null }) },
+    orderBy: [{ terminatedAt: { sort: 'asc', nulls: 'first' } }, { rentedAt: 'desc' }],
+    take: 500,
     select: {
       id: true,
       externalId: true,
@@ -66,6 +58,7 @@ export async function GET() {
       lastError: true,
       rentedAt: true,
       readyAt: true,
+      terminatedAt: true,
       metadata: true,
     },
   });
@@ -74,7 +67,7 @@ export async function GET() {
   // provider, not to every rented worker. Flattened here so the admin screen
   // does not have to know that — it asks for machines and gets machines.
   const workers = rows.map(({ metadata, ...worker }) => {
-    const meta = (metadata ?? {}) as CommunityMeta;
+    const meta = readCommunityMeta(metadata);
     return {
       ...worker,
       label: meta.label ?? null,
@@ -90,6 +83,11 @@ export async function GET() {
       eligibility: meta.eligibility ?? 'unknown',
       note: meta.note ?? null,
       syncedAt: meta.syncedAt ?? null,
+      freeSharePct: meta.freeSharePct ?? 0,
+      pro: meta.pro ?? false,
+      suspended: meta.suspended ?? false,
+      adminRetired: meta.adminRetired ?? false,
+      adminRetiredAt: meta.adminRetiredAt ?? null,
     };
   });
 
@@ -116,10 +114,16 @@ export async function POST(request: NextRequest) {
   }
 
   // A worker whose model is not in the catalogue would be claimed for jobs that
-  // no graph exists for, and fail every one of them.
-  if (!getCatalogEntry(modelKey)) {
+  // no graph exists for, and fail every one of them. A rented-only model is no
+  // better: the queue never gives its jobs to a community machine, and a home
+  // PC has none of its weights.
+  if (!inPool(getCatalogEntry(modelKey), 'community')) {
     return NextResponse.json(
-      { error: `Unknown modelKey '${modelKey}'. Known: ${MODEL_CATALOG.map((m) => m.key).join(', ')}` },
+      {
+        error: `'${modelKey}' is not a community model. Community models: ${communityCatalogue()
+          .map((m) => m.key)
+          .join(', ')}`,
+      },
       { status: 400 }
     );
   }
@@ -133,6 +137,17 @@ export async function POST(request: NextRequest) {
       { status: 400 }
     );
   }
+
+  const existing = await prisma.aiGpuWorker.findUnique({
+    where: { providerSlug_externalId: { providerSlug: PROVIDER_SLUG, externalId: workerId } },
+    select: { metadata: true },
+  });
+  // An admin enlisting by hand is an explicit decision: it undoes an admin
+  // retirement, and restarts the row's clock.
+  const meta = readCommunityMeta(existing?.metadata);
+  delete meta.adminRetired;
+  delete meta.adminRetiredAt;
+  delete meta.rejectedTokenHash;
 
   const worker = await prisma.aiGpuWorker.upsert({
     where: { providerSlug_externalId: { providerSlug: PROVIDER_SLUG, externalId: workerId } },
@@ -161,7 +176,9 @@ export async function POST(request: NextRequest) {
       gpuModel: typeof body.gpuModel === 'string' ? body.gpuModel : undefined,
       gpuMemoryMb: typeof body.gpuMemoryMb === 'number' ? body.gpuMemoryMb : undefined,
       terminatedAt: null,
+      rentedAt: new Date(),
       lastError: null,
+      metadata: meta as Prisma.InputJsonValue,
     },
     select: { id: true, externalId: true, status: true, modelKey: true, endpoint: true },
   });
@@ -169,6 +186,53 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({ worker });
 }
 
+/**
+ * `{ workerId, action: 'restore' }` — undo an admin retirement. The row goes
+ * back to `warming` and the reconciler asks the node before it gets work.
+ */
+export async function PATCH(request: NextRequest) {
+  if (!(await isAdmin())) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
+
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  const workerId = typeof body.workerId === 'string' ? body.workerId.trim() : '';
+  if (!workerId || body.action !== 'restore') {
+    return NextResponse.json({ error: "workerId and action: 'restore' are required" }, { status: 400 });
+  }
+
+  const row = await prisma.aiGpuWorker.findUnique({
+    where: { providerSlug_externalId: { providerSlug: PROVIDER_SLUG, externalId: workerId } },
+  });
+  if (!row) return NextResponse.json({ error: 'ไม่พบเครื่องนี้' }, { status: 404 });
+
+  const meta = readCommunityMeta(row.metadata);
+  // A suspension belongs to XMAN Studio; lifting it here would be overwritten
+  // by the next push anyway.
+  if (meta.suspended) {
+    return NextResponse.json({ error: 'เครื่องนี้ถูกระงับจาก XMAN Studio — ต้องยกเลิกการระงับที่นั่น' }, { status: 409 });
+  }
+  delete meta.adminRetired;
+  delete meta.adminRetiredAt;
+
+  // Guarded on the row as read, so a double click restores once.
+  const { count } = await prisma.aiGpuWorker.updateMany({
+    where: { id: row.id, status: row.status },
+    data: {
+      metadata: meta as Prisma.InputJsonValue,
+      ...(row.terminatedAt || row.status === 'terminated'
+        ? { status: 'warming', terminatedAt: null, rentedAt: new Date(), readyAt: null, lastError: null }
+        : {}),
+    },
+  });
+
+  return NextResponse.json({ restored: count });
+}
+
+/**
+ * Retire a node: no more work, and XMAN Studio's periodic push will not bring
+ * it back (`metadata.adminRetired`). Reversible with PATCH restore.
+ */
 export async function DELETE(request: NextRequest) {
   if (!(await isAdmin())) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
@@ -179,12 +243,25 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: 'workerId is required' }, { status: 400 });
   }
 
+  const row = await prisma.aiGpuWorker.findUnique({
+    where: { providerSlug_externalId: { providerSlug: PROVIDER_SLUG, externalId: workerId } },
+  });
+  if (!row) return NextResponse.json({ retired: 0 });
+
   // Retiring a community node stops us sending it work. It does not stop the
   // machine — that is its owner's to decide, and the agent will simply sit
-  // connected with nothing to do.
+  // connected with nothing to do. A job it is rendering now is retried on
+  // another machine by the queue.
+  const meta = { ...readCommunityMeta(row.metadata), adminRetired: true, adminRetiredAt: new Date().toISOString() };
+  const alreadyRetired = row.terminatedAt !== null || row.status === 'terminated';
   const { count } = await prisma.aiGpuWorker.updateMany({
-    where: { providerSlug: PROVIDER_SLUG, externalId: workerId, terminatedAt: null },
-    data: { status: 'terminated', terminatedAt: new Date() },
+    where: { id: row.id, status: row.status },
+    data: {
+      metadata: meta as Prisma.InputJsonValue,
+      ...(alreadyRetired
+        ? {}
+        : { status: 'terminated', terminatedAt: new Date(), lastError: 'ผู้ดูแลระบบปลดเครื่องนี้ออกจากการรับงาน' }),
+    },
   });
 
   return NextResponse.json({ retired: count });

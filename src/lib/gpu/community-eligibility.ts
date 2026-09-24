@@ -10,6 +10,19 @@ export interface DispatchableModel {
   name: string;
   kind: string;
   hardware: { minVramMb: number };
+  /**
+   * Which machines the entry runs on (catalog.ts `pools`). An entry that
+   * declares pools without `community` is never offered to a home node, even
+   * when a caller hands in the whole catalogue: its weights are downloaded
+   * onto rented machines and no home PC has them. Absent (test fixtures,
+   * older callers) means no restriction.
+   */
+  pools?: readonly string[];
+}
+
+/** The entries a community node may be matched to at all. */
+export function communityEntries<T extends DispatchableModel>(catalogue: readonly T[]): T[] {
+  return catalogue.filter((entry) => !entry.pools || entry.pools.includes('community'));
 }
 
 /**
@@ -62,8 +75,10 @@ export interface Eligibility {
 
 export function assessCommunityNode(
   node: NodeReport,
-  catalogue: readonly DispatchableModel[]
+  fullCatalogue: readonly DispatchableModel[]
 ): Eligibility {
+  const catalogue = communityEntries(fullCatalogue);
+
   if (!node.assessed) {
     return {
       status: 'unassessed',

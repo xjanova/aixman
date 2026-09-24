@@ -3,8 +3,20 @@ import prisma, { SLOW_DB_TX } from '@/lib/db';
 import { Prisma } from '@/generated/prisma/client';
 import type { AiGpuJob, AiGpuWorker } from '@/generated/prisma/client';
 import { getGpuConfig, getWorkerProfile, type GpuBudgetConfig } from '@/lib/gpu/config';
-import { getCatalogEntry, isAdminOnlyPreset } from '@/lib/gpu/catalog';
+import { getCatalogEntry, inPool, isAdminOnlyPreset, isCommunityModel } from '@/lib/gpu/catalog';
 import { WorkerClient, type SubmitResult, type WorkerJobParams } from '@/lib/gpu/worker-client';
+import {
+  COMMUNITY_PROVIDER_SLUGS,
+  isNodeRefusal,
+  laneOf,
+  planSubmitFailure,
+  rankCommunityCandidates,
+  readAvoidList,
+  readCommunityMeta,
+  slowLaneOpen,
+  stageLabel,
+  withAvoided,
+} from '@/lib/gpu/community-dispatch';
 import {
   effectiveWorkflow,
   getSchemaSnapshot,
@@ -40,6 +52,16 @@ const ASSIGN_STALE_MS = 5 * 60_000;
 
 /** A worker in any of these is up, or on its way up, and costs money. */
 const LIVE_WORKER_STATUSES = ['provisioning', 'warming', 'ready', 'busy', 'draining'];
+
+/** Rows we rent — community rows hold no rental slot and are never pre-warmed. */
+const RENTED_ONLY = { providerSlug: { notIn: [...COMMUNITY_PROVIDER_SLUGS] } };
+
+/**
+ * How many queued jobs a machine looks through for one it may take. Only jobs
+ * that failed on this machine before are skipped, so the head of the queue is
+ * almost always the answer.
+ */
+const CLAIM_SCAN = 20;
 
 /** Pause before the one retry of recording a render that was just submitted. */
 const RECORD_RETRY_MS = 2_000;
@@ -327,7 +349,7 @@ export class GpuQueue {
 
     for (const modelKey of wanted) {
       const [machines, jobs] = await Promise.all([
-        prisma.aiGpuWorker.count({ where: { modelKey, status: { in: LIVE_WORKER_STATUSES } } }),
+        prisma.aiGpuWorker.count({ where: { ...RENTED_ONLY, modelKey, status: { in: LIVE_WORKER_STATUSES } } }),
         prisma.aiGpuJob.count({ where: { modelKey, status: { in: ['queued', 'assigned', 'running'] } } }),
       ]);
       if (machines > 0 || jobs > 0) continue;
@@ -375,7 +397,14 @@ export class GpuQueue {
    * Every booted, idle machine serving this model takes the next job — one
    * GPU renders one job at a time. Only a booted machine can take one:
    * submitting to one still starting fails and costs the job an attempt for
-   * nothing. Warmest first. `remaining` is what is left queued.
+   * nothing. `remaining` is what is left queued.
+   *
+   * Rented machines first, warmest first: they bill whether they work or not.
+   * Community machines only for models built for them (catalogue `pools`) —
+   * a home PC has none of a rented model's weights — full lane before slow,
+   * and the one given work least recently first (community-dispatch.ts). A
+   * machine is reserved (ready → busy, conditionally) before its job is
+   * claimed, so two passes can never hand one machine two jobs.
    */
   private static async assignIdleWorkers(
     modelKey: string,
@@ -383,29 +412,99 @@ export class GpuQueue {
   ): Promise<{ dispatched: number; failed: number; remaining: number }> {
     let dispatched = 0;
     let failed = 0;
+    const communityAllowed = inPool(getCatalogEntry(modelKey), 'community');
     const ready = await prisma.aiGpuWorker.findMany({
-      where: { modelKey, status: 'ready', endpoint: { not: null } },
+      where: {
+        modelKey,
+        status: 'ready',
+        endpoint: { not: null },
+        ...(communityAllowed ? {} : RENTED_ONLY),
+      },
       orderBy: { lastJobAt: { sort: 'desc', nulls: 'last' } },
     });
-    for (const worker of ready) {
+
+    const rented = ready.filter((w) => !GpuWorkerManager.isCommunity(w.providerSlug));
+    const community = rankCommunityCandidates(
+      ready
+        .filter((w) => GpuWorkerManager.isCommunity(w.providerSlug))
+        .map((w) => ({ id: w.id, lane: readCommunityMeta(w.metadata).lane ?? null, lastJobAt: w.lastJobAt, worker: w }))
+    );
+    const idleFullRows = community.filter((c) => laneOf(c) === 'full').length;
+    let fullRowsBlocked = false;
+    const slots = [
+      ...rented.map((worker) => ({ worker, community: false, lane: 'full' as const })),
+      ...community.map((c) => ({ worker: c.worker, community: true, lane: laneOf(c) })),
+    ];
+
+    for (const { worker, community: isCommunity, lane } of slots) {
       if (queued <= 0) break;
+      if (isCommunity && lane === 'slow' && !slowLaneOpen(idleFullRows, fullRowsBlocked)) continue;
+
       const busy = await prisma.aiGpuJob.count({
         where: { workerId: worker.id, status: { in: ['assigned', 'running'] } },
       });
       if (busy > 0) continue;
 
-      const job = await this.claimNextJob(modelKey, worker.id);
-      if (!job) return { dispatched, failed, remaining: 0 };
+      // Reserve the machine first. The DB count above is not atomic with the
+      // claim below; this conditional flip is, so an overlapping pass (a tick
+      // that outlived its lease) finds it busy and moves on.
+      const reserved = await prisma.aiGpuWorker.updateMany({
+        where: { id: worker.id, status: 'ready' },
+        data: { status: 'busy' },
+      });
+      if (reserved.count === 0) continue;
+      const held: AiGpuWorker = { ...worker, status: 'busy' };
+
+      const claim = await this.claimNextJob(modelKey, worker.id);
+      if (!claim.job) {
+        await prisma.aiGpuWorker.updateMany({ where: { id: worker.id, status: 'busy' }, data: { status: 'ready' } });
+        if (!claim.anyQueued) return { dispatched, failed, remaining: 0 };
+        // What is left has all failed on this machine before.
+        if (isCommunity && lane === 'full') fullRowsBlocked = true;
+        continue;
+      }
       queued -= 1;
       try {
-        await this.submitJob(job, worker);
+        await this.submitJob(claim.job, held);
         dispatched += 1;
       } catch (error) {
-        await this.settleFailure(job, worker, (error as Error).message, true);
+        const plan = planSubmitFailure(error, isCommunity);
+        if (plan.requeueWithoutAttempt) {
+          await this.requeueRefused(claim.job, held, error as Error);
+          queued += 1;
+          continue;
+        }
+        await this.settleFailure(claim.job, held, (error as Error).message, true, { avoidWorker: plan.avoidWorker });
         failed += 1;
       }
     }
     return { dispatched, failed, remaining: queued };
+  }
+
+  /**
+   * A community node said "not now" — paused by its owner, busy with their
+   * own work, or offline (contract C5). Nothing is wrong with the job: it goes
+   * back to the queue with its attempt handed back, and the node leaves
+   * rotation until the reconciler hears a 200 from its /aixman/ready.
+   */
+  private static async requeueRefused(job: AiGpuJob, worker: AiGpuWorker, error: Error): Promise<void> {
+    const stage = isNodeRefusal(error) ? error.stage : 'unknown';
+    await prisma.aiGpuJob.updateMany({
+      where: { id: job.id, status: 'assigned' },
+      data: {
+        status: 'queued',
+        workerId: null,
+        externalJobId: null,
+        startedAt: null,
+        attempts: { decrement: 1 },
+        errorMessage: `Node #${worker.id} refused (${stage}); requeued without spending an attempt`.slice(0, 1000),
+      },
+    });
+    await prisma.aiGpuWorker.updateMany({
+      where: { id: worker.id, status: 'busy' },
+      data: { status: 'warming', lastError: `${stageLabel(stage)} (${stage})`.slice(0, 1000) },
+    });
+    console.log(`[gpu] ${job.modelKey}: community node #${worker.id} refused job ${job.id} (${stage}) — requeued`);
   }
 
   /** Whether the fast lane has anything to do — checked before taking the lock. */
@@ -449,12 +548,20 @@ export class GpuQueue {
    * The conditional UPDATE is what guarantees a job is never dispatched twice,
    * even if two ticks somehow overlap.
    */
-  private static async claimNextJob(modelKey: string, workerId: number): Promise<AiGpuJob | null> {
-    const candidate = await prisma.aiGpuJob.findFirst({
+  private static async claimNextJob(
+    modelKey: string,
+    workerId: number
+  ): Promise<{ job: AiGpuJob | null; anyQueued: boolean }> {
+    const queued = await prisma.aiGpuJob.findMany({
       where: { status: 'queued', modelKey },
       orderBy: [{ priority: 'desc' }, { queuedAt: 'asc' }],
+      take: CLAIM_SCAN,
+      select: { id: true, avoidWorkerIds: true },
     });
-    if (!candidate) return null;
+    if (queued.length === 0) return { job: null, anyQueued: false };
+    // Not a job that already failed on this machine.
+    const candidate = queued.find((j) => !readAvoidList(j.avoidWorkerIds).includes(workerId));
+    if (!candidate) return { job: null, anyQueued: true };
 
     const claimed = await prisma.aiGpuJob.updateMany({
       where: { id: candidate.id, status: 'queued' },
@@ -465,9 +572,9 @@ export class GpuQueue {
         attempts: { increment: 1 },
       },
     });
-    if (claimed.count === 0) return null;
+    if (claimed.count === 0) return { job: null, anyQueued: true };
 
-    return prisma.aiGpuJob.findUnique({ where: { id: candidate.id } });
+    return { job: await prisma.aiGpuJob.findUnique({ where: { id: candidate.id } }), anyQueued: true };
   }
 
   private static async submitJob(job: AiGpuJob, worker: AiGpuWorker): Promise<void> {
@@ -481,7 +588,8 @@ export class GpuQueue {
       profile,
       GpuWorkerManager.readAuthToken(worker),
       job.modelKey,
-      workflow
+      workflow,
+      { community: GpuWorkerManager.isCommunity(worker.providerSlug) }
     );
     const submitted = await client.submit(payload);
     const { externalJobId } = submitted;
@@ -625,6 +733,10 @@ export class GpuQueue {
 
       // The worker died under the job. Retry on a fresh machine if the job has
       // attempts left — the render is lost either way, but the user shouldn't be.
+      // A community machine that merely dropped off the relay is not dead: the
+      // reconciler leaves a row with a job alone, its polls read as pending,
+      // and the job timeout below is what gives up on it. Only a retirement
+      // (XMAN Studio's DELETE, an admin, a refused token) lands here.
       if (!worker || worker.terminatedAt || worker.status === 'terminated') {
         await this.settleFailure(job, worker, 'GPU worker was terminated mid-render', true);
         failed += 1;
@@ -633,6 +745,8 @@ export class GpuQueue {
 
       const startedAt = job.startedAt ?? job.queuedAt;
       const elapsedMs = Date.now() - startedAt.getTime();
+      const jobTimeoutMs = cfg.jobTimeoutMinutes * 60_000;
+      const community = GpuWorkerManager.isCommunity(worker.providerSlug);
 
       try {
         const profile = await getWorkerProfile(job.modelKey);
@@ -640,13 +754,14 @@ export class GpuQueue {
           worker.endpoint || '',
           profile,
           GpuWorkerManager.readAuthToken(worker),
-          job.modelKey
+          job.modelKey,
+          undefined,
+          { community }
         );
         const outcome = await client.poll(job.externalJobId as string);
 
         if (outcome.state === 'completed') {
-          await this.settleSuccess(job, worker, outcome.assetUrls, client);
-          completed += 1;
+          if (await this.settleSuccess(job, worker, outcome.assetUrls, client, elapsedMs < jobTimeoutMs)) completed += 1;
           continue;
         }
 
@@ -671,8 +786,11 @@ export class GpuQueue {
         }
       } catch (error) {
         console.error(`[gpu] poll failed for job ${job.id}:`, (error as Error).message);
-        if (elapsedMs > cfg.jobTimeoutMinutes * 60_000) {
+        if (elapsedMs > jobTimeoutMs) {
           await this.settleFailure(job, worker, `Render exceeded ${cfg.jobTimeoutMinutes} min`, true);
+          // A home node that stopped answering for a whole job timeout is
+          // checked (draining → re-probed) before it gets another job.
+          if (community) await GpuWorkerManager.drain(worker.id, 'Job timed out on this worker').catch(() => {});
           failed += 1;
         }
       }
@@ -697,12 +815,18 @@ export class GpuQueue {
   // Settlement
   // ----------------------------------------------------------------
 
+  /**
+   * Returns false when the job was left running to be collected on a later
+   * poll (a community node that went offline between finishing and handing
+   * over its file); true when it was settled one way or the other.
+   */
   private static async settleSuccess(
     job: AiGpuJob,
     worker: AiGpuWorker,
     assetUrls: string[],
-    client: WorkerClient
-  ): Promise<void> {
+    client: WorkerClient,
+    mayWait: boolean
+  ): Promise<boolean> {
     // The asset lives on the worker's Cloudflare tunnel, which dies the moment
     // the machine is reaped. Copying it to R2 is mandatory, not best-effort —
     // `persistAssetSafe` would hand back a URL that breaks minutes later.
@@ -714,7 +838,7 @@ export class GpuQueue {
         false,
         { countAgainstModel: false }
       );
-      return;
+      return true;
     }
 
     const generation = await prisma.aiGeneration.findUnique({ where: { id: job.generationId } });
@@ -734,6 +858,13 @@ export class GpuQueue {
       );
     } catch (error) {
       const message = (error as Error).message;
+      // A home node that paused or dropped off the relay after finishing
+      // still has the file. Paying for the render again elsewhere (and not
+      // paying its owner) would be worse than waiting — up to the job timeout.
+      if (mayWait && isNodeRefusal(error) && GpuWorkerManager.isCommunity(worker.providerSlug)) {
+        console.warn(`[gpu] job ${job.id}: community node #${worker.id} finished but is not handing over yet (${error.stage}) — will retry`);
+        return false;
+      }
       // The render finished — what failed was carrying it home. That is the
       // tunnel's fault or R2's, never the model's, so it must not count
       // towards the model's failure streak (same reasoning as the
@@ -751,7 +882,7 @@ export class GpuQueue {
       await GpuWorkerManager.drain(worker.id, `Could not deliver a finished render: ${message}`).catch(
         (err) => console.error('[gpu] could not drain a worker that failed to deliver:', (err as Error).message)
       );
-      return;
+      return true;
     }
 
     const now = new Date();
@@ -806,6 +937,7 @@ export class GpuQueue {
 
     // First success is what promotes a self-hosted model out of 'tuning'.
     if (generation?.modelId) await ModelReadiness.recordSuccess(generation.modelId);
+    return true;
   }
 
   /**
@@ -817,27 +949,41 @@ export class GpuQueue {
     worker: AiGpuWorker | null,
     message: string,
     retryable: boolean,
-    { countAgainstModel = true }: { countAgainstModel?: boolean } = {}
+    { countAgainstModel = true, avoidWorker }: { countAgainstModel?: boolean; avoidWorker?: boolean } = {}
   ): Promise<void> {
     const now = new Date();
     const canRetry = retryable && job.attempts < job.maxAttempts;
+    // One home PC failing — a checkpoint its owner deleted, a flaky uplink —
+    // says nothing about the model, and must not take it off sale for every
+    // customer. Nor does it teach the rental picker anything about a card.
+    const community = worker ? GpuWorkerManager.isCommunity(worker.providerSlug) : false;
+    const counts = countAgainstModel && !community;
     // A card type that cannot run this model is avoided from now on, and its
     // failure is not the model's (GpuWorkerManager.noteRenderFailure).
-    const cardFault = await GpuWorkerManager.noteRenderFailure(job.modelKey, worker, message).catch(() => false);
+    const cardFault = community
+      ? false
+      : await GpuWorkerManager.noteRenderFailure(job.modelKey, worker, message).catch(() => false);
 
     if (worker) {
       await prisma.aiGpuWorker.update({
         where: { id: worker.id },
         data: {
-          // Free a machine this job was holding, and otherwise leave its status
-          // alone: writing back the one read before the job ran would undo a
-          // drain made since — submitJob drains a machine it could not record.
-          ...(worker.status === 'busy' ? { status: 'ready' } : {}),
           jobsFailed: { increment: 1 },
           lastJobAt: now,
           lastError: message.slice(0, 1000),
         },
       });
+      // Free a machine this job was holding — only if it is still the busy
+      // it was: writing back the status read before the job ran would undo a
+      // drain made since (submitJob drains a machine it could not record). A
+      // community machine is not trusted straight back into rotation: it is
+      // asked (/aixman/ready) on the next tick first.
+      if (worker.status === 'busy') {
+        await prisma.aiGpuWorker.updateMany({
+          where: { id: worker.id, status: 'busy' },
+          data: { status: community ? 'warming' : 'ready' },
+        });
+      }
     }
 
     if (canRetry) {
@@ -849,6 +995,10 @@ export class GpuQueue {
           externalJobId: null,
           startedAt: null,
           errorMessage: `Attempt ${job.attempts} failed: ${message}`.slice(0, 1000),
+          // The retry goes to another home PC, not the one that just failed it.
+          ...(worker && community && (avoidWorker ?? true)
+            ? { avoidWorkerIds: withAvoided(job.avoidWorkerIds, worker.id) }
+            : {}),
         },
       });
       await prisma.aiGeneration.update({
@@ -881,7 +1031,7 @@ export class GpuQueue {
     // running out of memory) says nothing about the model they do order.
     const extra = (job.payload as { extra?: { resolution?: unknown } } | null)?.extra;
     const experiment = isAdminOnlyPreset(job.modelKey, extra?.resolution);
-    if (countAgainstModel && !experiment && !cardFault && generation?.modelId) {
+    if (counts && !experiment && !cardFault && generation?.modelId) {
       await ModelReadiness.recordFailure(generation.modelId, message);
     }
 
@@ -889,7 +1039,7 @@ export class GpuQueue {
     // when each one was refunded. Only failures on a machine count: an admin's
     // stop, a stale-queue refund and a config error are not render failures,
     // and the last two have alerts of their own.
-    if (countAgainstModel && !experiment) {
+    if (counts && !experiment) {
       const recent = await prisma.aiGpuJob
         .count({
           where: {
@@ -975,13 +1125,24 @@ export class GpuQueue {
     // its way and will take these jobs — the same test as GpuBalance.pausesModel.
     const servingStatuses = paused ? ['provisioning', 'warming', 'ready', 'busy'] : ['ready', 'busy'];
     for (const job of stale) {
-      if (!serving.has(job.modelKey)) {
+      // A machine this job already failed on will never be offered it again,
+      // so it is not "serving" this job — without this a job that failed on
+      // the only home node would wait for it forever with the credits held.
+      // Home nodes count only for models they may run.
+      const avoid = readAvoidList(job.avoidWorkerIds);
+      const key = `${job.modelKey}|${avoid.join(',')}`;
+      if (!serving.has(key)) {
         const count = await prisma.aiGpuWorker.count({
-          where: { modelKey: job.modelKey, status: { in: servingStatuses } },
+          where: {
+            modelKey: job.modelKey,
+            status: { in: servingStatuses },
+            ...(isCommunityModel(job.modelKey) ? {} : RENTED_ONLY),
+            ...(avoid.length > 0 ? { id: { notIn: avoid } } : {}),
+          },
         });
-        serving.set(job.modelKey, count > 0);
+        serving.set(key, count > 0);
       }
-      if (serving.get(job.modelKey)) continue;
+      if (serving.get(key)) continue;
 
       const minutes = Math.round(allowanceMs / 60_000);
       await this.settleFailure(

@@ -15,6 +15,7 @@ import {
 } from './comfy-validate';
 import { applyWorkflowVars, buildJobGraph, schemaSubset, templateClasses } from './workflow-build';
 import type { EffectiveWorkflow } from './workflow-overrides';
+import { NodeRefusedError, parseNodeRefusal } from './community-dispatch';
 
 export { applyWorkflowVars };
 
@@ -124,7 +125,21 @@ const DOWNLOAD_STALL_MS = 60_000;
  * than the longest song this catalogue can produce.
  */
 const DOWNLOAD_CEILING_MS = 15 * 60_000;
+/**
+ * How long a community node's `/object_info` is trusted. Its owner can add,
+ * rename or delete checkpoints at any time; a rented container cannot.
+ */
+export const COMMUNITY_SCHEMA_TTL_MS = 10 * 60_000;
 
+export interface WorkerClientOptions {
+  /**
+   * The worker is a GPUxMINE home machine. Its "not now" answers (503 with a
+   * stage, 409 busy — contract C5) become NodeRefusedError so the queue can
+   * requeue the job without spending an attempt, and its schema is re-read
+   * every COMMUNITY_SCHEMA_TTL_MS.
+   */
+  community?: boolean;
+}
 
 /**
  * Checkpoint files this worker reports on disk.
@@ -162,8 +177,19 @@ export class WorkerClient {
      * prompt affixes, custom graph), resolved by the queue. Null or absent: the
      * catalogue as shipped. Only submission reads it; polling needs none.
      */
-    private readonly workflow?: EffectiveWorkflow | null
+    private readonly workflow?: EffectiveWorkflow | null,
+    private readonly options: WorkerClientOptions = {}
   ) {}
+
+  /**
+   * A community node saying "not now" rather than failing. Only community
+   * machines speak this dialect; a rented worker's errors keep their old text.
+   */
+  private refusal(status: number, text: string, what: string): NodeRefusedError | null {
+    if (!this.options.community) return null;
+    const refusal = parseNodeRefusal(status, text);
+    return refusal ? new NodeRefusedError(refusal, what) : null;
+  }
 
   private url(path: string): string {
     return `${this.endpoint.replace(/\/+$/, '')}${path}`;
@@ -219,7 +245,14 @@ export class WorkerClient {
         signal: controller.signal,
         cache: 'no-store',
       });
-      if (!res.ok) throw new Error(`Failed to download render (HTTP ${res.status})`);
+      if (!res.ok) {
+        // A home node that dropped off the relay after finishing still has
+        // the file; the queue waits for it to come back instead of paying
+        // for the render again somewhere else.
+        const refused = this.refusal(res.status, await res.text().catch(() => ''), 'the download');
+        if (refused) throw refused;
+        throw new Error(`Failed to download render (HTTP ${res.status})`);
+      }
 
       const chunks: Buffer[] = [];
       let bytes = 0;
@@ -306,15 +339,18 @@ export class WorkerClient {
   /**
    * The worker's node schema. Several megabytes, so it is fetched once per
    * endpoint and reused — the set of installed nodes cannot change while a
-   * container is running.
+   * container is running. A community PC's can (its owner manages the
+   * checkpoints), so there it is re-read after COMMUNITY_SCHEMA_TTL_MS.
    */
   private async objectInfo(): Promise<ComfyObjectInfo> {
     const key = this.endpoint.replace(/\/+$/, '');
-    const cached = getCachedSchema(key);
+    const cached = getCachedSchema(key, this.options.community ? COMMUNITY_SCHEMA_TTL_MS : undefined);
     if (cached) return cached;
 
     const res = await this.request('/object_info', { timeout: 60_000 });
     if (!res.ok) {
+      const refused = this.refusal(res.status, await res.text().catch(() => ''), 'the node schema request');
+      if (refused) throw refused;
       throw new Error(`Could not read the worker's node schema (HTTP ${res.status})`);
     }
     const info = (await res.json()) as ComfyObjectInfo;
@@ -392,6 +428,8 @@ export class WorkerClient {
     });
     const text = await res.text();
     if (!res.ok) {
+      const refused = this.refusal(res.status, text, 'the reference song');
+      if (refused) throw refused;
       throw new Error(`Worker refused the reference song (HTTP ${res.status}): ${text.slice(0, 200)}`);
     }
     const data = JSON.parse(text) as { name?: string; subfolder?: string };
@@ -430,6 +468,8 @@ export class WorkerClient {
     });
     const text = await res.text();
     if (!res.ok) {
+      const refused = this.refusal(res.status, text, `the ${role} frame`);
+      if (refused) throw refused;
       throw new Error(`Worker refused the ${role} frame (HTTP ${res.status}): ${text.slice(0, 200)}`);
     }
     const data = JSON.parse(text) as { name?: string; subfolder?: string };
@@ -441,6 +481,8 @@ export class WorkerClient {
   private async refreshNodeSpec(objectInfo: ComfyObjectInfo, classType: string): Promise<void> {
     const res = await this.request(`/object_info/${encodeURIComponent(classType)}`, { timeout: 30_000 });
     if (!res.ok) {
+      const refused = this.refusal(res.status, await res.text().catch(() => ''), `the ${classType} schema request`);
+      if (refused) throw refused;
       throw new Error(`Could not refresh the worker's ${classType} schema (HTTP ${res.status})`);
     }
     const fresh = (await res.json()) as ComfyObjectInfo;
@@ -579,6 +621,10 @@ export class WorkerClient {
 
     const text = await res.text();
     if (!res.ok) {
+      // A paused or busy home node refuses /prompt with a stage (503, or 409
+      // while its previous prompt runs) — not the graph's fault.
+      const refused = this.refusal(res.status, text, 'the prompt');
+      if (refused) throw refused;
       throw new Error(`ComfyUI rejected the workflow (HTTP ${res.status}): ${text.slice(0, 500)}`);
     }
 

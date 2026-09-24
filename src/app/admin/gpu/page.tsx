@@ -2323,6 +2323,8 @@ interface CommunityRow {
   lastJobAt: string | null;
   lastError: string | null;
   rentedAt: string;
+  readyAt?: string | null;
+  terminatedAt?: string | null;
   label: string | null;
   ownerUserId: number | null;
   score: number;
@@ -2335,6 +2337,20 @@ interface CommunityRow {
   eligibility: string;
   note: string | null;
   syncedAt: string | null;
+  freeSharePct?: number;
+  suspended?: boolean;
+  adminRetired?: boolean;
+}
+
+/** GET /api/admin/gpu/community/health */
+interface CommunityHealth {
+  ok: boolean;
+  checkedAt: string;
+  problems: string[];
+  warnings: string[];
+  config: { relayUrl: string; relayUrlFromEnv: boolean; webhookSecretSet: boolean; r2Configured: boolean };
+  relay: { reachable: boolean; online?: number; detail?: string; workers: { known: number; online: number } | null };
+  workers: { total: number; byStatus: Record<string, number> };
 }
 
 const ELIGIBILITY_LABEL: Record<string, string> = {
@@ -2345,12 +2361,115 @@ const ELIGIBILITY_LABEL: Record<string, string> = {
   unknown: "ไม่ทราบ",
 };
 
+/** สถานะในคิวส่งงาน — คนละเรื่องกับผลประเมินด้านบน: เครื่องผ่านประเมินแล้วก็ยังพักอยู่ได้ */
+const DISPATCH_LABEL: Record<string, string> = {
+  ready: "ว่าง รอรับงาน",
+  busy: "กำลังทำงาน",
+  warming: "ยังไม่พร้อม",
+  draining: "รอตรวจใหม่",
+  provisioning: "กำลังเริ่ม",
+  terminated: "ปลดแล้ว",
+};
+
 const KIND_LABEL: Record<string, string> = {
   image: "ภาพ",
   video: "วิดีโอ",
+  audio: "เสียง",
   upscale: "ขยายภาพ",
   embed: "ข้อความ",
 };
+
+/**
+ * What aixman's side of the pool needs to work, checked in one call. Every
+ * item here used to fail silently: nodes registered and never got a job.
+ */
+function CommunityHealthCard() {
+  const [health, setHealth] = useState<CommunityHealth | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+
+  const check = useCallback(async () => {
+    setChecking(true);
+    try {
+      const res = await fetch("/api/admin/gpu/community/health", { cache: "no-store" });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      setHealth(body as CommunityHealth);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "ตรวจไม่สำเร็จ");
+    } finally {
+      setChecking(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void check();
+  }, [check]);
+
+  return (
+    <div className="glass rounded-xl p-5 mb-4">
+      <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
+        <h2 className="font-bold flex items-center gap-2">
+          <Activity className="w-4 h-4 text-primary-light" /> ความพร้อมของระบบเครื่องชุมชน
+          {health && (
+            <span className={`text-xs font-normal ${health.ok ? "text-success" : "text-error"}`}>
+              {health.ok ? "พร้อมใช้งาน" : `มีปัญหา ${health.problems.length} ข้อ`}
+            </span>
+          )}
+        </h2>
+        <button
+          onClick={() => void check()}
+          disabled={checking}
+          className="text-xs flex items-center gap-1 text-muted hover:text-white disabled:opacity-50"
+        >
+          <RefreshCw className={`w-3 h-3 ${checking ? "animate-spin" : ""}`} /> ตรวจอีกครั้ง
+        </button>
+      </div>
+
+      {error && <p className="text-sm text-error">{error}</p>}
+      {!health && !error && <p className="text-sm text-muted">กำลังตรวจ...</p>}
+      {health && (
+        <div className="space-y-2 text-sm">
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
+            <span>
+              relay: <span className="font-mono">{health.config.relayUrl}</span>{" "}
+              <span className={health.relay.reachable ? "text-success" : "text-error"}>
+                {health.relay.reachable ? `ติดต่อได้ · ออนไลน์ ${health.relay.online ?? "?"}` : "ติดต่อไม่ได้"}
+              </span>
+            </span>
+            <span className={health.config.webhookSecretSet ? "" : "text-error"}>
+              webhook secret {health.config.webhookSecretSet ? "✓" : "✗"}
+            </span>
+            <span className={health.config.r2Configured ? "" : "text-error"}>R2 {health.config.r2Configured ? "✓" : "✗"}</span>
+            <span>
+              เครื่องในระบบ {health.workers.total} · ว่าง {health.workers.byStatus.ready ?? 0} · ทำงาน{" "}
+              {health.workers.byStatus.busy ?? 0}
+            </span>
+          </div>
+          {health.problems.length > 0 && (
+            <ul className="space-y-1">
+              {health.problems.map((p) => (
+                <li key={p} className="text-error flex gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" /> {p}
+                </li>
+              ))}
+            </ul>
+          )}
+          {health.warnings.length > 0 && (
+            <ul className="space-y-1">
+              {health.warnings.map((w) => (
+                <li key={w} className="text-warning text-xs">
+                  · {w}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * Every machine somebody has plugged into the network, whatever state it is in.
@@ -2363,10 +2482,13 @@ const KIND_LABEL: Record<string, string> = {
 function CommunityNodes() {
   const [rows, setRows] = useState<CommunityRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showRetired, setShowRetired] = useState(false);
+  /** The row an action is in flight for — its buttons stay disabled, so a double click acts once. */
+  const [actingOn, setActingOn] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch("/api/admin/gpu/community", { cache: "no-store" });
+      const res = await fetch(`/api/admin/gpu/community${showRetired ? "?terminated=1" : ""}`, { cache: "no-store" });
       const body = await res.json();
       if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
       setRows(body.workers ?? []);
@@ -2374,7 +2496,7 @@ function CommunityNodes() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "โหลดไม่สำเร็จ");
     }
-  }, []);
+  }, [showRetired]);
 
   useEffect(() => {
     void load();
@@ -2384,130 +2506,221 @@ function CommunityNodes() {
     return () => clearInterval(timer);
   }, [load]);
 
-  const ready = rows?.filter((r) => r.eligibility === "eligible").length ?? 0;
+  const act = async (r: CommunityRow, action: "retire" | "restore") => {
+    if (actingOn) return;
+    if (
+      action === "retire" &&
+      !confirm(
+        [
+          `ปลด "${r.label ?? r.externalId}" ออกจากการรับงาน?`,
+          "",
+          "• เครื่องจะไม่ได้รับงานอีก และ XMAN Studio ส่งกลับเข้ามาเองไม่ได้ จนกว่าจะกด \"คืนสถานะ\"",
+          "• งานที่เครื่องนี้กำลังทำอยู่จะถูกส่งไปทำที่เครื่องอื่น",
+          "• ไม่ได้ปิดเครื่องของเจ้าของ — โปรแกรมยังเชื่อมต่ออยู่แต่ไม่มีงานเข้า",
+        ].join("\n")
+      )
+    ) {
+      return;
+    }
+    setActingOn(r.externalId);
+    try {
+      const res =
+        action === "retire"
+          ? await fetch(`/api/admin/gpu/community?workerId=${encodeURIComponent(r.externalId)}`, { method: "DELETE" })
+          : await fetch("/api/admin/gpu/community", {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ workerId: r.externalId, action: "restore" }),
+            });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      setError(null);
+      await load();
+    } catch (e) {
+      setError(`${action === "retire" ? "ปลดเครื่อง" : "คืนสถานะ"}ไม่สำเร็จ: ${e instanceof Error ? e.message : "ไม่ทราบสาเหตุ"}`);
+    } finally {
+      setActingOn(null);
+    }
+  };
+
+  const live = rows?.filter((r) => r.status !== "terminated") ?? [];
+  const serving = live.filter((r) => r.status === "ready" || r.status === "busy").length;
 
   return (
-    <div className="glass rounded-xl p-5">
-      <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
-        <h2 className="font-bold flex items-center gap-2">
-          <Users className="w-4 h-4 text-primary-light" /> เครื่องจากชุมชน
-          {rows && (
-            <span className="text-xs font-normal text-muted">
-              {rows.length} เครื่อง · พร้อมรับงาน {ready}
-            </span>
-          )}
-        </h2>
-        <button onClick={() => void load()} className="text-xs flex items-center gap-1 text-muted hover:text-white">
-          <RefreshCw className="w-3 h-3" /> รีเฟรช
-        </button>
-      </div>
-
-      {error && <p className="text-sm text-error py-2">{error}</p>}
-
-      {rows === null ? (
-        <p className="text-sm text-muted py-6 text-center">กำลังโหลด...</p>
-      ) : rows.length === 0 ? (
-        <p className="text-sm text-muted py-6 text-center">
-          ยังไม่มีเครื่องจากชุมชน — เจ้าของเครื่องลงทะเบียนได้ที่หน้า GPUxMINE บน XMAN Studio
-        </p>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="text-xs text-muted border-b border-white/10">
-              <tr>
-                <th className="text-left py-2 pr-3">เครื่อง</th>
-                <th className="text-left py-2 pr-3">การ์ดจอ</th>
-                <th className="text-left py-2 pr-3">คะแนน</th>
-                <th className="text-left py-2 pr-3">รับงานได้</th>
-                <th className="text-left py-2 pr-3">สถานะ</th>
-                <th className="text-left py-2 pr-3">งานสำเร็จ</th>
-                <th className="text-left py-2">เห็นล่าสุด</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.id} className="border-b border-white/5">
-                  <td className="py-2 pr-3">
-                    <div className="font-medium">{r.label ?? r.externalId}</div>
-                    <div className="text-xs text-muted font-mono">{r.externalId}</div>
-                  </td>
-                  <td className="py-2 pr-3">
-                    <div>{r.gpuModel ?? "–"}</div>
-                    {r.gpuMemoryMb ? (
-                      <div className="text-xs text-muted">{(r.gpuMemoryMb / 1024).toFixed(1)} GB</div>
-                    ) : null}
-                  </td>
-                  <td className="py-2 pr-3">
-                    {r.score > 0 ? (
-                      <>
-                        <div>{r.score.toLocaleString()}</div>
-                        <div className="text-xs text-muted uppercase">{r.tier}</div>
-                      </>
-                    ) : (
-                      "–"
-                    )}
-                  </td>
-                  <td className="py-2 pr-3">
-                    {r.canRun.length > 0 ? (
-                      <div className="flex flex-wrap gap-1">
-                        {r.canRun.map((k) => (
-                          <span
-                            key={k}
-                            // งานที่เครื่องนี้ช้าต้องอ่านออกตั้งแต่ตาแรก ไม่ใช่ปนอยู่
-                            // ในรายการเดียวกับงานที่มันทำได้เร็ว
-                            className={
-                              r.lanes?.[k] === "slow"
-                                ? "rounded bg-warning/10 px-1.5 py-0.5 text-warning"
-                                : "rounded bg-surface px-1.5 py-0.5"
-                            }
-                            title={r.lanes?.[k] === "slow" ? "ช้ากว่าที่คนนั่งรอจะยอม — ส่งเฉพาะงานที่ไม่มีคนรอ" : undefined}
-                          >
-                            {KIND_LABEL[k] ?? k}
-                            {r.lanes?.[k] === "slow" && " ·ช้า"}
-                          </span>
-                        ))}
-                      </div>
-                    ) : (
-                      <span className="text-muted">–</span>
-                    )}
-                  </td>
-                  <td className="py-2 pr-3">
-                    <span
-                      className={
-                        r.eligibility === "eligible"
-                          ? "text-success"
-                          : r.eligibility === "offline"
-                            ? "text-muted"
-                            : "text-warning"
-                      }
-                    >
-                      {ELIGIBILITY_LABEL[r.eligibility] ?? r.eligibility}
-                    </span>
-                    {r.provisional && (
-                      <span
-                        className="ml-1 text-xs text-muted"
-                        title="เครื่องได้เลนนี้มาแบบให้ไว้ก่อน ยังไม่มีเวลาจริงจากงานที่ทำมายืนยัน"
-                      >
-                        · รอบแรก
-                      </span>
-                    )}
-                    {r.note && <div className="text-xs text-muted max-w-xs">{r.note}</div>}
-                  </td>
-                  <td className="py-2 pr-3">
-                    {r.jobsCompleted}
-                    {r.jobsFailed > 0 && <span className="text-error"> / {r.jobsFailed} ล้ม</span>}
-                  </td>
-                  <td className="py-2 text-xs text-muted">
-                    {r.syncedAt
-                      ? new Date(r.syncedAt).toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" })
-                      : "–"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+    <>
+      <CommunityHealthCard />
+      <div className="glass rounded-xl p-5">
+        <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
+          <h2 className="font-bold flex items-center gap-2">
+            <Users className="w-4 h-4 text-primary-light" /> เครื่องจากชุมชน
+            {rows && (
+              <span className="text-xs font-normal text-muted">
+                {live.length} เครื่อง · รับงานได้ตอนนี้ {serving}
+              </span>
+            )}
+          </h2>
+          <div className="flex items-center gap-3">
+            <label className="text-xs text-muted flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" checked={showRetired} onChange={(e) => setShowRetired(e.target.checked)} />
+              แสดงเครื่องที่ปลดแล้ว
+            </label>
+            <button onClick={() => void load()} className="text-xs flex items-center gap-1 text-muted hover:text-white">
+              <RefreshCw className="w-3 h-3" /> รีเฟรช
+            </button>
+          </div>
         </div>
-      )}
-    </div>
+
+        {error && <p className="text-sm text-error py-2">{error}</p>}
+
+        {rows === null ? (
+          <p className="text-sm text-muted py-6 text-center">กำลังโหลด...</p>
+        ) : rows.length === 0 ? (
+          <p className="text-sm text-muted py-6 text-center">
+            {showRetired
+              ? "ยังไม่มีเครื่องจากชุมชน"
+              : "ยังไม่มีเครื่องจากชุมชน — เจ้าของเครื่องลงทะเบียนได้ที่หน้า GPUxMINE บน XMAN Studio"}
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="text-xs text-muted border-b border-white/10">
+                <tr>
+                  <th className="text-left py-2 pr-3">เครื่อง</th>
+                  <th className="text-left py-2 pr-3">การ์ดจอ</th>
+                  <th className="text-left py-2 pr-3">คะแนน</th>
+                  <th className="text-left py-2 pr-3">รับงานได้</th>
+                  <th className="text-left py-2 pr-3">ผลประเมิน</th>
+                  <th className="text-left py-2 pr-3">การส่งงาน</th>
+                  <th className="text-left py-2 pr-3">งานสำเร็จ</th>
+                  <th className="text-left py-2 pr-3">เห็นล่าสุด</th>
+                  <th className="py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => {
+                  const retired = r.status === "terminated";
+                  return (
+                    <tr key={r.id} className={`border-b border-white/5 ${retired ? "opacity-60" : ""}`}>
+                      <td className="py-2 pr-3">
+                        <div className="font-medium">{r.label ?? r.externalId}</div>
+                        <div className="text-xs text-muted font-mono">{r.externalId}</div>
+                        {r.freeSharePct ? <div className="text-xs text-muted">แชร์ฟรี {r.freeSharePct}%</div> : null}
+                      </td>
+                      <td className="py-2 pr-3">
+                        <div>{r.gpuModel ?? "–"}</div>
+                        {r.gpuMemoryMb ? (
+                          <div className="text-xs text-muted">{(r.gpuMemoryMb / 1024).toFixed(1)} GB</div>
+                        ) : null}
+                      </td>
+                      <td className="py-2 pr-3">
+                        {r.score > 0 ? (
+                          <>
+                            <div>{r.score.toLocaleString()}</div>
+                            <div className="text-xs text-muted uppercase">{r.tier}</div>
+                          </>
+                        ) : (
+                          "–"
+                        )}
+                      </td>
+                      <td className="py-2 pr-3">
+                        {r.canRun.length > 0 ? (
+                          <div className="flex flex-wrap gap-1">
+                            {r.canRun.map((k) => (
+                              <span
+                                key={k}
+                                // งานที่เครื่องนี้ช้าต้องอ่านออกตั้งแต่ตาแรก ไม่ใช่ปนอยู่
+                                // ในรายการเดียวกับงานที่มันทำได้เร็ว
+                                className={
+                                  r.lanes?.[k] === "slow"
+                                    ? "rounded bg-warning/10 px-1.5 py-0.5 text-warning"
+                                    : "rounded bg-surface px-1.5 py-0.5"
+                                }
+                                title={r.lanes?.[k] === "slow" ? "ช้ากว่าที่คนนั่งรอจะยอม — ส่งเฉพาะงานที่ไม่มีคนรอ" : undefined}
+                              >
+                                {KIND_LABEL[k] ?? k}
+                                {r.lanes?.[k] === "slow" && " ·ช้า"}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-muted">–</span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-3">
+                        <span
+                          className={
+                            r.eligibility === "eligible"
+                              ? "text-success"
+                              : r.eligibility === "offline"
+                                ? "text-muted"
+                                : "text-warning"
+                          }
+                        >
+                          {ELIGIBILITY_LABEL[r.eligibility] ?? r.eligibility}
+                        </span>
+                        {r.provisional && (
+                          <span
+                            className="ml-1 text-xs text-muted"
+                            title="เครื่องได้เลนนี้มาแบบให้ไว้ก่อน ยังไม่มีเวลาจริงจากงานที่ทำมายืนยัน"
+                          >
+                            · รอบแรก
+                          </span>
+                        )}
+                        {r.note && <div className="text-xs text-muted max-w-xs">{r.note}</div>}
+                      </td>
+                      <td className="py-2 pr-3">
+                        <span
+                          className={
+                            r.status === "ready" || r.status === "busy"
+                              ? "text-success"
+                              : retired
+                                ? "text-muted"
+                                : "text-warning"
+                          }
+                        >
+                          {DISPATCH_LABEL[r.status] ?? r.status}
+                        </span>
+                        {r.adminRetired && <span className="ml-1 text-xs text-error">· แอดมินปลด</span>}
+                        {r.suspended && <span className="ml-1 text-xs text-error">· ระงับจาก XMAN Studio</span>}
+                        <div className="text-xs text-muted font-mono">{r.modelKey}</div>
+                        {r.lastError && <div className="text-xs text-muted max-w-xs break-words">{r.lastError}</div>}
+                      </td>
+                      <td className="py-2 pr-3">
+                        {r.jobsCompleted}
+                        {r.jobsFailed > 0 && <span className="text-error"> / {r.jobsFailed} ล้ม</span>}
+                      </td>
+                      <td className="py-2 pr-3 text-xs text-muted">
+                        {r.syncedAt
+                          ? new Date(r.syncedAt).toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" })
+                          : "–"}
+                      </td>
+                      <td className="py-2 text-right whitespace-nowrap">
+                        {r.adminRetired ? (
+                          <button
+                            onClick={() => void act(r, "restore")}
+                            disabled={actingOn !== null}
+                            className="text-xs flex items-center gap-1 text-muted hover:text-white disabled:opacity-50"
+                          >
+                            <Play className="w-3 h-3" /> คืนสถานะ
+                          </button>
+                        ) : !retired ? (
+                          <button
+                            onClick={() => void act(r, "retire")}
+                            disabled={actingOn !== null}
+                            className="text-xs flex items-center gap-1 text-error/80 hover:text-error disabled:opacity-50"
+                          >
+                            <Ban className="w-3 h-3" /> ปลดเครื่อง
+                          </button>
+                        ) : null}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </>
   );
 }

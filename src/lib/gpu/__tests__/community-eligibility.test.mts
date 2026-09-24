@@ -13,7 +13,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { assessCommunityNode, type DispatchableModel } from '@/lib/gpu/community-eligibility';
+import { assessCommunityNode, communityEntries, type DispatchableModel } from '@/lib/gpu/community-eligibility';
 
 /** Mirrors the shape and the real numbers of today's catalogue. */
 const CATALOGUE: DispatchableModel[] = [
@@ -256,4 +256,66 @@ test('once a community-tier model exists, the 8 GB home card finally gets one', 
   assert.equal(verdict.modelKey, 'sdxl-community');
   // Slow, and dispatched anyway — that is the point of the lane.
   assert.equal(verdict.lane, 'slow');
+});
+
+// ---------------------------------------------------------------------------
+// Pools: which catalogue entries a home PC may be matched to at all
+// ---------------------------------------------------------------------------
+
+/** The real catalogue's shape: every datacentre model is `rented`, the home tier `community`. */
+const POOLED: DispatchableModel[] = [
+  { key: 'ace-step-1.5', name: 'ACE-Step', kind: 'audio', hardware: { minVramMb: 12288 }, pools: ['rented'] },
+  { key: 'yue2-music', name: 'YuE2', kind: 'audio', hardware: { minVramMb: 16384 }, pools: ['rented'] },
+  { key: 'qwen-image', name: 'Qwen Image', kind: 'image', hardware: { minVramMb: 24576 }, pools: ['rented'] },
+  { key: 'minimax-h3', name: 'MiniMax H3', kind: 'video', hardware: { minVramMb: 24576 }, pools: ['rented'] },
+  { key: 'sdxl-community', name: 'SDXL (เครื่องชุมชน)', kind: 'image', hardware: { minVramMb: 6144 }, pools: ['community'] },
+];
+
+test('a big home card is given the community model, never a rented one it has no weights for', () => {
+  // The bug this pins: a 24 GB card that reported any diffusion model was
+  // matched to Qwen-Image or H3, whose 40 GB of weights exist only on rented
+  // machines. Customers' paid orders then failed on somebody's PC.
+  const verdict = assessCommunityNode(
+    { assessed: true, online: true, vramTotalMb: 24576, canRun: ['image', 'video', 'audio'] },
+    POOLED
+  );
+
+  assert.equal(verdict.status, 'eligible');
+  assert.equal(verdict.modelKey, 'sdxl-community');
+});
+
+test('a card that can only do rented-pool work is told there is nothing for it', () => {
+  const verdict = assessCommunityNode(
+    { assessed: true, online: true, vramTotalMb: 16384, canRun: ['audio', 'video'] },
+    POOLED
+  );
+
+  assert.equal(verdict.status, 'no-matching-model');
+  assert.equal(verdict.modelKey, null);
+});
+
+test('the pool filter holds even when a caller hands in the whole catalogue', () => {
+  // communityEntries is applied inside assessCommunityNode, so a route that
+  // forgets to pre-filter still cannot dispatch a rented model to a home PC.
+  const pooledOnly = communityEntries(POOLED);
+  assert.deepEqual(pooledOnly.map((e) => e.key), ['sdxl-community']);
+
+  const both = assessCommunityNode(
+    { assessed: true, online: true, vramTotalMb: 49152, canRun: ['image'] },
+    POOLED
+  );
+  const filtered = assessCommunityNode(
+    { assessed: true, online: true, vramTotalMb: 49152, canRun: ['image'] },
+    pooledOnly
+  );
+  assert.deepEqual(both, filtered);
+});
+
+test('an entry listed in both pools is available to home PCs', () => {
+  const verdict = assessCommunityNode(
+    { assessed: true, online: true, vramTotalMb: 12288, canRun: ['audio'] },
+    [{ key: 'shared-audio', name: 'Shared', kind: 'audio', hardware: { minVramMb: 8192 }, pools: ['rented', 'community'] }]
+  );
+
+  assert.equal(verdict.modelKey, 'shared-audio');
 });

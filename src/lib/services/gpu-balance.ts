@@ -232,7 +232,10 @@ async function readVendors(cfg: GpuBudgetConfig): Promise<VendorBalanceReading[]
   // Imported lazily: gpu-worker imports this module for addCapacity.
   const { GpuWorkerManager } = await import('./gpu-worker');
   const keyed = await GpuWorkerManager.keyedProviders();
-  const slugs = cfg.providers.filter((slug) => keyed.has(slug));
+  // The community pool reports an infinite balance ("never blocked on funds"),
+  // which would read as `unknown` and keep the state 'ok' while every vendor
+  // we actually rent from runs dry. It is not rented, so it is not counted.
+  const slugs = cfg.providers.filter((slug) => keyed.has(slug) && !GpuWorkerManager.isCommunity(slug));
   if (slugs.length === 0) throw new Error('No active API key for any GPU provider');
   return Promise.all(
     slugs.map(async (slug): Promise<VendorBalanceReading> => {

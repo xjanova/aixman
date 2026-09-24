@@ -280,6 +280,39 @@ mocked `fetch` built from the vendor's documented responses before a real key.
 utilisation, and profit. Profit uses *worker uptime* cost, not per-job cost —
 warmup and idle are real spend that no single job carries.
 
+## GPUxMINE community pool (home PCs, provider `gpuxmine`, exposure `pool-relay`)
+
+Home PCs dial out to the relay (`GPUXMINE_RELAY_URL`, prod
+`https://relay.xman4289.com:8443`); xmanstudio pushes each node to
+`POST /api/gpux/nodes` (contract C1: endpoint `{relay}/w/{id}`, tunnel token,
+assessment). Rules that must not regress (`src/lib/gpu/community-dispatch.ts`,
+`community-push.ts`, tests in `src/lib/gpu/__tests__/community-*.test.mts`):
+- **No rental reaper applies.** `reconcileCommunity` never terminates on
+  lifetime, warmup, idle, budget or draining. It probes `/aixman/ready` with the
+  row's own token: warming rows every tick, ready rows every 3 min, rows with a
+  job never. 200 → ready, 503+stage / silence → warming, relay 401/403 →
+  terminated (only a *new* token revives it). Only xmanstudio's DELETE, an admin
+  retire, or a refused token end a row. **No relay admin key is needed**; the
+  key in Admin → GPU only adds the live "who is connected" list.
+- Community rows hold **no rental slot** (`gpu_max_concurrent_workers`) and are
+  never released, pre-warmed or counted in vendor balances.
+- Catalogue `pools`: a node is matched only to `community` entries
+  (`sdxl-community`); the queue never gives a `rented`-only model's job to one.
+- Dispatch: machine reserved ready→busy (conditional) before the claim; full
+  lane before slow, least recently given work first (`rankCommunityCandidates`
+  — the cooperation score is meant to feed its `priority`). A node's "not now"
+  (503 with a stage, 409 busy — C5) requeues **without spending an attempt**;
+  any other failure sends the retry elsewhere (`ai_gpu_jobs.avoid_worker_ids`).
+- A push never downgrades `ready`/`busy` while the node is eligible and online,
+  never changes a busy node's model, sets `rentedAt=now` on revival, and never
+  revives `metadata.adminRetired` (admin → เครื่องชุมชน → ปลดเครื่อง / คืนสถานะ).
+- `GET /api/admin/gpu/community/health` is the go-live check (webhook secret,
+  R2, relay reachable, sdxl-community readiness, per-node lastError).
+
+`npm test` runs every `__tests__/*.test.mts` under plain Node 22.7+
+(`--experimental-transform-types` + `scripts/alias-loader.mjs`, which also
+resolves extensionless imports and unattributed JSON).
+
 ## Workflow control room (`/admin/workflows`) — graphs editable without a deploy
 
 **One builder.** `workflow-build.ts#buildJobGraph` turns entry + order into the

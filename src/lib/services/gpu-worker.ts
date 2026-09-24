@@ -1,4 +1,4 @@
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import prisma from '@/lib/db';
 import { decrypt, encrypt } from '@/lib/utils/encryption';
 import { getGpuProvider } from '@/lib/gpu';
@@ -11,10 +11,22 @@ import {
   type WorkerProfile,
 } from '@/lib/gpu/config';
 import type { AiGpuWorker, Prisma } from '@/generated/prisma/client';
-import { MODEL_CATALOG, getCatalogEntry, downloadBytes } from '@/lib/gpu/catalog';
+import { MODEL_CATALOG, getCatalogEntry, downloadBytes, isCommunityModel } from '@/lib/gpu/catalog';
 import { cardFamily, isEligibleGpu } from '@/lib/gpu/gpu-specs';
 import { FUNDING_MARGIN, fundedOffers, offerKey, rankOffers, type RankedOffer } from '@/lib/gpu/offer-picker';
-import { buildComfyUiStartScript, LOG_PATH, renderEnvExports } from '@/lib/gpu/provision';
+import { buildComfyUiStartScript, LOG_PATH, READY_PATH, renderEnvExports } from '@/lib/gpu/provision';
+import { clearSchema } from '@/lib/gpu/comfy-validate';
+import {
+  COMMUNITY_PROVIDER_SLUGS,
+  PROBE_CONCURRENCY,
+  ProbeBudget,
+  classifyCommunityProbe,
+  isCommunitySlug,
+  planCommunityReconcile,
+  readCommunityMeta,
+  transitionAfterProbe,
+  type ProbeResult,
+} from '@/lib/gpu/community-dispatch';
 import {
   GPU_PROVIDER_SLUGS,
   RentRefusedError,
@@ -145,6 +157,34 @@ export type WorkerStatus =
 /** Statuses where the machine still exists at the vendor and still costs money. */
 const LIVE_STATUSES: WorkerStatus[] = ['provisioning', 'warming', 'ready', 'busy', 'draining'];
 
+/**
+ * Prisma filter for rows we rent. Community rows are live too, but they hold
+ * no rental slot and cost nothing: counting them against
+ * `gpu_max_concurrent_workers` (default 1) let one home PC block every paid
+ * rental, and made them candidates for release to "free" a slot.
+ */
+const RENTED_ONLY = { providerSlug: { notIn: [...COMMUNITY_PROVIDER_SLUGS] } };
+const COMMUNITY_ONLY = { providerSlug: { in: [...COMMUNITY_PROVIDER_SLUGS] } };
+
+/** When this process last asked each community row's /aixman/ready (worker id → ms). */
+const communityProbedAt = new Map<number, number>();
+
+/** Run `fn` over `items`, at most `limit` at a time. */
+async function forEachLimited<T>(items: readonly T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const lanes = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const item = items[next++];
+      await fn(item);
+    }
+  });
+  await Promise.all(lanes);
+}
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
 export interface CapacityResult {
   /** A machine was rented this tick (it takes jobs once booted). */
   rented?: boolean;
@@ -196,6 +236,11 @@ export class GpuWorkerManager {
     const provider = getGpuProvider(slug);
     if (!provider) throw new Error(`Unknown GPU rental provider: ${slug}`);
     return provider;
+  }
+
+  /** A community (GPUxMINE) machine: not rented, never reaped, reached through the relay. */
+  static isCommunity(providerSlug: string): boolean {
+    return isCommunitySlug(providerSlug) || getGpuProvider(providerSlug)?.exposure === 'pool-relay';
   }
 
   /**
@@ -423,10 +468,20 @@ export class GpuWorkerManager {
       where: { status: { in: LIVE_STATUSES } },
     });
     if (workers.length === 0) return;
+    const now = new Date();
 
+    // Community machines are nobody's rental: they cost nothing idle and come
+    // back after going away, so none of the reapers below applies to them.
+    const community = workers.filter((w) => this.isCommunity(w.providerSlug));
+    const rented = workers.filter((w) => !this.isCommunity(w.providerSlug));
+
+    if (rented.length > 0) await this.reconcileRented(rented, cfg, now);
+    if (community.length > 0) await this.reconcileCommunityRows(community, now);
+  }
+
+  private static async reconcileRented(workers: AiGpuWorker[], cfg: GpuBudgetConfig, now: Date): Promise<void> {
     // Each machine is watched through the vendor it was rented from.
     const vendors = await this.keyedProviders();
-    const now = new Date();
 
     // Once the day's budget is gone, idle machines are pure loss. Reap them on
     // sight instead of waiting out the normal idle timeout. Jobs already
@@ -655,7 +710,153 @@ export class GpuWorkerManager {
     }
 
     // 'busy' is released by the queue once its job settles; the lifetime cap
-    // above is the backstop if that never happens.
+    // above is the backstop if that never happens. A busy row with no job at
+    // all is a dispatch reservation whose submit never got as far as a job
+    // (the process died in between) — hand it back to the idle reaper.
+    if (worker.status === 'busy') {
+      const activeJobs = await prisma.aiGpuJob.count({
+        where: { workerId: worker.id, status: { in: ['assigned', 'running'] } },
+      });
+      if (activeJobs === 0) {
+        await prisma.aiGpuWorker.updateMany({ where: { id: worker.id, status: 'busy' }, data: { status: 'ready' } });
+      }
+    }
+  }
+
+  // ----------------------------------------------------------------
+  // Community machines (GPUxMINE)
+  // ----------------------------------------------------------------
+
+  /**
+   * Keep every community row's status honest, without a vendor key and
+   * without reaping. Rows are probed in parallel (bounded), because a relay
+   * round trip per home PC in sequence would outgrow the tick's lease.
+   */
+  private static async reconcileCommunityRows(rows: AiGpuWorker[], now: Date): Promise<void> {
+    const active = await prisma.aiGpuJob.groupBy({
+      by: ['workerId'],
+      where: { workerId: { in: rows.map((r) => r.id) }, status: { in: ['assigned', 'running'] } },
+      _count: { _all: true },
+    });
+    const activeBy = new Map(active.map((a) => [a.workerId, a._count._all]));
+    const budget = new ProbeBudget(Date.now());
+
+    await forEachLimited(rows, PROBE_CONCURRENCY, async (worker) => {
+      try {
+        await this.reconcileCommunity(worker, activeBy.get(worker.id) ?? 0, now, budget);
+      } catch (error) {
+        console.error(`[gpu] reconcile failed for community worker ${worker.id}:`, (error as Error).message);
+        await prisma.aiGpuWorker
+          .update({ where: { id: worker.id }, data: { lastError: String((error as Error).message).slice(0, 1000) } })
+          .catch(() => {});
+      }
+    });
+  }
+
+  /**
+   * One community row, per community-dispatch.ts: a warming row is asked
+   * every tick, a ready one every few minutes, one with a job on it not at
+   * all (the queue owns it). 200 puts it in rotation, a stage or silence takes
+   * it out, and only a relay refusing its token ends it. Every write is
+   * guarded on the status it was read with, so a job the queue handed it
+   * meanwhile, or a push from XMAN Studio, is never overwritten.
+   */
+  static async reconcileCommunity(worker: AiGpuWorker, activeJobs: number, now: Date, budget?: ProbeBudget): Promise<void> {
+    const meta = readCommunityMeta(worker.metadata);
+    const step = planCommunityReconcile({
+      status: worker.status,
+      hasEndpoint: Boolean(worker.endpoint),
+      activeJobs,
+      meta,
+      modelAllowed: isCommunityModel(worker.modelKey),
+      lastProbedAt: communityProbedAt.get(worker.id) ?? null,
+      now: now.getTime(),
+    });
+
+    if (step.kind === 'leave') return;
+    if (step.kind === 'hold') {
+      if (worker.status !== 'warming' || worker.lastError !== step.lastError) {
+        await prisma.aiGpuWorker.updateMany({
+          where: { id: worker.id, status: worker.status },
+          data: { status: 'warming', lastError: step.lastError },
+        });
+      }
+      return;
+    }
+
+    const decision = budget?.next(Date.now()) ?? 'probe';
+    if (decision === 'skip') return; // asked next tick
+    const endpoint = (worker.endpoint as string).replace(/\/+$/, '');
+    const token = this.readAuthToken(worker);
+    let result: ProbeResult;
+    if (decision === 'unreachable') {
+      result = { error: 'relay ไม่ตอบเลยในรอบนี้ — ไม่ได้ถามเครื่องนี้แยก' };
+    } else {
+      result = await this.probeCommunity(endpoint, token);
+      budget?.record(result);
+    }
+    const verdict = classifyCommunityProbe(result);
+    communityProbedAt.set(worker.id, Date.now());
+    const next = transitionAfterProbe(worker.status, verdict);
+    if (next.forgetSchema) clearSchema(endpoint);
+
+    if (next.status === 'terminated') {
+      communityProbedAt.delete(worker.id);
+      // Remember which token was refused: XMAN Studio pushing the same one
+      // again would only be refused again, so only a new token revives the
+      // row (POST /api/gpux/nodes). Metadata is re-read right before the
+      // write, to keep a push that landed during the probe.
+      const fresh = await prisma.aiGpuWorker.findUnique({ where: { id: worker.id }, select: { metadata: true } });
+      await prisma.aiGpuWorker.updateMany({
+        where: { id: worker.id, status: worker.status, terminatedAt: null },
+        data: {
+          status: 'terminated',
+          terminatedAt: now,
+          lastError: next.lastError,
+          metadata: {
+            ...readCommunityMeta(fresh?.metadata),
+            ...(token ? { rejectedTokenHash: sha256(token) } : {}),
+          } as Prisma.InputJsonValue,
+        },
+      });
+      console.warn(`[gpu] community worker ${worker.id} (${worker.externalId}) retired: ${next.lastError}`);
+      return;
+    }
+
+    const unchanged = next.status === worker.status && next.lastError === worker.lastError && !next.stampReadyAt;
+    if (unchanged) return;
+    await prisma.aiGpuWorker.updateMany({
+      where: { id: worker.id, status: worker.status },
+      data: {
+        status: next.status,
+        lastError: next.lastError,
+        ...(next.stampReadyAt ? { readyAt: now } : {}),
+      },
+    });
+  }
+
+  /**
+   * `GET {endpoint}/aixman/ready` with the row's own token — the relay checks
+   * it and forwards to the node, or answers 503 `{stage:'offline'}` itself.
+   * Never throws.
+   */
+  static async probeCommunity(endpoint: string, authToken?: string): Promise<ProbeResult> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
+    try {
+      const res = await fetch(`${endpoint}${READY_PATH}`, {
+        headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
+        signal: controller.signal,
+        cache: 'no-store',
+      });
+      return { status: res.status, body: await res.json().catch(() => null) };
+    } catch (error) {
+      const message =
+        (error as Error).name === 'AbortError' ? `no answer within ${HEALTH_TIMEOUT_MS / 1000} s` : (error as Error).message;
+      return { error: message.slice(0, 200) };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   // ----------------------------------------------------------------
@@ -790,8 +991,17 @@ export class GpuWorkerManager {
       return { reason: 'GPU rental is disabled (gpu_enabled = false)' };
     }
 
+    // Rented machines booting or up, plus — for a model community machines may
+    // run — home PCs actually taking work. A warming home PC is paused or
+    // offline, not on its way up, so it is no reason to hold off renting.
     const serving = await prisma.aiGpuWorker.count({
-      where: { modelKey, status: { in: ['ready', 'busy', 'warming', 'provisioning'] } },
+      where: {
+        modelKey,
+        OR: [
+          { ...RENTED_ONLY, status: { in: ['ready', 'busy', 'warming', 'provisioning'] } },
+          ...(isCommunityModel(modelKey) ? [{ ...COMMUNITY_ONLY, status: { in: ['ready', 'busy'] } }] : []),
+        ],
+      },
     });
     if (opts.prewarm && serving > 0) return { reason: 'Pre-warm skipped: the model already has a machine' };
     if (serving > 0) {
@@ -808,7 +1018,7 @@ export class GpuWorkerManager {
       if (!decision.add) return { reason: decision.reason };
     }
 
-    const liveCount = await prisma.aiGpuWorker.count({ where: { status: { in: LIVE_STATUSES } } });
+    const liveCount = await prisma.aiGpuWorker.count({ where: { ...RENTED_ONLY, status: { in: LIVE_STATUSES } } });
     if (liveCount >= cfg.maxConcurrentWorkers && opts.prewarm) {
       return { reason: `Pre-warm skipped: at worker capacity (${liveCount}/${cfg.maxConcurrentWorkers})` };
     }
@@ -1135,7 +1345,7 @@ export class GpuWorkerManager {
     if (!getCatalogEntry(modelKey)) throw new Error('ไม่รู้จักโมเดลนี้');
     if (!isStorageConfigured()) throw new Error('ยังไม่ได้ตั้งค่า R2 — งานที่เรนเดอร์จะหายไปพร้อมเครื่อง');
 
-    const liveCount = await prisma.aiGpuWorker.count({ where: { status: { in: LIVE_STATUSES } } });
+    const liveCount = await prisma.aiGpuWorker.count({ where: { ...RENTED_ONLY, status: { in: LIVE_STATUSES } } });
     if (liveCount >= cfg.maxConcurrentWorkers) {
       throw new Error(`เครื่องเต็มเพดานแล้ว (${liveCount}/${cfg.maxConcurrentWorkers}) — ปิดเครื่องอื่นหรือเพิ่มเพดานก่อน`);
     }
@@ -1202,8 +1412,11 @@ export class GpuWorkerManager {
   ): Promise<{ markets: VendorMarket[]; clients: Map<GpuProviderSlug, VendorClient> }> {
     const keyed = await this.keyedProviders();
     const clients = new Map<GpuProviderSlug, VendorClient>();
+    // The community pool has no market and an infinite "balance"; asking it
+    // would only let that Infinity mask a rented vendor running dry.
+    const rentable = cfg.providers.filter((slug) => !this.isCommunity(slug));
     const markets = await Promise.all(
-      cfg.providers.map(async (slug): Promise<VendorMarket> => {
+      rentable.map(async (slug): Promise<VendorMarket> => {
         const vendor = keyed.get(slug);
         if (!vendor) return { slug, offers: [], note: 'no API key' };
         if (vendor.provider.exposure === 'tunnel') {
@@ -1261,6 +1474,7 @@ export class GpuWorkerManager {
   private static async isWarmestIdle(worker: AiGpuWorker): Promise<boolean> {
     const warmer = await prisma.aiGpuWorker.count({
       where: {
+        ...RENTED_ONLY,
         modelKey: worker.modelKey,
         status: 'ready',
         id: { not: worker.id },
@@ -1272,7 +1486,9 @@ export class GpuWorkerManager {
 
   private static async releaseIdleWorkerForOtherModel(wantedModelKey: string, waitedMs: number): Promise<boolean> {
     const candidates = await prisma.aiGpuWorker.findMany({
-      where: { status: 'ready', modelKey: { not: wantedModelKey } },
+      // A home PC holds no rental slot, so releasing one frees nothing — and
+      // it is somebody's machine, not ours to switch off.
+      where: { ...RENTED_ONLY, status: 'ready', modelKey: { not: wantedModelKey } },
       orderBy: { lastJobAt: 'asc' }, // least recently useful first
     });
     const now = Date.now();
@@ -1478,6 +1694,16 @@ export class GpuWorkerManager {
     const worker = await prisma.aiGpuWorker.findUnique({ where: { id: workerId } });
     if (!worker || worker.terminatedAt) return;
 
+    // Nothing bills for a community machine and nothing at the relay needs
+    // stopping, so no vendor key is involved: closing the row is the whole of
+    // it. (Asking for a key here used to leave the row 'draining' with a
+    // "machine may still be billing" alert whenever the relay key was absent.)
+    if (this.isCommunity(worker.providerSlug)) {
+      communityProbedAt.delete(workerId);
+      await this.markTerminated(workerId, reason, new Date());
+      return;
+    }
+
     try {
       const apiKey = await this.getApiKey(worker.providerSlug);
       await this.resolveProvider(worker.providerSlug).terminate(worker.externalId, apiKey);
@@ -1545,6 +1771,8 @@ export class GpuWorkerManager {
 
     const terminated: string[] = [];
     for (const vendor of vendors.values()) {
+      // Community machines are never ours to terminate, orphaned or not.
+      if (vendor.provider.exposure === 'pool-relay') continue;
       try {
         terminated.push(...(await this.sweepVendor(vendor)));
       } catch (error) {

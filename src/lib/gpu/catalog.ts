@@ -126,10 +126,25 @@ export interface VideoResolutionOption {
   adminOnly?: boolean;
 }
 
+/**
+ * Which machines may run an entry. `rented`: machines we rent by the second and
+ * provision with the entry's own downloads. `community`: GPUxMINE home PCs,
+ * which bring whatever weights their owner has and are matched to a model by
+ * community-eligibility.ts.
+ */
+export type CatalogPool = 'rented' | 'community';
+
 export interface CatalogEntry {
   /** Matches `ai_models.modelId`, and doubles as the worker profile key. */
   key: string;
   name: string;
+  /**
+   * The pools this entry is dispatched to. A home node was once matched to any
+   * entry its VRAM could hold, and a 12 GB card got ACE-Step, whose weights no
+   * home PC has — customers' paid orders failed there and could take the model
+   * off sale. Only entries built for home cards list `community`.
+   */
+  pools: readonly CatalogPool[];
   kind: 'video' | 'image' | 'audio' | 'lipsync';
   /** What the job produces, so the queue knows how to store it. */
   outputKind: 'video' | 'image' | 'audio';
@@ -568,6 +583,7 @@ const H3_RESIZE_NODE = '105_310';
 const MINIMAX_H3: CatalogEntry = {
   key: 'minimax-h3',
   name: 'MiniMax H3 (Hailuo 3.0)',
+  pools: ['rented'],
   kind: 'video',
   outputKind: 'video',
   description: 'วิดีโอพร้อมเสียงในตัว คุณภาพสูงสุดในกลุ่ม • ใช้เวลาสร้างนานกว่าโมเดลอื่น',
@@ -772,6 +788,7 @@ const ACE = tunableReader(ACE_TUNABLES);
 const ACE_STEP: CatalogEntry = {
   key: 'ace-step-1.5',
   name: 'ACE-Step 1.5 (เพลง/เสียง)',
+  pools: ['rented'],
   kind: 'audio',
   outputKind: 'audio',
   description: 'สร้างเพลงและเสียงจากคำอธิบาย • เบาที่สุด เร็วและถูกที่สุดในระบบ',
@@ -1009,6 +1026,7 @@ function qwenSize(p: CatalogJobParams): { width: number; height: number } {
 const QWEN_IMAGE: CatalogEntry = {
   key: 'qwen-image',
   name: 'Qwen-Image',
+  pools: ['rented'],
   kind: 'image',
   outputKind: 'image',
   description: 'สร้างภาพนิ่งคุณภาพสูง เก่งเรื่องตัวอักษรทั้งไทยและอังกฤษ • ใช้ LoRA 8 สเต็ป เร็วกว่าปกติมาก',
@@ -1177,6 +1195,7 @@ function yue2Style(p: CatalogJobParams): string {
 const YUE2_MUSIC: CatalogEntry = {
   key: 'yue2-music',
   name: 'YuE2 (เพลงเต็มเพลง)',
+  pools: ['rented'],
   kind: 'audio',
   outputKind: 'audio',
   description: 'แต่งเพลงเต็มเพลงพร้อมเสียงร้องจากเนื้อร้องที่เขียนเอง • วางโครงทำนองก่อนแล้วค่อยร้อง คุณภาพระดับ 48 kHz',
@@ -1231,6 +1250,7 @@ const YUE2_MUSIC: CatalogEntry = {
 const YUE2_COVER: CatalogEntry = {
   key: 'yue2-cover',
   name: 'YuE2 คัฟเวอร์ (จากเพลงที่อัปโหลด)',
+  pools: ['rented'],
   kind: 'audio',
   outputKind: 'audio',
   description: 'อัปโหลดเพลงแล้วให้ AI เรียบเรียงใหม่ตามแนวที่สั่ง • ถอดทำนองจากเพลงต้นฉบับแล้วร้องใหม่ทั้งเพลง',
@@ -1355,6 +1375,9 @@ const SDXL = tunableReader(SDXL_TUNABLES);
 const SDXL_COMMUNITY: CatalogEntry = {
   key: 'sdxl-community',
   name: 'SDXL (เครื่องชุมชน)',
+  // Community only (owner decision D5, 2026-09-25): a 1-credit image is not
+  // worth booting a rented card for, and a home card is what it was built for.
+  pools: ['community'],
   kind: 'image',
   outputKind: 'image',
   description: 'สร้างภาพนิ่งด้วย SDXL บนการ์ดจอที่คนแชร์มา — คิวธรรมดา ไม่ใช่งานด่วน',
@@ -1407,6 +1430,26 @@ export const MODEL_CATALOG: CatalogEntry[] = [MINIMAX_H3, ACE_STEP, QWEN_IMAGE, 
 
 export function getCatalogEntry(key: string): CatalogEntry | undefined {
   return MODEL_CATALOG.find((m) => m.key === key);
+}
+
+export function inPool(entry: Pick<CatalogEntry, 'pools'> | undefined, pool: CatalogPool): boolean {
+  return entry?.pools.includes(pool) ?? false;
+}
+
+/** Whether GPUxMINE home machines may be given this model's jobs. */
+export function isCommunityModel(modelKey: string): boolean {
+  return inPool(getCatalogEntry(modelKey), 'community');
+}
+
+/** Whether this model may only ever run on community machines (no rental fallback). */
+export function isCommunityOnlyModel(modelKey: string): boolean {
+  const entry = getCatalogEntry(modelKey);
+  return inPool(entry, 'community') && !inPool(entry, 'rented');
+}
+
+/** The entries a community node may be matched to — the only ones eligibility looks at. */
+export function communityCatalogue(): CatalogEntry[] {
+  return MODEL_CATALOG.filter((entry) => inPool(entry, 'community'));
 }
 
 /** Total download size, used for the disk estimate and warmup expectations. */

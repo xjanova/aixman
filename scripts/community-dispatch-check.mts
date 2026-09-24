@@ -11,7 +11,11 @@
  * credentials are already on the machine the node runs on, and this way the
  * check needs no database and moves no secret anywhere.
  *
- * Run: node --experimental-strip-types --import ./scripts/alias-loader.mjs \
+ * (transform, not strip: WorkerClient declares parameter properties. A paused
+ * or busy node answers with NodeRefusedError — the "not now" the queue
+ * requeues without spending an attempt.)
+ *
+ * Run: node --experimental-transform-types --import ./scripts/alias-loader.mjs \
  *        scripts/community-dispatch-check.mts
  */
 import { readFileSync } from 'node:fs';
@@ -48,7 +52,9 @@ console.log('endpoint', endpoint);
 
 // `apiKind` is what picks the ComfyUI path; nothing else on the profile is
 // read once the worker is already running.
-const client = new WorkerClient(endpoint, { apiKind: 'comfyui' } as never, token, 'sdxl-community');
+const client = new WorkerClient(endpoint, { apiKind: 'comfyui' } as never, token, 'sdxl-community', null, {
+  community: true,
+});
 
 const result = await client.submit({
   prompt: 'a red vintage bicycle leaning against a white wall, soft daylight, photograph',

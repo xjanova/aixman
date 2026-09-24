@@ -188,19 +188,32 @@ export function validateGraph(graph: ComfyGraph, objectInfo: ComfyObjectInfo): V
  * endpoint. Entries are dropped when a worker is released, and the map is
  * bounded so a long-running process cannot accumulate dead endpoints.
  */
-const schemaCache = new Map<string, ComfyObjectInfo>();
+const schemaCache = new Map<string, { info: ComfyObjectInfo; at: number }>();
 const SCHEMA_CACHE_LIMIT = 8;
 
 export function cacheSchema(endpoint: string, info: ComfyObjectInfo): void {
+  schemaCache.delete(endpoint);
   if (schemaCache.size >= SCHEMA_CACHE_LIMIT) {
     const oldest = schemaCache.keys().next().value;
     if (oldest) schemaCache.delete(oldest);
   }
-  schemaCache.set(endpoint, info);
+  schemaCache.set(endpoint, { info, at: Date.now() });
 }
 
-export function getCachedSchema(endpoint: string): ComfyObjectInfo | undefined {
-  return schemaCache.get(endpoint);
+/**
+ * The cached schema, or undefined when there is none or it is older than
+ * `maxAgeMs`. A rented container's node set cannot change while it runs, so it
+ * passes no age; a community PC's owner can add, rename or delete checkpoints
+ * at any time, and the list pickCheckpoint chooses from must not go stale.
+ */
+export function getCachedSchema(endpoint: string, maxAgeMs?: number): ComfyObjectInfo | undefined {
+  const hit = schemaCache.get(endpoint);
+  if (!hit) return undefined;
+  if (maxAgeMs !== undefined && Date.now() - hit.at > maxAgeMs) {
+    schemaCache.delete(endpoint);
+    return undefined;
+  }
+  return hit.info;
 }
 
 export function clearSchema(endpoint: string): void {

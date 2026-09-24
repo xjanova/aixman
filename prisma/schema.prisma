@@ -479,6 +479,10 @@ model AiGpuJob {
   payload       Json
   // Job id inside the container (e.g. ComfyUI prompt_id)
   externalJobId String?   @map("external_job_id") @db.VarChar(255)
+  // Community workers (ai_gpu_workers.id) this job already failed on. The
+  // retry goes to another node instead of the same home PC that just failed
+  // it (db/migrations/20260925_gpu_community_dispatch.sql).
+  avoidWorkerIds Json?    @map("avoid_worker_ids")
   resultUrl     String?   @map("result_url") @db.MediumText
   errorMessage  String?   @map("error_message") @db.Text
   // Wall-clock GPU seconds this job occupied, for honest per-job costing.

@@ -1,12 +1,22 @@
-import { timingSafeEqual } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/db';
+import { Prisma } from '@/generated/prisma/client';
+import type { AiGpuWorker } from '@/generated/prisma/client';
 import { encrypt } from '@/lib/utils/encryption';
 import { assessCommunityNode } from '@/lib/gpu/community-eligibility';
-import { MODEL_CATALOG } from '@/lib/gpu/catalog';
+import { communityCatalogue } from '@/lib/gpu/catalog';
+import {
+  PUSH_OUTCOME_NOTE,
+  endpointProblem,
+  metaFromPush,
+  planNodePush,
+  type NodePayload,
+  type PushOutcome,
+} from '@/lib/gpu/community-push';
 
 /**
- * Where a community GPU joins the pool.
+ * Where a community GPU joins the pool (contract C1).
  *
  * XMAN Studio is the only caller. It owns the relationship — who the machine
  * belongs to, which wallet its earnings go to, and the relay token, which the
@@ -17,7 +27,13 @@ import { MODEL_CATALOG } from '@/lib/gpu/catalog';
  * The one judgement made here is eligibility, and it is made against the
  * catalogue rather than against the node's own opinion of itself. A node says
  * "I can do video"; the catalogue says what a video job on this platform
- * actually needs. Only the overlap is dispatchable.
+ * actually needs. Only the overlap is dispatchable, and only entries built for
+ * home machines (catalogue `pools`) are in the running at all.
+ *
+ * XMAN Studio pushes on every change and again every few minutes regardless,
+ * so this must be safe to call repeatedly — community-push.ts says what a push
+ * may and may not do to a row. Readiness itself is not decided here: the
+ * reconciler asks the node (gpu-worker.ts reconcileCommunity).
  */
 
 export const dynamic = 'force-dynamic';
@@ -37,24 +53,7 @@ function isXmanStudio(request: NextRequest): boolean {
   }
 }
 
-interface NodePayload {
-  workerId: string;
-  endpoint: string;
-  token: string;
-  label?: string;
-  online?: boolean;
-  assessed?: boolean;
-  gpuName?: string | null;
-  vramTotalMb?: number;
-  score?: number;
-  tier?: string;
-  canRun?: string[];
-  /** Per-kind speed: `full` for work somebody waits on, `slow` for queued work. */
-  lanes?: Record<string, string>;
-  /** Kinds whose lane is still the node's opening assumption rather than a measured fact. */
-  provisional?: string[];
-  ownerUserId?: number;
-}
+const WORKER_SELECT = { id: true, externalId: true, status: true, modelKey: true, lastError: true } as const;
 
 export async function POST(request: NextRequest) {
   if (!isXmanStudio(request)) {
@@ -63,85 +62,97 @@ export async function POST(request: NextRequest) {
 
   const node = (await request.json().catch(() => null)) as NodePayload | null;
 
-  if (!node?.workerId || !node.endpoint || !node.token) {
+  if (
+    !node ||
+    typeof node.workerId !== 'string' ||
+    typeof node.endpoint !== 'string' ||
+    typeof node.token !== 'string' ||
+    !node.workerId.trim() ||
+    !node.endpoint.trim() ||
+    !node.token.trim()
+  ) {
     return NextResponse.json(
       { error: 'workerId, endpoint and token are all required' },
       { status: 400 }
     );
   }
+  node.workerId = node.workerId.trim();
+  node.endpoint = node.endpoint.trim().replace(/\/+$/, '');
+  if (node.workerId.length > 100) {
+    return NextResponse.json({ error: 'workerId is too long (100 characters at most)' }, { status: 400 });
+  }
+  const problem = endpointProblem(node.endpoint);
+  if (problem) return NextResponse.json({ error: problem }, { status: 400 });
 
-  const verdict = assessCommunityNode(node, MODEL_CATALOG);
+  const verdict = assessCommunityNode(node, communityCatalogue());
+  const tokenHash = createHash('sha256').update(node.token).digest('hex');
+  const where = { providerSlug_externalId: { providerSlug: PROVIDER_SLUG, externalId: node.workerId } };
+  const now = new Date();
+  // Written on every push: XMAN Studio is the source of truth for where the
+  // node is and which token opens it (a rotated tunnel token lands here).
+  const reach = {
+    endpoint: node.endpoint,
+    authToken: encrypt(node.token),
+    ...(typeof node.gpuName === 'string' ? { gpuModel: node.gpuName.slice(0, 100) } : {}),
+    ...(node.vramTotalMb ? { gpuMemoryMb: Math.round(node.vramTotalMb) } : {}),
+  };
 
-  // A node that cannot be given work still gets a row. The alternative is a
-  // machine that is online, assessed and invisible — and an owner asking why,
-  // with nothing on this side to answer from.
-  const worker = await prisma.aiGpuWorker.upsert({
-    where: { providerSlug_externalId: { providerSlug: PROVIDER_SLUG, externalId: node.workerId } },
-    create: {
-      providerSlug: PROVIDER_SLUG,
-      externalId: node.workerId,
-      // Never `ready` from a webhook. The health probe decides that, exactly as
-      // it does for a rented machine — this call only says the node exists and
-      // what it claims to be.
-      status: verdict.status === 'eligible' ? 'warming' : 'draining',
-      modelKey: verdict.modelKey ?? 'unassigned',
-      endpoint: node.endpoint.replace(/\/+$/, ''),
-      authToken: encrypt(node.token),
-      gpuModel: node.gpuName ?? null,
-      gpuMemoryMb: node.vramTotalMb || null,
-      // Community capacity has no hourly price, and a zero here is what keeps
-      // it out of every cost and margin calculation built for rentals.
-      pricePerHourUsd: 0,
-      metadata: {
-        source: 'community',
-        ownerUserId: node.ownerUserId ?? null,
-        label: node.label ?? null,
-        score: node.score ?? 0,
-        tier: node.tier ?? 'unrated',
-        canRun: node.canRun ?? [],
-        lanes: node.lanes ?? {},
-        // What the dispatcher filters on: `slow` is capacity for work nobody is
-        // waiting on, and handing it an impatient customer is the one mistake
-        // this whole field exists to prevent.
-        lane: verdict.lane,
-        provisional: verdict.provisional,
-        eligibility: verdict.status,
-        note: verdict.note,
-        syncedAt: new Date().toISOString(),
-      },
-    },
-    update: {
-      status: verdict.status === 'eligible' ? 'warming' : 'draining',
-      modelKey: verdict.modelKey ?? 'unassigned',
-      endpoint: node.endpoint.replace(/\/+$/, ''),
-      authToken: encrypt(node.token),
-      gpuModel: node.gpuName ?? undefined,
-      gpuMemoryMb: node.vramTotalMb || undefined,
-      terminatedAt: null,
-      metadata: {
-        source: 'community',
-        ownerUserId: node.ownerUserId ?? null,
-        label: node.label ?? null,
-        score: node.score ?? 0,
-        tier: node.tier ?? 'unrated',
-        canRun: node.canRun ?? [],
-        lanes: node.lanes ?? {},
-        // What the dispatcher filters on: `slow` is capacity for work nobody is
-        // waiting on, and handing it an impatient customer is the one mistake
-        // this whole field exists to prevent.
-        lane: verdict.lane,
-        provisional: verdict.provisional,
-        eligibility: verdict.status,
-        note: verdict.note,
-        syncedAt: new Date().toISOString(),
-      },
-    },
-    select: { id: true, externalId: true, status: true, modelKey: true },
-  });
+  // Guarded read-decide-write: the reconciler and the queue move this row's
+  // status concurrently, and a write decided on a status that has since
+  // changed could hand a busy node a second model or pull it mid-job.
+  let outcome: PushOutcome = null;
+  let worker: Pick<AiGpuWorker, 'id' | 'externalId' | 'status' | 'modelKey' | 'lastError'> | null = null;
+  for (let attempt = 0; attempt < 3 && !worker; attempt++) {
+    const row = await prisma.aiGpuWorker.findUnique({ where });
+
+    if (!row) {
+      try {
+        // A node that cannot be given work still gets a row. The alternative is
+        // a machine that is online, assessed and invisible — and an owner
+        // asking why, with nothing on this side to answer from.
+        worker = await prisma.aiGpuWorker.create({
+          data: {
+            providerSlug: PROVIDER_SLUG,
+            externalId: node.workerId,
+            // Never `ready` from a webhook: the reconciler asks the node itself.
+            status: node.suspended === true ? 'terminated' : 'warming',
+            terminatedAt: node.suspended === true ? now : null,
+            modelKey: verdict.modelKey ?? 'unassigned',
+            ...reach,
+            // Community capacity has no hourly price, and a zero here is what
+            // keeps it out of every cost and margin calculation built for rentals.
+            pricePerHourUsd: 0,
+            metadata: metaFromPush(node, verdict, now) as Prisma.InputJsonValue,
+          },
+          select: WORKER_SELECT,
+        });
+        outcome = node.suspended === true ? 'suspended' : null;
+      } catch (error) {
+        // Two pushes for a brand-new node raced; the other one created it.
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') continue;
+        throw error;
+      }
+      break;
+    }
+
+    const plan = planNodePush(row, node, verdict, tokenHash, now);
+    const { metadata, ...change } = plan.change;
+    const { count } = await prisma.aiGpuWorker.updateMany({
+      where: { id: row.id, status: row.status },
+      data: { ...reach, ...change, metadata: metadata as Prisma.InputJsonValue },
+    });
+    if (count === 0) continue; // the status moved under us — decide again on what it is now
+    outcome = plan.outcome;
+    worker = await prisma.aiGpuWorker.findUnique({ where: { id: row.id }, select: WORKER_SELECT });
+  }
+
+  if (!worker) {
+    return NextResponse.json({ error: 'The node changed state repeatedly while it was being saved; retry' }, { status: 409 });
+  }
 
   return NextResponse.json({
-    status: verdict.status,
-    note: verdict.note,
+    status: outcome ?? verdict.status,
+    note: outcome ? PUSH_OUTCOME_NOTE[outcome] : verdict.note,
     modelKey: verdict.modelKey,
     worker,
   });

@@ -17,3 +17,5 @@ would be unsafe (e.g. would drop legacy tables that still hold data).
   MEDIUMTEXT; UNIQUE index on `xman_order_id` to close a webhook double-credit race.
 - `20260809_add_gpu_rental_tables.sql` — add `ai_gpu_workers` + `ai_gpu_jobs`
   for GPU rental (SimplePod → self-hosted MiniMax H3).
+- `20260925_gpu_community_dispatch.sql` — `ai_gpu_jobs.avoid_worker_ids` (JSON):
+  community machines a job already failed on, so its retry goes elsewhere.

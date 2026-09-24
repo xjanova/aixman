@@ -6,6 +6,7 @@ import { getGpuProvider } from '@/lib/gpu';
 import { GPU_DEFAULTS, getGpuConfig } from '@/lib/gpu/config';
 import { syncCatalogModels } from '@/lib/gpu/model-sync';
 import { isGpuProviderSlug, type GpuProviderSlug } from '@/lib/gpu/types';
+import { relayBaseUrl } from '@/lib/gpu/gpuxmine';
 import { GpuBalance } from '@/lib/services/gpu-balance';
 
 /**
@@ -51,11 +52,12 @@ const VENDOR_ROWS: Record<GpuProviderSlug, { name: string; baseUrl: string; desc
     description: 'ศูนย์ข้อมูลของ Verda (DataCrunch เดิม) ที่ฟินแลนด์ — RTX PRO 6000, H100, A100, L40S',
   },
   // Not a marketplace. The credential is the relay's admin key, and it only
-  // buys the admin pages a live view of who is online — the pool itself works
-  // without one, because community nodes bring themselves.
+  // buys the admin pages a live view of who is online. The pool itself works
+  // without one: XMAN Studio pushes each node's endpoint and tunnel token, and
+  // the reconciler probes the node through it (gpuxmine.ts, gpu-worker.ts).
   gpuxmine: {
     name: 'GPUxMINE (เครื่องชุมชน)',
-    baseUrl: process.env.GPUXMINE_RELAY_URL || 'https://relay.gpuxmine.com',
+    baseUrl: relayBaseUrl(),
     description: 'เครื่องของผู้ใช้ที่ลงไคลเอนต์ GPUxMINE เอง — ไม่มีค่าเช่ารายชั่วโมง จ่ายเป็นค่าตอบแทนต่องาน',
   },
 };
