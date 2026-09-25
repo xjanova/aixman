@@ -249,6 +249,60 @@ test('a node the relay has disabled refuses /prompt as a "not now", so no attemp
   await assert.rejects(client.submit(JOB), (error: unknown) => isNodeRefusal(error) && (error as { stage: string }).stage === 'disabled');
 });
 
+// ---------------------------------------------------------------------------
+// A v0.1.x node whose ComfyUI is down
+// ---------------------------------------------------------------------------
+
+/** What every v0.1.x client answers when the forward to its ComfyUI fails (ComfyRuntime.ForwardAsync). */
+const runtimeUnreachable = () =>
+  json(502, { error: 'local runtime unreachable', detail: 'No connection could be made because the target machine actively refused it. (127.0.0.1:8188)' });
+
+test("a v0.1.x node whose ComfyUI is down refuses /object_info as paused, and a rented worker's 502 stays a failure", async () => {
+  scripted({ 'GET /object_info': runtimeUnreachable });
+  const client = new WorkerClient(endpoint(), PROFILE, 'token', 'sdxl-community', null, { community: true });
+  await assert.rejects(client.submit(JOB), (error: unknown) => {
+    assert.equal(isNodeRefusal(error), true);
+    assert.equal((error as { stage: string }).stage, 'paused');
+    assert.equal((error as { status: number }).status, 502);
+    return true;
+  });
+
+  const rented = new WorkerClient(endpoint(), PROFILE, 'token', 'sdxl-community');
+  await assert.rejects(rented.submit(JOB), (error: unknown) => {
+    assert.equal(isNodeRefusal(error), false);
+    assert.match((error as Error).message, /Could not read the worker's node schema \(HTTP 502\)/);
+    return true;
+  });
+});
+
+test('a v0.1.x node whose ComfyUI died between the schema and the prompt refuses the prompt as paused', async () => {
+  const seen = scripted({ 'GET /object_info': () => json(200, baseline.classes), 'POST /prompt': runtimeUnreachable });
+  const client = new WorkerClient(endpoint(), PROFILE, 'token', 'sdxl-community', null, { community: true });
+
+  await assert.rejects(client.submit(JOB), (error: unknown) => isNodeRefusal(error) && (error as { stage: string }).stage === 'paused');
+  assert.deepEqual(seen, ['GET /object_info', 'POST /prompt']);
+});
+
+test("the relay's own 502 on /prompt is still a failure — only the node's unreachable ComfyUI is a refusal", async () => {
+  scripted({
+    'GET /object_info': () => json(200, baseline.classes),
+    'POST /prompt': () => json(502, { error: 'bad reply from node', detail: 'status 900' }),
+  });
+  const client = new WorkerClient(endpoint(), PROFILE, 'token', 'sdxl-community', null, { community: true });
+
+  await assert.rejects(client.submit(JOB), (error: unknown) => !isNodeRefusal(error) && /HTTP 502/.test((error as Error).message));
+});
+
+test('a finished render on a v0.1.x node whose ComfyUI went down is waited for, not thrown away', async () => {
+  scripted({ 'GET /view': runtimeUnreachable });
+  const base = endpoint();
+  const community = new WorkerClient(base, PROFILE, 'token', 'sdxl-community', null, { community: true });
+  const rented = new WorkerClient(base, PROFILE, 'token', 'sdxl-community');
+
+  await assert.rejects(community.download(`${base}/view?filename=a.png&type=output`), (error: unknown) => isNodeRefusal(error));
+  await assert.rejects(rented.download(`${base}/view?filename=a.png&type=output`), /Failed to download render \(HTTP 502\)/);
+});
+
 test('readCapped reads up to the limit, says there was more, and gives up on a body that stalls', async () => {
   const small = await readCapped(new Response('{"ok":true}'), 1024, 1_000);
   assert.deepEqual(small, { text: '{"ok":true}', overflow: false });

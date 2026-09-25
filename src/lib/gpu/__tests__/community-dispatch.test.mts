@@ -20,6 +20,7 @@ import {
   RELAY_BUSY_STAGE,
   RELAY_DOWN_AFTER,
   RELAY_PUSHBACK_PARK_AFTER,
+  RUNTIME_UNREACHABLE_ERROR,
   classifyCommunityProbe,
   communityHoldReason,
   isCommunitySlug,
@@ -296,6 +297,65 @@ test('a node saying "not now" is a refusal; anything without a stage is a failur
   assert.equal(parseNodeRefusal(503, JSON.stringify({ error: 'x' })), null);
   assert.equal(parseNodeRefusal(500, JSON.stringify({ stage: 'paused' })), null);
   assert.equal(parseNodeRefusal(400, JSON.stringify({ stage: 'paused' })), null);
+});
+
+test("an older node's 502 'local runtime unreachable' is its ComfyUI being down — read as paused, not a failure", () => {
+  // Every v0.1.x client forwards /object_info, /prompt and /upload/image and
+  // answers a ComfyUI it cannot reach with this. It used to cost the job an
+  // attempt and put the node on its avoid list: two such nodes refunded an
+  // sdxl-community job that no machine had started.
+  const v01 = JSON.stringify({ error: RUNTIME_UNREACHABLE_ERROR, detail: 'No connection could be made (127.0.0.1:8188)' });
+  assert.equal(RUNTIME_UNREACHABLE_ERROR, 'local runtime unreachable');
+  const refusal = parseNodeRefusal(502, v01);
+  assert.deepEqual(refusal, { stage: 'paused', reason: 'local runtime unreachable', status: 502 });
+  // The node's detail (a local address, an exception) is not carried along.
+  assert.doesNotMatch(new NodeRefusedError(refusal!, 'the prompt').message, /127\.0\.0\.1/);
+
+  // Only that body. The relay's own 502, a proxy's page, a stage on a 502, and
+  // a lookalike stay failures.
+  assert.equal(parseNodeRefusal(502, JSON.stringify({ error: 'bad reply from node', detail: 'status 900' })), null);
+  assert.equal(parseNodeRefusal(502, '<html><body>502 Bad Gateway</body></html>'), null);
+  assert.equal(parseNodeRefusal(502, ''), null);
+  assert.equal(parseNodeRefusal(502, 'null'), null);
+  assert.equal(parseNodeRefusal(502, JSON.stringify({ stage: 'paused' })), null);
+  assert.equal(parseNodeRefusal(502, JSON.stringify({ error: 'unreadable queue from local runtime' })), null);
+  assert.equal(parseNodeRefusal(502, JSON.stringify({ error: 'Local Runtime Unreachable' })), null);
+  assert.equal(parseNodeRefusal(502, JSON.stringify({ error: [RUNTIME_UNREACHABLE_ERROR] })), null);
+  // And only on a 502: the same words under another status mean nothing new.
+  assert.equal(parseNodeRefusal(500, v01), null);
+  assert.equal(parseNodeRefusal(504, v01), null);
+  assert.equal(parseNodeRefusal(503, v01), null);
+
+  // Planned exactly like a stage-503: requeued whole, node parked, no avoid list.
+  assert.deepEqual(planSubmitFailure(new NodeRefusedError(refusal!, 'the prompt'), true), {
+    requeueWithoutAttempt: true,
+    workerStatus: 'warming',
+    avoidWorker: false,
+  });
+  assert.equal(isRelayPushback(new NodeRefusedError(refusal!, 'the prompt')), false);
+  // A rented machine keeps its rule (WorkerClient never raises a refusal for one anyway).
+  assert.deepEqual(planSubmitFailure(new NodeRefusedError(refusal!, 'the prompt'), false), {
+    requeueWithoutAttempt: false,
+    workerStatus: null,
+    avoidWorker: false,
+  });
+
+  // What requeueRefused writes for it is not "away": an order for a
+  // community-only model still counts the node, as it does a paused one.
+  assert.equal(lastErrorSaysAway(`${stageLabel('paused')} (paused)`), false);
+});
+
+test("a probe answered 502 'local runtime unreachable' parks the node as paused, to be asked again", () => {
+  const verdict = classifyCommunityProbe({ status: 502, body: { error: RUNTIME_UNREACHABLE_ERROR, detail: 'refused' } });
+  assert.equal(verdict.next, 'warming');
+  assert.ok(verdict.next === 'warming' && verdict.stage === 'paused');
+  assert.match((verdict as { detail: string }).detail, /\(paused\)/);
+  assert.equal(lastErrorSaysAway((verdict as { detail: string }).detail), false);
+  // The node answered: leaving rotation drops its schema, like any paused node.
+  assert.equal(transitionAfterProbe('ready', verdict).forgetSchema, true);
+  // Any other 502 is still just an odd status — warming, no stage.
+  const other = classifyCommunityProbe({ status: 502, body: { error: 'bad reply from node' } });
+  assert.ok(other.next === 'warming' && other.stage === undefined);
 });
 
 test('a stage-503 requeues the job without spending an attempt and parks the node', () => {

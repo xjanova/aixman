@@ -146,6 +146,24 @@ export const RELAY_BUSY_STAGE = 'relay-busy';
  */
 export const RELAY_PUSHBACK_PARK_AFTER = 3;
 
+/**
+ * A node whose own ComfyUI does not answer, in the words of clients that
+ * predate the stage for it (every v0.1.x build): the request is forwarded,
+ * the forward fails, and the node answers 502 `{error:'local runtime
+ * unreachable', detail}`. Newer builds answer the same moment on new work
+ * with 503 `{stage:'paused'}` (contract C5). Either way the owner closed
+ * ComfyUI or it is still starting — the owner's machine not ready, never the
+ * job's fault — so it is read as that stage: the job goes back to the queue
+ * without spending an attempt, the node to `warming` and off no avoid list,
+ * and the reconciler brings it back on a 200 from /aixman/ready. Only this
+ * exact body: any other 502 (the relay's `bad reply from node`, a proxy's
+ * page) is still a failure.
+ */
+export const RUNTIME_UNREACHABLE_ERROR = 'local runtime unreachable';
+
+/** The stage a node's unreachable ComfyUI is read as — what newer node builds answer for it. */
+export const RUNTIME_UNREACHABLE_STAGE = 'paused';
+
 export function stageLabel(stage: string): string {
   return STAGE_LABEL[stage] ?? `เครื่องยังไม่พร้อม (${stage})`;
 }
@@ -161,15 +179,16 @@ export interface NodeRefusal {
  * node or the relay, 409 `{stage:'busy'}` for a second prompt, or the relay's
  * 403 `{error:'worker-disabled'}` for a node an admin has switched off for
  * now. The relay's own pushback — 503 `{error:'relay-busy'}`, and any 429 —
- * is read as stage `relay-busy`. Anything else without a stage is an ordinary
- * failure, not a refusal.
+ * is read as stage `relay-busy`; an older node's 502 `{error:'local runtime
+ * unreachable'}` as stage `paused` (RUNTIME_UNREACHABLE_ERROR). Anything else
+ * without a stage is an ordinary failure, not a refusal.
  */
 export function parseNodeRefusal(status: number, body: string): NodeRefusal | null {
   // A rate limit is never the node's verdict on the work (the node client has
   // no 429 of its own), whatever the body says — the relay's, or a proxy's in
   // front of it.
   if (status === 429) return { stage: RELAY_BUSY_STAGE, reason: 'rate-limited', status };
-  if (status !== 503 && status !== 409 && status !== 403) return null;
+  if (status !== 503 && status !== 409 && status !== 403 && status !== 502) return null;
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
@@ -177,6 +196,13 @@ export function parseNodeRefusal(status: number, body: string): NodeRefusal | nu
     return null;
   }
   if (!parsed || typeof parsed !== 'object') return null;
+  if (status === 502) {
+    // The node's `detail` (a local URL, an exception) is not carried: it is
+    // the node's text, and the stage already says what the queue needs.
+    return (parsed as { error?: unknown }).error === RUNTIME_UNREACHABLE_ERROR
+      ? { stage: RUNTIME_UNREACHABLE_STAGE, reason: RUNTIME_UNREACHABLE_ERROR, status }
+      : null;
+  }
   if (status === 403) {
     // Only the reversible 403 is a "not now"; path-not-allowed and the rest stay failures.
     return (parsed as { error?: unknown }).error === RELAY_DISABLED_ERROR ? { stage: DISABLED_STAGE, status } : null;
@@ -400,6 +426,15 @@ export function classifyCommunityProbe(result: ProbeResult): ProbeVerdict {
       next: 'warming',
       stage: RELAY_BUSY_STAGE,
       detail: `${stageLabel(RELAY_BUSY_STAGE)} (${RELAY_BUSY_STAGE}) — HTTP ${result.status}`,
+    };
+  }
+  // An older node whose ComfyUI is down, in its own words — the same "not
+  // now" as a submit gets (parseNodeRefusal), with the same stage.
+  if (result.status === 502 && body.error === RUNTIME_UNREACHABLE_ERROR) {
+    return {
+      next: 'warming',
+      stage: RUNTIME_UNREACHABLE_STAGE,
+      detail: `${stageLabel(RUNTIME_UNREACHABLE_STAGE)} (${RUNTIME_UNREACHABLE_STAGE}): ComfyUI บนเครื่องไม่ตอบ — HTTP 502`,
     };
   }
   return { next: 'warming', detail: `เครื่องตอบ HTTP ${result.status}` };
