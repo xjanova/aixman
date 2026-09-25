@@ -35,6 +35,7 @@ import {
   readAvoidList,
   slowLaneOpen,
   stageLabel,
+  stageTag,
   transitionAfterProbe,
   withAvoided,
   type CommunityMeta,
@@ -356,6 +357,40 @@ test("a probe answered 502 'local runtime unreachable' parks the node as paused,
   // Any other 502 is still just an odd status — warming, no stage.
   const other = classifyCommunityProbe({ status: 502, body: { error: 'bad reply from node' } });
   assert.ok(other.next === 'warming' && other.stage === undefined);
+});
+
+test("an older node's own /aixman/ready words for its ComfyUI being down are read as paused, in Thai, without its exception", () => {
+  // What every v0.1.x client answers: a free-form stage, and the .NET exception naming the owner's local port.
+  const down = classifyCommunityProbe({
+    status: 503,
+    body: { ready: false, stage: 'comfyui unreachable', detail: 'No connection could be made because the target machine actively refused it. (127.0.0.1:8188)' },
+  });
+  assert.ok(down.next === 'warming' && down.stage === 'paused');
+  const detail = (down as { detail: string }).detail;
+  assert.match(detail, /ComfyUI บนเครื่องไม่ตอบ/);
+  assert.match(detail, /\(paused\)/);
+  assert.doesNotMatch(detail, /127\.0\.0\.1|No connection|comfyui unreachable/);
+  assert.equal(lastErrorSaysAway(detail), false);
+
+  const badStatus = classifyCommunityProbe({ status: 503, body: { ready: false, stage: 'comfyui HTTP 500' } });
+  assert.ok(badStatus.next === 'warming' && badStatus.stage === 'paused');
+  assert.match((badStatus as { detail: string }).detail, /HTTP 500/);
+
+  // The same words on a submit are the same "not now".
+  assert.deepEqual(
+    parseNodeRefusal(503, JSON.stringify({ ready: false, stage: 'comfyui unreachable', detail: 'refused (127.0.0.1:8188)' })),
+    { stage: 'paused', reason: RUNTIME_UNREACHABLE_ERROR, status: 503 }
+  );
+});
+
+test('a stage this build has no label for is named once in the worker row, not twice', () => {
+  assert.equal(stageTag('banana'), 'เครื่องยังไม่พร้อม (banana)');
+  assert.equal(stageTag('paused'), `${stageLabel('paused')} (paused)`);
+  const odd = classifyCommunityProbe({ status: 503, body: { stage: 'banana', reason: 'ทดสอบ' } });
+  assert.equal((odd as { detail: string }).detail, 'เครื่องยังไม่พร้อม (banana): ทดสอบ');
+  // A stage that merely starts with the legacy words is not the legacy stage.
+  const lookalike = classifyCommunityProbe({ status: 503, body: { stage: 'comfyui unreachable-ish' } });
+  assert.ok(lookalike.next === 'warming' && lookalike.stage === 'comfyui unreachable-ish');
 });
 
 test('a stage-503 requeues the job without spending an attempt and parks the node', () => {

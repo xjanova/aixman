@@ -20,7 +20,7 @@ import {
   readAvoidList,
   readCommunityMeta,
   slowLaneOpen,
-  stageLabel,
+  stageTag,
   withAvoided,
 } from '@/lib/gpu/community-dispatch';
 import { isCommunitySafe, readContentTier, type ContentTier } from '@/lib/safety/content-tier';
@@ -724,7 +724,7 @@ export class GpuQueue {
       where: { id: worker.id, status: 'busy', terminatedAt: null },
       data:
         workerStatus === 'warming'
-          ? { status: 'warming', lastError: `${stageLabel(stage)} (${stage})`.slice(0, 1000) }
+          ? { status: 'warming', lastError: stageTag(stage).slice(0, 1000) }
           : { status: 'ready' },
     });
     console.log(

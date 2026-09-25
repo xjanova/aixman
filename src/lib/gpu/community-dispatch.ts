@@ -168,6 +168,34 @@ export function stageLabel(stage: string): string {
   return STAGE_LABEL[stage] ?? `เครื่องยังไม่พร้อม (${stage})`;
 }
 
+/**
+ * A stage as a worker's lastError says it: `<label> (<stage>)`. A stage this
+ * build has no label for already carries itself in the fallback label, and
+ * used to be written twice: "เครื่องยังไม่พร้อม (x) (x)".
+ */
+export function stageTag(stage: string): string {
+  return Object.hasOwn(STAGE_LABEL, stage) ? `${STAGE_LABEL[stage]} (${stage})` : stageLabel(stage);
+}
+
+/**
+ * What clients from before the stage list (every v0.1.x build) answer on
+ * /aixman/ready when their own ComfyUI does not answer: `comfyui unreachable`
+ * (nothing listening) or `comfyui HTTP <code>`, with the .NET exception — in
+ * English, naming the owner's local port — as `detail`. A current node says
+ * stage `paused` with a Thai reason at the same moment. The old words are read
+ * as that: every old node whose owner had closed ComfyUI showed on the owner's
+ * page as "เครื่องยังไม่พร้อม (comfyui unreachable) (comfyui unreachable): No
+ * connection could be made because the target machine actively refused it.
+ * (127.0.0.1:8188)".
+ */
+const LEGACY_RUNTIME_STAGE = /^comfyui (?:unreachable|http (\d{3}))$/i;
+
+/** The legacy "ComfyUI is down" stage read as RUNTIME_UNREACHABLE_STAGE, and the HTTP code if it named one; null otherwise. */
+function legacyRuntimeStage(stage: string): { code: string | null } | null {
+  const match = LEGACY_RUNTIME_STAGE.exec(stage);
+  return match ? { code: match[1] ?? null } : null;
+}
+
 export interface NodeRefusal {
   stage: string;
   reason?: string;
@@ -210,6 +238,10 @@ export function parseNodeRefusal(status: number, body: string): NodeRefusal | nu
   const { stage, reason, detail, error } = parsed as { stage?: unknown; reason?: unknown; detail?: unknown; error?: unknown };
   if (typeof stage !== 'string' || stage.trim() === '') {
     return status === 503 && error === RELAY_BUSY_ERROR ? { stage: RELAY_BUSY_STAGE, reason: RELAY_BUSY_ERROR, status } : null;
+  }
+  if (legacyRuntimeStage(stage.trim())) {
+    // An old node's own ComfyUI is down (see LEGACY_RUNTIME_STAGE); its detail is its text, not carried.
+    return { stage: RUNTIME_UNREACHABLE_STAGE, reason: RUNTIME_UNREACHABLE_ERROR, status };
   }
   const why = typeof reason === 'string' ? reason : typeof detail === 'string' ? detail : undefined;
   return { stage: stage.trim().slice(0, 40), reason: why?.slice(0, 200), status };
@@ -414,8 +446,16 @@ export function classifyCommunityProbe(result: ProbeResult): ProbeVerdict {
 
   if (typeof body.stage === 'string' && body.stage.trim() !== '') {
     const stage = body.stage.trim().slice(0, 40);
+    const legacy = legacyRuntimeStage(stage);
+    if (legacy) {
+      return {
+        next: 'warming',
+        stage: RUNTIME_UNREACHABLE_STAGE,
+        detail: `${stageTag(RUNTIME_UNREACHABLE_STAGE)}: ComfyUI บนเครื่องไม่ตอบ${legacy.code ? ` — HTTP ${legacy.code}` : ''}`,
+      };
+    }
     const why = typeof body.reason === 'string' ? body.reason : typeof body.detail === 'string' ? body.detail : '';
-    return { next: 'warming', stage, detail: `${stageLabel(stage)} (${stage})${why ? `: ${why}` : ''}`.slice(0, 300) };
+    return { next: 'warming', stage, detail: `${stageTag(stage)}${why ? `: ${why}` : ''}`.slice(0, 300) };
   }
   // The relay pushing back for itself never reached the node, so the node is
   // not blamed for it (and its cached schema is kept — transitionAfterProbe).
