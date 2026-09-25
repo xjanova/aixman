@@ -48,6 +48,20 @@ jobs:
           fi
           echo "Build completed successfully"
 
+      # The unit suites (npm test: every src/**/__tests__/*.test.mts under
+      # plain `node --test`) need Node 22.7+ for --experimental-transform-types.
+      # The build above keeps the Node it has always used; the same
+      # node_modules serve both (sharp and Prisma are ABI-stable across them).
+      # No database: the suites stub it. A failing suite fails CI, and
+      # auto-deploy.yml only deploys a run that succeeded.
+      - name: Setup Node.js for tests
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Run tests
+        run: npm test
+
   # Auto-release when all checks pass on main branch
   auto-release:
     name: Auto Release
