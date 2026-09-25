@@ -13,6 +13,10 @@ import { S3Client, PutObjectCommand, DeleteObjectsCommand } from '@aws-sdk/clien
  *   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET, R2_PUBLIC_URL
  * R2_PUBLIC_URL is the bucket's public base (r2.dev URL or a custom domain).
  *
+ * Optional: R2_ENDPOINT — another S3-compatible server instead of Cloudflare's
+ * (see endpointConfig). R2_ACCOUNT_ID is still required, so a half-configured
+ * server never looks configured.
+ *
  * Optional: R2_KEY_PREFIX — a folder this app owns inside a *shared* bucket
  * (production shares Thaiprompt's `fortune-voice`). Every key written gets it,
  * and only keys under it are ever treated as ours. That second half is the one
@@ -39,12 +43,24 @@ export function isStorageConfigured(): boolean {
   );
 }
 
+/**
+ * Where the S3 API is. Cloudflare's, from the account id, unless R2_ENDPOINT
+ * names another S3-compatible server — a local stand-in for the end-to-end
+ * sandbox, or staging's own bucket — so that no test has to write to the
+ * production bucket to see a render delivered. Such a server has no
+ * per-bucket hostnames, so it is addressed path-style.
+ */
+function endpointConfig(): { endpoint: string; forcePathStyle?: true } {
+  const custom = process.env.R2_ENDPOINT?.trim().replace(/\/+$/, '');
+  if (custom) return { endpoint: custom, forcePathStyle: true };
+  return { endpoint: `https://${process.env.R2_ACCOUNT_ID!}.r2.cloudflarestorage.com` };
+}
+
 function getClient(): S3Client {
   if (cachedClient) return cachedClient;
-  const accountId = process.env.R2_ACCOUNT_ID!;
   cachedClient = new S3Client({
     region: 'auto',
-    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    ...endpointConfig(),
     credentials: {
       accessKeyId: process.env.R2_ACCESS_KEY_ID!,
       secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
