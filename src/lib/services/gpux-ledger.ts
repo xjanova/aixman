@@ -18,11 +18,13 @@
  * fails is picked up by `sweepMissingEarnings` for GPUXMINE_EARNINGS_SWEEP_DAYS
  * (default 30), and an admin is told before any job leaves that window unpaid.
  *
- * Deploy order: XMAN Studio's 2026_09_25_100000 and 2026_09_25_200000
- * migrations (gpu_nodes / gpu_job_earnings columns) must run before this build
- * serves community jobs, or at the latest within the sweep window of it. Until
- * they run every write fails and alerts; the sweep writes those jobs once the
- * columns exist, as long as they are still inside the window.
+ * Deploy order: deploy aixman first, then XMAN Studio (code + `php artisan
+ * migrate` for 2026_09_25_100000…300000, the gpu_nodes / gpu_job_earnings
+ * columns) in the same maintenance window. Until XMAN Studio migrates, every
+ * write fails with a `gpux-earning` alert, and the sweep backfills those jobs
+ * once the columns exist, within GPUXMINE_EARNINGS_SWEEP_DAYS (30). Do not
+ * deploy XMAN Studio before aixman: its first sync pushes every node to the
+ * old aixman, which flips busy rows to warming (db/migrations/README.md).
  *
  * Every amount is integer satang; the THB-per-credit rate is stored to six
  * decimals and the settlement is computed from that stored figure, so the row
@@ -56,8 +58,9 @@ export const LEDGER_WINDOW_DAYS = 30;
 
 /**
  * How far back the sweep looks for unwritten earnings by default. Long enough
- * that XMAN Studio's migrations landing a few days after this build (the
- * deploy order above, broken) still pays every job delivered in between.
+ * that XMAN Studio's migrations landing days after this build (the deploy
+ * order above, with its second half left late) still pay every job delivered
+ * in between.
  */
 export const SWEEP_WINDOW_DAYS = 30;
 /** The admin health check's "missing" count looks back this far. */

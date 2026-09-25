@@ -305,6 +305,11 @@ assessment). Rules that must not regress (`src/lib/gpu/community-dispatch.ts`,
   shuffles each lane. A node's "not now"
   (503 with a stage, 409 busy — C5) requeues **without spending an attempt**;
   any other failure sends the retry elsewhere (`ai_gpu_jobs.avoid_worker_ids`).
+  The relay's own pushback (503 `{error:'relay-busy'}`, any 429 — stage
+  `relay-busy`) never reached the node: requeued without an attempt, the node
+  goes straight back to `ready`, not on the avoid list — parked `warming` only
+  after `RELAY_PUSHBACK_PARK_AFTER` (3) in a row without a submit getting
+  through.
 - A push never downgrades `ready`/`busy` while the node is eligible and online,
   never changes a busy node's model, sets `rentedAt=now` on revival, and never
   revives `metadata.adminRetired` (admin → เครื่องชุมชน → ปลดเครื่อง / คืนสถานะ).
@@ -359,8 +364,12 @@ assessment). Rules that must not regress (`src/lib/gpu/community-dispatch.ts`,
   be written for (owner known, generation exists; decided in SQL, not process
   memory), and not at all while no credit package prices a credit. Jobs 24 h
   from leaving the window unwritten raise `gpux-earning-expiring` (critical).
-  **Deploy order:** xmanstudio's `2026_09_25_100000/200000` migrations must run
-  before (or within the sweep window of) this build serving community jobs.
+  **Deploy order:** aixman first, then xmanstudio (code + its
+  `2026_09_25_100000…300000` migrations) in the same window — never
+  xmanstudio first: its first sync pushes every node, and the aixman on
+  `main` flips busy rows to warming. Until xmanstudio migrates, earning writes
+  fail with `gpux-earning` and the sweep backfills them (see
+  `db/migrations/README.md`).
   A claim while the ledger cannot be read is stamped paid (100% share: free),
   never decided from empty sums. The money is `gpux-settlement.ts settleJob` on what the customer was
   actually charged (`creditsUsed − creditsRefunded`) at `pricingBasis()`

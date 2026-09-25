@@ -31,13 +31,27 @@ would be unsafe (e.g. would drop legacy tables that still hold data).
   the code that reads the columns starts. `gpu_job_earnings` / `gpu_nodes`
   themselves belong to xmanstudio's migrations.
 
-  **Deploy order (money):** xmanstudio's `2026_09_25_100000` (gpu_nodes) and
-  `2026_09_25_200000` (gpu_job_earnings) migrations must run **before** this
-  aixman build serves community (GPUxMINE) jobs — or at the latest within
-  `GPUXMINE_EARNINGS_SWEEP_DAYS` (default 30) of it. Until they run, every
-  earning write fails and raises a `gpux-earning` alert; the sweep writes
-  those jobs once the columns exist, but only jobs still inside the window.
-  A job about to leave the window with no row raises a critical
-  `gpux-earning-expiring` alert naming it. Past the window it is never
-  written, and its owner is never paid — so do not ship aixman first and
-  leave xmanstudio for later.
+  **Deploy order (money):** deploy **aixman first**, then xmanstudio (its code
+  plus `php artisan migrate` for `2026_09_25_100000` … `2026_09_25_300000`,
+  the `gpu_nodes` and `gpu_job_earnings` columns) in the same maintenance
+  window. The GpuXmine relay can go before or after either (its RELAY-DEPLOY
+  runbook: relay → aixman → xmanstudio).
+
+  Why aixman goes first: those migrations leave every `gpu_nodes` row with
+  `dispatch_fingerprint = NULL`, so xmanstudio's first sync pushes every node
+  to aixman once. The aixman on `main` rewrites a node that is rendering to
+  `warming` on every push, and its rental reaper then ends warming rows past
+  the warm-up timeout (for a home PC that clock started at pairing) — the
+  render is cut off mid-way and its job requeued, across the whole pool at
+  once. This build never downgrades a `ready`/`busy` row that is still
+  eligible and online (contract C1). **Do not deploy xmanstudio before
+  aixman.**
+
+  Between the two deploys, this build cannot write earnings yet: every
+  `gpu_job_earnings` write fails and raises a `gpux-earning` alert, and the
+  sweep writes those jobs once the columns exist, as long as they were
+  delivered within `GPUXMINE_EARNINGS_SWEEP_DAYS` (default 30). Nothing is
+  lost if xmanstudio follows in the same window. If it is left for weeks, a
+  job about to leave the window with no row raises a critical
+  `gpux-earning-expiring` alert naming it; past the window it is never
+  written and its owner is never paid.
