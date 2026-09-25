@@ -29,5 +29,15 @@ would be unsafe (e.g. would drop legacy tables that still hold data).
   and `review_reason`: stamped when a community (GPUxMINE) machine claims a job,
   read when its `gpu_job_earnings` row is written after delivery. Apply before
   the code that reads the columns starts. `gpu_job_earnings` / `gpu_nodes`
-  themselves belong to xmanstudio's migrations, which must run first for the
-  earnings writer to succeed (until then it alerts and the sweep retries).
+  themselves belong to xmanstudio's migrations.
+
+  **Deploy order (money):** xmanstudio's `2026_09_25_100000` (gpu_nodes) and
+  `2026_09_25_200000` (gpu_job_earnings) migrations must run **before** this
+  aixman build serves community (GPUxMINE) jobs — or at the latest within
+  `GPUXMINE_EARNINGS_SWEEP_DAYS` (default 30) of it. Until they run, every
+  earning write fails and raises a `gpux-earning` alert; the sweep writes
+  those jobs once the columns exist, but only jobs still inside the window.
+  A job about to leave the window with no row raises a critical
+  `gpux-earning-expiring` alert naming it. Past the window it is never
+  written, and its owner is never paid — so do not ship aixman first and
+  leave xmanstudio for later.

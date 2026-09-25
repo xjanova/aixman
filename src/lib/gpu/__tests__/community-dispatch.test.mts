@@ -172,10 +172,35 @@ test('a failure that would end a rented machine only takes a home node out of ro
 });
 
 test('only a relay that refuses the token ends the row', () => {
-  assert.equal(classifyCommunityProbe({ status: 401, body: { error: 'bad worker token' } }).next, 'terminated');
-  assert.equal(classifyCommunityProbe({ status: 403, body: { error: 'disabled' } }).next, 'terminated');
+  const dead = classifyCommunityProbe({ status: 401, body: { error: 'bad worker token' } });
+  assert.equal(dead.next, 'terminated');
+  assert.equal(dead.next === 'terminated' && dead.rejectToken, true, 'a 401 is a dead token: remembered as refused');
+
+  // A 403 this build does not know: out, but the token is not written off.
+  const unknown = classifyCommunityProbe({ status: 403, body: { error: 'disabled' } });
+  assert.equal(unknown.next, 'terminated');
+  assert.equal(unknown.next === 'terminated' && unknown.rejectToken, false);
+
   // Deny-by-default on the tunnel is our configuration, not the node's fault.
   assert.equal(classifyCommunityProbe({ status: 403, body: { error: 'path-not-allowed' } }).next, 'warming');
+});
+
+test('a node the relay has disabled for now waits in the pool for its enable, token intact', () => {
+  // Contract C4 disable/enable: an XMAN Studio suspension whose push to us
+  // failed, or an operator's switch. Terminating it (and writing off the
+  // token) left the node dead after the enable.
+  const verdict = classifyCommunityProbe({ status: 403, body: { error: 'worker-disabled' } });
+  assert.equal(verdict.next, 'warming');
+  assert.ok(verdict.next === 'warming' && verdict.stage === 'disabled');
+  assert.match((verdict as { detail: string }).detail, /worker-disabled/);
+  assert.equal(transitionAfterProbe('ready', verdict).status, 'warming');
+
+  // The same answer to a submit or a download is a "not now": the job goes
+  // back to the queue without spending an attempt.
+  assert.deepEqual(parseNodeRefusal(403, '{"error":"worker-disabled"}'), { stage: 'disabled', status: 403 });
+  assert.equal(parseNodeRefusal(403, '{"error":"path-not-allowed"}'), null);
+  assert.equal(parseNodeRefusal(403, 'Forbidden'), null);
+  assert.equal(planSubmitFailure(new NodeRefusedError({ stage: 'disabled', status: 403 }, 'the prompt'), true).requeueWithoutAttempt, true);
 });
 
 test('a node leaving rotation drops its cached schema — its owner may have changed the checkpoints', () => {

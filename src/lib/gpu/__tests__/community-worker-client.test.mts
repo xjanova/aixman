@@ -130,3 +130,100 @@ test('a finished render on a node that dropped offline is a refusal, so the queu
   await assert.rejects(community.download(`${base}/view?filename=a.png&type=output`), (error: unknown) => isNodeRefusal(error));
   await assert.rejects(rented.download(`${base}/view?filename=a.png&type=output`), /Failed to download render \(HTTP 503\)/);
 });
+
+// ---------------------------------------------------------------------------
+// A modified node cannot fill the server's memory
+// ---------------------------------------------------------------------------
+
+const { readCapped } = await import('@/lib/gpu/worker-client');
+const { isRejectedOutput } = await import('@/lib/gpu/community-plausibility');
+
+const MB = 1_048_576;
+
+/** A body that never ends, and how much of it was ever pulled. */
+function endless(chunk = MB): { stream: ReadableStream<Uint8Array>; pulled: () => number } {
+  let pulled = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulled += chunk;
+      controller.enqueue(new Uint8Array(chunk));
+    },
+  });
+  return { stream, pulled: () => pulled };
+}
+
+test('a node that says up front it is sending gigabytes is refused before a byte is read', async () => {
+  const body = endless();
+  scripted({
+    'GET /view': () =>
+      new Response(body.stream, { status: 200, headers: { 'Content-Type': 'image/png', 'Content-Length': String(2 * 1024 * MB) } }),
+  });
+  const base = endpoint();
+  const client = new WorkerClient(base, PROFILE, 'token', 'sdxl-community', null, { community: true });
+
+  // No limit passed: a community client still has its model's (image: 64 MB).
+  await assert.rejects(client.download(`${base}/view?filename=a.png&type=output`), (error: unknown) => {
+    assert.equal(isRejectedOutput(error), true);
+    assert.match((error as Error).message, /offered 2048 MB/);
+    return true;
+  });
+  assert.ok(body.pulled() <= 2 * MB, `pulled ${body.pulled() / MB} MB`);
+});
+
+test('an endless stream is cut where it crosses the limit, not after the node gives up', async () => {
+  const body = endless();
+  scripted({ 'GET /view': () => new Response(body.stream, { status: 200, headers: { 'Content-Type': 'image/png' } }) });
+  const base = endpoint();
+  const client = new WorkerClient(base, PROFILE, 'token', 'sdxl-community', null, { community: true });
+
+  await assert.rejects(client.download(`${base}/view?filename=a.png&type=output`, { maxBytes: 4 * MB }), (error: unknown) => {
+    assert.equal(isRejectedOutput(error), true);
+    assert.match((error as Error).message, /more than 4 MB/);
+    return true;
+  });
+  assert.ok(body.pulled() <= 8 * MB, `pulled ${body.pulled() / MB} MB for a 4 MB limit`);
+});
+
+test('a render within the limit arrives whole, and a rented worker has no limit unless asked', async () => {
+  const png = new Uint8Array(3 * MB).fill(7);
+  scripted({ 'GET /view': () => new Response(png, { status: 200, headers: { 'Content-Type': 'image/png' } }) });
+  const base = endpoint();
+  const community = new WorkerClient(base, PROFILE, 'token', 'sdxl-community', null, { community: true });
+  const rented = new WorkerClient(base, PROFILE, 'token', 'sdxl-community');
+
+  assert.equal((await community.download(`${base}/view?filename=a.png`, { maxBytes: 3 * MB })).buffer.byteLength, 3 * MB);
+  assert.equal((await rented.download(`${base}/view?filename=a.png`)).buffer.byteLength, 3 * MB);
+});
+
+test('a history answer of megabytes is not a render report: the job moves on', async () => {
+  const body = endless();
+  scripted({ 'GET /history/p-1': () => new Response(body.stream, { status: 200, headers: { 'Content-Type': 'application/json' } }) });
+  const client = new WorkerClient(endpoint(), PROFILE, 'token', 'sdxl-community', null, { community: true });
+
+  const outcome = await client.poll('p-1');
+  assert.equal(outcome.state, 'failed');
+  assert.match((outcome as { error: string }).error, /larger than 8 MB/);
+  assert.ok(body.pulled() <= 12 * MB);
+});
+
+test('a node the relay has disabled refuses /prompt as a "not now", so no attempt is spent', async () => {
+  scripted({
+    'GET /object_info': () => json(200, baseline.classes),
+    'POST /prompt': () => json(403, { error: 'worker-disabled' }),
+  });
+  const client = new WorkerClient(endpoint(), PROFILE, 'token', 'sdxl-community', null, { community: true });
+
+  await assert.rejects(client.submit(JOB), (error: unknown) => isNodeRefusal(error) && (error as { stage: string }).stage === 'disabled');
+});
+
+test('readCapped reads up to the limit, says there was more, and gives up on a body that stalls', async () => {
+  const small = await readCapped(new Response('{"ok":true}'), 1024, 1_000);
+  assert.deepEqual(small, { text: '{"ok":true}', overflow: false });
+
+  const big = await readCapped(new Response(endless(1024).stream), 4096, 1_000);
+  assert.equal(big.overflow, true);
+  assert.equal(big.text.length, 4096);
+
+  const stalled = new ReadableStream<Uint8Array>({ pull: () => new Promise(() => {}) });
+  await assert.rejects(readCapped(new Response(stalled), 1024, 50), /did not finish within/);
+});

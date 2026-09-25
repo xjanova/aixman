@@ -318,12 +318,30 @@ assessment). Rules that must not regress (`src/lib/gpu/community-dispatch.ts`,
   `OrderRefusedError` (422). A community row is only ever handed
   `general` + no upload — the claim filters on the columns and re-checks the
   payload. Lexicon, deliberately one-sided: a false "adult" only keeps a job
-  off home PCs. Sexual words in the *negative* prompt never make an order adult.
+  off home PCs. Sexual words in the *negative* prompt never make an order adult;
+  clothes in it do — the generic words *and every garment by name* (shirt,
+  pants, dress, bikini, towel, เสื้อ, กางเกง …), since SDXL follows it.
 - **Community-only models (D5, `pools: ['community']`).** Never rented
   (`addCapacity`, pre-warm, test rental all refuse). The order is refused
   before charging when it is not community-safe or no community row for the
-  model is ready/busy/warming (and not held); a queued job no node takes is
-  refunded after `GPUXMINE_COMMUNITY_QUEUE_GRACE_MIN` (default 5).
+  model is ready/busy/warming (and not held — a warming PC that XMAN Studio or
+  the relay says is offline, and that served nothing within the grace, does
+  not count); a queued job no node takes is refunded after
+  `GPUXMINE_COMMUNITY_QUEUE_GRACE_MIN` (default 5), counted from when its pool
+  last had a ready/busy machine (`communityLastServingAt`), not from the order.
+- **A modified node cannot hurt the server.** Every read of a community node's
+  answer is capped in size and time (`worker-client.ts readCapped`,
+  `COMMUNITY_BODY_LIMITS`); its files are fetched one at a time, at most
+  `MAX_COMMUNITY_OUTPUTS`, within `MAX_COMMUNITY_OUTPUT_BYTES` per job (checked
+  on Content-Length and on every chunk). From an image model, a flat, tiny or
+  sub-1 KB picture is *rejected* (job moves to another node), not delivered.
+- **Retired stays retired.** Worker status writes after an `await` are guarded
+  (`updateMany … status: 'busy', terminatedAt: null`) and every "ready"/"serving"
+  query filters `terminatedAt: null`, so a retire or suspend landing during a
+  submit or a download is never undone. The relay's 403 `worker-disabled` is a
+  reversible "not now" (warming / NodeRefusedError), never a dead token; only a
+  401 records `metadata.rejectedTokenHash`, and a 200 probe or an admin restore
+  clears it.
 - **Purge (C5).** After the R2 copy and the delivery transaction, aixman calls
   `POST /aixman/purge {prompt_id}` then `POST /history {delete:[id]}` on the
   node (purge first — the node finds the files through its history). Never
@@ -336,8 +354,15 @@ assessment). Rules that must not regress (`src/lib/gpu/community-dispatch.ts`,
   transaction, never inside it: `INSERT … ON DUPLICATE KEY UPDATE id = id` on
   `job_id = 'aix-gpu-job-' + ai_gpu_jobs.id` (the node's `prompt_id` has its
   own column). Never throws into delivery; failures alert (`gpux-earning`) and
-  the tick's sweep retries completed community jobs of the last 7 days with no
-  row. The money is `gpux-settlement.ts settleJob` on what the customer was
+  the tick's sweep retries completed community jobs of the last
+  `GPUXMINE_EARNINGS_SWEEP_DAYS` (default 30) with no row — only jobs a row can
+  be written for (owner known, generation exists; decided in SQL, not process
+  memory), and not at all while no credit package prices a credit. Jobs 24 h
+  from leaving the window unwritten raise `gpux-earning-expiring` (critical).
+  **Deploy order:** xmanstudio's `2026_09_25_100000/200000` migrations must run
+  before (or within the sweep window of) this build serving community jobs.
+  A claim while the ledger cannot be read is stamped paid (100% share: free),
+  never decided from empty sums. The money is `gpux-settlement.ts settleJob` on what the customer was
   actually charged (`creditsUsed − creditsRefunded`) at `pricingBasis()`
   stored `toFixed(6)`; integer satang, half-up, no float. Owner = `gpu_nodes`
   by `worker_id` (soft-deleted too) → the job's claim-time `owner_user_id` →

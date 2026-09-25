@@ -15,7 +15,14 @@
  * unique, and the insert is `ON DUPLICATE KEY UPDATE id = id`, so a second
  * tick, an overlapping tick or the sweep can never write a job twice or
  * rewind a row XMAN Studio has already cleared, paid or voided. A write that
- * fails is picked up by `sweepMissingEarnings` for a week.
+ * fails is picked up by `sweepMissingEarnings` for GPUXMINE_EARNINGS_SWEEP_DAYS
+ * (default 30), and an admin is told before any job leaves that window unpaid.
+ *
+ * Deploy order: XMAN Studio's 2026_09_25_100000 and 2026_09_25_200000
+ * migrations (gpu_nodes / gpu_job_earnings columns) must run before this build
+ * serves community jobs, or at the latest within the sweep window of it. Until
+ * they run every write fails and alerts; the sweep writes those jobs once the
+ * columns exist, as long as they are still inside the window.
  *
  * Every amount is integer satang; the THB-per-credit rate is stored to six
  * decimals and the settlement is computed from that stored figure, so the row
@@ -47,8 +54,21 @@ export function earningJobId(aiGpuJobId: number): string {
 /** Free share and cooperation look back this far. */
 export const LEDGER_WINDOW_DAYS = 30;
 
-/** The sweep looks for unwritten earnings this far back. */
-export const SWEEP_WINDOW_DAYS = 7;
+/**
+ * How far back the sweep looks for unwritten earnings by default. Long enough
+ * that XMAN Studio's migrations landing a few days after this build (the
+ * deploy order above, broken) still pays every job delivered in between.
+ */
+export const SWEEP_WINDOW_DAYS = 30;
+/** The admin health check's "missing" count looks back this far. */
+export const HEALTH_MISSING_DAYS = 7;
+
+/** GPUXMINE_EARNINGS_SWEEP_DAYS, default SWEEP_WINDOW_DAYS, 1 to 90. */
+export function sweepWindowDays(env: Record<string, string | undefined> = process.env): number {
+  const days = Number(env.GPUXMINE_EARNINGS_SWEEP_DAYS);
+  return Number.isFinite(days) && days >= 1 ? Math.min(90, Math.floor(days)) : SWEEP_WINDOW_DAYS;
+}
+
 /** Left to the delivery path this long, so the sweep never races it. */
 export const SWEEP_AFTER_MS = 2 * 60_000;
 /** At most this many per tick. */
@@ -56,15 +76,20 @@ export const SWEEP_BATCH = 20;
 /** One job is tried again at most this often, so one that cannot be written does not hold the batch. */
 export const SWEEP_RETRY_EVERY_MS = 10 * 60_000;
 /**
- * A job skipped for a reason that will not fix itself soon (no owner known, no
- * credit price) waits this long instead, so a pile of them — an admin's own
- * enlisted machine has no owner — cannot fill every batch and starve the jobs
- * behind them.
+ * A job skipped for a reason the query itself could not see waits this long
+ * instead. The lasting reasons — no owner anywhere (an admin's own enlisted
+ * machine), no generation row — are left out by the query, so a pile of them
+ * cannot fill every batch whatever this process remembers; and no credit
+ * price stops the whole sweep before it starts. This is only a backstop.
  */
 export const SWEEP_RETRY_SKIPPED_MS = 6 * 3_600_000;
+/** Jobs this close to leaving the sweep window with no row are named to an admin. */
+export const SWEEP_EXPIRY_WARN_MS = 24 * 3_600_000;
 
 /** The ledger's reading of the 30-day sums is reused for this long — one read per tick. */
 export const LEDGER_CACHE_MS = 60_000;
+/** A read that failed is tried again this soon; claims meanwhile are paid (claimStampFor). */
+export const LEDGER_FAILED_CACHE_MS = 15_000;
 
 /** gpu_job_earnings.thb_per_credit is DECIMAL(12,6). */
 export const THB_PER_CREDIT_DECIMALS = 6;
@@ -417,7 +442,7 @@ export async function recordCommunityEarning(jobId: number, db: LedgerDb = prism
 /**
  * `recordCommunityEarning` for callers that must not fail: the delivery path
  * and the sweep. Never throws. Anything that leaves money unrecorded is an
- * alert; the sweep tries a failed job again for SWEEP_WINDOW_DAYS.
+ * alert; the sweep tries a failed job again for sweepWindowDays().
  */
 export async function recordEarningSafely(
   jobId: number,
@@ -441,7 +466,7 @@ export async function recordEarningSafely(
         type: 'gpux-earning',
         key: outcome.reason.replace(/\d+/g, '#').slice(0, 80),
         level: 'warning',
-        title: 'บันทึกรายได้ของเครื่องชุมชนไม่ได้ — ระบบจะลองใหม่เองภายใน 7 วัน',
+        title: `บันทึกรายได้ของเครื่องชุมชนไม่ได้ — ระบบจะลองใหม่เองภายใน ${sweepWindowDays()} วัน`,
         lines: [`งาน GPU #${jobId}: ${outcome.reason}`, 'เจ้าของเครื่องยังไม่ได้รับรายได้ของงานนี้จนกว่าจะแก้สาเหตุ'],
       });
     }
@@ -453,7 +478,7 @@ export async function recordEarningSafely(
       type: 'gpux-earning',
       key: 'write-failed',
       level: 'warning',
-      title: 'บันทึกรายได้ของเครื่องชุมชนไม่ได้ — ระบบจะลองใหม่เองภายใน 7 วัน',
+      title: `บันทึกรายได้ของเครื่องชุมชนไม่ได้ — ระบบจะลองใหม่เองภายใน ${sweepWindowDays()} วัน`,
       lines: [
         `งาน GPU #${jobId}: ${message.slice(0, 200)}`,
         'ถ้าเป็นเพราะคอลัมน์ไม่ครบ: ต้องรัน migration ของ XMAN Studio (gpu_job_earnings 2026_09_25_*) ก่อน',
@@ -464,28 +489,41 @@ export async function recordEarningSafely(
 }
 
 /**
- * FROM … WHERE for completed community jobs of the sweep window that have no
- * earning row, by either key (ai_gpu_job_id, or job_id for a row some other
- * writer made without it).
+ * FROM … WHERE for completed community jobs delivered in [fromMs, toMs] that
+ * have no earning row, by either key (ai_gpu_job_id, or job_id for a row some
+ * other writer made without it).
+ *
+ * `writableOnly`: only jobs a row can be written for — an owner is known the
+ * same three ways resolveOwner looks (gpu_nodes by worker_id, soft-deleted
+ * rows too; the owner stamped at claim; the one XMAN Studio pushed) and the
+ * generation still exists. The sweep asks for these, so jobs that can never
+ * be written (an admin's own enlisted machine has no owner) do not fill its
+ * batches — decided by the database on every run, never by what one process
+ * remembers. Once an owner turns up for them, they are simply found.
  */
-function missingEarningsFrom(now: number): Prisma.Sql {
-  const from = sqlUtc(new Date(now - SWEEP_WINDOW_DAYS * 86_400_000));
-  const to = sqlUtc(new Date(now - SWEEP_AFTER_MS));
+function missingEarningsFrom(fromMs: number, toMs: number, { writableOnly = false }: { writableOnly?: boolean } = {}): Prisma.Sql {
+  const writable = writableOnly
+    ? Prisma.sql`
+      AND (j.owner_user_id > 0
+        OR JSON_UNQUOTE(JSON_EXTRACT(w.metadata, '$.ownerUserId')) REGEXP '^[1-9][0-9]*$'
+        OR EXISTS (SELECT 1 FROM gpu_nodes n WHERE n.worker_id = w.external_id AND n.user_id > 0))
+      AND EXISTS (SELECT 1 FROM ai_generations g WHERE g.id = j.generation_id)`
+    : Prisma.empty;
   return Prisma.sql`FROM ai_gpu_jobs j
     JOIN ai_gpu_workers w ON w.id = j.worker_id
     LEFT JOIN gpu_job_earnings e1 ON e1.ai_gpu_job_id = j.id
     LEFT JOIN gpu_job_earnings e2 ON e2.job_id = CONCAT(${EARNING_JOB_PREFIX}, j.id)
     WHERE j.status = 'completed'
-      AND j.completed_at >= ${from} AND j.completed_at <= ${to}
+      AND j.completed_at >= ${sqlUtc(new Date(fromMs))} AND j.completed_at <= ${sqlUtc(new Date(toMs))}
       AND w.provider_slug IN (${Prisma.join([...COMMUNITY_PROVIDER_SLUGS])})
-      AND e1.id IS NULL AND e2.id IS NULL`;
+      AND e1.id IS NULL AND e2.id IS NULL${writable}`;
 }
 
 export interface LedgerHealth {
   /** Every column the writer inserts exists (XMAN Studio's 2026_09_25 migration ran). */
   writable: boolean;
   detail?: string;
-  /** Completed community jobs of the last 7 days with no earning row yet. */
+  /** Completed community jobs of the last HEALTH_MISSING_DAYS (7) with no earning row yet. */
   missing7d: number | null;
   /** Last 30 days of rows by status: how many, and the owners' amount in satang. */
   byStatus30d: Record<string, { rows: number; amountSatang: number }>;
@@ -519,7 +557,10 @@ export async function ledgerHealth(now: number = Date.now(), db: LedgerDb = pris
   }
   const health: LedgerHealth = { writable: true, missing7d: null, byStatus30d: {} };
   try {
-    const [counted] = await db.$queryRaw<{ n: number | bigint }[]>`SELECT COUNT(*) AS n ${missingEarningsFrom(now)}`;
+    const [counted] = await db.$queryRaw<{ n: number | bigint }[]>`SELECT COUNT(*) AS n ${missingEarningsFrom(
+      now - HEALTH_MISSING_DAYS * 86_400_000,
+      now - SWEEP_AFTER_MS
+    )}`;
     health.missing7d = Number(counted?.n ?? 0);
     const groups = await db.gpuJobEarning.groupBy({
       by: ['status'],
@@ -540,32 +581,74 @@ export async function ledgerHealth(now: number = Date.now(), db: LedgerDb = pris
 const sweepNextAt = new Map<number, number>();
 
 /**
- * Community jobs delivered in the last week that have no earning row — the
- * write after delivery failed, the process died in between, or XMAN Studio's
- * migration had not run yet. A handful per tick, oldest first; a failed job is
- * tried again after SWEEP_RETRY_EVERY_MS, a skipped one after
- * SWEEP_RETRY_SKIPPED_MS. Returns how many were written.
+ * Community jobs delivered inside the sweep window (sweepWindowDays) that
+ * have no earning row and can have one — the write after delivery failed, the
+ * process died in between, or XMAN Studio's migration had not run yet. A
+ * handful per tick, oldest first (they are nearest to leaving the window); a
+ * failed job is tried again after SWEEP_RETRY_EVERY_MS. Jobs no row can be
+ * written for are left out by the query itself (missingEarningsFrom). With no
+ * credit price to value a job at, nothing can be written and nothing is
+ * tried. Jobs about to leave the window unwritten are named to an admin.
+ * Returns how many were written.
  */
 export async function sweepMissingEarnings(now: number = Date.now(), deps: LedgerDeps = {}): Promise<number> {
   const db = deps.db ?? prisma;
-  const recent: number[] = [];
-  for (const [id, at] of sweepNextAt) {
-    if (now >= at) sweepNextAt.delete(id);
-    else recent.push(id);
-  }
-  const missing = await db.$queryRaw<{ id: number | bigint }[]>`
-    SELECT j.id ${missingEarningsFrom(now)}
-      ${recent.length > 0 ? Prisma.sql`AND j.id NOT IN (${Prisma.join(recent)})` : Prisma.empty}
-    ORDER BY j.completed_at ASC
-    LIMIT ${Prisma.raw(String(SWEEP_BATCH))}`;
+  const alert = deps.alert ?? raiseAlert;
+  const windowMs = sweepWindowDays() * 86_400_000;
+  const from = now - windowMs;
+  const to = now - SWEEP_AFTER_MS;
 
   let written = 0;
-  for (const { id } of missing) {
-    const jobId = Number(id);
-    sweepNextAt.set(jobId, now + SWEEP_RETRY_EVERY_MS);
-    const outcome = await recordEarningSafely(jobId, 'sweep', deps);
-    if (outcome?.status === 'written') written += 1;
-    if (outcome?.status === 'skipped') sweepNextAt.set(jobId, now + SWEEP_RETRY_SKIPPED_MS);
+  if ((await currentThbPerCredit(db)) <= 0) {
+    // Nothing can be valued, so nothing is tried: one alert instead of one per job.
+    alert({
+      type: 'gpux-earning',
+      key: 'no active credit package to value a credit at',
+      level: 'warning',
+      title: 'บันทึกรายได้ของเครื่องชุมชนไม่ได้ — ไม่มีแพ็กเกจเครดิตที่เปิดขาย จึงตีมูลค่างานไม่ได้',
+      lines: ['เปิดแพ็กเกจเครดิตอย่างน้อยหนึ่งแพ็กเกจ แล้วระบบจะบันทึกรายได้ที่ค้างเองในรอบถัดไป'],
+    });
+  } else {
+    const recent: number[] = [];
+    for (const [id, at] of sweepNextAt) {
+      if (now >= at) sweepNextAt.delete(id);
+      else recent.push(id);
+    }
+    const missing = await db.$queryRaw<{ id: number | bigint }[]>`
+      SELECT j.id ${missingEarningsFrom(from, to, { writableOnly: true })}
+        ${recent.length > 0 ? Prisma.sql`AND j.id NOT IN (${Prisma.join(recent)})` : Prisma.empty}
+      ORDER BY j.completed_at ASC
+      LIMIT ${Prisma.raw(String(SWEEP_BATCH))}`;
+
+    for (const { id } of missing) {
+      const jobId = Number(id);
+      sweepNextAt.set(jobId, now + SWEEP_RETRY_EVERY_MS);
+      const outcome = await recordEarningSafely(jobId, 'sweep', deps);
+      if (outcome?.status === 'written') written += 1;
+      if (outcome?.status === 'skipped') sweepNextAt.set(jobId, now + SWEEP_RETRY_SKIPPED_MS);
+    }
+  }
+
+  // Money the sweep is about to stop looking for. Past the window a job is
+  // never written, and nothing else would ever say so.
+  const expiring = await db.$queryRaw<{ id: number | bigint }[]>`
+    SELECT j.id ${missingEarningsFrom(from, Math.min(to, from + SWEEP_EXPIRY_WARN_MS), { writableOnly: true })}
+    ORDER BY j.completed_at ASC
+    LIMIT 10`;
+  if (expiring.length > 0) {
+    const ids = expiring.map(({ id }) => `#${Number(id)}`).join(', ');
+    console.error(`[gpux] earnings for job(s) ${ids} are about to leave the ${sweepWindowDays()}-day sweep window unwritten`);
+    alert({
+      type: 'gpux-earning-expiring',
+      key: 'expiring',
+      level: 'critical',
+      title: `รายได้ของงานเครื่องชุมชนยังไม่ถูกบันทึก และจะหลุดจากรอบตรวจภายใน 24 ชม.`,
+      lines: [
+        `งาน GPU ${ids}${expiring.length >= 10 ? ' (และอาจมีมากกว่านี้)' : ''}`,
+        `เลยจาก ${sweepWindowDays()} วัน ระบบจะไม่บันทึกให้อีก — แก้สาเหตุ (เช่น migration ของ XMAN Studio) หรือขยาย GPUXMINE_EARNINGS_SWEEP_DAYS`,
+      ],
+      cooldownMs: 6 * 3_600_000,
+    });
   }
   return written;
 }
@@ -627,11 +710,13 @@ let loading: Promise<LedgerSnapshot> | null = null;
  * The last LEDGER_WINDOW_DAYS of gpu_job_earnings, summed per node and per
  * owner, read at most once per LEDGER_CACHE_MS — a tick and the fast lane
  * between ticks share one read. Void rows are left out. A ledger that cannot
- * be read (XMAN Studio's migration not applied yet) reads as empty: no node
- * gains or loses priority, and free share falls back to its no-history rule.
+ * be read (XMAN Studio's migration not applied yet, a stall) reads as empty
+ * with `ok: false`, and is tried again after LEDGER_FAILED_CACHE_MS: no node
+ * gains or loses priority, and a claim decides no free share from it
+ * (claimStampFor pays the job).
  */
 export async function ledgerSnapshot(now: number = Date.now(), db: LedgerDb = prisma): Promise<LedgerSnapshot> {
-  if (cached && now - cached.at < LEDGER_CACHE_MS) return cached;
+  if (cached && now - cached.at < (cached.ok ? LEDGER_CACHE_MS : LEDGER_FAILED_CACHE_MS)) return cached;
   if (loading) return loading;
   loading = (async () => {
     try {
@@ -698,12 +783,22 @@ export const RENTED_CLAIM_STAMP: ClaimStamp = { freeShare: false, pro: false, ow
  * the last 30 days against the share its owner chose (freeSharePct, pushed by
  * XMAN Studio) — never by the node. The node's own sums, not its owner's: the
  * share is set per machine.
+ *
+ * `ledgerOk` false: the sums could not be read, and empty sums are not "no
+ * history" — deciding from them stamped every claim of a 60% node free (the
+ * no-history rule) and every claim of a 40% node paid, permanently, for as
+ * long as the read failed. Only a share that needs no history is decided
+ * then: 100% is always free; anything else is paid, and the share catches up
+ * by itself once the ledger reads again (it tracks value given against value
+ * earned, so the paid run is given back as free jobs).
  */
-export function claimStampFor(meta: CommunityMeta, nodeSums: LedgerSums): ClaimStamp {
+export function claimStampFor(meta: CommunityMeta, nodeSums: LedgerSums, ledgerOk = true): ClaimStamp {
   const pct = Number(meta.freeSharePct);
   const targetPercent = Number.isFinite(pct) ? Math.min(100, Math.max(0, Math.round(pct))) : 0;
   return {
-    freeShare: shouldFreeShare({ targetPercent, donatedSatang: nodeSums.donatedSatang, earnedSatang: nodeSums.earnedSatang }),
+    freeShare: ledgerOk
+      ? shouldFreeShare({ targetPercent, donatedSatang: nodeSums.donatedSatang, earnedSatang: nodeSums.earnedSatang })
+      : targetPercent >= 100,
     pro: meta.pro === true,
     ownerUserId: positiveInt(meta.ownerUserId),
   };

@@ -19,10 +19,12 @@ process.env.DATABASE_URL ??= 'mysql://test:test@127.0.0.1:3306/test';
 
 const {
   COMMUNITY_SAFE_JOB,
+  communityLastServingAt,
   communityOrderRefusal,
   communityQueueGraceMs,
   communityRefusalMessage,
   communityRowMayServe,
+  lastErrorSaysAway,
   payloadHasInputMedia,
   pickClaimCandidate,
 } = await import('@/lib/gpu/community-dispatch');
@@ -117,15 +119,67 @@ test('ready, busy and warming machines count; retired, suspended and ineligible 
   });
   assert.equal(communityRowMayServe(row('ready')), true);
   assert.equal(communityRowMayServe(row('busy')), true);
-  // Paused by its owner, or a relay blip: it may be back before the grace ends.
-  assert.equal(communityRowMayServe(row('warming', { eligibility: 'offline' })), true);
+  // Paused by its owner, busy with their own work: it may be back before the grace ends.
+  assert.equal(communityRowMayServe(row('warming')), true);
   assert.equal(communityRowMayServe(row('warming', null)), true);
+  // A ready machine counts whatever XMAN Studio's last sample of the relay said.
+  assert.equal(communityRowMayServe(row('ready', { eligibility: 'offline' })), true);
   assert.equal(communityRowMayServe(row('terminated')), false);
   assert.equal(communityRowMayServe(row('draining')), false);
   assert.equal(communityRowMayServe(row('ready', { eligibility: 'eligible' }, null)), false);
   assert.equal(communityRowMayServe(row('warming', { adminRetired: true })), false);
   assert.equal(communityRowMayServe(row('warming', { suspended: true })), false);
   assert.equal(communityRowMayServe(row('warming', { eligibility: 'no-model', note: 'ไม่มีโมเดลที่รันได้' })), false);
+});
+
+test('a PC switched off for the night is no machine for a new order; one that served moments ago still is', () => {
+  const now = Date.parse('2026-09-25T23:00:00Z');
+  const hoursAgo = (h: number) => new Date(now - h * 3_600_000);
+  const row = (over: Record<string, unknown>) => ({
+    status: 'warming',
+    endpoint: 'https://relay/w/1',
+    metadata: { eligibility: 'eligible' } as unknown,
+    readyAt: hoursAgo(6),
+    lastJobAt: hoursAgo(5),
+    lastError: null as string | null,
+    ...over,
+  });
+
+  // XMAN Studio says the PC is off, and the relay said so on the last probe.
+  const off = row({ metadata: { eligibility: 'offline' }, lastError: 'เครื่องไม่ได้เชื่อมต่อ relay (offline)' });
+  assert.equal(communityRowMayServe(off, now), false);
+  // Either one alone is enough.
+  assert.equal(communityRowMayServe(row({ metadata: { eligibility: 'offline' } }), now), false);
+  assert.equal(communityRowMayServe(row({ lastError: 'เครื่องไม่ได้เชื่อมต่อ relay (offline): agent gone' }), now), false);
+  assert.equal(lastErrorSaysAway('เจ้าของเครื่องพักการแชร์อยู่ (paused)'), false);
+  // Switched off on the relay by an admin: not coming back in a minute either.
+  assert.equal(communityRowMayServe(row({ lastError: 'relay ปิดการรับงานของเครื่องนี้ชั่วคราว (ผู้ดูแลระงับไว้) (disabled) — 403 worker-disabled' }), now), false);
+
+  // A blip: it was rendering two minutes ago.
+  assert.equal(communityRowMayServe({ ...off, lastJobAt: new Date(now - 2 * 60_000) }, now), true);
+  assert.equal(communityRowMayServe({ ...off, readyAt: new Date(now - 60_000) }, now), true);
+
+  // Paused, or busy with the owner's own batch: back any minute.
+  assert.equal(communityRowMayServe(row({ lastError: 'เจ้าของเครื่องพักการแชร์อยู่ (paused)' }), now), true);
+  assert.equal(communityRowMayServe(row({ lastError: 'เครื่องกำลังทำงานอื่นอยู่ (busy)' }), now), true);
+});
+
+test('a community job’s grace runs from when its pool went dark, not from when it was ordered', () => {
+  const start = Date.parse('2026-09-25T10:00:00Z');
+  const rows = [
+    { id: 1, readyAt: new Date(start - 3 * 3_600_000), lastJobAt: new Date(start - 3_600_000) },
+    { id: 2, readyAt: null, lastJobAt: null },
+  ];
+  // Seen busy by this process a minute ago: that is when the pool was last up.
+  const seen = new Map([[1, start + 20 * 60_000]]);
+  assert.equal(communityLastServingAt(rows, seen, [], start), start + 20 * 60_000);
+  // A row the job already failed on is no machine for it.
+  assert.equal(communityLastServingAt(rows, seen, [1], start), start, 'row 2: never seen, so from when the process started');
+  // Never seen by this process at all: its own readyAt/lastJobAt, or the process start, whichever is later.
+  assert.equal(communityLastServingAt(rows.slice(0, 1), new Map(), [], start - 7_200_000), start - 3_600_000);
+  // No machine at all: nothing to wait for.
+  assert.equal(communityLastServingAt([], seen, [], start), null);
+  assert.equal(communityLastServingAt(rows, seen, [1, 2], start), null);
 });
 
 test('the queue grace is 5 minutes unless configured, and stays within 1..120', () => {

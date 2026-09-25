@@ -38,6 +38,7 @@ const {
   sqlUtc,
   sumsFor,
   sweepMissingEarnings,
+  sweepWindowDays,
 } = ledger;
 
 type Facts = Parameters<typeof planEarning>[0];
@@ -471,7 +472,7 @@ test('the sweep writes what the delivery path could not, and does not retry the 
   assert.match(first.sql, /LEFT JOIN gpu_job_earnings e1 ON e1\.ai_gpu_job_id = j\.id/);
   assert.match(first.sql, /e1\.id IS NULL AND e2\.id IS NULL/);
   assert.match(first.sql, /LIMIT 20/);
-  assert.ok(first.values.includes('2026-09-14 00:00:00'), 'a week back');
+  assert.ok(first.values.includes('2026-08-22 00:00:00'), 'thirty days back by default');
   assert.ok(first.values.includes('2026-09-20 23:58:00'), 'not the last two minutes: delivery is still writing those');
 
   // One minute later: both were just tried, so they are excluded.
@@ -497,6 +498,66 @@ test('a job the sweep cannot write for a lasting reason steps aside for hours, a
   // 911 has no owner (skipped); 912 hit a database error (failed).
   assert.deepEqual(await excluded(now + 11 * 60_000), [911], 'the failed one is back after ten minutes');
   assert.deepEqual(await excluded(now + 7 * 3_600_000), [], 'the ownerless one after six hours');
+});
+
+test('jobs no row can be written for are left out by the database, not by what one process remembers', async () => {
+  // An admin-enlisted node has no owner and no gpu_nodes row. Its jobs used to
+  // be skipped only in memory: every restart put them back at the head of the
+  // oldest-first batch, ahead of the paying owner's job behind them.
+  const now = Date.parse('2026-09-22T00:00:00Z');
+  const t = fakeDb({ jobs: [communityJob({ id: 921 })], nodes: [homeNode()], missing: [921] });
+  await sweepMissingEarnings(now, { db: t.db, alert: noAlert });
+  const q = t.calls.queries.find((x) => /FROM ai_gpu_jobs j/.test(x.sql))!;
+  assert.match(q.sql, /j\.owner_user_id > 0/);
+  assert.match(q.sql, /JSON_EXTRACT\(w\.metadata, '\$\.ownerUserId'\)/);
+  assert.match(q.sql, /EXISTS \(SELECT 1 FROM gpu_nodes n WHERE n\.worker_id = w\.external_id AND n\.user_id > 0\)/);
+  assert.match(q.sql, /EXISTS \(SELECT 1 FROM ai_generations g WHERE g\.id = j\.generation_id\)/);
+  assert.match(q.sql, /ORDER BY j\.completed_at ASC/);
+
+  // The admin health count still counts every missing job of the last 7 days.
+  const h = fakeDb({ missingCount: 3 });
+  const health = await ledgerHealth(now, h.db);
+  const counted = h.calls.queries.find((x) => /SELECT COUNT\(\*\) AS n FROM ai_gpu_jobs j/.test(x.sql))!;
+  assert.doesNotMatch(counted.sql, /owner_user_id/);
+  assert.ok(counted.values.includes('2026-09-15 00:00:00'), 'seven days back');
+  assert.equal(health.missing7d, 3);
+});
+
+test('with no credit price the sweep tries nothing, says why once, and still warns of what is about to expire', async () => {
+  const t = fakeDb({ jobs: [communityJob({ id: 931 })], nodes: [homeNode()], missing: [931], packages: [] });
+  const alerts: AlertInput[] = [];
+  assert.equal(await sweepMissingEarnings(Date.parse('2026-09-22T00:00:00Z'), { db: t.db, alert: (a) => alerts.push(a) }), 0);
+  assert.equal(t.calls.inserts.length, 0);
+  // Only the expiry check looked at jobs: no batch was fetched to be tried.
+  const jobQueries = t.calls.queries.filter((x) => /FROM ai_gpu_jobs j/.test(x.sql));
+  assert.equal(jobQueries.length, 1);
+  assert.match(jobQueries[0].sql, /LIMIT 10/);
+  assert.equal(alerts.filter((a) => a.type === 'gpux-earning').length, 1);
+  assert.match(alerts.find((a) => a.type === 'gpux-earning')!.title, /แพ็กเกจเครดิต/);
+  assert.ok(alerts.some((a) => a.type === 'gpux-earning-expiring'));
+});
+
+test('a job about to leave the sweep window unwritten is named to an admin', async () => {
+  const now = Date.parse('2026-09-22T00:00:00Z');
+  const t = fakeDb({ jobs: [communityJob({ id: 941 })], nodes: [homeNode()], missing: [941], failInsert: true });
+  const alerts: AlertInput[] = [];
+  await sweepMissingEarnings(now, { db: t.db, alert: (a) => alerts.push(a) });
+  const expiring = alerts.find((a) => a.type === 'gpux-earning-expiring');
+  assert.ok(expiring, 'a critical alert names the job');
+  assert.equal(expiring!.level, 'critical');
+  assert.match(expiring!.lines?.join(' ') ?? '', /#941/);
+  // Asked about the last day of the window only.
+  const q = t.calls.queries.filter((x) => /FROM ai_gpu_jobs j/.test(x.sql)).at(-1)!;
+  assert.ok(q.values.includes('2026-08-23 00:00:00'), 'from thirty days back …');
+  assert.ok(q.values.includes('2026-08-24 00:00:00'), '… to the day after');
+});
+
+test('the sweep window is 30 days unless configured, and stays within 1..90', () => {
+  assert.equal(sweepWindowDays({}), 30);
+  assert.equal(sweepWindowDays({ GPUXMINE_EARNINGS_SWEEP_DAYS: '45' }), 45);
+  assert.equal(sweepWindowDays({ GPUXMINE_EARNINGS_SWEEP_DAYS: '400' }), 90);
+  assert.equal(sweepWindowDays({ GPUXMINE_EARNINGS_SWEEP_DAYS: '0' }), 30);
+  assert.equal(sweepWindowDays({ GPUXMINE_EARNINGS_SWEEP_DAYS: 'week' }), 30);
 });
 
 // ---------------------------------------------------------------------------
@@ -532,13 +593,33 @@ test('the ledger is read once a minute, per node and per owner, and a fresh writ
   assert.equal(t.calls.groupBy, 2);
 });
 
-test('a ledger that cannot be read counts as empty, and is not re-read every call', async () => {
+test('a ledger that cannot be read counts as empty, and is not re-read every call — but sooner than a good one', async () => {
   const t = fakeDb({ failGroupBy: true });
   const snap = await ledgerSnapshot(1_000_000, t.db);
   assert.equal(snap.ok, false);
   assert.equal(snap.byWorker.size, 0);
   await ledgerSnapshot(1_010_000, t.db);
   assert.equal(t.calls.groupBy, 1);
+  await ledgerSnapshot(1_016_000, t.db);
+  assert.equal(t.calls.groupBy, 2, 'a failed read is tried again after 15 s, not a minute');
+});
+
+test('a claim while the ledger cannot be read decides no free share from empty sums', () => {
+  // Empty sums are "no history" to shouldFreeShare: a 60% node would be
+  // stamped free on every claim, a 40% node paid on every claim, for as long
+  // as the read failed — and the sweep would write those stamps for good.
+  const empty = { donatedSatang: 0, earnedSatang: 0 };
+  assert.equal(claimStampFor({ freeSharePct: 60 }, empty, false).freeShare, false);
+  assert.equal(claimStampFor({ freeSharePct: 40 }, empty, false).freeShare, false);
+  assert.equal(claimStampFor({ freeSharePct: 100 }, empty, false).freeShare, true, '100% needs no history');
+  assert.equal(claimStampFor({ freeSharePct: 0 }, empty, false).freeShare, false);
+  assert.deepEqual(claimStampFor({ freeSharePct: 60, ownerUserId: 5, pro: true }, empty, false), {
+    freeShare: false,
+    pro: true,
+    ownerUserId: 5,
+  });
+  // With the ledger read, the same empty sums are real "no history".
+  assert.equal(claimStampFor({ freeSharePct: 60 }, empty).freeShare, true);
 });
 
 test('the claim decides free share from the node’s own 30 days, never the node', () => {

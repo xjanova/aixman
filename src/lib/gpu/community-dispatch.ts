@@ -106,7 +106,18 @@ const STAGE_LABEL: Record<string, string> = {
   unassessed: 'เครื่องยังไม่ผ่านการประเมิน',
   busy: 'เครื่องกำลังทำงานอื่นอยู่',
   draining: 'เครื่องกำลังหยุดรับงาน',
+  disabled: 'relay ปิดการรับงานของเครื่องนี้ชั่วคราว (ผู้ดูแลระงับไว้)',
 };
+
+/**
+ * The relay's reversible "no" (contract C4 disable/enable): 403
+ * `{error:'worker-disabled'}`. It knows the token and is holding the node
+ * back until it is switched on again — unlike 401, which is a dead token.
+ */
+export const RELAY_DISABLED_ERROR = 'worker-disabled';
+
+/** The stage a relay-disabled node is read as, for refusals and probes alike. */
+export const DISABLED_STAGE = 'disabled';
 
 export function stageLabel(stage: string): string {
   return STAGE_LABEL[stage] ?? `เครื่องยังไม่พร้อม (${stage})`;
@@ -120,11 +131,12 @@ export interface NodeRefusal {
 
 /**
  * A node's refusal to take work: 503 `{ready:false, stage, reason}` from the
- * node or the relay, or 409 `{stage:'busy'}` for a second prompt. Anything
- * without a stage is an ordinary failure, not a refusal.
+ * node or the relay, 409 `{stage:'busy'}` for a second prompt, or the relay's
+ * 403 `{error:'worker-disabled'}` for a node an admin has switched off for
+ * now. Anything without a stage is an ordinary failure, not a refusal.
  */
 export function parseNodeRefusal(status: number, body: string): NodeRefusal | null {
-  if (status !== 503 && status !== 409) return null;
+  if (status !== 503 && status !== 409 && status !== 403) return null;
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
@@ -132,6 +144,10 @@ export function parseNodeRefusal(status: number, body: string): NodeRefusal | nu
     return null;
   }
   if (!parsed || typeof parsed !== 'object') return null;
+  if (status === 403) {
+    // Only the reversible 403 is a "not now"; path-not-allowed and the rest stay failures.
+    return (parsed as { error?: unknown }).error === RELAY_DISABLED_ERROR ? { stage: DISABLED_STAGE, status } : null;
+  }
   const { stage, reason, detail } = parsed as { stage?: unknown; reason?: unknown; detail?: unknown };
   if (typeof stage !== 'string' || stage.trim() === '') return null;
   const why = typeof reason === 'string' ? reason : typeof detail === 'string' ? detail : undefined;
@@ -265,15 +281,21 @@ export type ProbeResult = { status: number; body: unknown } | { error: string };
 export type ProbeVerdict =
   | { next: 'ready'; detail?: string }
   | { next: 'warming'; detail: string; stage?: string }
-  | { next: 'terminated'; detail: string };
+  /**
+   * `rejectToken`: the relay said this token is dead (401). Only then is the
+   * token remembered as refused, so pushing it again does not revive the row.
+   */
+  | { next: 'terminated'; detail: string; rejectToken: boolean };
 
 /**
  * One answer from `{endpoint}/aixman/ready`, read as a decision.
  *
  * Only a relay that refuses the token ends the row: that credential is dead
  * and asking again changes nothing until XMAN Studio pushes a new one. Every
- * other answer — offline, paused, busy, unreachable, an odd status — leaves
- * the node in the pool, out of rotation, and it is asked again next tick.
+ * other answer — offline, paused, busy, unreachable, an odd status, and a
+ * node the relay has disabled for now (403 worker-disabled, which an enable
+ * undoes) — leaves the node in the pool, out of rotation, and it is asked
+ * again next tick.
  */
 export function classifyCommunityProbe(result: ProbeResult): ProbeVerdict {
   if ('error' in result) {
@@ -288,7 +310,11 @@ export function classifyCommunityProbe(result: ProbeResult): ProbeVerdict {
   if (result.status >= 200 && result.status < 300) return { next: 'ready' };
 
   if (result.status === 401) {
-    return { next: 'terminated', detail: 'relay ปฏิเสธ token ของเครื่องนี้ (401) — รอ XMAN Studio ส่ง token ใหม่' };
+    return {
+      next: 'terminated',
+      detail: 'relay ปฏิเสธ token ของเครื่องนี้ (401) — รอ XMAN Studio ส่ง token ใหม่',
+      rejectToken: true,
+    };
   }
   if (result.status === 403) {
     // Deny-by-default on the tunnel (contract C4) is a configuration problem
@@ -296,7 +322,19 @@ export function classifyCommunityProbe(result: ProbeResult): ProbeVerdict {
     if (body.error === 'path-not-allowed') {
       return { next: 'warming', detail: 'relay ไม่อนุญาตให้เรียก /aixman/ready (403 path-not-allowed)' };
     }
-    return { next: 'terminated', detail: 'relay ปิดกั้นเครื่องนี้ (403)' };
+    // Disabled on the relay (an XMAN Studio suspension, or an operator):
+    // reversible, with the same token. Ending the row here would leave it
+    // dead after the enable, since nothing would ever bring it back.
+    if (body.error === RELAY_DISABLED_ERROR) {
+      return {
+        next: 'warming',
+        stage: DISABLED_STAGE,
+        detail: `${stageLabel(DISABLED_STAGE)} (${DISABLED_STAGE}) — 403 ${RELAY_DISABLED_ERROR}`,
+      };
+    }
+    // A 403 this build does not know. Out of the pool, but the token is not
+    // written off: the next push with it brings the row back to be asked again.
+    return { next: 'terminated', detail: 'relay ปิดกั้นเครื่องนี้ (403)', rejectToken: false };
   }
 
   if (typeof body.stage === 'string' && body.stage.trim() !== '') {
@@ -530,15 +568,81 @@ export function communityQueueGraceMs(env: Record<string, string | undefined> = 
 export const COMMUNITY_ORDERABLE_STATUSES: readonly string[] = ['ready', 'busy', 'warming'];
 
 /**
- * Whether one community row counts as a machine that may serve a new order:
- * up, busy, or warming (paused or briefly offline — its owner may be back in
- * a minute), and not held out for a reason of its own (retired, suspended,
- * not eligible, matched to a model it may not run).
+ * Whether a row's last word from the relay was "this node is not connected"
+ * (503 stage offline) or "switched off by an admin" (403 worker-disabled) —
+ * as reconcileCommunity and requeueRefused write it: `<label> (<stage>)`.
+ * Neither is an owner stepping away for a minute.
  */
-export function communityRowMayServe(row: { status: string; endpoint: string | null; metadata: unknown }): boolean {
+export function lastErrorSaysAway(lastError: string | null | undefined): boolean {
+  return typeof lastError === 'string' && (lastError.includes('(offline)') || lastError.includes(`(${DISABLED_STAGE})`));
+}
+
+export interface OrderableRow {
+  status: string;
+  endpoint: string | null;
+  metadata: unknown;
+  readyAt?: Date | null;
+  lastJobAt?: Date | null;
+  lastError?: string | null;
+}
+
+/**
+ * Whether one community row counts as a machine that may serve a new order:
+ * up, busy, or warming, and not held out for a reason of its own (retired,
+ * suspended, not eligible, matched to a model it may not run).
+ *
+ * A warming row counts while its owner may be back in a minute — paused, busy
+ * with their own work — or while it was serving moments ago (a blip). A PC
+ * that is simply switched off does not: XMAN Studio says it is offline, or
+ * the relay did on the last probe (or said an admin disabled it), and it
+ * served nothing within `recentMs`. Counting it charged every order placed
+ * overnight only to refund it after the grace.
+ */
+export function communityRowMayServe(
+  row: OrderableRow,
+  now: number = Date.now(),
+  recentMs: number = communityQueueGraceMs()
+): boolean {
   if (!COMMUNITY_ORDERABLE_STATUSES.includes(row.status)) return false;
   if (!row.endpoint) return false;
-  return communityHoldReason(readCommunityMeta(row.metadata)) === null;
+  const meta = readCommunityMeta(row.metadata);
+  if (communityHoldReason(meta) !== null) return false;
+  if (row.status !== 'warming') return true;
+  const servedAt = Math.max(row.readyAt?.getTime() ?? 0, row.lastJobAt?.getTime() ?? 0);
+  if (servedAt > 0 && now - servedAt < recentMs) return true;
+  return meta.eligibility !== 'offline' && !lastErrorSaysAway(row.lastError);
+}
+
+/**
+ * When a community job's pool last had a machine for it, as far as anyone
+ * can tell — so the grace before a refund (D5) runs from when the pool went
+ * dark, not from when the order was placed. A job queued behind a busy node
+ * for ten minutes is not ten minutes into its grace the moment that node
+ * steps out for one tick.
+ *
+ * For each row that may take this job (not retired, not on its avoid list):
+ * the last time this process saw it ready or busy, its readyAt and lastJobAt
+ * — and, for a row this process has never seen serving, when the process
+ * started, since it cannot know what happened before. Null when no such row
+ * exists at all.
+ */
+export function communityLastServingAt(
+  rows: readonly { id: number; readyAt: Date | null; lastJobAt: Date | null }[],
+  seenServingAt: ReadonlyMap<number, number>,
+  avoid: readonly number[],
+  processStartedAt: number
+): number | null {
+  let latest: number | null = null;
+  for (const row of rows) {
+    if (avoid.includes(row.id)) continue;
+    const at = Math.max(
+      seenServingAt.get(row.id) ?? processStartedAt,
+      row.readyAt?.getTime() ?? 0,
+      row.lastJobAt?.getTime() ?? 0
+    );
+    latest = latest === null ? at : Math.max(latest, at);
+  }
+  return latest;
 }
 
 export type CommunityOrderRefusal = 'adult' | 'unreadable' | 'input-media' | 'no-machine';

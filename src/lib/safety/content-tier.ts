@@ -163,8 +163,13 @@ const EXPLICIT: Lexicon = {
     'breasts?\\s+(?:out|exposed|bare)',
     'cum(?!\\s+laude)', 'cums', 'cumming', 'cumshot\\w*', 'semen', 'ejaculat\\w*',
     '(?:blow|hand|foot|tit|boob)\\s*-?\\s*jobs?', 'fellatio', 'cunnilingus', 'masturbat\\w*', 'dildos?', 'strap-?on',
-    'topless', 'undress\\w*', 'unclothed', 'disrob\\w*',
+    'topless', 'bottomless', 'undress\\w*', 'unclothed', 'unclad', 'disrob\\w*',
     '(?:without|no|zero)\\s+(?:any\\s+)?(?:clothes|clothing)',
+    // Nudity said without the usual words.
+    'wearing\\s+nothing', '(?:with|wearing|has|having|had)\\s+nothing\\s+on(?![\\s-]*[a-z])',
+    'not\\s+wearing\\s+(?:anything|any\\s+clothes|clothes|clothing)',
+    'bare[\\s-]+(?:bod(?:y|ied)|skin(?:ned)?)', 'birthday\\s+suit', 'in\\s+the\\s+(?:buff|nude)', 'au\\s+naturel',
+    'skinny[\\s-]*dipp\\w*', 'cloth(?:e|es)?-?less', 'clothing[\\s-]*optional', 'without\\s+a\\s+(?:stitch|thread)',
     'strippers?', 'striptease', 'prostitut\\w*', 'brothel', 'onlyfans', 'camgirls?',
     'upskirt', 'downblouse', 'camel\\s*toe', 'doggy\\s*style', 'missionary\\s+position',
     'spread(?:ing)?\\s+(?:her\\s+|his\\s+|their\\s+)?legs',
@@ -173,6 +178,7 @@ const EXPLICIT: Lexicon = {
   ]),
   thai: thai([
     'โป๊', 'เปลือย', 'ล่อนจ้อน', 'แก้ผ้า', 'นู้ด', 'ไม่(?:ได้)?(?:ใส่|สวม)(?:เสื้อผ้า|อะไรเลย)', 'ถอดเสื้อผ้า',
+    'ไม่(?:ได้)?นุ่ง(?:ผ้า|อะไร)', 'ไม่มี(?:อะไร)?ปกปิด',
     'เซ็กส์', 'เซ็กซ์', 'เย็ด', 'ร่วมเพศ', 'เพศสัมพันธ์', 'ร่วมรัก', 'ลามก', 'อนาจาร', 'หื่น', 'กามารมณ์', 'น้ำกาม',
     'ควย', 'หี(?!บ)', 'จิ๋ม', 'จู๋', 'หัวนม', 'อวัยวะเพศ', 'ช่วยตัวเอง', 'สำเร็จความใคร่', 'ออรัล', 'โอรัล', 'ขย่ม', 'ของลับ',
   ]),
@@ -207,10 +213,35 @@ const NUDIFY: Lexicon = {
   thai: thai(['ถอดเสื้อ(?!คลุม|แจ็คเก็ต|แจ็กเก็ต|กันหนาว|สูท|นอก)', 'แก้ผ้า', 'ลบเสื้อผ้า', 'เอาเสื้อผ้าออก', 'ทำให้(?:โป๊|เปลือย)', 'ไม่(?:ได้)?(?:ใส่|สวม)เสื้อผ้า']),
 };
 
-/** In the negative prompt: "no clothes please", said the other way round. */
+/**
+ * In the negative prompt: "no clothes please", said the other way round.
+ * SDXL follows a negative prompt, so naming what she wears there is asking
+ * for it to be gone — the generic words, and every garment by name ("shirt,
+ * pants, dress, bikini" in the negative of "a woman on a beach" is a nude).
+ * Accessories are left out on purpose: no hat, no glasses, no shoes is not
+ * nudity. A false hit only keeps the order off a home PC.
+ */
 const NEGATIVE_STRIPS: Lexicon = {
-  latin: latin(['clothes', 'clothing', 'clothed', 'dressed', 'garments?', 'outfits?', 'underwear', 'bra', 'panties', 'censor\\w*', 'mosaic', 'bar\\s+censor']),
-  thai: thai(['เสื้อผ้า', 'ชุดชั้นใน', 'เซ็นเซอร์', 'โมเสก']),
+  latin: latin([
+    'clothes', 'clothing', 'clothed', 'cloth', 'dressed', 'garments?', 'outfits?', 'attire', 'apparel',
+    'underwear', 'bras?', 'panties', 'panty', 'lingerie', 'briefs', 'boxers', 'knickers', 'thongs?', 'undergarments?',
+    't-?shirts?', 'tee\\s*shirts?', 'tees', 'shirts?', 'blouses?', 'tank\\s*tops?', 'crop\\s*tops?', 'tube\\s*tops?',
+    // "top" the garment, not the viewpoint or the corner.
+    'tops?(?![\\s-]*(?:view|down|angle|shot|light\\w*|left|right|corner|edge|of|side|quality|rated|notch|hat))',
+    'sweaters?', 'hoodies?', 'jumpers?', 'cardigans?', 'vests?', 'jackets?', 'coats?', 'robes?', 'bathrobes?', 'kimonos?',
+    'dress(?:es)?', 'gowns?', 'nightgowns?', 'nightdress(?:es)?', 'pajamas?', 'pyjamas?', 'sleepwear', 'skirts?', 'miniskirts?',
+    'pants', 'trousers', 'jeans', 'shorts', 'leggings', 'tights', 'stockings', 'bottoms',
+    'bikinis?', 'swimsuits?', 'swimwear', 'bathing\\s*suits?', 'bodysuits?', 'leotards?', 'jumpsuits?', 'overalls',
+    // Anything that would cover her instead ("snow covered" is a landscape, not a body).
+    '(?<!(?:snow|moss|ice|frost|cloud|dust|leaf|grass|ivy|vine|sand|mud|blood|water|flower|tree)[\\s-]+)covered',
+    'covering', 'coverings', 'cover(?:ed)?\\s+up', 'modest\\w*', 'fabric', 'textiles?', 'towels?', 'blankets?',
+    'bed\\s*sheets?', 'drapes?', 'draped', 'censor\\w*', 'mosaic', 'bar\\s+censor', 'pixelat\\w*', 'blurred\\s+(?:body|crotch|chest)',
+  ]),
+  thai: thai([
+    // บรา before another consonant is บราซิล or บราวนี่, not a bra.
+    'เสื้อ', 'ชุดชั้นใน', 'ชั้นใน', 'กางเกง', 'กระโปรง', 'เดรส', 'ชุดว่ายน้ำ', 'บิกินี', 'ยกทรง', 'บรา(?![ก-ฮ])', 'ชุดนอน', 'ชุดคลุม',
+    'ผ้าเช็ดตัว', 'ผ้าห่ม', 'ผ้าคลุม', 'ผ้าปู', 'ปกปิด', 'สวมใส่', 'เครื่องแต่งกาย', 'เครื่องนุ่งห่ม', 'เซ็นเซอร์', 'โมเสก',
+  ]),
 };
 
 /** A child, or someone who reads as one (Criminal Code s.287/1: "ทำให้เข้าใจได้ว่าเป็นผู้เยาว์"). */

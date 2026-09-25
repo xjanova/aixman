@@ -6,7 +6,7 @@ import { communityQueueGraceMs, readCommunityMeta } from '@/lib/gpu/community-di
 import { relayBaseUrl, relayHealth } from '@/lib/gpu/gpuxmine';
 import { isStorageConfigured } from '@/lib/storage/r2';
 import { GpuWorkerManager } from '@/lib/services/gpu-worker';
-import { ledgerHealth } from '@/lib/services/gpux-ledger';
+import { ledgerHealth, sweepWindowDays } from '@/lib/services/gpux-ledger';
 
 /**
  * GPUxMINE go-live check: everything aixman's side of the community pool
@@ -39,6 +39,8 @@ export async function GET() {
     r2Configured: isStorageConfigured(),
     // GPUXMINE_COMMUNITY_QUEUE_GRACE_MIN: a community-only job no node takes is refunded after this.
     communityQueueGraceMinutes: communityQueueGraceMs() / 60_000,
+    // GPUXMINE_EARNINGS_SWEEP_DAYS: how long an unwritten earning is still written by the sweep.
+    earningsSweepDays: sweepWindowDays(),
   };
   if (!config.webhookSecretSet) {
     problems.push('ยังไม่ได้ตั้ง XMAN_WEBHOOK_SECRET — XMAN Studio ส่งเครื่องเข้ามาไม่ได้ (ต้องตรงกับ AIXMAN_WEBHOOK_SECRET ฝั่ง XMAN Studio)');

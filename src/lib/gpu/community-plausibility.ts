@@ -12,13 +12,17 @@
  * Two outcomes besides "fine":
  *  - reject: not delivered at all. The bytes are not the kind of media the
  *    model makes — empty, HTML, an archive, an image that does not decode,
- *    audio from an image model. Serving them from our storage would hand the
- *    customer junk (or a script), so the job goes to another machine, and the
- *    node is paid nothing because it delivered nothing.
+ *    audio from an image model — or, from an image model, not a picture
+ *    anyone ordered: one flat colour, a sliver under 64 px, a file under 1 KB.
+ *    Serving them would hand the customer junk (or a script) for their
+ *    credits, so the job goes to another machine, and the node is paid
+ *    nothing because it delivered nothing. More bytes than any render of the
+ *    model could be is rejected too, while it is still arriving
+ *    (MAX_COMMUNITY_OUTPUT_BYTES), so a node cannot fill the server's memory.
  *  - review: delivered, because it is a real file of the right kind, but the
  *    earning waits for an admin (gpu_job_earnings.status = 'review',
- *    review_reason in Thai). An honest node never trips these; a cheap cheat
- *    does, and its money is held instead of paid.
+ *    review_reason in Thai): a render faster than its lane allows, or an
+ *    odd-looking audio or video file, where an honest node can land too.
  *
  * Everything here is a decision on facts passed in, except `inspectImage`,
  * which decodes with sharp.
@@ -130,6 +134,42 @@ export const MIN_OUTPUT_BYTES: Record<MediaKind, number> = {
   video: 16_384,
 };
 
+const MIB = 1_048_576;
+
+/**
+ * The most one community job's files may add up to, by the kind of media the
+ * model makes. A modified node can answer /view with an endless stream, and a
+ * download is held in memory until it is examined: without a ceiling one node
+ * could take the whole site down. Far above any honest render — a 1024² SDXL
+ * PNG is about 2 MB, a ten-minute song as WAV about 100 MB — and checked
+ * against Content-Length before the first byte and on every chunk after.
+ */
+export const MAX_COMMUNITY_OUTPUT_BYTES: Record<MediaKind, number> = {
+  image: 64 * MIB,
+  audio: 128 * MIB,
+  video: 256 * MIB,
+};
+
+/**
+ * A community job delivers at most this many files, downloaded one at a time.
+ * The models built for home PCs save one; a node listing dozens is not
+ * rendering them, it is trying to make the server fetch them.
+ */
+export const MAX_COMMUNITY_OUTPUTS = 4;
+
+/** The byte budget for one community job's files; the largest when the model's kind is unknown. */
+export function communityOutputBudget(expected: MediaKind | null | undefined): number {
+  return expected ? MAX_COMMUNITY_OUTPUT_BYTES[expected] : Math.max(...Object.values(MAX_COMMUNITY_OUTPUT_BYTES));
+}
+
+/** English, for the job's error and the admin's alert, when a node sends more than the budget. */
+export function oversizeReason(limitBytes: number, sentBytes?: number): string {
+  const limit = `${Math.round(limitBytes / MIB)} MB`;
+  return sentBytes === undefined
+    ? `the node sent more than ${limit} for one job, more than any render of this model`
+    : `the node offered ${(sentBytes / MIB).toFixed(0)} MB for one job, more than the ${limit} any render of this model can be`;
+}
+
 /** An image narrower or shorter than this is a placeholder, not a render. */
 export const MIN_IMAGE_SIDE_PX = 64;
 
@@ -182,15 +222,30 @@ export function judgeOutput(output: OutputFacts, expected: MediaKind | null | un
   }
 
   const kind = output.sniffed.kind;
+  // An image model's picture is the whole product: a blank or a sliver is
+  // not something the customer can be charged for, whatever the node meant.
+  // SDXL at 1024² never makes one honestly (a black frame from a broken VAE
+  // is still not a render), so the job goes to another machine. For audio
+  // and video the same facts can be honest — a short clip, a fade from
+  // black on the first frame of a GIF — so they hold only the earning.
+  const pictureIsProduct = kind === 'image' && expected === 'image';
   if (output.bytes < MIN_OUTPUT_BYTES[kind]) {
-    return { review: `ไฟล์ผลงานเล็กผิดปกติ (${output.bytes} ไบต์ · ${output.sniffed.mime})` };
+    return pictureIsProduct
+      ? { reject: `the node returned a ${output.bytes}-byte ${output.sniffed.mime}, too small to be a render` }
+      : { review: `ไฟล์ผลงานเล็กผิดปกติ (${output.bytes} ไบต์ · ${output.sniffed.mime})` };
   }
   if (output.image) {
     const { width, height, flat } = output.image;
     if (width < MIN_IMAGE_SIDE_PX || height < MIN_IMAGE_SIDE_PX) {
-      return { review: `ภาพผลงานเล็กผิดปกติ (${width}×${height} พิกเซล)` };
+      return pictureIsProduct
+        ? { reject: `the node returned a ${width}×${height} image, smaller than any render` }
+        : { review: `ภาพผลงานเล็กผิดปกติ (${width}×${height} พิกเซล)` };
     }
-    if (flat) return { review: `ภาพผลงานเป็นสีเดียวทั้งภาพ (${width}×${height})` };
+    if (flat) {
+      return pictureIsProduct
+        ? { reject: `the node returned one flat colour (${width}×${height}), not a picture` }
+        : { review: `ภาพผลงานเป็นสีเดียวทั้งภาพ (${width}×${height})` };
+    }
   }
   return {};
 }

@@ -5,10 +5,11 @@
  * Run: npm test   (or: node --experimental-transform-types --import ./scripts/alias-loader.mjs --test src/lib/gpu/__tests__/community-plausibility.test.mts)
  *
  * A node's owner can run a modified agent that answers "success" with any
- * bytes under any Content-Type. Bytes that are not the model's media are never
- * delivered (reject); a real file that looks wrong — tiny, one flat colour, or
- * finished faster than any card could — is delivered but its earning is held
- * for an admin (review).
+ * bytes under any Content-Type. Bytes that are not the model's media — or,
+ * from an image model, a blank, a sliver or a scrap — are never delivered
+ * (reject); a real file that looks odd where an honest node can land too (a
+ * short song, a GIF fading in from black, a render faster than its lane) is
+ * delivered but its earning is held for an admin (review).
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,14 +21,18 @@ process.env.DATABASE_URL ??= 'mysql://test:test@127.0.0.1:3306/test';
 
 const {
   acceptableFor,
+  communityOutputBudget,
   examineOutput,
   inspectImage,
   isRejectedOutput,
   joinReviewReasons,
   judgeOutput,
   judgeRenderTime,
+  MAX_COMMUNITY_OUTPUT_BYTES,
+  MAX_COMMUNITY_OUTPUTS,
   minPlausibleRenderSeconds,
   MIN_OUTPUT_BYTES,
+  oversizeReason,
   RejectedOutputError,
   sniffMedia,
 } = await import('@/lib/gpu/community-plausibility');
@@ -99,19 +104,46 @@ test('nothing that is not the model’s media is delivered', () => {
   assert.match(judgeOutput({ bytes: 500_000, sniffed: png, image: null }, 'image').reject ?? '', /does not decode/);
 });
 
-test('a real file that looks wrong is delivered, but held for review', () => {
+test('from an image model, a blank, a sliver or a scrap is not delivered — the customer would pay for nothing', () => {
+  // A modified node's cheapest "render": a valid solid-grey PNG. It used to
+  // reach the customer as their result, with only the node's pay held.
   const tiny = judgeOutput({ bytes: 300, sniffed: png, image: { width: 1024, height: 1024, flat: false } }, 'image');
-  assert.equal(tiny.reject, undefined);
-  assert.match(tiny.review ?? '', /เล็กผิดปกติ/);
+  assert.equal(tiny.review, undefined);
+  assert.match(tiny.reject ?? '', /300-byte image\/png, too small/);
 
   const thumb = judgeOutput({ bytes: 40_000, sniffed: png, image: { width: 32, height: 1024, flat: false } }, 'image');
-  assert.match(thumb.review ?? '', /32×1024/);
+  assert.match(thumb.reject ?? '', /32×1024/);
 
   const flat = judgeOutput({ bytes: 40_000, sniffed: png, image: { width: 1024, height: 1024, flat: true } }, 'image');
-  assert.match(flat.review ?? '', /สีเดียว/);
+  assert.match(flat.reject ?? '', /flat colour/);
+});
+
+test('from a video or music model, an odd-looking file is delivered, but its earning held for review', () => {
+  // A GIF that fades in from black has a flat first frame; a short clip is small.
+  const gif = { mime: 'image/gif', kind: 'image' as const };
+  const fadeIn = judgeOutput({ bytes: 40_000, sniffed: gif, image: { width: 512, height: 512, flat: true } }, 'video');
+  assert.equal(fadeIn.reject, undefined);
+  assert.match(fadeIn.review ?? '', /สีเดียว/);
+
+  const tinyGif = judgeOutput({ bytes: 900, sniffed: gif, image: { width: 512, height: 512, flat: false } }, 'video');
+  assert.match(tinyGif.review ?? '', /เล็กผิดปกติ/);
 
   const shortSong = judgeOutput({ bytes: MIN_OUTPUT_BYTES.audio - 1, sniffed: { mime: 'audio/flac', kind: 'audio' } }, 'audio');
+  assert.equal(shortSong.reject, undefined);
   assert.match(shortSong.review ?? '', /audio\/flac/);
+
+  // No catalogue entry to say what the model makes: held, not refused.
+  assert.match(judgeOutput({ bytes: 300, sniffed: png, image: { width: 1024, height: 1024, flat: false } }, null).review ?? '', /เล็กผิดปกติ/);
+});
+
+test('a job’s files have a ceiling far above any render, and a count', () => {
+  assert.equal(communityOutputBudget('image'), MAX_COMMUNITY_OUTPUT_BYTES.image);
+  assert.ok(MAX_COMMUNITY_OUTPUT_BYTES.image >= 32 * 1_048_576, 'a 1024² PNG is ~2 MB: the ceiling is nowhere near an honest render');
+  assert.ok(MAX_COMMUNITY_OUTPUT_BYTES.audio > MAX_COMMUNITY_OUTPUT_BYTES.image);
+  assert.equal(communityOutputBudget(null), Math.max(...Object.values(MAX_COMMUNITY_OUTPUT_BYTES)));
+  assert.ok(MAX_COMMUNITY_OUTPUTS >= 1 && MAX_COMMUNITY_OUTPUTS <= 8);
+  assert.match(oversizeReason(64 * 1_048_576, 2 * 1024 ** 3), /offered 2048 MB .* 64 MB/);
+  assert.match(oversizeReason(64 * 1_048_576), /more than 64 MB/);
 });
 
 test('an ordinary render passes untouched', () => {
@@ -186,9 +218,11 @@ test('examineOutput: stores the sniffed type, never the node’s, and rejects wh
   const good = await examineOutput(await noisy(128, 128), 'image');
   assert.deepEqual(good, { mime: 'image/png' });
 
+  // A solid-grey 1024² PNG decodes fine — and is still not a render.
   const blank = await examineOutput(await flatPng(1024, 1024), 'image');
-  assert.equal(blank.reject, undefined);
-  assert.match(blank.review ?? '', /สีเดียว|เล็กผิดปกติ/);
+  assert.equal(blank.review, undefined);
+  assert.match(blank.reject ?? '', /flat colour|too small/);
+  assert.equal(blank.mime, 'image/png');
 
   const html = await examineOutput(Buffer.from('<html><body>not a picture</body></html>'.repeat(100)), 'image');
   assert.equal(html.mime, 'application/octet-stream');

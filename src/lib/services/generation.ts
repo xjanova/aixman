@@ -548,10 +548,12 @@ export class GenerationService {
   }
 
   /**
-   * Whether a GPUxMINE machine for this model is up, busy, or warming (paused
-   * or briefly offline — its owner may be back in a minute) and not held out
-   * of the pool. An order for a community-only model with none would only
-   * wait out the grace and be refunded.
+   * Whether a GPUxMINE machine for this model is up, busy, or warming for a
+   * reason its owner may undo in a minute (paused, their own work, a blip),
+   * and not held out of the pool. A PC that is switched off does not count
+   * (community-dispatch.ts communityRowMayServe). An order for a
+   * community-only model with none would only wait out the grace and be
+   * refunded.
    */
   private static async communityMachineAvailable(modelKey: string): Promise<boolean> {
     const rows = await prisma.aiGpuWorker.findMany({
@@ -561,10 +563,11 @@ export class GenerationService {
         status: { in: [...COMMUNITY_ORDERABLE_STATUSES] },
         terminatedAt: null,
       },
-      select: { status: true, endpoint: true, metadata: true },
+      select: { status: true, endpoint: true, metadata: true, readyAt: true, lastJobAt: true, lastError: true },
       take: 500,
     });
-    return rows.some(communityRowMayServe);
+    const now = Date.now();
+    return rows.some((row) => communityRowMayServe(row, now));
   }
 
   /**

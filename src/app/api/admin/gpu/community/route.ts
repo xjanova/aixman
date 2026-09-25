@@ -214,6 +214,11 @@ export async function PATCH(request: NextRequest) {
   }
   delete meta.adminRetired;
   delete meta.adminRetiredAt;
+  // A restore is an admin saying "try this node again": a token refused
+  // before must not turn the next ordinary suspend-and-resume push into
+  // "relay refused this token". A dead token is refused again on the next
+  // probe (401) and remembered again then.
+  delete meta.rejectedTokenHash;
 
   // Guarded on the row as read, so a double click restores once.
   const { count } = await prisma.aiGpuWorker.updateMany({

@@ -16,6 +16,7 @@ import { cardFamily, isEligibleGpu } from '@/lib/gpu/gpu-specs';
 import { FUNDING_MARGIN, fundedOffers, offerKey, rankOffers, type RankedOffer } from '@/lib/gpu/offer-picker';
 import { buildComfyUiStartScript, LOG_PATH, READY_PATH, renderEnvExports } from '@/lib/gpu/provision';
 import { clearSchema } from '@/lib/gpu/comfy-validate';
+import { COMMUNITY_BODY_LIMITS, readCapped } from '@/lib/gpu/worker-client';
 import {
   COMMUNITY_PROVIDER_SLUGS,
   PROBE_CONCURRENCY,
@@ -762,6 +763,18 @@ export class GpuWorkerManager {
    * meanwhile, or a push from XMAN Studio, is never overwritten.
    */
   static async reconcileCommunity(worker: AiGpuWorker, activeJobs: number, now: Date, budget?: ProbeBudget): Promise<void> {
+    // Retired, yet reading live: a delivery or submit write from before those
+    // writes were guarded turned a just-retired row back to 'ready'/'busy'.
+    // terminatedAt is what every reader (the push, the restore, the queue)
+    // treats as the truth, so the status is put back in line with it — and
+    // the row is never probed back into rotation.
+    if (worker.terminatedAt) {
+      await prisma.aiGpuWorker.updateMany({
+        where: { id: worker.id, status: worker.status, terminatedAt: { not: null } },
+        data: { status: 'terminated' },
+      });
+      return;
+    }
     const meta = readCommunityMeta(worker.metadata);
     const step = planCommunityReconcile({
       status: worker.status,
@@ -802,10 +815,13 @@ export class GpuWorkerManager {
 
     if (next.status === 'terminated') {
       communityProbedAt.delete(worker.id);
-      // Remember which token was refused: XMAN Studio pushing the same one
-      // again would only be refused again, so only a new token revives the
-      // row (POST /api/gpux/nodes). Metadata is re-read right before the
-      // write, to keep a push that landed during the probe.
+      // Remember which token was refused — only when the relay said it is
+      // dead (401): XMAN Studio pushing the same one again would only be
+      // refused again, so only a new token revives the row (POST
+      // /api/gpux/nodes). Any other ending keeps the token usable. Metadata
+      // is re-read right before the write, to keep a push that landed during
+      // the probe.
+      const rejectToken = verdict.next === 'terminated' && verdict.rejectToken && Boolean(token);
       const fresh = await prisma.aiGpuWorker.findUnique({ where: { id: worker.id }, select: { metadata: true } });
       await prisma.aiGpuWorker.updateMany({
         where: { id: worker.id, status: worker.status, terminatedAt: null },
@@ -815,7 +831,7 @@ export class GpuWorkerManager {
           lastError: next.lastError,
           metadata: {
             ...readCommunityMeta(fresh?.metadata),
-            ...(token ? { rejectedTokenHash: sha256(token) } : {}),
+            ...(rejectToken ? { rejectedTokenHash: sha256(token as string) } : {}),
           } as Prisma.InputJsonValue,
         },
       });
@@ -823,14 +839,29 @@ export class GpuWorkerManager {
       return;
     }
 
-    const unchanged = next.status === worker.status && next.lastError === worker.lastError && !next.stampReadyAt;
+    // The relay took this token just now, so no earlier refusal of it can
+    // stand: left behind (a restore by hand, a probe from before a 401 was
+    // fixed on the relay), it would turn the next ordinary suspend-and-resume
+    // push into "relay refused this token".
+    const clearRejected = next.status === 'ready' && Boolean(meta.rejectedTokenHash);
+
+    const unchanged =
+      next.status === worker.status && next.lastError === worker.lastError && !next.stampReadyAt && !clearRejected;
     if (unchanged) return;
+    let metadata: Prisma.InputJsonValue | undefined;
+    if (clearRejected) {
+      const fresh = await prisma.aiGpuWorker.findUnique({ where: { id: worker.id }, select: { metadata: true } });
+      const kept = { ...readCommunityMeta(fresh?.metadata) };
+      delete kept.rejectedTokenHash;
+      metadata = kept as Prisma.InputJsonValue;
+    }
     await prisma.aiGpuWorker.updateMany({
       where: { id: worker.id, status: worker.status },
       data: {
         status: next.status,
         lastError: next.lastError,
         ...(next.stampReadyAt ? { readyAt: now } : {}),
+        ...(metadata ? { metadata } : {}),
       },
     });
   }
@@ -849,7 +880,16 @@ export class GpuWorkerManager {
         signal: controller.signal,
         cache: 'no-store',
       });
-      return { status: res.status, body: await res.json().catch(() => null) };
+      // A readiness answer is a few bytes; a node that streams more is read
+      // no further than an error body (worker-client's COMMUNITY_BODY_LIMITS).
+      const answer = await readCapped(res, COMMUNITY_BODY_LIMITS.error, HEALTH_TIMEOUT_MS).catch(() => null);
+      let body: unknown = null;
+      try {
+        body = answer && !answer.overflow ? JSON.parse(answer.text) : null;
+      } catch {
+        body = null;
+      }
+      return { status: res.status, body };
     } catch (error) {
       const message =
         (error as Error).name === 'AbortError' ? `no answer within ${HEALTH_TIMEOUT_MS / 1000} s` : (error as Error).message;
@@ -1003,6 +1043,8 @@ export class GpuWorkerManager {
     const serving = await prisma.aiGpuWorker.count({
       where: {
         modelKey,
+        // A retired row is no machine, whatever a racing write left in its status.
+        terminatedAt: null,
         OR: [
           { ...RENTED_ONLY, status: { in: ['ready', 'busy', 'warming', 'provisioning'] } },
           ...(isCommunityModel(modelKey) ? [{ ...COMMUNITY_ONLY, status: { in: ['ready', 'busy'] } }] : []),

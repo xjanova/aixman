@@ -8,6 +8,7 @@ import { WorkerClient, purgeCommunityJob, type SubmitResult, type WorkerJobParam
 import {
   COMMUNITY_PROVIDER_SLUGS,
   COMMUNITY_SAFE_JOB,
+  communityLastServingAt,
   communityQueueGraceMs,
   isNodeRefusal,
   laneOf,
@@ -23,10 +24,13 @@ import {
 } from '@/lib/gpu/community-dispatch';
 import { isCommunitySafe, readContentTier, type ContentTier } from '@/lib/safety/content-tier';
 import {
+  communityOutputBudget,
   examineOutput,
   isRejectedOutput,
   joinReviewReasons,
   judgeRenderTime,
+  MAX_COMMUNITY_OUTPUTS,
+  oversizeReason,
   RejectedOutputError,
 } from '@/lib/gpu/community-plausibility';
 import { isLotterySlot } from './gpux-settlement';
@@ -132,6 +136,16 @@ let purgeSweepRunning = false;
 const EARNINGS_SWEEP_EVERY_MS = 5 * 60_000;
 let earningsSweptAt = 0;
 let earningsSweepRunning = false;
+
+/**
+ * When this process last saw each community row ready or busy (worker id →
+ * ms). A community-only job's grace (D5) runs from when its pool went dark,
+ * and a row that steps out for one tick — a failed job sends it to warming —
+ * must not look like a pool that has been dark since the order was placed.
+ */
+const communitySeenServingAt = new Map<number, number>();
+/** Before this the process saw nothing: a row it never saw serving is given the benefit of the doubt from here. */
+const PROCESS_STARTED_AT = Date.now();
 
 /** Warn admins once a day when today's GPU spend reaches this share of the budget. */
 const BUDGET_WARN_AT = 0.8;
@@ -539,6 +553,9 @@ export class GpuQueue {
       where: {
         modelKey,
         status: 'ready',
+        // A retired row is never handed work, whatever its status says: a
+        // write that raced the retirement can leave one reading 'ready'.
+        terminatedAt: null,
         endpoint: { not: null },
         ...(communityAllowed ? {} : RENTED_ONLY),
       },
@@ -602,9 +619,14 @@ export class GpuQueue {
 
       // What the job is to this machine's owner — its free share or paid,
       // Pro or not, whose — fixed now, with the claim, so the earning written
-      // after delivery settles the job as it was dispatched.
+      // after delivery settles the job as it was dispatched. A ledger that
+      // could not be read decides nothing (claimStampFor pays the job).
       const stamp = isCommunity
-        ? claimStampFor(readCommunityMeta(worker.metadata), sumsFor(ledger?.byWorker ?? new Map(), worker.externalId))
+        ? claimStampFor(
+            readCommunityMeta(worker.metadata),
+            sumsFor(ledger?.byWorker ?? new Map(), worker.externalId),
+            ledger?.ok !== false
+          )
         : RENTED_CLAIM_STAMP;
       const claim = await this.claimNextJob(modelKey, worker.id, isCommunity, stamp);
       if (!claim.job) {
@@ -790,14 +812,20 @@ export class GpuQueue {
     // while the machine kept rendering it: the next job sat behind that orphan
     // in ComfyUI's own queue (a 10 min render took 19), and on a last attempt a
     // render that finished would have been refunded.
+    //
+    // The machine was reserved (ready → busy) before the claim, so 'busy' is
+    // only re-asserted over 'ready'/'busy'. A retirement or suspension that
+    // landed during the submit (admin DELETE, XMAN Studio's push) is left
+    // standing: the poll then sees it and moves the job elsewhere, instead of
+    // the retired row reading busy and later 'ready' with work on offer.
     const record = () =>
       prisma.$transaction(async (tx) => {
         await tx.aiGpuJob.update({
           where: { id: job.id },
           data: { status: 'running', externalJobId },
         });
-        await tx.aiGpuWorker.update({
-          where: { id: worker.id },
+        await tx.aiGpuWorker.updateMany({
+          where: { id: worker.id, status: { in: ['ready', 'busy'] }, terminatedAt: null },
           data: { status: 'busy', lastJobAt: new Date() },
         });
         await tx.aiGeneration.update({
@@ -1052,25 +1080,14 @@ export class GpuQueue {
       // that correctly gates its port. Every file is fetched (and, from a home
       // PC, examined) before any is stored, so a rejected one leaves nothing
       // behind in R2.
-      const files = await Promise.all(
-        assetUrls.map(async (url) => {
-          const downloaded = await client.download(url);
-          return { url, buffer: downloaded.buffer, contentType: downloaded.contentType };
-        })
-      );
-      if (community) {
-        // A home PC's bytes are what they are, not what its Content-Type says:
-        // a modified node can send anything under any header, and serving an
-        // HTML page as the customer's "image" from our storage is a script
-        // on our domain. Stored as the sniffed type; not stored at all when
-        // it is not the model's kind of media (community-plausibility.ts).
-        for (const file of files) {
-          const examined = await examineOutput(file.buffer, entry?.outputKind ?? null);
-          if (examined.reject) throw new RejectedOutputError(examined.reject);
-          if (examined.review) reviewNotes.push(examined.review);
-          file.contentType = examined.mime;
-        }
-      }
+      const files = community
+        ? await this.collectCommunityFiles(job, worker, assetUrls, client, entry?.outputKind ?? null, reviewNotes)
+        : await Promise.all(
+            assetUrls.map(async (url) => {
+              const downloaded = await client.download(url);
+              return { url, buffer: downloaded.buffer, contentType: downloaded.contentType };
+            })
+          );
       durableUrls = await Promise.all(
         files.map(({ url, buffer, contentType }) => {
           const key = `${prefix}/${Date.now()}-${randomBytes(6).toString('hex')}.${extensionFor(contentType, url)}`;
@@ -1086,11 +1103,13 @@ export class GpuQueue {
         console.warn(`[gpu] job ${job.id}: community node #${worker.id} finished but is not handing over yet (${error.stage}) — will retry`);
         return false;
       }
-      // Not a render of this model at all. The customer never sees it, the
-      // job moves to another machine (settleFailure adds this one to its
-      // avoid list and parks it until it answers /aixman/ready again), and
-      // the node is paid nothing, because it delivered nothing. Honest nodes
-      // never land here, so an admin hears about each one.
+      // Not a render of this model at all — or a blank, a sliver, more bytes
+      // than any render could be. The customer never sees it, the job moves
+      // to another machine (settleFailure adds this one to its avoid list
+      // and parks it until it answers /aixman/ready again), and the node is
+      // paid nothing, because it delivered nothing. An honest node lands here
+      // only when broken (a VAE rendering black), so an admin hears about
+      // each one.
       if (isRejectedOutput(error)) {
         await this.settleFailure(job, worker, `Rejected community render: ${message}`, true, { countAgainstModel: false });
         const owner = readCommunityMeta(worker.metadata).ownerUserId;
@@ -1180,11 +1199,16 @@ export class GpuQueue {
       });
       await tx.aiGpuWorker.update({
         where: { id: worker.id },
-        data: {
-          status: worker.status === 'busy' ? 'ready' : worker.status,
-          jobsCompleted: { increment: 1 },
-          lastJobAt: now,
-        },
+        data: { jobsCompleted: { increment: 1 }, lastJobAt: now },
+      });
+      // Released only if it is still the busy machine it was when this poll
+      // read it: the download can take minutes, and a retirement, a
+      // suspension or a drain made meanwhile must stand. Writing back the
+      // status read before the loop turned a just-retired node 'ready', and
+      // the same tick handed it the next customer's prompt.
+      await tx.aiGpuWorker.updateMany({
+        where: { id: worker.id, status: 'busy', terminatedAt: null },
+        data: { status: 'ready' },
       });
     }, SLOW_DB_TX);
 
@@ -1215,6 +1239,52 @@ export class GpuQueue {
     // First success is what promotes a self-hosted model out of 'tuning'.
     if (generation?.modelId) await ModelReadiness.recordSuccess(generation.modelId);
     return true;
+  }
+
+  /**
+   * A home PC's files for one job, fetched one at a time and judged as each
+   * arrives. The node decides what /history lists and what /view sends, so
+   * nothing it says is taken on trust:
+   *   - at most MAX_COMMUNITY_OUTPUTS files, the model's own kind first
+   *     (collectComfyOutputs sorts them so);
+   *   - together no more than the model's MAX_COMMUNITY_OUTPUT_BYTES, each
+   *     download stopped the moment it would cross what is left — a node
+   *     streaming garbage cannot fill the server's memory;
+   *   - each file is what its bytes are, not what its Content-Type says:
+   *     serving an HTML page as the customer's "image" from our storage is a
+   *     script on our domain. Stored as the sniffed type; rejected when it is
+   *     not the model's kind of media, or not a picture anyone ordered
+   *     (community-plausibility.ts).
+   * Throws RejectedOutputError for any of those; one file rejected stops the
+   * rest from being fetched.
+   */
+  private static async collectCommunityFiles(
+    job: AiGpuJob,
+    worker: AiGpuWorker,
+    assetUrls: string[],
+    client: WorkerClient,
+    expected: 'image' | 'video' | 'audio' | null,
+    reviewNotes: string[]
+  ): Promise<{ url: string; buffer: Buffer; contentType: string }[]> {
+    const urls = assetUrls.slice(0, MAX_COMMUNITY_OUTPUTS);
+    if (assetUrls.length > urls.length) {
+      console.warn(
+        `[gpu] job ${job.id}: community node #${worker.id} listed ${assetUrls.length} outputs; taking the first ${urls.length}`
+      );
+    }
+    const budget = communityOutputBudget(expected);
+    let left = budget;
+    const files: { url: string; buffer: Buffer; contentType: string }[] = [];
+    for (const url of urls) {
+      if (left <= 0) throw new RejectedOutputError(oversizeReason(budget));
+      const downloaded = await client.download(url, { maxBytes: left });
+      left -= downloaded.buffer.byteLength;
+      const examined = await examineOutput(downloaded.buffer, expected);
+      if (examined.reject) throw new RejectedOutputError(examined.reject);
+      if (examined.review) reviewNotes.push(examined.review);
+      files.push({ url, buffer: downloaded.buffer, contentType: examined.mime });
+    }
+    return files;
   }
 
   /**
@@ -1502,6 +1572,7 @@ export class GpuQueue {
     // D5), whatever the vendor balance says.
     const communityAllowanceMs = communityQueueGraceMs();
     const now = Date.now();
+    await this.noteCommunityServing(now);
     const cutoff = new Date(now - Math.min(rentalAllowanceMs, communityAllowanceMs));
     const stale = await prisma.aiGpuJob.findMany({
       where: { status: 'queued', queuedAt: { lt: cutoff } },
@@ -1511,6 +1582,7 @@ export class GpuQueue {
     let failed = 0;
     let communityFailed = 0;
     const serving = new Map<string, boolean>();
+    const poolRows = new Map<string, { id: number; readyAt: Date | null; lastJobAt: Date | null }[]>();
     for (const job of stale) {
       const communityOnly = isCommunityOnlyModel(job.modelKey);
       const allowanceMs = communityOnly ? communityAllowanceMs : rentalAllowanceMs;
@@ -1528,6 +1600,26 @@ export class GpuQueue {
         serving.set(key, await this.anyMachineServing(job.modelKey, { rented: !communityOnly, community, paused, avoid }));
       }
       if (serving.get(key)) continue;
+
+      // A community-only job's grace runs from when its pool went dark, not
+      // from when it was ordered: a queue that waited behind a busy node is
+      // not refunded the first tick that node reads 'warming' (a failed job,
+      // a thirty-second pause), only once no machine for it has been seen
+      // for the whole grace.
+      if (communityOnly && community) {
+        if (!poolRows.has(job.modelKey)) {
+          poolRows.set(
+            job.modelKey,
+            await prisma.aiGpuWorker.findMany({
+              where: { modelKey: job.modelKey, providerSlug: { in: [...COMMUNITY_PROVIDER_SLUGS] }, terminatedAt: null },
+              select: { id: true, readyAt: true, lastJobAt: true },
+              take: 500,
+            })
+          );
+        }
+        const lastServing = communityLastServingAt(poolRows.get(job.modelKey) ?? [], communitySeenServingAt, avoid, PROCESS_STARTED_AT);
+        if (lastServing !== null && now - Math.max(job.queuedAt.getTime(), lastServing) < allowanceMs) continue;
+      }
 
       const minutes = Math.round(allowanceMs / 60_000);
       await this.settleFailure(
@@ -1574,10 +1666,33 @@ export class GpuQueue {
   }
 
   /**
+   * Remember which community rows are taking work right now
+   * (communitySeenServingAt). Once a tick; one small query. Entries for rows
+   * that stopped existing are dropped after a day, so the map cannot grow.
+   */
+  private static async noteCommunityServing(now: number): Promise<void> {
+    try {
+      const up = await prisma.aiGpuWorker.findMany({
+        where: { providerSlug: { in: [...COMMUNITY_PROVIDER_SLUGS] }, status: { in: ['ready', 'busy'] }, terminatedAt: null },
+        select: { id: true },
+        take: 5_000,
+      });
+      for (const { id } of up) communitySeenServingAt.set(id, now);
+      for (const [id, at] of communitySeenServingAt) {
+        if (now - at > 24 * 3_600_000) communitySeenServingAt.delete(id);
+      }
+    } catch (error) {
+      // Only the grace's starting point is lost for a tick: it falls back to readyAt/lastJobAt.
+      console.error('[gpu] could not note serving community machines:', (error as Error).message);
+    }
+  }
+
+  /**
    * Whether any machine that may take this job is taking work: rented ones
    * (up, or on their way while the balance is paused — the same test as
    * GpuBalance.pausesModel) and community ones that are up. A warming home
-   * PC is paused or offline, not on its way.
+   * PC is paused or offline, not on its way. A retired row never counts,
+   * whatever its status says.
    */
   private static async anyMachineServing(
     modelKey: string,
@@ -1592,7 +1707,7 @@ export class GpuQueue {
     }
     if (pools.length === 0) return false;
     const count = await prisma.aiGpuWorker.count({
-      where: { modelKey, OR: pools, ...(opts.avoid.length > 0 ? { id: { notIn: opts.avoid } } : {}) },
+      where: { modelKey, terminatedAt: null, OR: pools, ...(opts.avoid.length > 0 ? { id: { notIn: opts.avoid } } : {}) },
     });
     return count > 0;
   }

@@ -16,6 +16,7 @@ import {
 import { applyWorkflowVars, buildJobGraph, schemaSubset, templateClasses } from './workflow-build';
 import type { EffectiveWorkflow } from './workflow-overrides';
 import { NodeRefusedError, parseNodeRefusal } from './community-dispatch';
+import { RejectedOutputError, communityOutputBudget, oversizeReason } from './community-plausibility';
 
 export { applyWorkflowVars };
 
@@ -138,6 +139,74 @@ export const COMMUNITY_SCHEMA_TTL_MS = 10 * 60_000;
 /** Each of the two purge calls. A node that cannot answer in this is asked again later. */
 const PURGE_TIMEOUT_MS = 10_000;
 
+/**
+ * The most of a community node's answer that is read, by what the answer is.
+ * A modified node can answer any call with a body that never ends, and every
+ * answer is held in memory until it is parsed — so each is read up to a
+ * ceiling far above an honest one, and only for as long as the call may take.
+ * Rented workers are ours and keep reading as they always did.
+ */
+export const COMMUNITY_BODY_LIMITS = {
+  /** An error or refusal: only its first words are ever used. */
+  error: 64 * 1024,
+  /** /prompt, /upload, /history/{id}, /queue, progress. */
+  json: 8 * 1_048_576,
+  /** /object_info: several MB on a node with many custom nodes. */
+  schema: 64 * 1_048_576,
+} as const;
+
+/**
+ * Read a response body up to `maxBytes`, and for no longer than `timeoutMs`.
+ * `overflow` says there was more; the rest is never read (the stream is
+ * cancelled). Throws when the body does not finish in time.
+ */
+export async function readCapped(
+  res: Response,
+  maxBytes: number,
+  timeoutMs: number
+): Promise<{ text: string; overflow: boolean }> {
+  if (!res.body) return { text: '', overflow: false };
+  const reader = res.body.getReader();
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  let overflow = false;
+  let finished = false;
+  const deadline = Date.now() + timeoutMs;
+  try {
+    for (;;) {
+      const left = deadline - Date.now();
+      if (left <= 0) throw new Error(`the node's answer did not finish within ${Math.round(timeoutMs / 1000)} s`);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const { done, value } = await Promise.race([
+        reader.read(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`the node's answer did not finish within ${Math.round(timeoutMs / 1000)} s`)),
+            left
+          );
+        }),
+      ]).finally(() => clearTimeout(timer));
+      if (done) {
+        finished = true;
+        break;
+      }
+      if (!value) continue;
+      if (bytes + value.byteLength > maxBytes) {
+        chunks.push(Buffer.from(value.subarray(0, maxBytes - bytes)));
+        bytes = maxBytes;
+        overflow = true;
+        break;
+      }
+      chunks.push(Buffer.from(value));
+      bytes += value.byteLength;
+    }
+  } finally {
+    // Stop the rest arriving: a stream left open keeps the node's bytes coming.
+    if (!finished) void reader.cancel().catch(() => {});
+  }
+  return { text: Buffer.concat(chunks, bytes).toString('utf8'), overflow };
+}
+
 export interface PurgeOutcome {
   /** Nothing is left worth asking again for. */
   done: boolean;
@@ -225,7 +294,8 @@ export async function purgeCommunityJob(endpoint: string, authToken: string | un
         signal: controller.signal,
         cache: 'no-store',
       });
-      return { status: res.status, body: (await res.text().catch(() => '')).slice(0, 500) };
+      const answer = await readCapped(res, COMMUNITY_BODY_LIMITS.error, PURGE_TIMEOUT_MS).catch(() => ({ text: '' }));
+      return { status: res.status, body: answer.text.slice(0, 500) };
     } catch (error) {
       return { error: (error as Error).message };
     } finally {
@@ -298,6 +368,24 @@ export class WorkerClient {
     return refusal ? new NodeRefusedError(refusal, what) : null;
   }
 
+  /**
+   * A successful answer's body. From a community node it is read up to
+   * `limit` and within `timeoutMs`, and more than that is an error: nothing
+   * an honest node sends comes close.
+   */
+  private async body(res: Response, limit: number, timeoutMs: number = POLL_TIMEOUT_MS): Promise<string> {
+    if (!this.options.community) return res.text();
+    const { text, overflow } = await readCapped(res, limit, timeoutMs);
+    if (overflow) throw new Error(`The node's answer was larger than ${Math.round(limit / 1_048_576)} MB`);
+    return text;
+  }
+
+  /** A failed answer's body, for its error message or refusal — never more than its first words from a community node. */
+  private async errorBody(res: Response): Promise<string> {
+    if (!this.options.community) return res.text().catch(() => '');
+    return (await readCapped(res, COMMUNITY_BODY_LIMITS.error, POLL_TIMEOUT_MS).catch(() => ({ text: '' }))).text;
+  }
+
   private url(path: string): string {
     return `${this.endpoint.replace(/\/+$/, '')}${path}`;
   }
@@ -324,8 +412,19 @@ export class WorkerClient {
    * Asset URLs point at the worker's own tunnel and inherit its auth, so they
    * must be downloaded through this client rather than handed to a generic
    * fetcher. Returns the bytes for durable storage.
+   *
+   * `maxBytes`: the most this file may be. More is a RejectedOutputError,
+   * raised on the Content-Length before the first byte, or on the chunk that
+   * crosses the line — never after the whole stream is in memory. A community
+   * node always has one (its model's MAX_COMMUNITY_OUTPUT_BYTES when the
+   * caller gives none); a rented worker has none unless asked.
    */
-  async download(assetUrl: string): Promise<{ buffer: Buffer; contentType: string }> {
+  async download(assetUrl: string, opts: { maxBytes?: number } = {}): Promise<{ buffer: Buffer; contentType: string }> {
+    const maxBytes =
+      opts.maxBytes ??
+      (this.options.community
+        ? communityOutputBudget(this.modelKey ? getCatalogEntry(this.modelKey)?.outputKind : undefined)
+        : undefined);
     const controller = new AbortController();
     // A *stall* timeout, not a total one. The old fixed 120 s cap was a
     // bandwidth test dressed up as a health check: a 5-minute song is a 33 MB
@@ -356,9 +455,17 @@ export class WorkerClient {
         // A home node that dropped off the relay after finishing still has
         // the file; the queue waits for it to come back instead of paying
         // for the render again somewhere else.
-        const refused = this.refusal(res.status, await res.text().catch(() => ''), 'the download');
+        const refused = this.refusal(res.status, await this.errorBody(res), 'the download');
         if (refused) throw refused;
         throw new Error(`Failed to download render (HTTP ${res.status})`);
+      }
+
+      // Refused before a byte is read when the node says up front that it is
+      // sending more than the file may be.
+      const declared = Number(res.headers.get('content-length'));
+      if (maxBytes !== undefined && Number.isFinite(declared) && declared > maxBytes) {
+        controller.abort();
+        throw new RejectedOutputError(oversizeReason(maxBytes, declared));
       }
 
       const chunks: Buffer[] = [];
@@ -369,6 +476,13 @@ export class WorkerClient {
           const { done, value } = await reader.read();
           if (done) break;
           if (value) {
+            if (maxBytes !== undefined && bytes + value.byteLength > maxBytes) {
+              // Stop the stream where it crossed the line: the chunks so far
+              // are dropped with this frame, and nothing more is fetched.
+              void reader.cancel().catch(() => {});
+              controller.abort();
+              throw new RejectedOutputError(oversizeReason(maxBytes));
+            }
             chunks.push(Buffer.from(value));
             bytes += value.byteLength;
             keepalive();
@@ -378,6 +492,7 @@ export class WorkerClient {
         // No streaming body (a mocked fetch in tests, or a runtime that does
         // not expose one) — the stall timer cannot help, the ceiling still can.
         const whole = Buffer.from(await res.arrayBuffer());
+        if (maxBytes !== undefined && whole.byteLength > maxBytes) throw new RejectedOutputError(oversizeReason(maxBytes));
         chunks.push(whole);
         bytes = whole.byteLength;
       }
@@ -421,7 +536,7 @@ export class WorkerClient {
     try {
       const res = await this.request(PROGRESS_PATH, { timeout: PROGRESS_TIMEOUT_MS });
       if (!res.ok) return null;
-      const raw = (await res.json()) as Record<string, unknown>;
+      const raw = JSON.parse(await this.body(res, COMMUNITY_BODY_LIMITS.json, PROGRESS_TIMEOUT_MS)) as Record<string, unknown>;
       const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
       return {
         promptId: typeof raw.prompt_id === 'string' ? raw.prompt_id : null,
@@ -456,11 +571,11 @@ export class WorkerClient {
 
     const res = await this.request('/object_info', { timeout: 60_000 });
     if (!res.ok) {
-      const refused = this.refusal(res.status, await res.text().catch(() => ''), 'the node schema request');
+      const refused = this.refusal(res.status, await this.errorBody(res), 'the node schema request');
       if (refused) throw refused;
       throw new Error(`Could not read the worker's node schema (HTTP ${res.status})`);
     }
-    const info = (await res.json()) as ComfyObjectInfo;
+    const info = JSON.parse(await this.body(res, COMMUNITY_BODY_LIMITS.schema, 60_000)) as ComfyObjectInfo;
     cacheSchema(key, info);
     return info;
   }
@@ -533,7 +648,7 @@ export class WorkerClient {
       body: new Uint8Array(body),
       timeout: SUBMIT_TIMEOUT_MS,
     });
-    const text = await res.text();
+    const text = res.ok ? await this.body(res, COMMUNITY_BODY_LIMITS.json, SUBMIT_TIMEOUT_MS) : await this.errorBody(res);
     if (!res.ok) {
       const refused = this.refusal(res.status, text, 'the reference song');
       if (refused) throw refused;
@@ -573,7 +688,7 @@ export class WorkerClient {
       body: new Uint8Array(body),
       timeout: SUBMIT_TIMEOUT_MS,
     });
-    const text = await res.text();
+    const text = res.ok ? await this.body(res, COMMUNITY_BODY_LIMITS.json, SUBMIT_TIMEOUT_MS) : await this.errorBody(res);
     if (!res.ok) {
       const refused = this.refusal(res.status, text, `the ${role} frame`);
       if (refused) throw refused;
@@ -588,11 +703,11 @@ export class WorkerClient {
   private async refreshNodeSpec(objectInfo: ComfyObjectInfo, classType: string): Promise<void> {
     const res = await this.request(`/object_info/${encodeURIComponent(classType)}`, { timeout: 30_000 });
     if (!res.ok) {
-      const refused = this.refusal(res.status, await res.text().catch(() => ''), `the ${classType} schema request`);
+      const refused = this.refusal(res.status, await this.errorBody(res), `the ${classType} schema request`);
       if (refused) throw refused;
       throw new Error(`Could not refresh the worker's ${classType} schema (HTTP ${res.status})`);
     }
-    const fresh = (await res.json()) as ComfyObjectInfo;
+    const fresh = JSON.parse(await this.body(res, COMMUNITY_BODY_LIMITS.json, 30_000)) as ComfyObjectInfo;
     if (fresh[classType]) objectInfo[classType] = fresh[classType];
   }
 
@@ -726,7 +841,7 @@ export class WorkerClient {
       timeout: SUBMIT_TIMEOUT_MS,
     });
 
-    const text = await res.text();
+    const text = res.ok ? await this.body(res, COMMUNITY_BODY_LIMITS.json, SUBMIT_TIMEOUT_MS) : await this.errorBody(res);
     if (!res.ok) {
       // A paused or busy home node refuses /prompt with a stage (503, or 409
       // while its previous prompt runs) — not the graph's fault.
@@ -767,7 +882,16 @@ export class WorkerClient {
     const res = await this.request(`/history/${encodeURIComponent(promptId)}`);
     if (!res.ok) return { state: 'pending' };
 
-    const history = (await res.json()) as Record<
+    let raw: string;
+    try {
+      raw = await this.body(res, COMMUNITY_BODY_LIMITS.json);
+    } catch (error) {
+      // One prompt's history is a few KB. A node answering with megabytes
+      // (or never finishing) is not reporting a render: the job moves on.
+      if (this.options.community) return { state: 'failed', error: `Unreadable history from the node: ${(error as Error).message}` };
+      throw error;
+    }
+    const history = JSON.parse(raw) as Record<
       string,
       {
         status?: { status_str?: string; completed?: boolean; messages?: unknown[] };
@@ -802,7 +926,7 @@ export class WorkerClient {
     try {
       const res = await this.request('/queue');
       if (!res.ok) return true; // can't tell — assume still pending
-      const body = await res.text();
+      const body = await this.body(res, COMMUNITY_BODY_LIMITS.json);
       return body.includes(promptId);
     } catch {
       return true;
