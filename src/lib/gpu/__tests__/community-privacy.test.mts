@@ -19,7 +19,9 @@ process.env.DATABASE_URL ??= 'mysql://test:test@127.0.0.1:3306/test';
 
 const {
   COMMUNITY_SAFE_JOB,
+  NO_MACHINE_LISTING_TEXT,
   communityLastServingAt,
+  communityListing,
   communityOrderRefusal,
   communityQueueGraceMs,
   communityRefusalMessage,
@@ -113,6 +115,18 @@ test('an order a community machine may not take is refused before charging, what
 test('a general order is refused only when no machine could take it', () => {
   assert.equal(communityOrderRefusal({ contentTier: 'general', hasInputMedia: false, machineAvailable: false }), 'no-machine');
   assert.equal(communityOrderRefusal({ contentTier: 'general', hasInputMedia: false, machineAvailable: true }), null);
+});
+
+test('the model list offers a community-only model only while a machine could take the order', () => {
+  const on = { providerActive: true, storageConfigured: true };
+  assert.equal(communityListing({ ...on, machineAvailable: true }), 'ok');
+  // Every home PC switched off: listed as closed, not offered only to be refused at the door.
+  assert.equal(communityListing({ ...on, machineAvailable: false }), 'no-machine');
+  assert.equal(communityListing({ providerActive: false, storageConfigured: true, machineAvailable: true }), 'not-connected');
+  assert.equal(communityListing({ providerActive: true, storageConfigured: false, machineAvailable: true }), 'maintenance');
+  // The list says why in Thai, without the order refusal's "no credit was taken" (nothing was ordered).
+  assert.match(NO_MACHINE_LISTING_TEXT, /[฀-๿]/);
+  assert.doesNotMatch(NO_MACHINE_LISTING_TEXT, /หักเครดิต/);
 });
 
 test('every refusal is Thai and says no credit was taken', () => {

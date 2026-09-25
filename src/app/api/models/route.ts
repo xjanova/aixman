@@ -8,6 +8,8 @@ import { getGpuConfig } from '@/lib/gpu/config';
 import { GpuBalance } from '@/lib/services/gpu-balance';
 import { isStorageConfigured } from '@/lib/storage/r2';
 import { isInHouse, publicProvider } from '@/lib/public-provider';
+import { communityListing, NO_MACHINE_LISTING_TEXT } from '@/lib/gpu/community-dispatch';
+import { communityMachineAvailable } from '@/lib/gpu/community-availability';
 import { getAllStoredWorkflows, visibleQualityModes } from '@/lib/gpu/workflow-overrides';
 
 /**
@@ -20,17 +22,19 @@ import { getAllStoredWorkflows, visibleQualityModes } from '@/lib/gpu/workflow-o
  * Every model also carries whether it can be ordered *right now* and, if not,
  * a customer-safe reason, so the studio can grey it out instead of letting a
  * customer type a prompt for a model whose provider is not connected, whose
- * keys are all failing, or whose rental is switched off.
+ * keys are all failing, or whose rental is switched off — or, for a model only
+ * GPUxMINE home PCs run, when no such PC may take an order right now.
  */
 
 export const dynamic = 'force-dynamic';
 
-type Availability = 'ok' | 'not-connected' | 'busy' | 'maintenance';
+type Availability = 'ok' | 'not-connected' | 'busy' | 'maintenance' | 'no-machine';
 
 const UNAVAILABLE_TEXT: Record<Exclude<Availability, 'ok'>, string> = {
   'not-connected': 'ยังไม่เปิดให้บริการ',
   busy: 'มีผู้ใช้งานหนาแน่น ลองใหม่ในอีกสักครู่',
   maintenance: 'ปิดปรับปรุงชั่วคราว',
+  'no-machine': NO_MACHINE_LISTING_TEXT,
 };
 
 /**
@@ -155,11 +159,22 @@ export async function GET() {
 
   // A community-only model (sdxl-community) is served by GPUxMINE home PCs: it
   // rents nothing and calls no vendor's API, so neither the rental switch nor
-  // the SimplePod row's keys say whether it can take an order — only the
-  // provider row being on and somewhere to keep the render, exactly what
-  // GenerationService checks before a community machine is looked for.
-  const communityAvailability = (provider: { isActive: boolean }): Availability =>
-    !provider.isActive ? 'not-connected' : !isStorageConfigured() ? 'maintenance' : 'ok';
+  // the SimplePod row's keys say whether it can take an order — the provider
+  // row being on, somewhere to keep the render and a home PC that may serve
+  // it do, exactly what GenerationService checks before charging. One query
+  // per such model; a read that fails leaves the decision to the order path.
+  const communityOnly = models.filter((m) => isInHouse(m.provider.slug) && isCommunityOnlyModel(m.modelId));
+  const machineFor = new Map(
+    await Promise.all(
+      communityOnly.map(async (m) => [m.modelId, await communityMachineAvailable(m.modelId).catch(() => true)] as const)
+    )
+  );
+  const communityAvailability = (m: { modelId: string; provider: { isActive: boolean } }): Availability =>
+    communityListing({
+      providerActive: m.provider.isActive,
+      storageConfigured: isStorageConfigured(),
+      machineAvailable: machineFor.get(m.modelId) ?? true,
+    });
 
   return NextResponse.json({
     models: models.map((m) => {
@@ -167,7 +182,7 @@ export async function GET() {
       const avail = pausedModels.has(m.modelId)
         ? 'maintenance'
         : inHouse && isCommunityOnlyModel(m.modelId)
-          ? communityAvailability(m.provider)
+          ? communityAvailability(m)
           : availability(m.provider);
       const readinessOk = ModelReadiness.canOrder(m.readiness, admin);
       const status = avail !== 'ok' ? 'unavailable' : m.readiness === 'tuning' ? 'tuning' : readinessOk ? 'ready' : 'unavailable';

@@ -776,3 +776,28 @@ const COMMUNITY_REFUSAL_MESSAGE: Record<CommunityOrderRefusal, string> = {
 export function communityRefusalMessage(refusal: CommunityOrderRefusal): string {
   return COMMUNITY_REFUSAL_MESSAGE[refusal];
 }
+
+export type CommunityListing = 'ok' | 'not-connected' | 'maintenance' | 'no-machine';
+
+/**
+ * How the studio's model list (/api/models) shows a community-only model,
+ * from the facts the order path checks before charging: the provider row is
+ * on, there is somewhere to keep the render, and a community machine may
+ * serve it (communityRowMayServe over the model's rows).
+ *
+ * The list used to leave the machine out. With every home PC switched off it
+ * showed the model as orderable, the customer wrote a prompt, and the order
+ * was refused with 'no-machine' — every time, until a node came back.
+ */
+export function communityListing(s: {
+  providerActive: boolean;
+  storageConfigured: boolean;
+  machineAvailable: boolean;
+}): CommunityListing {
+  if (!s.providerActive) return 'not-connected';
+  if (!s.storageConfigured) return 'maintenance';
+  return s.machineAvailable ? 'ok' : 'no-machine';
+}
+
+/** The model list's reason for 'no-machine': the order refusal's words, less "no credit was taken". */
+export const NO_MACHINE_LISTING_TEXT = 'ยังไม่มีเครื่องชุมชนออนไลน์รับงานโมเดลนี้ กรุณาลองใหม่ภายหลัง หรือเลือกโมเดลอื่น';

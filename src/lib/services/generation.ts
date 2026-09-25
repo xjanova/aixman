@@ -17,13 +17,8 @@ import { getStoredWorkflow, pickQualityMode } from '@/lib/gpu/workflow-overrides
 import { GpuBalance, RENDERING_PAUSED_MESSAGE } from './gpu-balance';
 import { raiseAlert } from '@/lib/notify/alerts';
 import { BLOCKED_LABEL, blockedMessage, classifyContent, type ContentAssessment } from '@/lib/safety/content-tier';
-import {
-  COMMUNITY_ORDERABLE_STATUSES,
-  COMMUNITY_PROVIDER_SLUGS,
-  communityOrderRefusal,
-  communityRefusalMessage,
-  communityRowMayServe,
-} from '@/lib/gpu/community-dispatch';
+import { communityOrderRefusal, communityRefusalMessage } from '@/lib/gpu/community-dispatch';
+import { communityMachineAvailable } from '@/lib/gpu/community-availability';
 import { OrderRefusedError } from './order-refusal';
 
 /**
@@ -116,7 +111,7 @@ export class GenerationService {
       const refusal = communityOrderRefusal({
         contentTier: content.tier,
         hasInputMedia,
-        machineAvailable: await this.communityMachineAvailable(model.modelId),
+        machineAvailable: await communityMachineAvailable(model.modelId),
       });
       if (refusal) {
         throw new OrderRefusedError(
@@ -554,29 +549,6 @@ export class GenerationService {
       path: '/admin/generations',
     });
     throw new OrderRefusedError(blockedMessage(category), 'content-blocked', 422);
-  }
-
-  /**
-   * Whether a GPUxMINE machine for this model is up, busy, or warming for a
-   * reason its owner may undo in a minute (paused, their own work, a blip),
-   * and not held out of the pool. A PC that is switched off does not count
-   * (community-dispatch.ts communityRowMayServe). An order for a
-   * community-only model with none would only wait out the grace and be
-   * refunded.
-   */
-  private static async communityMachineAvailable(modelKey: string): Promise<boolean> {
-    const rows = await prisma.aiGpuWorker.findMany({
-      where: {
-        modelKey,
-        providerSlug: { in: [...COMMUNITY_PROVIDER_SLUGS] },
-        status: { in: [...COMMUNITY_ORDERABLE_STATUSES] },
-        terminatedAt: null,
-      },
-      select: { status: true, endpoint: true, metadata: true, readyAt: true, lastJobAt: true, lastError: true },
-      take: 500,
-    });
-    const now = Date.now();
-    return rows.some((row) => communityRowMayServe(row, now));
   }
 
   /**
