@@ -107,6 +107,7 @@ const STAGE_LABEL: Record<string, string> = {
   busy: 'เครื่องกำลังทำงานอื่นอยู่',
   draining: 'เครื่องกำลังหยุดรับงาน',
   disabled: 'relay ปิดการรับงานของเครื่องนี้ชั่วคราว (ผู้ดูแลระงับไว้)',
+  'relay-busy': 'relay ไม่ว่างชั่วคราว — คำขอยังไม่ถึงเครื่อง',
 };
 
 /**
@@ -118,6 +119,32 @@ export const RELAY_DISABLED_ERROR = 'worker-disabled';
 
 /** The stage a relay-disabled node is read as, for refusals and probes alike. */
 export const DISABLED_STAGE = 'disabled';
+
+/**
+ * The relay pushing back for itself (contract C4): 503 `{error:'relay-busy'}`
+ * when the buffers it holds request bodies in are full (Retry-After 5), and
+ * 429 `{error:'rate-limited'}` when this worker's tunnel allowance is spent.
+ * Neither carries a stage, because neither says anything about the node: the
+ * relay turns the request away before the node sees it. Read as this stage,
+ * so the job goes back to the queue without spending an attempt and the
+ * machine stays in rotation — not parked in `warming`, not on the job's
+ * avoid list.
+ */
+export const RELAY_BUSY_ERROR = 'relay-busy';
+
+/** The stage relay pushback (503 relay-busy, 429) is read as. */
+export const RELAY_BUSY_STAGE = 'relay-busy';
+
+/**
+ * Relay pushback on one machine this many times in a row, with no submit
+ * getting through in between, parks it like any other "not now". Once is the
+ * relay under load. Again and again is more likely that node's own share of
+ * the relay (its agent stopped reading, so the relay's buffer for it stays
+ * full) — or a modified node answering in the relay's words to stay in
+ * rotation while refusing every job. Parked, it is asked /aixman/ready next
+ * tick like any warming row, and comes back on a 200.
+ */
+export const RELAY_PUSHBACK_PARK_AFTER = 3;
 
 export function stageLabel(stage: string): string {
   return STAGE_LABEL[stage] ?? `เครื่องยังไม่พร้อม (${stage})`;
@@ -133,9 +160,15 @@ export interface NodeRefusal {
  * A node's refusal to take work: 503 `{ready:false, stage, reason}` from the
  * node or the relay, 409 `{stage:'busy'}` for a second prompt, or the relay's
  * 403 `{error:'worker-disabled'}` for a node an admin has switched off for
- * now. Anything without a stage is an ordinary failure, not a refusal.
+ * now. The relay's own pushback — 503 `{error:'relay-busy'}`, and any 429 —
+ * is read as stage `relay-busy`. Anything else without a stage is an ordinary
+ * failure, not a refusal.
  */
 export function parseNodeRefusal(status: number, body: string): NodeRefusal | null {
+  // A rate limit is never the node's verdict on the work (the node client has
+  // no 429 of its own), whatever the body says — the relay's, or a proxy's in
+  // front of it.
+  if (status === 429) return { stage: RELAY_BUSY_STAGE, reason: 'rate-limited', status };
   if (status !== 503 && status !== 409 && status !== 403) return null;
   let parsed: unknown;
   try {
@@ -148,8 +181,10 @@ export function parseNodeRefusal(status: number, body: string): NodeRefusal | nu
     // Only the reversible 403 is a "not now"; path-not-allowed and the rest stay failures.
     return (parsed as { error?: unknown }).error === RELAY_DISABLED_ERROR ? { stage: DISABLED_STAGE, status } : null;
   }
-  const { stage, reason, detail } = parsed as { stage?: unknown; reason?: unknown; detail?: unknown };
-  if (typeof stage !== 'string' || stage.trim() === '') return null;
+  const { stage, reason, detail, error } = parsed as { stage?: unknown; reason?: unknown; detail?: unknown; error?: unknown };
+  if (typeof stage !== 'string' || stage.trim() === '') {
+    return status === 503 && error === RELAY_BUSY_ERROR ? { stage: RELAY_BUSY_STAGE, reason: RELAY_BUSY_ERROR, status } : null;
+  }
   const why = typeof reason === 'string' ? reason : typeof detail === 'string' ? detail : undefined;
   return { stage: stage.trim().slice(0, 40), reason: why?.slice(0, 200), status };
 }
@@ -177,6 +212,11 @@ export function isNodeRefusal(error: unknown): error is NodeRefusedError {
   return error instanceof NodeRefusedError || (error as { name?: unknown } | null)?.name === 'NodeRefusedError';
 }
 
+/** The relay turned the request away for itself (503 relay-busy, 429) — see RELAY_BUSY_ERROR. */
+export function isRelayPushback(error: unknown): error is NodeRefusedError {
+  return isNodeRefusal(error) && error.stage === RELAY_BUSY_STAGE;
+}
+
 // ---------------------------------------------------------------------------
 // Submitting
 // ---------------------------------------------------------------------------
@@ -186,7 +226,9 @@ export interface SubmitFailurePlan {
   requeueWithoutAttempt: boolean;
   /**
    * What the worker becomes. `warming` = out of rotation until the reconciler
-   * hears a 200 from its /aixman/ready again. Null = settleFailure's usual rule.
+   * hears a 200 from its /aixman/ready again. Null = settleFailure's usual
+   * rule — or, with `requeueWithoutAttempt`, straight back to `ready`: the
+   * relay pushed back and the node itself was never asked.
    */
   workerStatus: 'warming' | null;
   /** Never offer this job to this worker again. */
@@ -198,13 +240,20 @@ export interface SubmitFailurePlan {
  *
  * Rented machines keep the rule they always had. A community machine that
  * refused with a stage is paused, busy or offline — the job owes it nothing
- * and should not pay an attempt for it. Any other failure on a community
- * machine (a checkpoint the owner deleted, a broken ComfyUI) would fail the
- * same way again, so the job moves on to another node and this one is checked
- * before it gets more work.
+ * and should not pay an attempt for it. The relay pushing back for itself
+ * (relay-busy, rate-limited) owes the job nothing either, and says nothing
+ * about the node, which stays in rotation — until it has happened
+ * RELAY_PUSHBACK_PARK_AFTER times in a row (`pushbacksInARow` counts the ones
+ * before this). Any other failure on a community machine (a checkpoint the
+ * owner deleted, a broken ComfyUI) would fail the same way again, so the job
+ * moves on to another node and this one is checked before it gets more work.
  */
-export function planSubmitFailure(error: unknown, community: boolean): SubmitFailurePlan {
+export function planSubmitFailure(error: unknown, community: boolean, pushbacksInARow: number = 0): SubmitFailurePlan {
   if (!community) return { requeueWithoutAttempt: false, workerStatus: null, avoidWorker: false };
+  if (isRelayPushback(error)) {
+    const park = pushbacksInARow + 1 >= RELAY_PUSHBACK_PARK_AFTER;
+    return { requeueWithoutAttempt: true, workerStatus: park ? 'warming' : null, avoidWorker: false };
+  }
   if (isNodeRefusal(error)) return { requeueWithoutAttempt: true, workerStatus: 'warming', avoidWorker: false };
   return { requeueWithoutAttempt: false, workerStatus: 'warming', avoidWorker: true };
 }
@@ -342,6 +391,17 @@ export function classifyCommunityProbe(result: ProbeResult): ProbeVerdict {
     const why = typeof body.reason === 'string' ? body.reason : typeof body.detail === 'string' ? body.detail : '';
     return { next: 'warming', stage, detail: `${stageLabel(stage)} (${stage})${why ? `: ${why}` : ''}`.slice(0, 300) };
   }
+  // The relay pushing back for itself never reached the node, so the node is
+  // not blamed for it (and its cached schema is kept — transitionAfterProbe).
+  // Still out of rotation until the next tick's probe: a probe is one small
+  // GET, and a relay that turns even that away would turn the job away too.
+  if (result.status === 429 || (result.status === 503 && body.error === RELAY_BUSY_ERROR)) {
+    return {
+      next: 'warming',
+      stage: RELAY_BUSY_STAGE,
+      detail: `${stageLabel(RELAY_BUSY_STAGE)} (${RELAY_BUSY_STAGE}) — HTTP ${result.status}`,
+    };
+  }
   return { next: 'warming', detail: `เครื่องตอบ HTTP ${result.status}` };
 }
 
@@ -456,11 +516,13 @@ export function transitionAfterProbe(prevStatus: string, verdict: ProbeVerdict):
   if (verdict.next === 'ready') {
     return { status: 'ready', stampReadyAt: prevStatus !== 'ready', lastError: verdict.detail ?? null, forgetSchema: false };
   }
+  // Relay pushback never reached the node: nothing on it can have changed.
+  const nodeAnswered = !(verdict.next === 'warming' && verdict.stage === RELAY_BUSY_STAGE);
   return {
     status: verdict.next,
     stampReadyAt: false,
     lastError: verdict.detail,
-    forgetSchema: prevStatus === 'ready' || prevStatus === 'busy' || verdict.next === 'terminated',
+    forgetSchema: verdict.next === 'terminated' || (nodeAnswered && (prevStatus === 'ready' || prevStatus === 'busy')),
   };
 }
 

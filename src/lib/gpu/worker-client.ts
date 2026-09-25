@@ -311,7 +311,8 @@ export async function purgeCommunityJob(endpoint: string, authToken: string | un
 export interface WorkerClientOptions {
   /**
    * The worker is a GPUxMINE home machine. Its "not now" answers (503 with a
-   * stage, 409 busy — contract C5) become NodeRefusedError so the queue can
+   * stage, 409 busy — contract C5), and the relay's own pushback in front of
+   * it (503 relay-busy, 429 — C4), become NodeRefusedError so the queue can
    * requeue the job without spending an attempt, and its schema is re-read
    * every COMMUNITY_SCHEMA_TTL_MS.
    */

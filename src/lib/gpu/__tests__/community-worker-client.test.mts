@@ -206,6 +206,39 @@ test('a history answer of megabytes is not a render report: the job moves on', a
   assert.ok(body.pulled() <= 12 * MB);
 });
 
+test("the relay's own relay-busy and rate limit on /prompt are pushback, not the node failing the job", async () => {
+  const { isRelayPushback } = await import('@/lib/gpu/community-dispatch');
+  for (const answer of [
+    () => {
+      const res = json(503, { error: 'relay-busy' });
+      res.headers.set('Retry-After', '5');
+      return res;
+    },
+    () => json(429, { error: 'rate-limited' }),
+  ]) {
+    scripted({ 'GET /object_info': () => json(200, baseline.classes), 'POST /prompt': answer });
+    const client = new WorkerClient(endpoint(), PROFILE, 'token', 'sdxl-community', null, { community: true });
+    await assert.rejects(client.submit(JOB), (error: unknown) => {
+      assert.equal(isRelayPushback(error), true);
+      assert.equal((error as { stage: string }).stage, 'relay-busy');
+      return true;
+    });
+  }
+
+  // A rented worker behind some proxy answering the same keeps its old error.
+  scripted({ 'GET /object_info': () => json(200, baseline.classes), 'POST /prompt': () => json(503, { error: 'relay-busy' }) });
+  const rented = new WorkerClient(endpoint(), PROFILE, 'token', 'sdxl-community');
+  await assert.rejects(rented.submit(JOB), (error: unknown) => !isNodeRefusal(error) && /HTTP 503/.test((error as Error).message));
+});
+
+test('a finished render the relay rate-limits is waited for, not thrown away', async () => {
+  scripted({ 'GET /view': () => json(429, { error: 'rate-limited' }) });
+  const base = endpoint();
+  const community = new WorkerClient(base, PROFILE, 'token', 'sdxl-community', null, { community: true });
+
+  await assert.rejects(community.download(`${base}/view?filename=a.png&type=output`), (error: unknown) => isNodeRefusal(error));
+});
+
 test('a node the relay has disabled refuses /prompt as a "not now", so no attempt is spent', async () => {
   scripted({
     'GET /object_info': () => json(200, baseline.classes),

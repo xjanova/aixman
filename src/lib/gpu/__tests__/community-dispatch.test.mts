@@ -17,18 +17,23 @@ import {
   PROBE_BUDGET_MS,
   ProbeBudget,
   READY_REPROBE_MS,
+  RELAY_BUSY_STAGE,
   RELAY_DOWN_AFTER,
+  RELAY_PUSHBACK_PARK_AFTER,
   classifyCommunityProbe,
   communityHoldReason,
   isCommunitySlug,
   isNodeRefusal,
+  isRelayPushback,
   laneOf,
+  lastErrorSaysAway,
   parseNodeRefusal,
   planCommunityReconcile,
   planSubmitFailure,
   rankCommunityCandidates,
   readAvoidList,
   slowLaneOpen,
+  stageLabel,
   transitionAfterProbe,
   withAvoided,
   type CommunityMeta,
@@ -318,6 +323,103 @@ test('rented machines keep the rule they always had', () => {
   const unchanged = { requeueWithoutAttempt: false, workerStatus: null, avoidWorker: false };
   assert.deepEqual(planSubmitFailure(refused, false), unchanged);
   assert.deepEqual(planSubmitFailure(new Error('boom'), false), unchanged);
+  const pushback = new NodeRefusedError({ stage: RELAY_BUSY_STAGE, status: 429 }, 'the prompt');
+  assert.deepEqual(planSubmitFailure(pushback, false), unchanged);
+});
+
+// ---------------------------------------------------------------------------
+// The relay pushing back for itself (contract C4)
+// ---------------------------------------------------------------------------
+
+test("the relay's relay-busy and rate limit are read as its own pushback, not the node's refusal", () => {
+  // RelayHost.BusyAsync: 503 {error:'relay-busy'} with Retry-After, and no stage
+  // on purpose — "this says nothing about the node".
+  assert.deepEqual(parseNodeRefusal(503, JSON.stringify({ error: 'relay-busy' })), {
+    stage: RELAY_BUSY_STAGE,
+    reason: 'relay-busy',
+    status: 503,
+  });
+  // The rate limiter's 429 {error:'rate-limited'} — and any 429, since a node
+  // never answers one of its own (a proxy in front of the relay may).
+  assert.equal(parseNodeRefusal(429, JSON.stringify({ error: 'rate-limited' }))?.stage, RELAY_BUSY_STAGE);
+  assert.equal(parseNodeRefusal(429, 'Too Many Requests')?.stage, RELAY_BUSY_STAGE);
+  assert.equal(parseNodeRefusal(429, '')?.status, 429);
+
+  // Only 503 carries relay-busy; other statuses and other errors keep their meaning.
+  assert.equal(parseNodeRefusal(500, JSON.stringify({ error: 'relay-busy' })), null);
+  assert.equal(parseNodeRefusal(409, JSON.stringify({ error: 'relay-busy' })), null);
+  assert.equal(parseNodeRefusal(503, JSON.stringify({ error: 'body-too-large' })), null);
+  assert.equal(parseNodeRefusal(403, JSON.stringify({ error: 'relay-busy' })), null);
+  // A node's own stage still wins over an error field beside it.
+  assert.equal(parseNodeRefusal(503, JSON.stringify({ stage: 'paused', error: 'relay-busy' }))?.stage, 'paused');
+
+  const pushback = new NodeRefusedError({ stage: RELAY_BUSY_STAGE, status: 503 }, 'the prompt');
+  assert.equal(isNodeRefusal(pushback), true);
+  assert.equal(isRelayPushback(pushback), true);
+  assert.equal(isRelayPushback(new NodeRefusedError({ stage: 'paused', status: 503 }, 'the prompt')), false);
+  assert.equal(isRelayPushback(new Error('relay-busy')), false);
+});
+
+test('relay pushback requeues the job without an attempt and keeps the node in rotation, off no avoid list', () => {
+  // It used to count as the node failing: an attempt spent, the node parked
+  // in warming and the job told never to go back to a machine that was fine.
+  const pushback = new NodeRefusedError({ stage: RELAY_BUSY_STAGE, status: 503 }, 'the prompt');
+  assert.deepEqual(planSubmitFailure(pushback, true), {
+    requeueWithoutAttempt: true,
+    workerStatus: null,
+    avoidWorker: false,
+  });
+  const limited = new NodeRefusedError({ stage: RELAY_BUSY_STAGE, status: 429 }, 'the prompt');
+  assert.deepEqual(planSubmitFailure(limited, true, 1), {
+    requeueWithoutAttempt: true,
+    workerStatus: null,
+    avoidWorker: false,
+  });
+});
+
+test('relay pushback on the same node again and again parks it, still without costing the job an attempt', () => {
+  // A stuck share of the relay (the node's agent stopped reading), or a
+  // modified node answering in the relay's words to stay in rotation while
+  // refusing every job.
+  const pushback = new NodeRefusedError({ stage: RELAY_BUSY_STAGE, status: 503 }, 'the prompt');
+  assert.equal(planSubmitFailure(pushback, true, RELAY_PUSHBACK_PARK_AFTER - 2).workerStatus, null);
+  assert.deepEqual(planSubmitFailure(pushback, true, RELAY_PUSHBACK_PARK_AFTER - 1), {
+    requeueWithoutAttempt: true,
+    workerStatus: 'warming',
+    avoidWorker: false,
+  });
+  assert.equal(planSubmitFailure(pushback, true, RELAY_PUSHBACK_PARK_AFTER + 5).workerStatus, 'warming');
+  // The count is only about pushback: a node's own "not now" parks it at once, as before.
+  const paused = new NodeRefusedError({ stage: 'paused', status: 503 }, 'the prompt');
+  assert.equal(planSubmitFailure(paused, true, 0).workerStatus, 'warming');
+});
+
+test('a probe the relay pushed back does not blame the node, keeps its schema, and is asked again next tick', () => {
+  for (const result of [
+    { status: 503, body: { error: 'relay-busy' } },
+    { status: 429, body: { error: 'rate-limited' } },
+    { status: 429, body: null },
+  ]) {
+    const verdict = classifyCommunityProbe(result);
+    assert.equal(verdict.next, 'warming');
+    assert.ok(verdict.next === 'warming' && verdict.stage === RELAY_BUSY_STAGE);
+    assert.match((verdict as { detail: string }).detail, /relay-busy/);
+    assert.doesNotMatch((verdict as { detail: string }).detail, /เครื่องตอบ/);
+    // Nothing on the node changed: its multi-megabyte /object_info stays cached.
+    assert.equal(transitionAfterProbe('ready', verdict).forgetSchema, false);
+    assert.equal(transitionAfterProbe('busy', verdict).forgetSchema, false);
+  }
+  // Out of rotation only until the next tick's probe.
+  assert.deepEqual(planCommunityReconcile(row({ status: 'warming', lastProbedAt: NOW - 1_000 })), { kind: 'probe' });
+  // A 503 with some other error is still just an odd answer.
+  assert.equal(classifyCommunityProbe({ status: 503, body: { error: 'other' } }).next, 'warming');
+  assert.match((classifyCommunityProbe({ status: 503, body: { error: 'other' } }) as { detail: string }).detail, /HTTP 503/);
+});
+
+test('relay pushback is not an owner who is away, so a new order for the model is still taken', () => {
+  assert.equal(lastErrorSaysAway(`${stageLabel(RELAY_BUSY_STAGE)} (${RELAY_BUSY_STAGE})`), false);
+  assert.equal(lastErrorSaysAway(`${stageLabel('offline')} (offline)`), true);
+  assert.match(stageLabel(RELAY_BUSY_STAGE), /relay/);
 });
 
 test('a job remembers the machines it failed on, bounded, and shrugs off junk', () => {

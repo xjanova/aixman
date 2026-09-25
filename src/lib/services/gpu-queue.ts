@@ -11,6 +11,7 @@ import {
   communityLastServingAt,
   communityQueueGraceMs,
   isNodeRefusal,
+  isRelayPushback,
   laneOf,
   payloadHasInputMedia,
   pickClaimCandidate,
@@ -146,6 +147,14 @@ let earningsSweepRunning = false;
 const communitySeenServingAt = new Map<number, number>();
 /** Before this the process saw nothing: a row it never saw serving is given the benefit of the doubt from here. */
 const PROCESS_STARTED_AT = Date.now();
+
+/**
+ * Relay pushback (503 relay-busy, 429) each community row has had on submit
+ * since a submit to it last got through (worker id → count). At
+ * RELAY_PUSHBACK_PARK_AFTER the row is parked; any other outcome clears it.
+ * Bounded by the pool's size.
+ */
+const relayPushbacksInARow = new Map<number, number>();
 
 /** Warn admins once a day when today's GPU spend reaches this share of the budget. */
 const BUDGET_WARN_AT = 0.8;
@@ -655,11 +664,16 @@ export class GpuQueue {
       queued -= 1;
       try {
         await this.submitJob(claim.job, held);
+        relayPushbacksInARow.delete(worker.id);
         dispatched += 1;
       } catch (error) {
-        const plan = planSubmitFailure(error, isCommunity);
+        const pushback = isCommunity && isRelayPushback(error);
+        const inARow = pushback ? (relayPushbacksInARow.get(worker.id) ?? 0) : 0;
+        const plan = planSubmitFailure(error, isCommunity, inARow);
+        if (pushback && plan.workerStatus === null) relayPushbacksInARow.set(worker.id, inARow + 1);
+        else relayPushbacksInARow.delete(worker.id);
         if (plan.requeueWithoutAttempt) {
-          await this.requeueRefused(claim.job, held, error as Error);
+          await this.requeueRefused(claim.job, held, error as Error, plan.workerStatus);
           queued += 1;
           continue;
         }
@@ -675,9 +689,21 @@ export class GpuQueue {
    * own work, or offline (contract C5). Nothing is wrong with the job: it goes
    * back to the queue with its attempt handed back, and the node leaves
    * rotation until the reconciler hears a 200 from its /aixman/ready.
+   *
+   * `workerStatus` null: the relay pushed back for itself (relay-busy,
+   * rate-limited) and the node never saw the request, so the machine goes
+   * straight back to `ready` — the next pass, ten seconds on and past the
+   * relay's Retry-After, may offer it work again. This pass moves on to the
+   * next machine, which may take the same job.
    */
-  private static async requeueRefused(job: AiGpuJob, worker: AiGpuWorker, error: Error): Promise<void> {
+  private static async requeueRefused(
+    job: AiGpuJob,
+    worker: AiGpuWorker,
+    error: Error,
+    workerStatus: 'warming' | null = 'warming'
+  ): Promise<void> {
     const stage = isNodeRefusal(error) ? error.stage : 'unknown';
+    const pushback = isRelayPushback(error);
     await prisma.aiGpuJob.updateMany({
       where: { id: job.id, status: 'assigned' },
       data: {
@@ -686,14 +712,26 @@ export class GpuQueue {
         externalJobId: null,
         startedAt: null,
         attempts: { decrement: 1 },
-        errorMessage: `Node #${worker.id} refused (${stage}); requeued without spending an attempt`.slice(0, 1000),
+        errorMessage: (pushback
+          ? `The relay turned node #${worker.id}'s request away (${stage}, HTTP ${error.status}); requeued without spending an attempt`
+          : `Node #${worker.id} refused (${stage}); requeued without spending an attempt`
+        ).slice(0, 1000),
       },
     });
+    // Guarded on the reservation and on retirement: a retire or a suspension
+    // that landed during the submit is never undone here.
     await prisma.aiGpuWorker.updateMany({
-      where: { id: worker.id, status: 'busy' },
-      data: { status: 'warming', lastError: `${stageLabel(stage)} (${stage})`.slice(0, 1000) },
+      where: { id: worker.id, status: 'busy', terminatedAt: null },
+      data:
+        workerStatus === 'warming'
+          ? { status: 'warming', lastError: `${stageLabel(stage)} (${stage})`.slice(0, 1000) }
+          : { status: 'ready' },
     });
-    console.log(`[gpu] ${job.modelKey}: community node #${worker.id} refused job ${job.id} (${stage}) — requeued`);
+    console.log(
+      `[gpu] ${job.modelKey}: ${pushback ? `the relay pushed back on community node #${worker.id}` : `community node #${worker.id} refused`} job ${job.id} (${stage}) — requeued${
+        pushback ? (workerStatus === 'warming' ? ', node parked after repeated pushback' : ', node kept in rotation') : ''
+      }`
+    );
   }
 
   /** Hand a claimed, never-submitted job back to the queue with its attempt returned. */
