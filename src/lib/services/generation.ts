@@ -8,7 +8,7 @@ import { ModelReadiness, TUNING_MESSAGE } from './model-readiness';
 import { persistAssetSafe, isStorageConfigured } from '@/lib/storage/r2';
 import type { GenerationRequest, GenerationResult, ProviderSlug } from '@/types';
 import { fitFrame } from '@/lib/gpu/frame';
-import { getCatalogEntry, isAdminOnlyPreset, isCommunityOnlyModel } from '@/lib/gpu/catalog';
+import { getCatalogEntry, isAdminOnlyPreset, isCommunityOnlyModel, orderNeedsProviderAccount } from '@/lib/gpu/catalog';
 import { isAcceptedAudioSource, isAcceptedFrameSource } from '@/lib/gpu/frame-input';
 import { creditsForDuration } from '@/lib/pricing';
 import { sanitizeMusicParams } from '@/lib/music-style';
@@ -228,9 +228,14 @@ export class GenerationService {
       ...(request.inputImageEnd ? { inputImageEnd: request.inputImageEnd } : {}),
     };
 
-    // 2. Select an account from the pool
-    const account = await AccountPoolManager.selectAccount(model.providerId);
-    if (!account) {
+    // 2. Select an account from the pool — unless the model is community-only
+    //    (orderNeedsProviderAccount). Asking for one tied sdxl-community to the
+    //    SimplePod row's key: on a deploy where that key was missing, over quota
+    //    or in cooldown every order was refused as "Service temporarily
+    //    unavailable", by a rental vendor the model never uses.
+    const needsAccount = orderNeedsProviderAccount(model.modelId, gpuModel);
+    const account = needsAccount ? await AccountPoolManager.selectAccount(model.providerId) : null;
+    if (needsAccount && !account) {
       raiseAlert({
         type: 'no-accounts',
         key: String(model.providerId),
@@ -275,7 +280,7 @@ export class GenerationService {
             : Prisma.JsonNull) as Prisma.InputJsonValue,
           inputImage: request.inputImage,
           creditsUsed: requiredCredits,
-          accountPoolId: account.id,
+          accountPoolId: account?.id ?? null,
           contentTier: content.tier,
         },
       });
@@ -348,6 +353,10 @@ export class GenerationService {
         creditsUsed: requiredCredits,
       };
     }
+
+    // Only a community-only GPU model goes without an account, and it returned
+    // above; this says so to the compiler for everything below.
+    if (!account) throw new Error('No available API accounts for this provider. Please try again later.');
 
     // 6. Execute generation via provider
     try {

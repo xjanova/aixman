@@ -1447,6 +1447,17 @@ export function isCommunityOnlyModel(modelKey: string): boolean {
   return inPool(entry, 'community') && !inPool(entry, 'rented');
 }
 
+/**
+ * Whether an order for this model needs a key from its provider's account
+ * pool. A community-only model does not: it rents nothing and calls no
+ * vendor's API — its jobs go to GPUxMINE home PCs, paid per job — so the
+ * SimplePod row it is filed under must not decide whether it can be ordered.
+ * `gpuModel`: the model's provider is a GPU-rental row (getGpuProvider).
+ */
+export function orderNeedsProviderAccount(modelKey: string, gpuModel: boolean): boolean {
+  return !(gpuModel && isCommunityOnlyModel(modelKey));
+}
+
 /** The entries a community node may be matched to — the only ones eligibility looks at. */
 export function communityCatalogue(): CatalogEntry[] {
   return MODEL_CATALOG.filter((entry) => inPool(entry, 'community'));

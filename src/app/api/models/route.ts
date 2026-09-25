@@ -3,7 +3,7 @@ import prisma from '@/lib/db';
 import { isAdmin } from '@/lib/auth';
 import { ModelReadiness, TUNING_MESSAGE } from '@/lib/services/model-readiness';
 import { accountBlock, type AccountBlock } from '@/lib/services/account-pool';
-import { getCatalogEntry, visibleVideoOptions } from '@/lib/gpu/catalog';
+import { getCatalogEntry, isCommunityOnlyModel, visibleVideoOptions } from '@/lib/gpu/catalog';
 import { getGpuConfig } from '@/lib/gpu/config';
 import { GpuBalance } from '@/lib/services/gpu-balance';
 import { isStorageConfigured } from '@/lib/storage/r2';
@@ -130,7 +130,8 @@ export async function GET() {
     });
     const running = new Set(live.map((w) => w.modelKey));
     for (const m of models) {
-      if (isInHouse(m.provider.slug) && !running.has(m.modelId)) pausedModels.add(m.modelId);
+      // Nothing is rented for a community-only model, so no vendor balance pauses it (GpuBalance.pausesModel).
+      if (isInHouse(m.provider.slug) && !isCommunityOnlyModel(m.modelId) && !running.has(m.modelId)) pausedModels.add(m.modelId);
     }
   }
 
@@ -152,10 +153,22 @@ export async function GET() {
     return result;
   };
 
+  // A community-only model (sdxl-community) is served by GPUxMINE home PCs: it
+  // rents nothing and calls no vendor's API, so neither the rental switch nor
+  // the SimplePod row's keys say whether it can take an order — only the
+  // provider row being on and somewhere to keep the render, exactly what
+  // GenerationService checks before a community machine is looked for.
+  const communityAvailability = (provider: { isActive: boolean }): Availability =>
+    !provider.isActive ? 'not-connected' : !isStorageConfigured() ? 'maintenance' : 'ok';
+
   return NextResponse.json({
     models: models.map((m) => {
       const inHouse = isInHouse(m.provider.slug);
-      const avail = pausedModels.has(m.modelId) ? 'maintenance' : availability(m.provider);
+      const avail = pausedModels.has(m.modelId)
+        ? 'maintenance'
+        : inHouse && isCommunityOnlyModel(m.modelId)
+          ? communityAvailability(m.provider)
+          : availability(m.provider);
       const readinessOk = ModelReadiness.canOrder(m.readiness, admin);
       const status = avail !== 'ok' ? 'unavailable' : m.readiness === 'tuning' ? 'tuning' : readinessOk ? 'ready' : 'unavailable';
       const reason =

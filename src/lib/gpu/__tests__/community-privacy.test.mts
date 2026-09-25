@@ -30,7 +30,7 @@ const {
 } = await import('@/lib/gpu/community-dispatch');
 const { isCommunitySafe } = await import('@/lib/safety/content-tier');
 const { purgeCommunityJob, readPurgeOutcome } = await import('@/lib/gpu/worker-client');
-const { isCommunityOnlyModel } = await import('@/lib/gpu/catalog');
+const { isCommunityOnlyModel, orderNeedsProviderAccount } = await import('@/lib/gpu/catalog');
 
 const job = (id: number, contentTier: string | null, hasInputMedia: boolean | null = false, avoidWorkerIds: unknown = null) => ({
   id,
@@ -87,6 +87,18 @@ test('sdxl-community is the community-only model', () => {
   assert.equal(isCommunityOnlyModel('sdxl-community'), true);
   assert.equal(isCommunityOnlyModel('minimax-h3'), false);
   assert.equal(isCommunityOnlyModel('no-such-model'), false);
+});
+
+// Found by the end-to-end sandbox (2026-09-25): with only the GPUxMINE vendor
+// set up, every sdxl-community order was refused "Service temporarily
+// unavailable" because the SimplePod row it is filed under had no usable key.
+test('a community-only order needs no vendor key; a rented or API order still does', () => {
+  assert.equal(orderNeedsProviderAccount('sdxl-community', true), false);
+  assert.equal(orderNeedsProviderAccount('minimax-h3', true), true);
+  assert.equal(orderNeedsProviderAccount('qwen-image', true), true);
+  // Not on a GPU-rental row: an API model that happens to share a key name.
+  assert.equal(orderNeedsProviderAccount('sdxl-community', false), true);
+  assert.equal(orderNeedsProviderAccount('flux-schnell', false), true);
 });
 
 test('an order a community machine may not take is refused before charging, whatever is online', () => {
