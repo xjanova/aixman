@@ -11,6 +11,8 @@ import assert from 'node:assert/strict';
 
 import {
   settleJob,
+  revenueFromCredits,
+  shareOf,
   cooperationScore,
   proBonusCeiling,
   dispatchPriority,
@@ -63,9 +65,10 @@ test('a free-shared job pays the node nothing and records what it was worth', ()
 
   assert.equal(s.nodePayoutSatang, 0);
   assert.equal(s.referralSatang, 0);
-  // The whole pool becomes donated value — the platform does not quietly
-  // pocket the fee on work somebody gave away.
+  // Owner decision D6: the platform keeps the job's whole revenue, and what
+  // is recorded as donated is the pool — what the node would have been paid.
   assert.equal(s.donatedValueSatang, 480);
+  assert.equal(s.platformFeeSatang + s.donatedValueSatang, s.revenueSatang);
 });
 
 test('referral comes out of the node share, never added on top', () => {
@@ -127,6 +130,40 @@ test('a longer clip is settled on the same curve the customer was charged on', (
   assert.equal(short.revenueSatang, 600);
   assert.equal(long.revenueSatang, 1700);      // ceil(12 * 2.828) = 34 credits
   assert.ok(long.nodePayoutSatang > short.nodePayoutSatang * 2);
+});
+
+test('money is rounded once, half up, in integers — never by binary floating point', () => {
+  // 10 credits at ฿0.1025 is 102.5 satang. In floating point 10 * 0.1025 * 100
+  // is 102.49999999999999, which Math.round takes to 102; the ledger's own
+  // DECIMAL columns, replayed by anyone, say 103.
+  assert.equal(Math.round(10 * 0.1025 * 100), 102, 'the float trap this guards against');
+  const s = settleJob({ ...baseJob, creditsPerUnit: 10, thbPerCredit: 0.1025 });
+  assert.equal(s.revenueSatang, 103);
+  assert.equal(revenueFromCredits(10, 0.1025), 103);
+  assert.equal(revenueFromCredits(3, 0.335), 101);
+
+  // Rates are read to basis points; halves go up.
+  assert.equal(shareOf(10, REFERRAL_RATE), 1);     // 0.5 -> 1
+  assert.equal(shareOf(30, REFERRAL_RATE), 2);     // 1.5 -> 2
+  assert.equal(shareOf(29, REFERRAL_RATE), 1);     // 1.45 -> 1
+  assert.equal(shareOf(101, PLATFORM_FEE_FREE), 20); // 20.2 -> 20
+  assert.equal(shareOf(125, PLATFORM_FEE_PRO), 15);  // 15.0
+
+  // Nothing negative ever comes out.
+  assert.equal(revenueFromCredits(-4, 0.5), 0);
+  assert.equal(revenueFromCredits(4, -0.5), 0);
+  assert.equal(shareOf(-100, PLATFORM_FEE_FREE), 0);
+
+  // Every split still adds up exactly, across a range of awkward rates.
+  for (const rate of [0.333333, 0.1, 0.2, 0.3, 0.335, 0.4166667, 1.05]) {
+    for (let credits = 1; credits <= 40; credits++) {
+      const r = settleJob({ ...baseJob, creditsPerUnit: credits, thbPerCredit: rate, referrer: { userId: 1, joinedAt: new Date('2026-09-01') }, now: new Date('2026-09-18') });
+      assert.equal(r.platformFeeSatang + r.nodePayoutSatang + r.referralSatang, r.revenueSatang, `${credits} @ ${rate}`);
+      for (const v of [r.revenueSatang, r.platformFeeSatang, r.nodePayoutSatang, r.referralSatang]) {
+        assert.ok(Number.isInteger(v) && v >= 0);
+      }
+    }
+  }
 });
 
 test('a batch pays per unit produced', () => {

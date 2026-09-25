@@ -25,3 +25,9 @@ would be unsafe (e.g. would drop legacy tables that still hold data).
   on `ai_gpu_jobs (status, completed_at)`. Community machines only ever get
   `general` jobs with nothing uploaded; a delivered community job is purged
   from the node. Apply before the code that reads the columns starts.
+- `20260925c_gpu_ledger.sql` — `ai_gpu_jobs.free_share`, `pro`, `owner_user_id`
+  and `review_reason`: stamped when a community (GPUxMINE) machine claims a job,
+  read when its `gpu_job_earnings` row is written after delivery. Apply before
+  the code that reads the columns starts. `gpu_job_earnings` / `gpu_nodes`
+  themselves belong to xmanstudio's migrations, which must run first for the
+  earnings writer to succeed (until then it alerts and the sweep retries).

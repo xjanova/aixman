@@ -48,6 +48,8 @@ export const ALERT_TYPES: AlertType[] = [
   { id: 'failure-burst', level: 'warning', title: 'งานล้มตั้งแต่ 3 งานขึ้นไปใน 30 นาที', when: 'ซ้ำได้ทุก 1 ชม.' },
   { id: 'orphans', level: 'warning', title: 'พบเครื่องตกค้างที่ระบบไม่ได้ติดตาม — ปิดให้แล้ว', when: 'ทุกครั้งที่กวาดเจอ' },
   { id: 'content-blocked', level: 'warning', title: 'ปฏิเสธคำสั่งที่เข้าข่ายเนื้อหาต้องห้าม (ข้อกำหนด ข้อ 6) — ไม่หักเครดิต ไม่เก็บคำสั่ง', when: 'ต่อบัญชี ไม่เกินทุก 1 ชม.' },
+  { id: 'gpux-earning', level: 'warning', title: 'บันทึกรายได้ของเครื่องชุมชน (GPUxMINE) ไม่ได้ — ระบบลองใหม่เองภายใน 7 วัน', when: 'ต่อสาเหตุ ไม่เกินทุก 1 ชม.' },
+  { id: 'gpux-output-rejected', level: 'warning', title: 'เครื่องชุมชนส่งไฟล์ที่ไม่ใช่ผลงาน — ไม่ส่งให้ลูกค้า ส่งงานไปเครื่องอื่น ไม่จ่ายเงินเครื่องนั้น', when: 'ต่อเครื่อง ไม่เกินทุก 1 ชม.' },
   { id: 'workflow-fallback', level: 'warning', title: 'กราฟ ComfyUI ที่แอดมินแก้ใช้กับเครื่องจริงไม่ได้ — ใช้ workflow มาตรฐานแทน (ลูกค้าไม่เสียงาน)', when: 'ต่อโมเดล ไม่เกินทุก 6 ชม.' },
   // For the record.
   { id: 'emergency-stop', level: 'info', title: 'แอดมินกด "หยุดทั้งหมด"', when: 'ทุกครั้ง' },

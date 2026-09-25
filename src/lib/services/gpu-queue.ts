@@ -23,6 +23,24 @@ import {
 } from '@/lib/gpu/community-dispatch';
 import { isCommunitySafe, readContentTier, type ContentTier } from '@/lib/safety/content-tier';
 import {
+  examineOutput,
+  isRejectedOutput,
+  joinReviewReasons,
+  judgeRenderTime,
+  RejectedOutputError,
+} from '@/lib/gpu/community-plausibility';
+import { isLotterySlot } from './gpux-settlement';
+import {
+  claimStampFor,
+  communityPriority,
+  ledgerSnapshot,
+  recordEarningSafely,
+  RENTED_CLAIM_STAMP,
+  sumsFor,
+  sweepMissingEarnings,
+  type ClaimStamp,
+} from './gpux-ledger';
+import {
   effectiveWorkflow,
   getSchemaSnapshot,
   getStoredWorkflow,
@@ -105,6 +123,15 @@ const PURGE_RETRY_EVERY_MS = 10 * 60_000;
 /** When this process last asked a node to purge each job (job id → ms). */
 const purgeAttemptedAt = new Map<number, number>();
 let purgeSweepRunning = false;
+
+/**
+ * How often the tick looks for delivered community jobs with no earning row
+ * (gpux-ledger.ts sweepMissingEarnings). Each such job is retried at most
+ * every 10 min anyway, so a minute-by-minute look would only repeat the query.
+ */
+const EARNINGS_SWEEP_EVERY_MS = 5 * 60_000;
+let earningsSweptAt = 0;
+let earningsSweepRunning = false;
 
 /** Warn admins once a day when today's GPU spend reaches this share of the budget. */
 const BUDGET_WARN_AT = 0.8;
@@ -249,6 +276,22 @@ export class GpuQueue {
         .catch((error) => console.error('[gpu] community purge sweep failed:', (error as Error).message))
         .finally(() => {
           purgeSweepRunning = false;
+        });
+    }
+
+    // Also not awaited: a community job whose earning could not be written
+    // right after delivery (XMAN Studio's table missing a column, a database
+    // stall, a restart in between) is written here, for up to a week.
+    if (!earningsSweepRunning && Date.now() - earningsSweptAt >= EARNINGS_SWEEP_EVERY_MS) {
+      earningsSweepRunning = true;
+      earningsSweptAt = Date.now();
+      void sweepMissingEarnings()
+        .then((written) => {
+          if (written > 0) console.log(`[gpux] earnings sweep wrote ${written} missing row(s)`);
+        })
+        .catch((error) => console.error('[gpux] earnings sweep failed:', (error as Error).message))
+        .finally(() => {
+          earningsSweepRunning = false;
         });
     }
 
@@ -503,10 +546,33 @@ export class GpuQueue {
     });
 
     const rented = ready.filter((w) => !GpuWorkerManager.isCommunity(w.providerSlug));
+    const communityRows = ready.filter((w) => GpuWorkerManager.isCommunity(w.providerSlug));
+    // The ledger's 30-day sums, read at most once a minute (never throws): what
+    // an owner has given and earned places their machines in the queue, and
+    // decides each machine's free share when it claims.
+    const ledger = communityRows.length > 0 ? await ledgerSnapshot() : null;
     const community = rankCommunityCandidates(
-      ready
-        .filter((w) => GpuWorkerManager.isCommunity(w.providerSlug))
-        .map((w) => ({ id: w.id, lane: readCommunityMeta(w.metadata).lane ?? null, lastJobAt: w.lastJobAt, worker: w }))
+      communityRows.map((w) => {
+        const meta = readCommunityMeta(w.metadata);
+        return {
+          id: w.id,
+          lane: meta.lane ?? null,
+          lastJobAt: w.lastJobAt,
+          priority: ledger
+            ? communityPriority({
+                ownerSums: sumsFor(ledger.byOwner, typeof meta.ownerUserId === 'number' ? meta.ownerUserId : null),
+                pro: meta.pro === true,
+                jobsCompleted: w.jobsCompleted,
+                jobsFailed: w.jobsFailed,
+                lane: meta.lane === 'slow' ? 'slow' : 'full',
+              })
+            : 0,
+          worker: w,
+        };
+      }),
+      // One pass in ten ignores priority, so a node with no record yet still
+      // gets work and can start building one.
+      { lottery: isLotterySlot(Math.random()) }
     );
     const idleFullRows = community.filter((c) => laneOf(c) === 'full').length;
     let fullRowsBlocked = false;
@@ -534,7 +600,13 @@ export class GpuQueue {
       if (reserved.count === 0) continue;
       const held: AiGpuWorker = { ...worker, status: 'busy' };
 
-      const claim = await this.claimNextJob(modelKey, worker.id, isCommunity);
+      // What the job is to this machine's owner — its free share or paid,
+      // Pro or not, whose — fixed now, with the claim, so the earning written
+      // after delivery settles the job as it was dispatched.
+      const stamp = isCommunity
+        ? claimStampFor(readCommunityMeta(worker.metadata), sumsFor(ledger?.byWorker ?? new Map(), worker.externalId))
+        : RENTED_CLAIM_STAMP;
+      const claim = await this.claimNextJob(modelKey, worker.id, isCommunity, stamp);
       if (!claim.job) {
         await prisma.aiGpuWorker.updateMany({ where: { id: worker.id, status: 'busy' }, data: { status: 'ready' } });
         if (!claim.anyQueued) return { dispatched, failed, remaining: 0 };
@@ -654,7 +726,8 @@ export class GpuQueue {
   private static async claimNextJob(
     modelKey: string,
     workerId: number,
-    community: boolean
+    community: boolean,
+    stamp: ClaimStamp = RENTED_CLAIM_STAMP
   ): Promise<{ job: AiGpuJob | null; anyQueued: boolean }> {
     // A community machine is shown only what it may take (general content,
     // nothing uploaded — owner decision D4), so an adult order at the head of
@@ -683,6 +756,11 @@ export class GpuQueue {
         workerId,
         startedAt: new Date(),
         attempts: { increment: 1 },
+        // Every claim writes all three, so a job requeued off a community
+        // machine carries nothing of that machine to the next one.
+        freeShare: stamp.freeShare,
+        pro: stamp.pro,
+        ownerUserId: stamp.ownerUserId,
       },
     });
     if (claimed.count === 0) return { job: null, anyQueued: true };
@@ -874,7 +952,11 @@ export class GpuQueue {
         const outcome = await client.poll(job.externalJobId as string);
 
         if (outcome.state === 'completed') {
-          if (await this.settleSuccess(job, worker, outcome.assetUrls, client, elapsedMs < jobTimeoutMs)) completed += 1;
+          if (
+            await this.settleSuccess(job, worker, outcome.assetUrls, client, elapsedMs < jobTimeoutMs, outcome.renderSeconds)
+          ) {
+            completed += 1;
+          }
           continue;
         }
 
@@ -938,7 +1020,9 @@ export class GpuQueue {
     worker: AiGpuWorker,
     assetUrls: string[],
     client: WorkerClient,
-    mayWait: boolean
+    mayWait: boolean,
+    /** How long the node says the prompt executed (ComfyUI's own timestamps), when it says. */
+    nodeRenderSeconds?: number
   ): Promise<boolean> {
     // The asset lives on the worker's Cloudflare tunnel, which dies the moment
     // the machine is reaped. Copying it to R2 is mandatory, not best-effort —
@@ -956,15 +1040,39 @@ export class GpuQueue {
 
     const generation = await prisma.aiGeneration.findUnique({ where: { id: job.generationId } });
     const prefix = `generations/${generation?.userId ?? 'unknown'}/${job.generationId}`;
+    const community = GpuWorkerManager.isCommunity(worker.providerSlug);
+    const entry = getCatalogEntry(job.modelKey);
+    // Why a community render is delivered but its earning held for an admin.
+    const reviewNotes: string[] = [];
 
     let durableUrls: string[];
     try {
       // Downloaded through the worker client so the request carries the
       // worker's bearer token — a bare fetch would be rejected by a container
-      // that correctly gates its port.
-      durableUrls = await Promise.all(
+      // that correctly gates its port. Every file is fetched (and, from a home
+      // PC, examined) before any is stored, so a rejected one leaves nothing
+      // behind in R2.
+      const files = await Promise.all(
         assetUrls.map(async (url) => {
-          const { buffer, contentType } = await client.download(url);
+          const downloaded = await client.download(url);
+          return { url, buffer: downloaded.buffer, contentType: downloaded.contentType };
+        })
+      );
+      if (community) {
+        // A home PC's bytes are what they are, not what its Content-Type says:
+        // a modified node can send anything under any header, and serving an
+        // HTML page as the customer's "image" from our storage is a script
+        // on our domain. Stored as the sniffed type; not stored at all when
+        // it is not the model's kind of media (community-plausibility.ts).
+        for (const file of files) {
+          const examined = await examineOutput(file.buffer, entry?.outputKind ?? null);
+          if (examined.reject) throw new RejectedOutputError(examined.reject);
+          if (examined.review) reviewNotes.push(examined.review);
+          file.contentType = examined.mime;
+        }
+      }
+      durableUrls = await Promise.all(
+        files.map(({ url, buffer, contentType }) => {
           const key = `${prefix}/${Date.now()}-${randomBytes(6).toString('hex')}.${extensionFor(contentType, url)}`;
           return uploadBuffer(buffer, key, contentType);
         })
@@ -974,9 +1082,30 @@ export class GpuQueue {
       // A home node that paused or dropped off the relay after finishing
       // still has the file. Paying for the render again elsewhere (and not
       // paying its owner) would be worse than waiting — up to the job timeout.
-      if (mayWait && isNodeRefusal(error) && GpuWorkerManager.isCommunity(worker.providerSlug)) {
+      if (mayWait && isNodeRefusal(error) && community) {
         console.warn(`[gpu] job ${job.id}: community node #${worker.id} finished but is not handing over yet (${error.stage}) — will retry`);
         return false;
+      }
+      // Not a render of this model at all. The customer never sees it, the
+      // job moves to another machine (settleFailure adds this one to its
+      // avoid list and parks it until it answers /aixman/ready again), and
+      // the node is paid nothing, because it delivered nothing. Honest nodes
+      // never land here, so an admin hears about each one.
+      if (isRejectedOutput(error)) {
+        await this.settleFailure(job, worker, `Rejected community render: ${message}`, true, { countAgainstModel: false });
+        const owner = readCommunityMeta(worker.metadata).ownerUserId;
+        raiseAlert({
+          type: 'gpux-output-rejected',
+          key: String(worker.id),
+          level: 'warning',
+          title: 'เครื่องชุมชนส่งไฟล์ที่ไม่ใช่ผลงาน — ไม่ส่งให้ลูกค้า และส่งงานไปเครื่องอื่นแล้ว',
+          lines: [
+            `เครื่อง #${worker.id} (${worker.externalId}${owner ? ` · เจ้าของ user #${owner}` : ''}) · งาน #${job.generationId} (${job.modelKey})`,
+            `สาเหตุ: ${message}`,
+            'ถ้าเกิดซ้ำจากเครื่องเดิม อาจเป็นโปรแกรมที่ถูกดัดแปลง — ระงับเครื่องได้ที่ XMAN Studio หรือปลดที่ แอดมิน → GPU → เครื่องชุมชน',
+          ],
+        });
+        return true;
       }
       // The render finished — what failed was carrying it home. That is the
       // tunnel's fault or R2's, never the model's, so it must not count
@@ -1001,6 +1130,20 @@ export class GpuQueue {
     const now = new Date();
     const startedAt = job.startedAt ?? job.queuedAt;
     const gpuSeconds = Math.max(0, Math.round((now.getTime() - startedAt.getTime()) / 1000));
+    if (community) {
+      // Claim-to-delivery is an upper bound on the render; the node's own
+      // execution timestamps, when it sends them, are tighter. Either being
+      // under what the lane allows holds the earning for an admin.
+      const wall = Math.max(0, (now.getTime() - startedAt.getTime()) / 1000);
+      const observed = typeof nodeRenderSeconds === 'number' ? Math.min(wall, nodeRenderSeconds) : wall;
+      const tooFast = judgeRenderTime({
+        observedSeconds: observed,
+        baselineSecondsPerUnit: entry?.baselineSecondsPerUnit,
+        lane: readCommunityMeta(worker.metadata).lane,
+      });
+      if (tooFast) reviewNotes.push(tooFast);
+    }
+    const reviewReason = community ? joinReviewReasons(reviewNotes) : null;
     // Per-job cost covers only the seconds this job held the GPU. Warmup and
     // idle time are real spend too — they are tracked on the worker row, which
     // is the number to trust for margin analysis.
@@ -1019,6 +1162,7 @@ export class GpuQueue {
           costUsd,
           completedAt: now,
           errorMessage: null,
+          reviewReason,
         },
       });
       await tx.aiGeneration.update({
@@ -1051,8 +1195,17 @@ export class GpuQueue {
     // awaited, and it never throws: the customer has their render whatever
     // the node answers, and a node that did not confirm is asked again by
     // purgeDeliveredOnNodes while it is up.
-    if (GpuWorkerManager.isCommunity(worker.providerSlug) && job.externalJobId) {
+    if (community && job.externalJobId) {
       void this.purgeOnNode(job.id, job.externalJobId, worker, true);
+    }
+
+    // The node's owner is owed for it (gpux-ledger.ts): written now, after the
+    // delivery is on record and outside its transaction, so a ledger that
+    // cannot be written never costs the customer their render. It never
+    // throws; a row it could not write is found by the tick's sweep.
+    if (community) {
+      if (reviewReason) console.warn(`[gpux] job ${job.id}: delivered, earning held for review — ${reviewReason}`);
+      await recordEarningSafely(job.id, 'delivery');
     }
 
     // Fix the retention window at delivery time, same as the synchronous path.
@@ -1546,6 +1699,10 @@ function extensionFor(contentType: string, url: string): string {
     'audio/ogg': 'ogg',
     'audio/opus': 'opus',
     'audio/mp4': 'm4a',
+    'audio/aac': 'aac',
+    'image/avif': 'avif',
+    'video/x-matroska': 'mkv',
+    'video/x-msvideo': 'avi',
   };
   const hit = byType[contentType.split(';')[0].trim().toLowerCase()];
   if (hit) return hit;

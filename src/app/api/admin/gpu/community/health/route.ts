@@ -6,6 +6,7 @@ import { communityQueueGraceMs, readCommunityMeta } from '@/lib/gpu/community-di
 import { relayBaseUrl, relayHealth } from '@/lib/gpu/gpuxmine';
 import { isStorageConfigured } from '@/lib/storage/r2';
 import { GpuWorkerManager } from '@/lib/services/gpu-worker';
+import { ledgerHealth } from '@/lib/services/gpux-ledger';
 
 /**
  * GPUxMINE go-live check: everything aixman's side of the community pool
@@ -159,6 +160,21 @@ export async function GET() {
     }
   }
 
+  // Owners are paid from gpu_job_earnings (XMAN Studio's table): aixman writes
+  // a row per delivered community job, XMAN Studio clears and pays it.
+  const ledger = await ledgerHealth();
+  if (!ledger.writable) {
+    problems.push(
+      `บันทึกรายได้เครื่องชุมชนลง gpu_job_earnings ไม่ได้ — ต้องรัน migration ของ XMAN Studio (2026_09_25_*) ก่อน (${ledger.detail ?? ''})`
+    );
+  } else if ((ledger.missing7d ?? 0) > 0) {
+    warnings.push(`งานเครื่องชุมชนที่ส่งมอบแล้ว ${ledger.missing7d} งานใน 7 วันยังไม่มีแถวรายได้ — ระบบบันทึกซ้ำเองทุก 5 นาที`);
+  }
+  const review = ledger.byStatus30d.review;
+  if (review && review.rows > 0) {
+    warnings.push(`รายได้ ${review.rows} งานใน 30 วันติดสถานะรอตรวจ (review) — แอดมิน XMAN Studio ต้องอนุมัติหรือยกเลิก`);
+  }
+
   return NextResponse.json({
     ok: problems.length === 0,
     checkedAt: new Date().toISOString(),
@@ -170,5 +186,6 @@ export async function GET() {
     queue: queued.map((q) => ({ modelKey: q.modelKey, queued: q._count._all, oldestQueuedAt: q._min.queuedAt })),
     workers: { total: rows.length, byStatus, rows: workers },
     privacy: { unpurgedDelivered24h: unpurged },
+    ledger,
   });
 }

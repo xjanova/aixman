@@ -436,10 +436,22 @@ export interface CommunityCandidate {
   lane?: string | null;
   lastJobAt: Date | null;
   /**
-   * Higher goes first within a lane. 0 for everyone today; the cooperation
-   * data (gpux-settlement.ts dispatchPriority) is meant to feed in here.
+   * Higher goes first within a lane: the node's dispatch-priority band from
+   * gpux-ledger.ts communityPriority (the owner's cooperation, the node's
+   * success rate, its lane). Absent reads as 0.
    */
   priority?: number;
+}
+
+export interface RankOptions {
+  /**
+   * This pass is a lottery slot (gpux-settlement.ts isLotterySlot): order each
+   * lane at random, ignoring priority and history, so a node with no record
+   * yet still gets picked sometimes and can start building one.
+   */
+  lottery?: boolean;
+  /** 0-1, for the lottery's shuffle; Math.random unless a test pins it. */
+  random?: () => number;
 }
 
 export function laneOf(candidate: Pick<CommunityCandidate, 'lane'>): 'full' | 'slow' {
@@ -451,12 +463,29 @@ export function laneOf(candidate: Pick<CommunityCandidate, 'lane'>): 'full' | 's
  *
  * Full lane before slow: a card that takes four minutes an image should not
  * serve somebody watching a progress bar while a quick one sits idle. Within
- * a lane, the machine given work least recently goes first — one that never
- * had a job before all others. The old warmest-first order handed one owner
- * every job and left new nodes earning nothing, which is how a volunteer
- * network loses its volunteers.
+ * a lane, a higher priority band first (what the owner has given, how
+ * reliably the node delivers), then the machine given work least recently —
+ * one that never had a job before all others. The old warmest-first order
+ * handed one owner every job and left new nodes earning nothing, which is how
+ * a volunteer network loses its volunteers. On a lottery pass each lane is
+ * shuffled instead; the lanes themselves never are.
  */
-export function rankCommunityCandidates<T extends CommunityCandidate>(rows: readonly T[]): T[] {
+export function rankCommunityCandidates<T extends CommunityCandidate>(rows: readonly T[], options: RankOptions = {}): T[] {
+  if (options.lottery) {
+    const random = options.random ?? Math.random;
+    const shuffle = (list: T[]): T[] => {
+      for (let i = list.length - 1; i > 0; i--) {
+        const j = Math.min(i, Math.floor(random() * (i + 1)));
+        [list[i], list[j]] = [list[j], list[i]];
+      }
+      return list;
+    };
+    const byId = (a: T, b: T) => a.id - b.id;
+    return [
+      ...shuffle(rows.filter((r) => laneOf(r) === 'full').sort(byId)),
+      ...shuffle(rows.filter((r) => laneOf(r) === 'slow').sort(byId)),
+    ];
+  }
   const fairness = (a: T, b: T): number => {
     const byPriority = (b.priority ?? 0) - (a.priority ?? 0);
     if (byPriority !== 0) return byPriority;

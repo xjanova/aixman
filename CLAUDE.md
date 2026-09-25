@@ -299,8 +299,10 @@ assessment). Rules that must not regress (`src/lib/gpu/community-dispatch.ts`,
 - Catalogue `pools`: a node is matched only to `community` entries
   (`sdxl-community`); the queue never gives a `rented`-only model's job to one.
 - Dispatch: machine reserved ready→busy (conditional) before the claim; full
-  lane before slow, least recently given work first (`rankCommunityCandidates`
-  — the cooperation score is meant to feed its `priority`). A node's "not now"
+  lane before slow, then the priority band (`gpux-ledger.ts communityPriority`:
+  owner's 30-day cooperation, node success rate, lane), then least recently
+  given work (`rankCommunityCandidates`); one pass in ten is a lottery that
+  shuffles each lane. A node's "not now"
   (503 with a stage, 409 busy — C5) requeues **without spending an attempt**;
   any other failure sends the retry elsewhere (`ai_gpu_jobs.avoid_worker_ids`).
 - A push never downgrades `ready`/`busy` while the node is eligible and online,
@@ -328,9 +330,35 @@ assessment). Rules that must not regress (`src/lib/gpu/community-dispatch.ts`,
   awaited by delivery; `ai_gpu_jobs.node_purged_at` records the confirmation,
   and the tick retries unconfirmed jobs (last 24 h, nodes ready/busy, 10 a tick).
 
+- **Earnings (C2, `src/lib/services/gpux-ledger.ts`).** A delivered community
+  job writes one `gpu_job_earnings` row (xmanstudio's table, mirrored in Prisma
+  as `GpuJobEarning`, never migrated from here) *after* the delivery
+  transaction, never inside it: `INSERT … ON DUPLICATE KEY UPDATE id = id` on
+  `job_id = 'aix-gpu-job-' + ai_gpu_jobs.id` (the node's `prompt_id` has its
+  own column). Never throws into delivery; failures alert (`gpux-earning`) and
+  the tick's sweep retries completed community jobs of the last 7 days with no
+  row. The money is `gpux-settlement.ts settleJob` on what the customer was
+  actually charged (`creditsUsed − creditsRefunded`) at `pricingBasis()`
+  stored `toFixed(6)`; integer satang, half-up, no float. Owner = `gpu_nodes`
+  by `worker_id` (soft-deleted too) → the job's claim-time `owner_user_id` →
+  metadata; no owner = alert, no row. Referral (D8) only from
+  `gpu_nodes.referrer_user_id` with an **active** `affiliates` row, never self,
+  12 months from the owner's first `paired_at`. Free share (D6) and Pro are
+  stamped on `ai_gpu_jobs` at claim in the same conditional update
+  (`shouldFreeShare` over the node's 30-day sums vs `freeSharePct`); a
+  free-share job pays 0 and records the pool as `donated_value_satang`.
+  Rows start `pending` (xmanstudio clears/pays after the hold) or `review`.
+- **Results check (`src/lib/gpu/community-plausibility.ts`).** A home PC's file
+  is stored as its *sniffed* type, never the node's Content-Type. Not the
+  model's media (empty, HTML, archive, undecodable, wrong kind) → not delivered,
+  job retried elsewhere, node unpaid, `gpux-output-rejected` alert. Delivered
+  but odd (tiny, one flat colour, faster than its lane allows) →
+  `ai_gpu_jobs.review_reason` → earning written as `review`.
+
 `npm test` runs every `__tests__/*.test.mts` under plain Node 22.7+
 (`--experimental-transform-types` + `scripts/alias-loader.mjs`, which also
-resolves extensionless imports and unattributed JSON).
+resolves extensionless imports and unattributed JSON). CI runs it after the
+build (on Node 22), so a failing suite blocks the auto-deploy.
 
 ## Workflow control room (`/admin/workflows`) — graphs editable without a deploy
 

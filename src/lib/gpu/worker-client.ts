@@ -83,7 +83,12 @@ interface StagedFrames {
 
 export type PollOutcome =
   | { state: 'pending' }
-  | { state: 'completed'; assetUrls: string[] }
+  /**
+   * `renderSeconds`: how long ComfyUI says the prompt executed (its own
+   * execution_start → execution_success timestamps), when it says. A community
+   * node's word, so it is only ever used to doubt a render, never to pay one.
+   */
+  | { state: 'completed'; assetUrls: string[]; renderSeconds?: number }
   | { state: 'failed'; error: string }
   /** The server no longer knows about this job — the container likely restarted. */
   | { state: 'lost'; error: string };
@@ -789,7 +794,8 @@ export class WorkerClient {
     if (assetUrls.length === 0) {
       return { state: 'failed', error: 'Workflow completed but produced no video output' };
     }
-    return { state: 'completed', assetUrls };
+    const renderSeconds = comfyExecutionSeconds(entry.status?.messages);
+    return renderSeconds === null ? { state: 'completed', assetUrls } : { state: 'completed', assetUrls, renderSeconds };
   }
 
   private async isQueued(promptId: string): Promise<boolean> {
@@ -909,6 +915,27 @@ function mediaKindOf(filename: string): 'video' | 'image' | 'audio' | undefined 
   if (['png', 'jpg', 'jpeg', 'webp'].includes(ext)) return 'image';
   if (['flac', 'mp3', 'wav', 'ogg', 'opus', 'm4a'].includes(ext)) return 'audio';
   return undefined;
+}
+
+/**
+ * Seconds between ComfyUI's execution_start and execution_success for a
+ * prompt, from the `messages` of its /history entry; null when either is
+ * missing or the two make no sense.
+ */
+export function comfyExecutionSeconds(messages: unknown): number | null {
+  if (!Array.isArray(messages)) return null;
+  let start: number | null = null;
+  let end: number | null = null;
+  for (const msg of messages) {
+    if (!Array.isArray(msg) || msg.length < 2) continue;
+    const [kind, detail] = msg as [unknown, { timestamp?: unknown } | null];
+    const at = typeof detail?.timestamp === 'number' && Number.isFinite(detail.timestamp) ? detail.timestamp : null;
+    if (at === null) continue;
+    if (kind === 'execution_start') start = at;
+    else if (kind === 'execution_success') end = at;
+  }
+  if (start === null || end === null || end < start) return null;
+  return (end - start) / 1000;
 }
 
 function summariseComfyMessages(messages: unknown[] | undefined): string {

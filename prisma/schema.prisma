@@ -92,6 +92,128 @@ model WalletTransaction {
   @@map("wallet_transactions")
 }
 
+// gpu_nodes is owned by xmanstudio (Laravel): one row per machine an owner
+// paired into GPUxMINE, soft-deleted when they remove it. AIXMAN only READS it
+// (including soft-deleted rows), by worker_id, to learn who owns a machine and
+// who referred that owner (owner decision D8, contract C3). Columns MUST match
+// the Laravel migrations exactly (2026_09_18_000003, 2026_09_19_000001,
+// 2026_09_25_100000, 2026_09_25_300000). Always query with an explicit
+// `select`: columns added by a newer xmanstudio migration may not exist yet.
+// DO NOT run prisma migrate/db push on this table.
+model GpuNode {
+  id                   Int       @id @default(autoincrement())
+  userId               Int       @map("user_id")
+  referrerUserId       Int?      @map("referrer_user_id")
+  productDeviceId      Int?      @map("product_device_id")
+  pairingCode          String?   @unique @map("pairing_code") @db.VarChar(16)
+  pairingExpiresAt     DateTime? @map("pairing_expires_at") @db.Timestamp(0)
+  pairedAt             DateTime? @map("paired_at") @db.Timestamp(0)
+  workerId             String?   @unique @map("worker_id") @db.VarChar(64)
+  relayToken           String?   @map("relay_token") @db.Text
+  tunnelToken          String?   @map("tunnel_token") @db.Text
+  relayUrl             String?   @map("relay_url") @db.VarChar(255)
+  tunnelEndpoint       String?   @map("tunnel_endpoint") @db.VarChar(255)
+  label                String?   @db.VarChar(255)
+  machineId            String?   @map("machine_id") @db.VarChar(64)
+  online               Boolean   @default(false)
+  agentVersion         String?   @map("agent_version") @db.VarChar(32)
+  gpuName              String?   @map("gpu_name") @db.VarChar(255)
+  vramTotalMb          Int       @default(0) @map("vram_total_mb") @db.UnsignedInt
+  score                Int       @default(0) @db.UnsignedInt
+  tier                 String    @default("unrated") @db.VarChar(16)
+  assessed             Boolean   @default(false)
+  accepting            Boolean?
+  busy                 Boolean?
+  canRun               Json?     @map("can_run")
+  lanes                Json?
+  provisional          Json?
+  freeSharePct         Int       @default(0) @map("free_share_pct") @db.UnsignedTinyInt
+  lastSeenAt           DateTime? @map("last_seen_at") @db.Timestamp(0)
+  dispatchSyncedAt     DateTime? @map("dispatch_synced_at") @db.Timestamp(0)
+  dispatchStatus       String?   @map("dispatch_status") @db.VarChar(32)
+  dispatchNote         String?   @map("dispatch_note") @db.VarChar(255)
+  dispatchFingerprint  String?   @map("dispatch_fingerprint") @db.VarChar(64)
+  dispatchWorkerStatus String?   @map("dispatch_worker_status") @db.VarChar(32)
+  dispatchLastError    String?   @map("dispatch_last_error") @db.VarChar(255)
+  suspendedAt          DateTime? @map("suspended_at") @db.Timestamp(0)
+  suspendedReason      String?   @map("suspended_reason") @db.VarChar(255)
+  suspendedBy          Int?      @map("suspended_by")
+  bannedAt             DateTime? @map("banned_at") @db.Timestamp(0)
+  bannedReason         String?   @map("banned_reason") @db.VarChar(255)
+  bannedBy             Int?      @map("banned_by")
+  retireStatus         String?   @map("retire_status") @db.VarChar(16)
+  createdAt            DateTime? @map("created_at") @db.Timestamp(0)
+  updatedAt            DateTime? @map("updated_at") @db.Timestamp(0)
+  deletedAt            DateTime? @map("deleted_at") @db.Timestamp(0)
+
+  @@index([userId, createdAt])
+  @@map("gpu_nodes")
+}
+
+// gpu_job_earnings is owned by xmanstudio (Laravel) — contract C2. AIXMAN
+// WRITES one row per community job it delivered (src/lib/services/gpux-ledger.ts,
+// raw INSERT … ON DUPLICATE KEY UPDATE id = id on job_id = 'aix-gpu-job-' + id,
+// never overwriting a row xmanstudio has moved on), and reads 30-day sums for
+// free-share and dispatch priority. xmanstudio clears pending rows after the
+// hold, pays them into the XMAN wallet and pays the referral
+// (gpuxmine:settle-earnings). Columns MUST match the Laravel migrations exactly
+// (2026_09_19_000002, 2026_09_25_200000, 2026_09_25_300000). Always query with
+// an explicit `select`. DO NOT run prisma migrate/db push on this table.
+model GpuJobEarning {
+  id                    Int       @id @default(autoincrement())
+  gpuNodeId             Int?      @map("gpu_node_id")
+  // Null once the owner's account is deleted: the payout trail outlives it.
+  userId                Int?      @map("user_id")
+  workerId              String    @map("worker_id") @db.VarChar(64)
+  // 'aix-gpu-job-' + ai_gpu_jobs.id — the idempotency key.
+  jobId                 String    @unique @map("job_id") @db.VarChar(96)
+  aiGpuJobId            Int?      @unique @map("ai_gpu_job_id")
+  generationId          Int?      @map("generation_id")
+  // The ComfyUI prompt_id on the node — what the client joins its own ledger on.
+  promptId              String?   @map("prompt_id") @db.VarChar(255)
+  // image | audio | video | upscale | embed
+  kind                  String    @db.VarChar(24)
+  modelKey              String?   @map("model_key") @db.VarChar(64)
+  // full | slow
+  lane                  String    @default("full") @db.VarChar(8)
+  seconds               Int       @default(0) @db.UnsignedInt
+  // What the node's owner receives, in satang, after the referral. The
+  // *_satang columns below it are BIGINT in MySQL; Int here, like every id
+  // mirrored from Laravel.
+  amountSatang          Int       @default(0) @map("amount_satang")
+  creditsCharged        Int       @default(0) @map("credits_charged")
+  thbPerCredit          Decimal   @default(0) @map("thb_per_credit") @db.Decimal(12, 6)
+  revenueSatang         Int       @default(0) @map("revenue_satang")
+  platformFeeRate       Decimal   @default(0) @map("platform_fee_rate") @db.Decimal(5, 4)
+  platformFeeSatang     Int       @default(0) @map("platform_fee_satang")
+  referralSatang        Int       @default(0) @map("referral_satang")
+  referralUserId        Int?      @map("referral_user_id")
+  donatedValueSatang    Int       @default(0) @map("donated_value_satang")
+  freeShare             Boolean   @default(false) @map("free_share")
+  pro                   Boolean   @default(false)
+  // pending | review | cleared | paid | void
+  status                String    @default("pending") @db.VarChar(16)
+  reviewReason          String?   @map("review_reason") @db.VarChar(255)
+  walletTransactionId   Int?      @map("wallet_transaction_id")
+  affiliateCommissionId Int?      @map("affiliate_commission_id")
+  completedAt           DateTime? @map("completed_at") @db.Timestamp(0)
+  clearedAt             DateTime? @map("cleared_at") @db.Timestamp(0)
+  paidAt                DateTime? @map("paid_at") @db.Timestamp(0)
+  voidReason            String?   @map("void_reason") @db.VarChar(255)
+  reviewedBy            Int?      @map("reviewed_by")
+  reviewedAt            DateTime? @map("reviewed_at") @db.Timestamp(0)
+  createdAt             DateTime? @map("created_at") @db.Timestamp(0)
+  updatedAt             DateTime? @map("updated_at") @db.Timestamp(0)
+
+  @@index([workerId])
+  @@index([status])
+  @@index([userId, completedAt])
+  @@index([promptId])
+  @@index([status, completedAt])
+  @@index([userId, status])
+  @@map("gpu_job_earnings")
+}
+
 // ============================================================
 // AI PLATFORM TABLES (owned by aixman)
 // ============================================================
@@ -498,6 +620,18 @@ model AiGpuJob {
   // ComfyUI history entry, contract C5). Null on rented jobs: those machines
   // are ours and are destroyed.
   nodePurgedAt  DateTime? @map("node_purged_at")
+  // Stamped when a community (GPUxMINE) machine claims the job, in the same
+  // conditional update, and read back when the earning is written: whether
+  // this job is the node's free share (decided here from the node's 30-day
+  // ledger, never by the node), whether its owner held Pro, and who owned it
+  // at the time. Rented claims write false/false/null
+  // (db/migrations/20260925c_gpu_ledger.sql).
+  freeShare     Boolean   @default(false) @map("free_share")
+  pro           Boolean   @default(false)
+  ownerUserId   Int?      @map("owner_user_id")
+  // Why a community render was delivered but its earning is held for an
+  // admin (too fast for its lane, a blank or tiny file). Null = nothing odd.
+  reviewReason  String?   @map("review_reason") @db.VarChar(255)
   resultUrl     String?   @map("result_url") @db.MediumText
   errorMessage  String?   @map("error_message") @db.Text
   // Wall-clock GPU seconds this job occupied, for honest per-job costing.

@@ -11,13 +11,17 @@
  *   revenue        what the customer's credits were worth in THB
  *   − platform fee the platform's cut (lower for Pro Miner)
  *   = node pool    what the job has to distribute
- *      ├─ free-shared job → node is paid 0, and the pool becomes
- *      │                    donated value, which buys dispatch priority
+ *      ├─ free-shared job → node is paid 0 and the platform keeps the whole
+ *      │                    revenue; the pool is recorded as donated value,
+ *      │                    which buys dispatch priority (owner decision D6)
  *      └─ paid job       → referral comes out first, node takes the rest
  *
- * Every figure is integer satang. Money never touches a float here: two nodes
- * settling 0.1 + 0.2 in binary floating point disagree by a satang, and a
- * ledger that disagrees with itself is worse than no ledger.
+ * Every figure is integer satang, and every multiplication is done in
+ * integers: the rate is read to micro-baht (the six decimals the ledger stores
+ * it at) and percentages to basis points, then rounded half up once. In binary
+ * floating point 10 credits at ฿0.1025 is 102.49999… satang, which rounds to
+ * 102 where the stored figures — replayed by anyone with a decimal type — say
+ * 103, and a ledger that disagrees with itself is worse than no ledger.
  */
 import { creditsForDuration } from '@/lib/pricing';
 import type { DurationCurve } from '@/lib/pricing';
@@ -91,16 +95,18 @@ export function settleJob(input: SettlementInput): Settlement {
     input.outputSeconds
   );
 
-  const revenueSatang = Math.round(creditsPerUnit * units * input.thbPerCredit * 100);
+  const revenueSatang = revenueFromCredits(creditsPerUnit * units, input.thbPerCredit);
 
   const platformFeeRate = input.pro ? PLATFORM_FEE_PRO : PLATFORM_FEE_FREE;
-  const platformFeeSatang = Math.round(revenueSatang * platformFeeRate);
+  const platformFeeSatang = shareOf(revenueSatang, platformFeeRate);
   const poolSatang = revenueSatang - platformFeeSatang;
 
   if (input.freeShare) {
-    // The owner chose to donate this slice of their capacity. They are paid
-    // nothing and the platform keeps nothing either: the whole pool is what
-    // the donation was worth, which is what the cooperation score counts.
+    // The owner chose to give this job away (owner decision D6). They are paid
+    // nothing, neither is anyone who referred them, and the platform keeps the
+    // job's whole revenue — fee and pool alike. What is recorded as donated is
+    // the pool: what this node would have been paid for it. That is the
+    // number the cooperation score counts and the owner's history shows.
     return {
       revenueSatang,
       platformFeeSatang,
@@ -140,7 +146,25 @@ function referralCut(
   expiry.setMonth(expiry.getMonth() + REFERRAL_MONTHS);
   if (now >= expiry) return 0;
 
-  return Math.round(poolSatang * REFERRAL_RATE);
+  return shareOf(poolSatang, REFERRAL_RATE);
+}
+
+/**
+ * Credits × THB per credit, in satang, rounded half up — in integers. The
+ * rate is taken to micro-baht first, which is the precision the ledger stores
+ * it at (gpu_job_earnings.thb_per_credit DECIMAL(12,6)), so the row can be
+ * replayed exactly from its own columns.
+ */
+export function revenueFromCredits(credits: number, thbPerCredit: number): number {
+  const microBahtPerCredit = Math.round(Math.max(0, thbPerCredit) * 1_000_000);
+  // 1 satang = 10,000 micro-baht.
+  return Math.floor((Math.max(0, credits) * microBahtPerCredit + 5_000) / 10_000);
+}
+
+/** `amountSatang × rate`, rounded half up, with the rate read to basis points. */
+export function shareOf(amountSatang: number, rate: number): number {
+  const basisPoints = Math.round(rate * 10_000);
+  return Math.floor((Math.max(0, amountSatang) * basisPoints + 5_000) / 10_000);
 }
 
 // ---------------------------------------------------------------------------
