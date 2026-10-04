@@ -136,6 +136,9 @@ export async function GET(request: NextRequest) {
         // In-house models show our brand, not the rented hardware behind them.
         provider: publicProvider(g.model.provider).name,
         providerSlug: publicProvider(g.model.provider).slug,
+        // A lip-sync clip is a 'video' order; this is what tells the studio to
+        // reopen it on its own tab, even once the model is no longer listed.
+        subcategory: g.model.subcategory,
       },
       createdAt: g.createdAt,
     })),

@@ -445,8 +445,13 @@ and spent all of it reasoning over the H3 brief (empty answer) without it.
 
 **Studio orders overlap** (tray above the canvas, `MAX_PARALLEL_JOBS` = 3). The
 old page-wide lock was what stopped double orders; now a 1.5 s guard does —
-keep it. A history item opens on the canvas; "ใช้การตั้งค่านี้" restores the
-order from the gallery API's whitelisted `remix` fields (never upload URLs).
+keep it. A history item opens on the canvas *and* puts its order back on its
+own tab (`openHistory`; lip-sync from the model's `subcategory`, since the
+server calls it 'video'): prompt and settings from the gallery API's
+whitelisted `remix` fields, uploads from `GET /api/gallery/[id]/inputs`
+(owner only; `order-inputs.ts` returns only what `/api/generate` accepts back).
+The order button waits while those load; "↶ กลับไปร่างเดิม" restores the draft
+from before the first open.
 
 ## Credit System
 

@@ -44,6 +44,7 @@ import { downloadGeneration, extensionOf, saveFavorite } from "@/lib/client-acti
 import { nextQueueProgress, shownFraction, type QueueProgress, type QueueReading } from "@/lib/queue-progress";
 import { AUDIO_EXT, AudioCover, AudioResult } from "@/components/xdreamer/audio";
 import { AudioWave } from "@/components/xdreamer/audio-wave";
+import { NO_ORDER_INPUTS, type OrderInputs } from "@/lib/order-inputs";
 
 const HUE = 70;
 
@@ -340,7 +341,41 @@ interface HistoryItem {
   } | null;
   resultUrl?: string;
   thumbnailUrl?: string;
+  model?: { name?: string; subcategory?: string | null };
   createdAt: string;
+}
+
+/**
+ * Everything a history item puts over the form, kept so "↶" can give the
+ * customer back what they were writing before they opened it.
+ */
+interface FormSnapshot {
+  tab: TabType;
+  modelId: number | null;
+  prompt: string;
+  negativePrompt: string;
+  lyrics: string;
+  aspectRatio: string;
+  duration: number;
+  resolution: string | null;
+  qualityId: string | null;
+  numOutputs: number;
+  strength: number;
+  steps: number;
+  guidance: number;
+  musicStyle: MusicStyleParams;
+  instrumental: boolean;
+  videoMode: "t2v" | "i2v";
+  refImage: string | null;
+  refImagePreview: string | null;
+  inputImage: string | null;
+  inputImagePreview: string | null;
+  inputImageEnd: string | null;
+  inputAudio: string | null;
+  inputAudioName: string | null;
+  inputAudioFile: File | null;
+  sourceVideo: string | null;
+  sourceVideoName: string | null;
 }
 
 /** The fields of GET /api/generate/[id] this page reads while polling. */
@@ -477,6 +512,24 @@ async function fetchHistoryItems(): Promise<HistoryItem[] | null> {
     if (!res.ok) return null;
     const data = await res.json();
     return (data.data ?? []).filter((g: HistoryItem) => g.resultUrl || g.thumbnailUrl);
+  } catch {
+    return null;
+  }
+}
+
+/** The uploads a past order was made from, or null when they could not be read. */
+async function fetchOrderInputs(generationId: number): Promise<OrderInputs | null> {
+  try {
+    const res = await fetch(`/api/gallery/${generationId}/inputs`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const text = (v: unknown) => (typeof v === "string" && v !== "" ? v : null);
+    return {
+      inputImage: text(data.inputImage),
+      inputImageEnd: text(data.inputImageEnd),
+      inputAudio: text(data.inputAudio),
+      inputVideo: text(data.inputVideo),
+    };
   } catch {
     return null;
   }
@@ -1106,8 +1159,20 @@ export default function GeneratePage() {
   const [focusId, setFocusId] = useState<number | null>(null);
   /** When the last order was sent — a double click must not buy two. */
   const lastSubmitRef = useRef(0);
-  /** A history item opened on the canvas, so its settings can be reused. */
+  /** A history item opened on the canvas; the form holds the order that made it. */
   const [viewing, setViewing] = useState<HistoryItem | null>(null);
+  /** What was being written before a history item was opened over it, for "↶". */
+  const [formBeforeOpen, setFormBeforeOpen] = useState<FormSnapshot | null>(null);
+  /** The opened order's uploads are still on their way; an order now would go without them. */
+  const [loadingInputs, setLoadingInputs] = useState(false);
+  /**
+   * The uploads the opened order was made from, as a record: the canvas shows
+   * its original beside the result from here, and the form plays a file back
+   * only while its slot still holds this one — edits to the form change neither.
+   */
+  const [openedInputs, setOpenedInputs] = useState<OrderInputs | null>(null);
+  /** Bumped by every open and by whatever overrides one, so a late answer is dropped. */
+  const openSeqRef = useRef(0);
   /** A file is being dragged over the studio. */
   const [dragging, setDragging] = useState(false);
   /** Which compact control panel is open — only ever one at a time. */
@@ -1380,6 +1445,8 @@ export default function GeneratePage() {
     missingStartFrame ||
     missingLipsyncInput ||
     missingSourceSong ||
+    // …or, on a reopened order, without the files it was made from.
+    loadingInputs ||
     // An order placed mid-upload would go out without the end frame.
     uploading === "image" ||
     // …or, on a cover, without the song itself.
@@ -1604,6 +1671,7 @@ export default function GeneratePage() {
     focusRef.current = job.id;
     setFocusId(job.id);
     setViewing(null);
+    setFormBeforeOpen(null);
     setIsFavorited(false);
     if (job.status === "running") {
       setResult(null);
@@ -1622,6 +1690,7 @@ export default function GeneratePage() {
     focusRef.current = null;
     setFocusId(null);
     setViewing(null);
+    setFormBeforeOpen(null);
     setResult(null);
     setIsGenerating(false);
     setProgress(null);
@@ -1681,6 +1750,7 @@ export default function GeneratePage() {
     focusRef.current = pendingId;
     setFocusId(pendingId);
     setViewing(null);
+    setFormBeforeOpen(null);
     setIsGenerating(true); setResult(null); setIsFavorited(false);
     setProgress(null); setGenStartedAt(clickedAt);
     const ar = aspectRatios.find((a) => a.value === aspectRatio);
@@ -1828,8 +1898,71 @@ export default function GeneratePage() {
     }
   };
 
-  /** Open a finished piece from the history strip on the canvas. */
-  const viewHistory = (g: HistoryItem) => {
+  /** Which tab made this order. Lip-sync is a 'video' order on the server; its model says which. */
+  const tabForHistory = (g: HistoryItem): TabType => {
+    const subcategory = g.model?.subcategory ?? models.find((m) => m.id === g.modelDbId)?.subcategory;
+    if (isLipsyncModel(subcategory)) return "lipsync";
+    return g.type === "video" || g.type === "edit" || g.type === "audio" ? g.type : "image";
+  };
+
+  const captureForm = (): FormSnapshot => ({
+    tab, modelId: selectedModelId, prompt, negativePrompt, lyrics, aspectRatio, duration, resolution,
+    qualityId, numOutputs, strength, steps, guidance, musicStyle, instrumental, videoMode,
+    refImage, refImagePreview, inputImage, inputImagePreview, inputImageEnd,
+    inputAudio, inputAudioName, inputAudioFile, sourceVideo, sourceVideoName,
+  });
+
+  const applyForm = (f: FormSnapshot) => {
+    setTab(f.tab); setSelectedModelId(f.modelId);
+    setPrompt(f.prompt); setNegativePrompt(f.negativePrompt); setLyrics(f.lyrics);
+    setAspectRatio(f.aspectRatio); setDuration(f.duration); setResolution(f.resolution);
+    setQualityId(f.qualityId); setNumOutputs(f.numOutputs);
+    setStrength(f.strength); setSteps(f.steps); setGuidance(f.guidance);
+    setMusicStyle(f.musicStyle); setInstrumental(f.instrumental); setVideoMode(f.videoMode);
+    setRefImage(f.refImage); setRefImagePreview(f.refImagePreview);
+    setInputImage(f.inputImage); setInputImagePreview(f.inputImagePreview); setInputImageEnd(f.inputImageEnd);
+    setInputAudio(f.inputAudio); setInputAudioName(f.inputAudioName); setInputAudioFile(f.inputAudioFile);
+    setSourceVideo(f.sourceVideo); setSourceVideoName(f.sourceVideoName);
+  };
+
+  /**
+   * An order's uploads, into the slots its tab reads them from. Every other
+   * slot is emptied, so the form shows what that order used and nothing left
+   * over from before.
+   */
+  const fillAttachments = (kind: TabType, inputs: OrderInputs) => {
+    const image = inputs.inputImage;
+    const ref = kind === "image" ? image : null;
+    const main = kind === "image" ? null : image;
+    setRefImage(ref); setRefImagePreview(ref);
+    setInputImage(main); setInputImagePreview(main);
+    // The server only takes an end frame alongside a start frame.
+    setInputImageEnd(kind === "video" && image ? inputs.inputImageEnd : null);
+    if (kind === "video") setVideoMode(image ? "i2v" : "t2v");
+    const audio = kind === "lipsync" || kind === "audio" ? inputs.inputAudio : null;
+    setInputAudio(audio); setInputAudioName(audio ? "ไฟล์เสียงจากงานเดิม" : null); setInputAudioFile(null);
+    const video = kind === "lipsync" ? inputs.inputVideo : null;
+    setSourceVideo(video); setSourceVideoName(video ? "คลิปจากงานเดิม" : null);
+  };
+
+  /**
+   * Open a finished piece from the history strip: it goes on the canvas and
+   * the studio becomes the order that made it — its tab, model, prompt,
+   * settings and uploads — ready to change and order again with a fresh seed.
+   * What the customer was writing is kept for "↶".
+   */
+  const openHistory = async (g: HistoryItem) => {
+    const seq = ++openSeqRef.current;
+    const kind = tabForHistory(g);
+    const model = models.find((m) => m.id === g.modelDbId);
+    const r = g.remix ?? {};
+
+    // Kept once, from before the first piece opened over it: browsing on from
+    // piece to piece must not replace the draft with the last piece opened.
+    const hasDraft = Boolean(prompt.trim() || lyrics.trim() || refImage || inputImage || inputImageEnd || inputAudio || sourceVideo);
+    const keepsDraft = !viewing && hasDraft;
+    if (keepsDraft) setFormBeforeOpen(captureForm());
+
     focusRef.current = null;
     setFocusId(null);
     setIsGenerating(false);
@@ -1844,43 +1977,72 @@ export default function GeneratePage() {
       thumbnailUrl: g.thumbnailUrl,
       creditsUsed: 0,
     });
-    document.querySelector(".rp-studio-center")?.scrollTo({ top: 0, behavior: "smooth" });
-  };
 
-  /**
-   * Put a past order back — model, prompt, shape, length, quality, song —
-   * ready to order again with a fresh seed. The history strip used to restore
-   * only the prompt, leaving the customer to rebuild everything else from
-   * memory.
-   */
-  const remixFrom = (g: HistoryItem) => {
-    const nextTab: TabType = g.type === "video" || g.type === "edit" || g.type === "audio" ? g.type : "image";
-    const model = models.find((m) => m.id === g.modelDbId);
-    const r = g.remix ?? {};
-    setTab(nextTab);
-    clearCanvas();
-    setPrompt(g.prompt ?? "");
+    setTab(kind);
+    setPrompt((g.prompt ?? "").slice(0, 10_000));
     setNegativePrompt(g.negativePrompt ?? "");
     setPromptBeforeEnhance(null);
     setEnhanceNote(null);
     if (model && model.canOrder !== false) setSelectedModelId(model.id);
     if (r.aspectRatio && r.aspectRatio in ASPECT_RATIO_CSS) setAspectRatio(r.aspectRatio);
     if (typeof r.duration === "number") setDuration(r.duration);
-    if (r.resolution) setResolution(r.resolution);
+    setResolution(r.resolution ?? null);
     setQualityId(r.quality ?? null);
-    if (typeof r.numOutputs === "number") setNumOutputs(Math.min(4, Math.max(1, Math.round(r.numOutputs))));
-    if (nextTab === "audio") {
-      if (typeof r.lyrics === "string") setLyrics(r.lyrics.slice(0, 3000));
-      if (r.music) {
-        setMusicStyle({ complexity: MUSIC_COMPLEXITY_DEFAULT, variance: MUSIC_VARIANCE_DEFAULT, ...r.music });
-        setInstrumental(r.music.instrumental === true);
-      }
+    setNumOutputs(kind === "image" && typeof r.numOutputs === "number" ? Math.min(4, Math.max(1, Math.round(r.numOutputs))) : 1);
+    if (typeof r.strength === "number") setStrength(Math.min(1, Math.max(0, r.strength)));
+    if (typeof r.steps === "number") setSteps(Math.min(80, Math.max(10, Math.round(r.steps))));
+    if (typeof r.cfgScale === "number") setGuidance(Math.min(20, Math.max(1, r.cfgScale)));
+    if (kind === "audio") {
+      setLyrics(typeof r.lyrics === "string" ? r.lyrics.slice(0, 3000) : "");
+      setMusicStyle({ complexity: MUSIC_COMPLEXITY_DEFAULT, variance: MUSIC_VARIANCE_DEFAULT, ...(r.music ?? {}) });
+      setInstrumental(r.music?.instrumental === true);
     }
-    toast(
-      "info",
-      "โหลดการตั้งค่าเดิมแล้ว",
-      model ? `${model.name} — กดทอเพื่อสร้างอีกครั้งด้วย seed ใหม่` : "โมเดลเดิมไม่มีแล้ว — ใช้โมเดลที่เลือกอยู่แทน",
-    );
+
+    const notes = [
+      !model ? "โมเดลเดิมไม่มีแล้ว — ใช้โมเดลที่เลือกอยู่แทน"
+        : model.canOrder === false ? `${model.name} ปิดให้บริการชั่วคราว — เลือกโมเดลอื่นในแท็บนี้แทน` : null,
+      keepsDraft ? "ร่างที่เขียนค้างไว้ยังเก็บอยู่ — กด ↶ ใต้ผลงานเพื่อกลับไป" : null,
+    ].filter(Boolean);
+    if (notes.length > 0) toast("info", "เปิดงานเดิมแล้ว", notes.join(" · "));
+    document.querySelector(".rp-studio-center")?.scrollTo({ top: 0, behavior: "smooth" });
+
+    // The files come in their own request (a start frame can be megabytes).
+    // Until they land the slots are empty and the order button waits.
+    fillAttachments(kind, NO_ORDER_INPUTS);
+    setOpenedInputs(null);
+    setLoadingInputs(true);
+    const inputs = await fetchOrderInputs(g.id);
+    if (openSeqRef.current !== seq) return;
+    setLoadingInputs(false);
+    if (!inputs) {
+      toast("error", "โหลดไฟล์แนบของงานเดิมไม่สำเร็จ", "prompt และการตั้งค่าโหลดแล้ว — กดที่งานอีกครั้ง หรืออัปโหลดไฟล์ใหม่");
+      return;
+    }
+    setOpenedInputs(inputs);
+    fillAttachments(kind, inputs);
+  };
+
+  /** "↶": the draft from before the first history item was opened, and an empty canvas. */
+  const restoreDraft = () => {
+    if (!formBeforeOpen) return;
+    openSeqRef.current++;
+    setLoadingInputs(false);
+    setOpenedInputs(null);
+    applyForm(formBeforeOpen);
+    clearCanvas();
+  };
+
+  /**
+   * A file put back from a reopened order that no longer loads: the order
+   * reused an upload of an older one, and the older one's retention removed
+   * it. Sending the dead link would only fail after the charge. Files picked
+   * in this visit are left alone — they have not expired.
+   */
+  const dropExpiredInput = (url: string | null, clear: () => void) => {
+    const restored = openedInputs && url !== null && Object.values(openedInputs).includes(url);
+    if (!restored) return;
+    clear();
+    toast("info", "ไฟล์แนบเดิมหมดอายุแล้ว", "กรุณาอัปโหลดไฟล์ใหม่ก่อนสร้าง");
   };
 
   /** Carry a finished picture into the next step: animate it, edit it, or reference it. */
@@ -2036,6 +2198,14 @@ export default function GeneratePage() {
   const resultIsVideo =
     !resultIsAudio && (resultKind === "video" || resultKind === "lipsync" || /\.(mp4|webm|mov)(\?|$)/i.test(resultUrl));
   const resultIsImage = !!resultUrl && !resultIsAudio && !resultIsVideo;
+  /**
+   * The picture shown beside a result as its original: the reference of a
+   * fresh image order, or what a reopened picture was made from (its
+   * reference, or the photo an edit changed).
+   */
+  const originalImage = viewing
+    ? (resultIsImage ? openedInputs?.inputImage ?? null : null)
+    : (tab === "image" ? refImagePreview : null);
   if (!session) return null;
 
   // ─── RENDER ─────────────────────────────────────────────────────────
@@ -2096,6 +2266,10 @@ export default function GeneratePage() {
             const art = TAB_ART[t.key];
             const pick = () => {
               setTab(t.key); setResult(null); setNumOutputs(1);
+              // The canvas is cleared, so no history item is open any more.
+              setViewing(null); setFormBeforeOpen(null);
+              // Files of an order still loading belong to the tab being left.
+              if (t.key !== tab && loadingInputs) { openSeqRef.current++; setLoadingInputs(false); }
               // The audio upload is shared between lip-sync and the cover
               // panel, and their limits differ by a factor of six: a four
               // minute song accepted for a cover must not still be sitting
@@ -2382,7 +2556,8 @@ export default function GeneratePage() {
             {inputImagePreview ? (
               <div style={{ position: "relative" }}>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={inputImagePreview} alt="Input" style={{ width: "100%", borderRadius: 10, maxHeight: 180, objectFit: "cover" }} />
+                <img src={inputImagePreview} alt="Input" style={{ width: "100%", borderRadius: 10, maxHeight: 180, objectFit: "cover" }}
+                  onError={() => dropExpiredInput(inputImagePreview, () => { setInputImage(null); setInputImagePreview(null); })} />
                 <button onClick={() => { setInputImage(null); setInputImagePreview(null); }}
                   style={{ position: "absolute", top: 8, right: 8, width: 26, height: 26, borderRadius: "50%", background: "rgba(0,0,0,0.65)", color: "#fff", border: "none", cursor: "pointer", fontSize: 14 }}>×</button>
               </div>
@@ -2417,7 +2592,8 @@ export default function GeneratePage() {
             {inputImageEnd ? (
               <div style={{ position: "relative" }}>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={inputImageEnd} alt="End frame" style={{ width: "100%", borderRadius: 10, maxHeight: 180, objectFit: "cover" }} />
+                <img src={inputImageEnd} alt="End frame" style={{ width: "100%", borderRadius: 10, maxHeight: 180, objectFit: "cover" }}
+                  onError={() => dropExpiredInput(inputImageEnd, () => setInputImageEnd(null))} />
                 <button onClick={() => setInputImageEnd(null)}
                   style={{ position: "absolute", top: 8, right: 8, width: 26, height: 26, borderRadius: "50%", background: "rgba(0,0,0,0.65)", color: "#fff", border: "none", cursor: "pointer", fontSize: 14 }}>×</button>
               </div>
@@ -2454,6 +2630,13 @@ export default function GeneratePage() {
               onPick={(e) => handleMediaUpload(e, "video")}
               onClear={() => { setSourceVideo(null); setSourceVideoName(null); }}
             />
+            {/* A clip put back from a reopened order: the customer may not
+                have it to hand any more, so it is shown rather than named. */}
+            {sourceVideo && sourceVideo === openedInputs?.inputVideo && (
+              <video src={sourceVideo} controls muted playsInline preload="metadata"
+                onError={() => dropExpiredInput(sourceVideo, () => { setSourceVideo(null); setSourceVideoName(null); })}
+                style={{ width: "100%", maxHeight: 180, marginTop: 8, borderRadius: 10, background: "#000", display: "block" }} />
+            )}
             <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
               คลิปควรเห็นหน้าชัดและยาวไม่เกิน 40 วินาที · เสียงเดิมในคลิปจะถูกแทนที่ทั้งหมด
             </div>
@@ -2470,6 +2653,11 @@ export default function GeneratePage() {
               onPick={(e) => handleMediaUpload(e, "audio")}
               onClear={() => { setInputAudio(null); setInputAudioName(null); setInputAudioFile(null); }}
             />
+            {inputAudio && inputAudio === openedInputs?.inputAudio && (
+              <audio src={inputAudio} controls preload="metadata"
+                onError={() => dropExpiredInput(inputAudio, () => { setInputAudio(null); setInputAudioName(null); })}
+                style={{ width: "100%", height: 36, marginTop: 8 }} />
+            )}
             <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
               พูดภาษาอะไรก็ได้รวมถึงไทย — โมเดลอ่านคลื่นเสียงเป็นรูปปาก ไม่ได้อ่านภาษา
             </div>
@@ -2505,6 +2693,13 @@ export default function GeneratePage() {
                   height={64}
                 />
               </div>
+            )}
+            {/* The song of a reopened cover. No waveform: R2 sends no CORS
+                header, so the browser can play it but not read its samples. */}
+            {!inputAudioFile && inputAudio && inputAudio === openedInputs?.inputAudio && (
+              <audio src={inputAudio} controls preload="metadata"
+                onError={() => dropExpiredInput(inputAudio, () => { setInputAudio(null); setInputAudioName(null); })}
+                style={{ width: "100%", height: 36, marginTop: 10 }} />
             )}
             <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
               AI ถอดเฉพาะ<strong style={{ color: "#94a3b8" }}>ทำนอง</strong>ออกมาแล้วร้องใหม่ทั้งเพลง — เสียงร้องเดิมไม่ได้ถูกนำมาใช้
@@ -2635,12 +2830,12 @@ export default function GeneratePage() {
                 </div>
               ) : (
                 <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", marginBottom: 16, border: "1px solid rgba(255,255,255,0.06)" }}>
-                  {refImagePreview && tab === "image" && !viewing ? (
+                  {originalImage ? (
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12 }}>
                       <div style={{ position: "relative" }}>
                         <span style={{ position: "absolute", top: 8, left: 8, zIndex: 2, padding: "3px 8px", borderRadius: 999, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", fontSize: 10, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>ต้นฉบับ</span>
                         {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={refImagePreview} alt="Original" style={{ width: "100%", borderRadius: 12, opacity: 0.7, objectFit: "contain" }} />
+                        <img src={originalImage} alt="Original" style={{ width: "100%", borderRadius: 12, opacity: 0.7, objectFit: "contain" }} />
                       </div>
                       <div style={{ position: "relative" }}>
                         <span style={{ position: "absolute", top: 8, left: 8, zIndex: 2, padding: "3px 8px", borderRadius: 999, background: `hsla(${160 + HUE},70%,50%,0.3)`, backdropFilter: "blur(8px)", fontSize: 10, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>ผลลัพธ์</span>
@@ -2649,7 +2844,7 @@ export default function GeneratePage() {
                       </div>
                     </div>
                   ) : AUDIO_EXT.test(result.resultUrl) ? (
-                    <AudioResult src={result.resultUrl} title={songTitle || "เพลงของคุณ"} genId={result.id} />
+                    <AudioResult src={result.resultUrl} title={viewing?.prompt || songTitle || "เพลงของคุณ"} genId={result.id} />
                   ) : resultIsVideo ? (
                     <video src={result.resultUrl} controls autoPlay loop style={{ width: "100%", borderRadius: 12, maxHeight: 600, margin: "0 auto", display: "block" }} />
                   ) : (
@@ -2670,7 +2865,9 @@ export default function GeneratePage() {
                   )}
                 </div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {viewing && <Pill onClick={() => remixFrom(viewing)}>↺ ใช้การตั้งค่านี้</Pill>}
+                  {viewing && formBeforeOpen && (
+                    <Pill onClick={restoreDraft} title="คืน prompt การตั้งค่า และไฟล์แนบที่เขียนค้างไว้ก่อนเปิดงานนี้">↶ กลับไปร่างเดิม</Pill>
+                  )}
                   <Pill onClick={clearCanvas}>↻ สร้างใหม่</Pill>
                 </div>
               </div>
@@ -2788,17 +2985,19 @@ export default function GeneratePage() {
                 // A song has nothing to draw; it gets a note on its own colour.
                 const isAudio = g.type === "audio" || AUDIO_EXT.test(src ?? "");
                 return (
-                  <button key={g.id} type="button" title={`${g.prompt}\n— กดเพื่อดู แล้วใช้การตั้งค่าเดิมสร้างใหม่ได้`}
-                    // Opens the piece on the canvas; "↺ ใช้การตั้งค่านี้" there
-                    // puts the whole order back (model, shape, length…).
-                    onClick={() => viewHistory(g)}
+                  <button key={g.id} type="button" title={`${g.prompt}\n— กดเพื่อเปิดงานนี้ พร้อม prompt การตั้งค่า และไฟล์แนบเดิม`}
+                    // Opens the piece on the canvas and puts the whole order
+                    // back on its own tab (openHistory).
+                    onClick={() => void openHistory(g)}
+                    aria-current={viewing?.id === g.id ? "true" : undefined}
                     style={{
                       aspectRatio: "1",
                       borderRadius: 8,
                       padding: 0,
                       overflow: "hidden",
                       position: "relative",
-                      border: "1px solid rgba(255,255,255,0.05)",
+                      // The piece open on the canvas, so it is clear which order the form holds.
+                      border: viewing?.id === g.id ? `1.5px solid hsla(${220 + HUE},80%,65%,0.9)` : "1px solid rgba(255,255,255,0.05)",
                       cursor: "pointer",
                       background: `linear-gradient(135deg, hsl(${(g.id * 23 + HUE) % 360}, 50%, 15%), hsl(${(g.id * 23 + 60 + HUE) % 360}, 50%, 8%))`,
                     }}>
@@ -3268,7 +3467,17 @@ export default function GeneratePage() {
           </div>
         )}
 
-        {missingStartFrame && (
+        {loadingInputs && (
+          <div style={{
+            marginTop: 12, padding: "10px 12px", borderRadius: 10, fontSize: 12,
+            background: "rgba(148,163,184,0.10)", color: "rgba(203,213,225,0.85)",
+            border: "1px solid rgba(255,255,255,0.08)",
+          }}>
+            กำลังโหลดไฟล์แนบของงานเดิม…
+          </div>
+        )}
+
+        {missingStartFrame && !loadingInputs && (
           <div style={{
             marginTop: 12, padding: "10px 12px", borderRadius: 10, fontSize: 12,
             background: "hsla(38,90%,55%,0.12)", color: "#fbbf24",
@@ -3278,7 +3487,7 @@ export default function GeneratePage() {
           </div>
         )}
 
-        {missingLipsyncInput && (
+        {missingLipsyncInput && !loadingInputs && (
           <div style={{
             marginTop: 12, padding: "10px 12px", borderRadius: 10, fontSize: 12,
             background: "hsla(38,90%,55%,0.12)", color: "#fbbf24",
