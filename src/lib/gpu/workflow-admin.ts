@@ -157,7 +157,8 @@ export async function previewWorkflow(
     durationSeconds: num(input.durationSeconds, base.durationSeconds, 0, entry.limits?.maxDuration ?? 600),
     quality,
     resolution,
-    imageFilename: firstFrame ? PREVIEW_FIRST : undefined,
+    // A portrait model always has its still; a video model only when asked.
+    imageFilename: firstFrame || entry.needs?.image ? PREVIEW_FIRST : undefined,
     lastImageFilename: lastFrame ? PREVIEW_LAST : undefined,
     audioFilename: entry.needs?.audio ? PREVIEW_AUDIO : undefined,
     checkpoints: checkpointsIn(classes),

@@ -597,11 +597,18 @@ export class WorkerClient {
   private async stageFrames(params: WorkerJobParams, objectInfo: ComfyObjectInfo): Promise<StagedFrames> {
     const entry = this.modelKey ? getCatalogEntry(this.modelKey) : undefined;
     if (this.profile.workflow || !entry) return {};
-    if (!entry.video && !entry.needs?.audio) return {};
+    if (!entry.video && !entry.needs?.audio && !entry.needs?.image) return {};
 
     const lastSource = typeof params.extra?.inputImageEnd === 'string' ? params.extra.inputImageEnd : undefined;
     const frames: StagedFrames = {};
-    if (entry.video?.firstFrame && params.inputImage) frames.first = await this.uploadImage(params.inputImage, 'first');
+    // A model that needs a still (a portrait to make speak) without one would
+    // render the template's demo face and charge for it.
+    if (entry.needs?.image && !params.inputImage) {
+      throw new Error(`"${entry.key}" needs an image, and this job has none`);
+    }
+    if ((entry.video?.firstFrame || entry.needs?.image) && params.inputImage) {
+      frames.first = await this.uploadImage(params.inputImage, 'first');
+    }
     if (entry.video?.lastFrame && lastSource) frames.last = await this.uploadImage(lastSource, 'last');
 
     // LoadImage's schema lists the input dir as it was when /object_info was
@@ -611,10 +618,11 @@ export class WorkerClient {
 
     if (entry.needs?.audio) {
       const source = params.extra?.inputAudio;
-      // A cover with no song to cover would otherwise render the template's
-      // demo track and charge for it, exactly like an unbound parameter.
+      // A cover with no song to cover (or a portrait with no voice) would
+      // otherwise render the template's demo track and charge for it, exactly
+      // like an unbound parameter.
       if (!isAcceptedAudioSource(source)) {
-        throw new Error(`"${entry.key}" needs a reference song, and this job has none`);
+        throw new Error(`"${entry.key}" needs an uploaded audio track, and this job has none`);
       }
       frames.audio = await this.uploadAudio(source);
       await this.refreshNodeSpec(objectInfo, 'LoadAudio');

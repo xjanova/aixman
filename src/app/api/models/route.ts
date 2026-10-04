@@ -225,6 +225,11 @@ export async function GET() {
         // customer's words, and whether it starts from a song they upload.
         // Null for anything that is not a rented-GPU audio model.
         music: inHouse ? musicOptions(m.modelId) : null,
+        // A model whose render is as long as the uploaded voice: the studio
+        // rounds the voice's length with the same rule GenerationService
+        // applies (voice-length.ts) and prices that, instead of a length
+        // control. Null for every other model.
+        lengthFromAudio: inHouse ? getCatalogEntry(m.modelId)?.lengthFromAudio ?? null : null,
         // Quality modes the studio may offer (Qwen-Image เร็ว / คุณภาพสูง), each
         // with the multiplier GenerationService prices it at. Null when the
         // model has none; admin-only modes reach admins only.

@@ -22,6 +22,7 @@ import Image from "next/image";
 import { useAppStore } from "@/lib/store/app-store";
 import { useToast } from "@/components/ui/toast-provider";
 import { creditsForDuration } from "@/lib/pricing";
+import { voiceRenderSeconds } from "@/lib/voice-length";
 import {
   composeMusicTags,
   musicComplexity,
@@ -462,7 +463,7 @@ function probeDuration(file: File, kind: "audio" | "video"): Promise<number | nu
 async function uploadMedia(
   file: File,
   kind: "audio" | "video" | "image",
-): Promise<{ url?: string; error?: string }> {
+): Promise<{ url?: string; error?: string; durationSeconds?: number }> {
   try {
     const form = new FormData();
     form.append("file", file);
@@ -470,7 +471,9 @@ async function uploadMedia(
     const data = await res.json();
     if (!res.ok) return { error: data.error || "ลองใหม่อีกครั้ง" };
     if (typeof data.url !== "string") return { error: "เซิร์ฟเวอร์ไม่ได้ส่งลิงก์ไฟล์กลับมา" };
-    return { url: data.url };
+    // The server's own reading of the file — the one an order is priced by.
+    const seconds = typeof data.durationSeconds === "number" && data.durationSeconds > 0 ? data.durationSeconds : undefined;
+    return { url: data.url, durationSeconds: seconds };
   } catch {
     return { error: "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้" };
   }
@@ -1222,6 +1225,19 @@ export default function GeneratePage() {
    * in hand. That is the one moment a waveform is free.
    */
   const [inputAudioFile, setInputAudioFile] = useState<File | null>(null);
+  /**
+   * Seconds per uploaded audio URL: the server's reading from /api/uploads, or
+   * the player's for a file put back from a past order. Keyed by URL rather
+   * than held beside `inputAudio`, so no path that swaps or clears the track
+   * can leave a stale length behind it.
+   */
+  const [audioLengths, setAudioLengths] = useState<Record<string, number>>({});
+  /**
+   * The natural size of the picture in the image slot, read when it draws. A
+   * portrait made to speak keeps its own shape, so this — not the aspect
+   * control the lip-sync tab does not have — is the frame that is ordered.
+   */
+  const [imageDims, setImageDims] = useState<{ src: string; width: number; height: number } | null>(null);
   const [sourceVideo, setSourceVideo] = useState<string | null>(null);
   const [sourceVideoName, setSourceVideoName] = useState<string | null>(null);
   const [uploading, setUploading] = useState<"audio" | "video" | "image" | null>(null);
@@ -1412,6 +1428,22 @@ export default function GeneratePage() {
   /** Lip-sync needs both halves: the voice, and the thing that speaks it. */
   const missingLipsyncInput = tab === "lipsync" && (!inputAudio || !lipsyncSource);
 
+  /**
+   * A model whose clip is as long as the voice (a self-hosted portrait): the
+   * rule the server applies to the stored file, and the length — or the
+   * reason it will be refused — for the track in the slot. Null when the model
+   * has no such rule or the track's length is not known here (the server then
+   * still decides).
+   */
+  const voiceRule = tab === "lipsync" ? selectedModel?.lengthFromAudio ?? null : null;
+  const inputAudioSeconds = inputAudio ? audioLengths[inputAudio] ?? null : null;
+  const voiceLength =
+    voiceRule && inputAudioSeconds !== null ? voiceRenderSeconds(inputAudioSeconds, voiceRule, selectedModel?.maxDuration) : null;
+  /** Longest voice the lip-sync picker accepts: the model's own ceiling where it has one. */
+  const lipsyncAudioMax = voiceRule && selectedModel?.maxDuration ? selectedModel.maxDuration : MAX_INPUT_SECONDS;
+  /** The portrait in the slot, at its natural size, once it has drawn. */
+  const portraitDims = imageDims && imageDims.src === inputImagePreview ? imageDims : null;
+
   /** Music controls this model offers; null for API music models and every other tab. */
   const musicOpts = tab === "audio" ? selectedModel?.music ?? null : null;
   /** A cover has nothing to cover until the customer uploads the song. */
@@ -1444,6 +1476,8 @@ export default function GeneratePage() {
     (tab !== "lipsync" && !prompt.trim()) ||
     missingStartFrame ||
     missingLipsyncInput ||
+    // A voice the server would refuse (too long, too short, unreadable).
+    voiceLength?.ok === false ||
     missingSourceSong ||
     // …or, on a reopened order, without the files it was made from.
     loadingInputs ||
@@ -1519,12 +1553,14 @@ export default function GeneratePage() {
     setUploading(kind);
 
     const seconds = await probeDuration(file, kind);
-    if (seconds !== null && seconds > maxSeconds) {
+    // The same quarter second of slack the server allows: an MP3 trimmed to
+    // the limit still carries its encoder's end padding.
+    if (seconds !== null && seconds > maxSeconds + 0.25) {
       setUploading(null);
       toast(
         "error",
         "ไฟล์ยาวเกินไป",
-        `รองรับไม่เกิน ${maxSeconds} วินาที (ไฟล์นี้ ${Math.round(seconds)} วินาที) กรุณาตัดให้สั้นลงก่อน`,
+        `รองรับไม่เกิน ${maxSeconds} วินาที (ไฟล์นี้ ${seconds.toFixed(1)} วินาที) กรุณาตัดให้สั้นลงก่อน`,
       );
       return;
     }
@@ -1536,7 +1572,13 @@ export default function GeneratePage() {
       toast("error", "อัปโหลดไม่สำเร็จ", result.error);
       return;
     }
-    if (kind === "audio") { setInputAudio(result.url!); setInputAudioName(file.name); setInputAudioFile(file); }
+    if (kind === "audio") {
+      setInputAudio(result.url!); setInputAudioName(file.name); setInputAudioFile(file);
+      // What a voice-driven order will be priced by: the server's reading if it
+      // gave one, the browser's otherwise.
+      const length = result.durationSeconds ?? seconds;
+      if (length) setAudioLengths((m) => ({ ...m, [result.url!]: length }));
+    }
     else { setSourceVideo(result.url!); setSourceVideoName(file.name); }
   };
 
@@ -1726,6 +1768,10 @@ export default function GeneratePage() {
       );
       return;
     }
+    if (voiceLength && !voiceLength.ok) {
+      toast("error", "ใช้ไฟล์เสียงนี้ไม่ได้", voiceLength.message);
+      return;
+    }
     if (missingSourceSong) {
       toast("error", "ยังไม่ได้อัปโหลดเพลงต้นฉบับ", "โหมดคัฟเวอร์ต้องมีเพลงให้ AI ถอดทำนองก่อน");
       return;
@@ -1741,7 +1787,9 @@ export default function GeneratePage() {
     // while the request is out — an API model can take half a minute to
     // answer the POST itself.
     const pendingId = -clickedAt;
-    const jobAspect = tab === "audio" ? "1:1" : aspectRatio;
+    // A portrait made to speak keeps its own shape (talkingFrame on the server).
+    const portrait = tab === "lipsync" && lipsyncNeeds === "image" ? portraitDims : null;
+    const jobAspect = tab === "audio" ? "1:1" : portrait ? `${portrait.width}:${portrait.height}` : aspectRatio;
     setJobs((js) => [
       { id: pendingId, tab, prompt: prompt.trim(), aspect: jobAspect, startedAt: clickedAt, status: "running", progress: null, result: null },
       ...js.filter((j) => j.status === "running"),
@@ -1783,7 +1831,7 @@ export default function GeneratePage() {
       // shows the picker, and ignores the field if it is sent.
       inputImageEnd: tab === "video" && videoMode === "i2v" && imageToSend ? inputImageEnd ?? undefined : undefined,
       params: {
-        width: ar?.w || 1024, height: ar?.h || 1024, aspectRatio,
+        width: portrait?.width ?? (ar?.w || 1024), height: portrait?.height ?? (ar?.h || 1024), aspectRatio,
         // The customer's pick as-is. The server falls back to the model's
         // default when it is absent or not offered for the frame shape
         // (h3RenderPlan), which is the same preset the popover shows as chosen.
@@ -2076,7 +2124,7 @@ export default function GeneratePage() {
   const acceptFile = async (file: File) => {
     if (file.type.startsWith("audio/") || file.type.startsWith("video/")) {
       const kind = file.type.startsWith("audio/") ? "audio" : "video";
-      if (kind === "audio" && tab === "lipsync") return uploadMediaFile(file, "audio", MAX_INPUT_SECONDS);
+      if (kind === "audio" && tab === "lipsync") return uploadMediaFile(file, "audio", lipsyncAudioMax);
       if (kind === "audio" && musicOpts?.sourceSong) return uploadMediaFile(file, "audio", coverSourceSeconds);
       if (kind === "video" && tab === "lipsync" && lipsyncNeeds === "video") return uploadMediaFile(file, "video", MAX_INPUT_SECONDS);
       toast(
@@ -2182,7 +2230,8 @@ export default function GeneratePage() {
     setIsUpscaling(false);
   };
 
-  const totalCredits = creditsFor(tab === "video" || tab === "audio" ? duration : null) * outputs;
+  const totalCredits =
+    creditsFor(tab === "video" || tab === "audio" ? duration : voiceLength?.ok ? voiceLength.seconds : null) * outputs;
   /** The balance is known and this order costs more than it. The server is still the judge. */
   const shortOfCredits = creditsLoaded && totalCredits > 0 && creditBalance < totalCredits;
   /** A song has no picture shape; its in-progress frame is square. */
@@ -2557,6 +2606,12 @@ export default function GeneratePage() {
               <div style={{ position: "relative" }}>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={inputImagePreview} alt="Input" style={{ width: "100%", borderRadius: 10, maxHeight: 180, objectFit: "cover" }}
+                  onLoad={(e) => {
+                    const img = e.currentTarget;
+                    if (inputImagePreview && img.naturalWidth > 0 && img.naturalHeight > 0) {
+                      setImageDims({ src: inputImagePreview, width: img.naturalWidth, height: img.naturalHeight });
+                    }
+                  }}
                   onError={() => dropExpiredInput(inputImagePreview, () => { setInputImage(null); setInputImagePreview(null); })} />
                 <button onClick={() => { setInputImage(null); setInputImagePreview(null); }}
                   style={{ position: "absolute", top: 8, right: 8, width: 26, height: 26, borderRadius: "50%", background: "rgba(0,0,0,0.65)", color: "#fff", border: "none", cursor: "pointer", fontSize: 14 }}>×</button>
@@ -2565,8 +2620,16 @@ export default function GeneratePage() {
               <label style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, borderRadius: 12, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#64748b", fontSize: 12, cursor: "pointer" }}>
                 <div style={{ fontSize: 22, marginBottom: 4 }}>↑</div>
                 อัปโหลดภาพ
-                <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => handleImageUpload(e)} />
+                {/* What the rented worker can read (frame-input.ts) — a GIF or
+                    HEIC portrait would only be refused at the order. */}
+                <input type="file" accept={tab === "lipsync" ? "image/png,image/jpeg,image/webp" : "image/*"}
+                  style={{ display: "none" }} onChange={(e) => handleImageUpload(e)} />
               </label>
+            )}
+            {tab === "lipsync" && (
+              <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
+                ใช้รูปที่เห็นหน้าชัด หันเข้ากล้อง ปากไม่ถูกบัง — คลิปจะออกมาตามสัดส่วนของรูป
+              </div>
             )}
           </Section>
         )}
@@ -2649,14 +2712,44 @@ export default function GeneratePage() {
               value={inputAudioName}
               busy={uploading === "audio"}
               accept="audio/mpeg,audio/wav,audio/ogg,audio/flac,audio/mp4,audio/x-m4a"
-              hint="อัปโหลดเสียง (MP3 / WAV / M4A)"
-              onPick={(e) => handleMediaUpload(e, "audio")}
+              hint={voiceRule ? `อัปโหลดเสียงพูด (MP3 / WAV / M4A) ไม่เกิน ${lipsyncAudioMax} วินาที` : "อัปโหลดเสียง (MP3 / WAV / M4A)"}
+              onPick={(e) => handleMediaUpload(e, "audio", lipsyncAudioMax)}
               onClear={() => { setInputAudio(null); setInputAudioName(null); setInputAudioFile(null); }}
             />
+            {/* Hear what will be spoken before paying for it. */}
+            {voiceRule && inputAudioFile && (
+              <div style={{ marginTop: 10 }}>
+                <AudioWave
+                  key={`${inputAudioFile.name}:${inputAudioFile.size}:${inputAudioFile.lastModified}`}
+                  source={inputAudioFile}
+                  height={48}
+                />
+              </div>
+            )}
             {inputAudio && inputAudio === openedInputs?.inputAudio && (
               <audio src={inputAudio} controls preload="metadata"
+                // A track put back from a past order has no upload reading:
+                // the player's is what prices it here (the server re-reads it).
+                onLoadedMetadata={(e) => {
+                  const d = e.currentTarget.duration;
+                  if (Number.isFinite(d) && d > 0) setAudioLengths((m) => (inputAudio in m ? m : { ...m, [inputAudio]: d }));
+                }}
                 onError={() => dropExpiredInput(inputAudio, () => { setInputAudio(null); setInputAudioName(null); })}
                 style={{ width: "100%", height: 36, marginTop: 8 }} />
+            )}
+            {/* The clip is as long as the voice, and so is the price. */}
+            {voiceRule && (
+              voiceLength?.ok === false ? (
+                <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 8, fontSize: 11.5, lineHeight: 1.5, background: "hsla(38,90%,55%,0.12)", color: "#fbbf24", border: "1px solid hsla(38,90%,55%,0.25)" }}>
+                  {voiceLength.message}
+                </div>
+              ) : (
+                <div style={{ marginTop: 8, fontSize: 11.5, lineHeight: 1.5, color: "#a5f3fc" }}>
+                  {inputAudio
+                    ? `ความยาวคลิป = ความยาวเสียง${voiceLength ? ` ${voiceLength.seconds.toFixed(1)} วินาที` : ""} · ✦ ${totalCredits} เครดิต`
+                    : `คิดเครดิตตามความยาวเสียง: ✦ ${creditsFor(null)} (ไม่เกิน 5 วิ) ถึง ✦ ${creditsFor(lipsyncAudioMax)} (${lipsyncAudioMax} วิ)`}
+                </div>
+              )
             )}
             <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
               พูดภาษาอะไรก็ได้รวมถึงไทย — โมเดลอ่านคลื่นเสียงเป็นรูปปาก ไม่ได้อ่านภาษา

@@ -57,7 +57,7 @@ function jobParams(entry: CatalogEntry): CatalogJobParams {
     seed: 12345,
     lyrics: '[Verse]\nvalidation lyrics',
     audioFilename: entry.needs?.audio ? AUDIO_STUB : undefined,
-    imageFilename: entry.video?.firstFrame ? IMAGE_STUB : undefined,
+    imageFilename: entry.video?.firstFrame || entry.needs?.image ? IMAGE_STUB : undefined,
     quality: entry.qualityModes?.find((m) => m.isDefault)?.id,
     // A full set of song controls, so the run covers the composed `[Tags]`
     // path and the two that are real node inputs: `complexity` picks YuE2's
@@ -104,6 +104,17 @@ function variants(entry: CatalogEntry): Variant[] {
       out.push({ label: 'first+last frame', params: { ...base, lastImageFilename: IMAGE_STUB }, tuning: defaults });
     }
     out.push({ label: 'portrait 9:16', params: { ...base, width: 768, height: 1344 }, tuning: defaults });
+  }
+  if (entry.lengthFromAudio) {
+    // Every frame shape a portrait can map to, and the length extremes: the
+    // shortest voice, one off the 1/3 s grid (rounded), and the ceiling.
+    for (const [w, h] of [[720, 1280], [960, 1280], [1024, 1024], [1280, 960], [1280, 720]]) {
+      out.push({ label: `portrait ${w}x${h}`, params: { ...base, width: w, height: h }, tuning: defaults });
+    }
+    for (const s of [1, 7.6667, entry.limits?.maxDuration ?? 15]) {
+      out.push({ label: `voice ${s}s`, params: { ...base, durationSeconds: s }, tuning: defaults });
+    }
+    out.push({ label: 'no prompt', params: { ...base, prompt: '' }, tuning: defaults });
   }
   for (const r of entry.video?.resolutions ?? []) {
     if (!r.isDefault) {

@@ -81,6 +81,21 @@ function fillRequired(
     const opts = specOptions(spec);
     if (opts.hidden === true) continue;
 
+    // An autogrow input never arrives under its own name: it is the set of
+    // `name.a`, `name.b`… the graph wired (ComfyMathExpression's `values`).
+    // There is no default to fill it with — too few is a broken template.
+    if (specType(spec) === 'COMFY_AUTOGROW_V3') {
+      const template = opts.template as { min?: unknown } | undefined;
+      const min = typeof template?.min === 'number' ? template.min : 1;
+      const present = Object.keys(inputs).filter((k) => k.startsWith(`${key}.`)).length;
+      if (present < min) {
+        throw new Error(
+          `${where} needs at least ${min} "${key}.*" input(s) and has ${present}. The workflow needs updating for this ComfyUI version.`
+        );
+      }
+      continue;
+    }
+
     if (!(key in inputs)) {
       const choices = comboChoices(spec);
       if ('default' in opts) {

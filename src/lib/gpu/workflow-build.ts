@@ -323,6 +323,7 @@ export function sampleJob(entry: CatalogEntry, overrides: Partial<CatalogJobPara
     seed: 123456789,
     lyrics: audio ? '[Verse]\nแสงไฟยามค่ำ\n\n[Chorus]\nฝันไปด้วยกัน' : undefined,
     audioFilename: entry.needs?.audio ? 'aixman-source-sample.mp3' : undefined,
+    imageFilename: entry.needs?.image ? 'aixman-first-sample.png' : undefined,
     quality: entry.qualityModes?.find((m) => m.isDefault)?.id,
     tuning: resolveTunables(entry.tunables, null),
     ...overrides,

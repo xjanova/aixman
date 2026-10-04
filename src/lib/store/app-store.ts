@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { DurationCurve } from '@/lib/pricing';
+import type { LengthFromAudio } from '@/lib/voice-length';
 
 interface AIModel {
   id: number;
@@ -54,6 +55,12 @@ interface AIModel {
     /** Whether the voice / genre / arrangement controls apply to this model. */
     controls?: boolean;
   } | null;
+  /**
+   * Set when the render is as long as the uploaded voice (a portrait made to
+   * speak): the studio prices `voiceRenderSeconds` of it, the same length
+   * GenerationService reads from the file. Null for every other model.
+   */
+  lengthFromAudio?: LengthFromAudio | null;
   /**
    * Quality modes (rented-GPU models, e.g. Qwen-Image เร็ว / คุณภาพสูง), each
    * priced at the base price times its multiplier — the same sum

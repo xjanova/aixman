@@ -18,7 +18,7 @@ import assert from 'node:assert/strict';
 // Nothing here queries a database.
 process.env.DATABASE_URL ??= 'mysql://test:test@127.0.0.1:3306/test';
 
-const { MODEL_CATALOG, getCatalogEntry, nearestBucket, h3Prompt } = await import('@/lib/gpu/catalog');
+const { MODEL_CATALOG, getCatalogEntry, nearestBucket, h3Prompt, talkingFrame } = await import('@/lib/gpu/catalog');
 const { validateGraph } = await import('@/lib/gpu/comfy-validate');
 const { alternativeTunables, coerceTunable, resolveTunables } = await import('@/lib/gpu/tunables');
 const { buildJobGraph, sampleJob, shapePrompt } = await import('@/lib/gpu/workflow-build');
@@ -45,7 +45,8 @@ function schema(): Schema {
       def[1] = opts;
     }
   };
-  add('LoadImage', 'image', [FIRST, LAST]);
+  // …and its own stand-in portrait for entries that make one speak.
+  add('LoadImage', 'image', [FIRST, LAST, 'aixman-first-sample.png']);
   // `sampleJob` names its own stand-in song for entries that need one.
   add('LoadAudio', 'audio', [AUDIO, 'aixman-source-sample.mp3']);
   return s as Schema;
@@ -276,4 +277,46 @@ test('stored tunables are coerced, never trusted', () => {
   const resolved = resolveTunables(entry.tunables, { steps768: 99, sampler: 'not-a-sampler' });
   assert.equal(resolved.steps768, 4, 'an out-of-range value falls back to the default');
   assert.equal(resolved.sampler, 'euler');
+});
+
+// ---------------------------------------------------------------------------
+// LTX-2.3 talking portrait — the customer's voice, not the template's TTS
+// ---------------------------------------------------------------------------
+
+test('a portrait speaks the uploaded voice: no paid API node survives, the voice drives the clip', () => {
+  const g = build('ltx-2.3-talking', { audioFilename: AUDIO, imageFilename: FIRST, durationSeconds: 7.6667 }).graph;
+  const classes = Object.values(g).map((n) => n.class_type);
+  for (const api of ['ElevenLabsTextToSpeech', 'ElevenLabsVoiceSelector', 'GeminiNode', 'RegexExtract', 'SaveAudioMP3', 'PreviewAny']) {
+    assert.ok(!classes.includes(api), `${api} reached the graph`);
+  }
+  assert.equal(g.aix_voice.inputs.audio, AUDIO);
+  assert.deepEqual(g['478_332'].inputs.audio, ['aix_voice', 0], 'the trim reads our LoadAudio');
+  assert.equal(g['440'].inputs.image, FIRST);
+  // One number decides the trim and the frame count.
+  assert.equal(g['478_331'].inputs.value, 7.6667);
+  assert.deepEqual(g['478_332'].inputs.duration, ['478_331', 0]);
+  assert.deepEqual(g['478_329'].inputs['values.a'], ['478_331', 0]);
+  // The file carries the recording itself, not LTX's re-synthesised copy.
+  assert.deepEqual(g['478_312'].inputs.audio, ['478_332', 0]);
+  assert.ok(!classes.includes('LTXVAudioVAEDecode'), 'the unused audio decode is pruned');
+  // Two passes, two seeds.
+  assert.notEqual(g['478_285'].inputs.noise_seed, g['478_286'].inputs.noise_seed);
+});
+
+test('a portrait keeps its own shape on the 64 px grid', () => {
+  assert.deepEqual(talkingFrame(1080, 1920), { width: 704, height: 1280 });
+  assert.deepEqual(talkingFrame(3024, 4032), { width: 832, height: 1088 });
+  assert.deepEqual(talkingFrame(1000, 1000), { width: 960, height: 960 });
+  assert.deepEqual(talkingFrame(1920, 1080), { width: 1280, height: 704 });
+  assert.deepEqual(talkingFrame(0, 0), { width: 704, height: 1280 }, "unknown shape → the template's portrait");
+  const g = build('ltx-2.3-talking', { width: 1280, height: 720 }).graph;
+  assert.equal(g['478_330'].inputs.value, 1280);
+  assert.equal(g['478_324'].inputs.value, 704);
+});
+
+test('an empty prompt still tells the model the person is talking to camera', () => {
+  const empty = build('ltx-2.3-talking', { prompt: '' }).graph;
+  assert.match(String(empty['478_319'].inputs.value), /^action: the person talks directly to the camera/);
+  const scene = build('ltx-2.3-talking', { prompt: 'พิธีกรหญิงยิ้มแย้มในสตูดิโอข่าว' }).graph;
+  assert.match(String(scene['478_319'].inputs.value), /^พิธีกรหญิงยิ้มแย้มในสตูดิโอข่าว\naction:/);
 });

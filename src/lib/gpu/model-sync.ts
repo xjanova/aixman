@@ -1,5 +1,5 @@
 import prisma from '@/lib/db';
-import { MODEL_CATALOG } from './catalog';
+import { MODEL_CATALOG, type CatalogEntry } from './catalog';
 
 /**
  * Write the catalogue into `ai_models`.
@@ -13,6 +13,16 @@ import { MODEL_CATALOG } from './catalog';
  * prices follow the catalogue, but `readiness` is never reset — a model that
  * has already rendered successfully on this deployment stays proven.
  */
+/**
+ * The row's subcategory. A lip-sync entry is a 'video' row like any clip, and
+ * this is what tells the studio to give it the lip-sync tab — `lipsync-portrait`
+ * asks for a still to make speak, `lipsync` for a clip to re-dub.
+ */
+export function catalogSubcategory(entry: Pick<CatalogEntry, 'kind' | 'needs'>): string {
+  if (entry.kind === 'lipsync') return entry.needs?.image ? 'lipsync-portrait' : 'lipsync';
+  return 'self-hosted';
+}
+
 export async function syncCatalogModels(providerId: number): Promise<{ created: number; updated: number }> {
   const existing = new Set(
     (
@@ -35,7 +45,7 @@ export async function syncCatalogModels(providerId: number): Promise<{ created: 
         name: entry.name,
         description: entry.description,
         category: entry.outputKind,
-        subcategory: 'self-hosted',
+        subcategory: catalogSubcategory(entry),
         costPerUnit: entry.pricing.costPerUnit,
         creditsPerUnit: entry.pricing.creditsPerUnit,
         maxWidth: entry.limits?.maxWidth ?? null,
@@ -50,6 +60,7 @@ export async function syncCatalogModels(providerId: number): Promise<{ created: 
         name: entry.name,
         description: entry.description,
         category: entry.outputKind,
+        subcategory: catalogSubcategory(entry),
         costPerUnit: entry.pricing.costPerUnit,
         creditsPerUnit: entry.pricing.creditsPerUnit,
         maxWidth: entry.limits?.maxWidth ?? null,

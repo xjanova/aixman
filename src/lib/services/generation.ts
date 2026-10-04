@@ -9,7 +9,9 @@ import { persistAssetSafe, isStorageConfigured } from '@/lib/storage/r2';
 import type { GenerationRequest, GenerationResult, ProviderSlug } from '@/types';
 import { fitFrame } from '@/lib/gpu/frame';
 import { getCatalogEntry, isAdminOnlyPreset, isCommunityOnlyModel, orderNeedsProviderAccount } from '@/lib/gpu/catalog';
-import { isAcceptedAudioSource, isAcceptedFrameSource } from '@/lib/gpu/frame-input';
+import { isAcceptedAudioSource, isAcceptedFrameSource, readAudioSource } from '@/lib/gpu/frame-input';
+import { audioDurationSeconds } from '@/lib/audio-duration';
+import { voiceRenderSeconds, type LengthFromAudio } from '@/lib/voice-length';
 import { creditsForDuration } from '@/lib/pricing';
 import { sanitizeMusicParams } from '@/lib/music-style';
 import { getGpuConfig } from '@/lib/gpu/config';
@@ -133,13 +135,29 @@ export class GenerationService {
       }
     }
 
-    // Same rule for a cover's reference song: the model has nothing to
-    // transcribe without it, and the failure would otherwise land after the
-    // machine was rented and the credits taken.
-    if (gpuModel && getCatalogEntry(model.modelId)?.needs?.audio) {
-      if (!isAcceptedAudioSource(request.inputAudio)) {
-        throw new Error('โหมดคัฟเวอร์ต้องอัปโหลดเพลงต้นฉบับก่อน');
-      }
+    // Same rule for a cover's reference song, and for a portrait's voice and
+    // face: the model has nothing to work from without them, and the failure
+    // would otherwise land after the machine was rented and the credits taken.
+    const catalogEntry = gpuModel ? getCatalogEntry(model.modelId) : undefined;
+    const speaks = catalogEntry?.kind === 'lipsync';
+    if (catalogEntry?.needs?.audio && !isAcceptedAudioSource(request.inputAudio)) {
+      throw new OrderRefusedError(
+        speaks ? 'ต้องอัปโหลดไฟล์เสียงที่จะให้พูดก่อน' : 'โหมดคัฟเวอร์ต้องอัปโหลดเพลงต้นฉบับก่อน',
+        'missing-audio',
+        422
+      );
+    }
+    if (catalogEntry?.needs?.image && !isAcceptedFrameSource(request.inputImage)) {
+      throw new OrderRefusedError('ต้องอัปโหลดรูปคนที่จะให้พูดก่อน', 'missing-image', 422);
+    }
+
+    // A portrait speaks for as long as its voice runs, so the voice sets the
+    // length that is priced and rendered — read here from the file we stored,
+    // never from a number the client sends (lipsync is priced per second, and
+    // the studio's own measurement is only a preview of this one).
+    let voiceSeconds: number | null = null;
+    if (catalogEntry?.lengthFromAudio) {
+      voiceSeconds = await this.voiceLength(request.inputAudio as string, catalogEntry.lengthFromAudio, model.maxDuration);
     }
 
     // The model's limits are what its price was set against and what a rented
@@ -160,11 +178,11 @@ export class GenerationService {
     // from the 60 s fallback when it sends none) is just a place for the song
     // to get cut off. Those models always get their full budget; the price no
     // longer depends on it either, since the entry carries no duration curve.
-    const catalogEntry = gpuModel ? getCatalogEntry(model.modelId) : undefined;
     const gpuDuration =
-      catalogEntry?.music?.autoLength === true
+      voiceSeconds ??
+      (catalogEntry?.music?.autoLength === true
         ? catalogEntry.limits?.maxDuration ?? model.maxDuration ?? 0
-        : bounded(request.params?.duration, request.type === 'audio' ? 60 : 5, model.maxDuration);
+        : bounded(request.params?.duration, request.type === 'audio' ? 60 : 5, model.maxDuration));
 
     // A rented-GPU job is one render with one output, whatever count was asked
     // for — charging per requested output sold four images and delivered one.
@@ -549,6 +567,26 @@ export class GenerationService {
       path: '/admin/generations',
     });
     throw new OrderRefusedError(blockedMessage(category), 'content-blocked', 422);
+  }
+
+  /**
+   * The seconds a voice-driven order renders and is priced at, read from the
+   * uploaded file itself; refused in Thai when it cannot be read or does not
+   * fit the model.
+   */
+  private static async voiceLength(source: string, rule: LengthFromAudio, maxSeconds: number | null): Promise<number> {
+    let measured: number | null;
+    try {
+      const { bytes, ext } = await readAudioSource(source);
+      measured = audioDurationSeconds(bytes, ext);
+    } catch (error) {
+      // Our own bucket did not answer; the file is very likely fine.
+      console.warn('[generation] could not read an uploaded voice track:', (error as Error).message);
+      throw new OrderRefusedError('อ่านไฟล์เสียงที่อัปโหลดไม่สำเร็จ กรุณาลองใหม่อีกครั้ง', 'voice-fetch-failed', 503);
+    }
+    const length = voiceRenderSeconds(measured, rule, maxSeconds);
+    if (!length.ok) throw new OrderRefusedError(length.message, length.code, 422);
+    return length.seconds;
   }
 
   /**

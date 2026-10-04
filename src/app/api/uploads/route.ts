@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth';
 import { isStorageConfigured, uploadBuffer } from '@/lib/storage/r2';
 import { MAX_BYTES, isUploadKind, maxBytesLabel, sniff, uploadKey, type UploadKind } from '@/lib/uploads';
+import { audioDurationSeconds } from '@/lib/audio-duration';
 
 /**
  * Accept an input file for a generation and return a URL the model can fetch.
@@ -129,6 +130,10 @@ export async function POST(request: NextRequest) {
       kind,
       bytes: buffer.length,
       contentType: detected.contentType,
+      // The length the order path will read from this same file, so the
+      // studio can show the price a voice-driven model will charge for it.
+      // Null when the headers do not say (the order is then refused there).
+      durationSeconds: kind === 'audio' ? audioDurationSeconds(buffer, detected.ext) : null,
     });
   } catch (error) {
     // The S3 client's message can carry the bucket name and endpoint. Log it,
