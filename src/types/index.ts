@@ -4,7 +4,7 @@
 
 import type { MusicStyleParams } from '@/lib/music-style';
 
-export type GenerationType = 'image' | 'video' | 'edit' | 'audio';
+export type GenerationType = 'image' | 'video' | 'edit' | 'audio' | 'model3d';
 export type GenerationStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
 export type CreditTransactionType = 'purchase' | 'usage' | 'refund' | 'bonus' | 'admin_adjust';
 export type PoolRotationMode = 'round_robin' | 'balanced' | 'quota_first';

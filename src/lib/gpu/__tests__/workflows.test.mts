@@ -347,6 +347,29 @@ test('a picture becomes a textured mesh, cut out first and exported after painti
   assert.equal(g['43'].inputs.max_facenum, 60000);
 });
 
+test('a 3D quality mode changes only what makes it that mode', () => {
+  const standard = build('hunyuan3d-2.1', { imageFilename: FIRST, seed: 1, quality: 'standard' }).graph;
+  assert.equal(standard['43'].inputs.max_facenum, 60000);
+  assert.equal(standard['20'].inputs.view_size, 768, 'the template view size, stated');
+  // Game-ready: fewer faces, everything else as standard.
+  const game = build('hunyuan3d-2.1', { imageFilename: FIRST, seed: 1, quality: 'game' }).graph;
+  assert.equal(game['43'].inputs.max_facenum, 15000);
+  assert.equal(game['9'].inputs.octree_resolution, standard['9'].inputs.octree_resolution);
+  assert.equal(game['20'].inputs.texture_size, standard['20'].inputs.texture_size);
+  // An admin who already set fewer faces is not raised to the game cap.
+  const lean = build('hunyuan3d-2.1', { imageFilename: FIRST, seed: 1, quality: 'game' }, { tuning: { faces: 8000 } }).graph;
+  assert.equal(lean['43'].inputs.max_facenum, 8000);
+  const ultra = build('hunyuan3d-2.1', { imageFilename: FIRST, seed: 1, quality: 'ultra' }).graph;
+  assert.equal(ultra['9'].inputs.octree_resolution, 512);
+  assert.equal(ultra['43'].inputs.max_facenum, 200000);
+  assert.equal(ultra['20'].inputs.texture_size, 4096);
+  assert.equal(ultra['20'].inputs.view_size, 1024);
+  assert.equal(ultra['37'].inputs.steps, 50);
+  const modes = getCatalogEntry('hunyuan3d-2.1')!.qualityModes!;
+  assert.equal(modes.find((m) => m.isDefault)?.id, 'standard');
+  assert.equal(modes.find((m) => m.id === 'ultra')?.adminOnly, true, 'ultra is tried by admins first');
+});
+
 test('the 3D entry boots a devel image and builds its texture extensions', () => {
   const entry = getCatalogEntry('hunyuan3d-2.1');
   assert.ok(entry);

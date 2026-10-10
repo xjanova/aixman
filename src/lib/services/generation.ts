@@ -24,6 +24,12 @@ import { communityMachineAvailable } from '@/lib/gpu/community-availability';
 import { OrderRefusedError } from './order-refusal';
 
 /**
+ * Why an order was refused when its type and its model disagree about whether
+ * a 3D model is coming. Thai, because /api/generate shows it as it is.
+ */
+export const TYPE_MISMATCH_MESSAGE = 'โมเดลนี้ไม่รองรับงานประเภทนี้';
+
+/**
  * Generation Service
  * Orchestrates AI generation requests across providers with account pool rotation
  */
@@ -63,6 +69,13 @@ export class GenerationService {
     // running it is exactly how a model gets proven and promoted.
     if (!ModelReadiness.canOrder(model.readiness, options.isAdmin === true)) {
       throw new Error(TUNING_MESSAGE);
+    }
+
+    // The row's type is what the gallery, the studios and the download read to
+    // know a GLB is coming rather than a picture. A 3D order sent to a picture
+    // model — or a picture order to a 3D one — is refused before credits move.
+    if ((request.type === 'model3d') !== (model.category === 'model3d')) {
+      throw new Error(TYPE_MISMATCH_MESSAGE);
     }
 
     // What the order asks for, from its words, before anything is charged

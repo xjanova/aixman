@@ -122,6 +122,26 @@ function Media({ gen, full }: { gen: AdminGen; full: boolean }) {
       </div>
     );
   }
+  if (gen.type === "model3d") {
+    // A GLB is no picture. The still it was made from stands in for it, and
+    // the detail view links the file itself (opened from R2 directly — the
+    // in-page download route only serves a customer's own renders).
+    return (
+      <div className={full ? "flex flex-col items-center gap-3" : "w-full h-full relative"}>
+        {gen.thumbnailUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={gen.thumbnailUrl} alt={gen.prompt || ""}
+            className={full ? "max-h-[60vh] w-auto mx-auto rounded-lg" : "w-full h-full object-contain"} />
+        ) : (
+          <div className="w-full h-full min-h-24 grid place-items-center text-3xl text-muted">{gen.status === "failed" ? "✕" : "◆"}</div>
+        )}
+        {!full && <span className="absolute top-1 left-1 px-1.5 py-0.5 rounded text-[9px] font-bold bg-black/60 text-cyan-200">3D</span>}
+        {full && gen.resultUrl && (
+          <a href={gen.resultUrl} target="_blank" rel="noopener noreferrer" className="text-sm text-cyan-300 underline">เปิดไฟล์ GLB</a>
+        )}
+      </div>
+    );
+  }
   if (!src) {
     return (
       <div className="w-full h-full grid place-items-center text-3xl text-muted">

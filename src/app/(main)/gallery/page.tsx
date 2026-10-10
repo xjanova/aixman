@@ -19,6 +19,7 @@ import { useToast } from "@/components/ui/toast-provider";
 import { EmptyState } from "@/components/xdreamer/page-hero";
 import { downloadGeneration, extensionOf, saveFavorite } from "@/lib/client-actions";
 import { AudioCover } from "@/components/xdreamer/audio";
+import { ModelViewer } from "@/components/xdreamer/model-viewer";
 
 const HUE = 70;
 
@@ -143,7 +144,7 @@ export default function GalleryPage() {
   const handleDownload = async (gen: Generation, e?: React.MouseEvent) => {
     e?.stopPropagation();
     if (!gen.resultUrl) return;
-    const fallback = gen.type === "video" ? "mp4" : gen.type === "audio" ? "flac" : "webp";
+    const fallback = gen.type === "video" ? "mp4" : gen.type === "audio" ? "flac" : gen.type === "model3d" ? "glb" : "webp";
     const ok = await downloadGeneration(gen.id, gen.resultUrl, `xdreamer-${gen.id}.${extensionOf(gen.resultUrl, fallback)}`);
     if (ok) toast("success", "ดาวน์โหลดสำเร็จ");
     else toast("error", "ดาวน์โหลดไม่สำเร็จ");
@@ -292,6 +293,8 @@ export default function GalleryPage() {
                     <div style={{ position: "relative" }}>
                       {gen.type === "audio" ? (
                         <AudioCover seed={gen.prompt} bars={9} label={false} style={{ aspectRatio: "1/1" }} />
+                      ) : gen.type === "model3d" && !gen.thumbnailUrl ? (
+                        <ModelPlaceholder style={{ aspectRatio: "1/1" }} />
                       ) : gen.type === "video" ? (
                         <video src={gen.thumbnailUrl || gen.resultUrl} muted style={{ width: "100%", display: "block", objectFit: "cover" }} />
                       ) : (
@@ -300,7 +303,7 @@ export default function GalleryPage() {
                       )}
                       {gen.type !== "image" && (
                         <span style={{ position: "absolute", top: 10, right: 10, padding: "3px 8px", borderRadius: 999, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", fontSize: 9, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>
-                          {gen.type === "video" ? "▶ video" : gen.type === "audio" ? "♫ เพลง" : "✦ edit"}
+                          {gen.type === "video" ? "▶ video" : gen.type === "audio" ? "♫ เพลง" : gen.type === "model3d" ? "◆ 3D" : "✦ edit"}
                         </span>
                       )}
                       {showFavCount && (
@@ -357,6 +360,8 @@ export default function GalleryPage() {
                     }}>
                       {gen.type === "audio" ? (
                         <AudioCover seed={gen.prompt} bars={7} label={false} style={{ width: "100%", height: "100%" }} />
+                      ) : gen.type === "model3d" && !gen.thumbnailUrl ? (
+                        <ModelPlaceholder style={{ width: "100%", height: "100%" }} />
                       ) : gen.type === "video" ? (
                         <video src={gen.thumbnailUrl || gen.resultUrl} muted style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                       ) : (
@@ -365,7 +370,7 @@ export default function GalleryPage() {
                       )}
                       {gen.type !== "image" && (
                         <span style={{ position: "absolute", top: 4, right: 4, padding: "2px 6px", borderRadius: 999, background: "rgba(0,0,0,0.6)", fontSize: 8, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>
-                          {gen.type === "video" ? "▶" : gen.type === "audio" ? "♫" : "✦"}
+                          {gen.type === "video" ? "▶" : gen.type === "audio" ? "♫" : gen.type === "model3d" ? "◆" : "✦"}
                         </span>
                       )}
                     </div>
@@ -455,6 +460,12 @@ export default function GalleryPage() {
                   <AudioCover seed={selectedItem.prompt} animated style={{ aspectRatio: "16/7" }} />
                   <audio src={selectedItem.resultUrl} controls autoPlay style={{ width: "100%", display: "block", background: "rgba(2,6,23,0.6)" }} />
                 </>
+              ) : selectedItem.type === "model3d" ? (
+                // A GLB is a scene, not a picture: turned around in the viewer,
+                // fetched through our own download route (R2 sends no CORS).
+                <div style={{ position: "relative", height: "min(60vh, 520px)", background: "radial-gradient(ellipse at 50% 30%, rgba(34,211,238,0.12), transparent 60%), #050a18" }}>
+                  <ModelViewer src={`/api/generate/${selectedItem.id}/download`} autoRotate />
+                </div>
               ) : selectedItem.type === "video" ? (
                 <video src={selectedItem.resultUrl} controls autoPlay style={{ width: "100%", display: "block" }} />
               ) : (
@@ -480,7 +491,13 @@ export default function GalleryPage() {
                 style={{ padding: "10px 18px", borderRadius: 10, background: "rgba(255,255,255,0.06)", color: selectedItem.isFavorited ? "#fca5a5" : "#fff", border: "1px solid rgba(255,255,255,0.12)", fontSize: 13, fontWeight: 500, cursor: "pointer" }}>
                 {selectedItem.isFavorited ? "♥ บันทึกแล้ว" : "♡ บันทึก"}
               </button>
-              {selectedItem.type !== "video" && selectedItem.type !== "audio" && (
+              {selectedItem.type === "model3d" && (
+                <Link href={`/generate/3d?id=${selectedItem.id}`}
+                  style={{ padding: "10px 18px", borderRadius: 10, background: "rgba(255,255,255,0.06)", color: "#a5f3fc", border: "1px solid rgba(165,243,252,0.25)", fontSize: 13, fontWeight: 500, textDecoration: "none" }}>
+                  ◆ เปิดใน 3D Studio
+                </Link>
+              )}
+              {selectedItem.type !== "video" && selectedItem.type !== "audio" && selectedItem.type !== "model3d" && (
                 <button onClick={() => handleUpscale(selectedItem)}
                   style={{ padding: "10px 18px", borderRadius: 10, background: "rgba(255,255,255,0.06)", color: "#fff", border: "1px solid rgba(255,255,255,0.12)", fontSize: 13, fontWeight: 500, cursor: "pointer" }}>
                   ⤢ Upscale
@@ -516,5 +533,15 @@ export default function GalleryPage() {
         }
       `}</style>
     </div>
+  );
+}
+
+/** A 3D model that has no picture to show (its source was sent inline). */
+function ModelPlaceholder({ style }: { style?: React.CSSProperties }) {
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", justifyContent: "center", fontSize: 34, color: "rgba(165,243,252,0.55)",
+      background: "radial-gradient(circle at 50% 60%, rgba(34,211,238,0.14), rgba(2,6,23,0.6))", ...style,
+    }} aria-hidden="true">◆</div>
   );
 }

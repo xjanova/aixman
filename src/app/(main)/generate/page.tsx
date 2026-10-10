@@ -19,6 +19,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
+import Link from "next/link";
 import { useAppStore } from "@/lib/store/app-store";
 import { useToast } from "@/components/ui/toast-provider";
 import { creditsForDuration } from "@/lib/pricing";
@@ -514,7 +515,9 @@ async function fetchHistoryItems(): Promise<HistoryItem[] | null> {
     const res = await fetch("/api/gallery?limit=16&page=1");
     if (!res.ok) return null;
     const data = await res.json();
-    return (data.data ?? []).filter((g: HistoryItem) => g.resultUrl || g.thumbnailUrl);
+    // 3D models live in their own studio (/generate/3d): this canvas draws
+    // pictures and clips, and a GLB opened here would be a broken image.
+    return (data.data ?? []).filter((g: HistoryItem) => g.type !== "model3d" && (g.resultUrl || g.thumbnailUrl));
   } catch {
     return null;
   }
@@ -1316,6 +1319,15 @@ export default function GeneratePage() {
    * provider not connected, keys failing, switched off), or null. The tab is
    * dimmed with the reason rather than letting someone write a prompt for it.
    */
+  /** Why the 3D studio cannot take an order right now, or null — the same test as a tab. */
+  const model3dModels = models.filter((m) => m.category === "model3d");
+  const model3dBlocked = !modelsLoaded
+    ? null
+    : model3dModels.length === 0
+      ? "ยังไม่มีโมเดลในหมวดนี้"
+      : model3dModels.some((m) => m.canOrder !== false)
+        ? null
+        : model3dModels[0].unavailableReason ?? model3dModels[0].tuningMessage ?? "ยังใช้งานไม่ได้ในขณะนี้";
   const tabBlockedReason = (key: TabType): string | null => {
     if (!modelsLoaded) return null;
     const inThisTab = models.filter((m) => inTab(m, key));
@@ -2358,6 +2370,28 @@ export default function GeneratePage() {
             </button>
             );
           })}
+          {/* Picture to 3D model has a studio of its own — nothing on this
+              canvas fits a scene you turn around. Dimmed with the reason, like
+              the tabs above, while no 3D model can be ordered. */}
+          {model3dBlocked ? (
+            <button type="button" className="rp-tab-plate" data-active="false" disabled title={model3dBlocked}>
+              <span className="rp-tab-plate-icon" aria-hidden="true">◆</span>
+              <span className="rp-tab-plate-text">
+                <span className="rp-tab-plate-th">สร้างโมเดล 3D</span>
+                <span className="rp-tab-plate-en">3D Model</span>
+              </span>
+              <span className="rp-tab-plate-go" aria-hidden="true">&rsaquo;</span>
+            </button>
+          ) : (
+            <Link href="/generate/3d" className="rp-tab-plate" data-active="false" style={{ textDecoration: "none" }}>
+              <span className="rp-tab-plate-icon" aria-hidden="true">◆</span>
+              <span className="rp-tab-plate-text">
+                <span className="rp-tab-plate-th">สร้างโมเดล 3D</span>
+                <span className="rp-tab-plate-en">3D Model</span>
+              </span>
+              <span className="rp-tab-plate-go" aria-hidden="true">&rsaquo;</span>
+            </Link>
+          )}
         </div>
 
         {/* Model Selector */}

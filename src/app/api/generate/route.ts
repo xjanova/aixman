@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId, isAdmin } from '@/lib/auth';
-import { GenerationService } from '@/lib/services/generation';
+import { GenerationService, TYPE_MISMATCH_MESSAGE } from '@/lib/services/generation';
 import { keyFromPublicUrl } from '@/lib/storage/r2';
 import { RENDERING_PAUSED_MESSAGE } from '@/lib/services/gpu-balance';
 import { isOrderRefused } from '@/lib/services/order-refusal';
@@ -8,7 +8,7 @@ import type { GenerationRequest } from '@/types';
 
 const MAX_PROMPT_LENGTH = 10000;
 const MAX_NUM_OUTPUTS = 4;
-const VALID_TYPES = ['image', 'video', 'edit', 'audio'];
+const VALID_TYPES = ['image', 'video', 'edit', 'audio', 'model3d'];
 /** ACE-Step reads a few verses and a chorus; this is several songs' worth. */
 const MAX_LYRICS_LENGTH = 3000;
 
@@ -117,6 +117,10 @@ export async function POST(request: NextRequest) {
     // than flattening it into a generic failure.
     if (message.includes('กำลังปรับแต่ง') || message.includes('ยังตั้งค่าไม่เสร็จ')) {
       return NextResponse.json({ error: message }, { status: 409 });
+    }
+    // A 3D order sent to a picture model, or the other way round.
+    if (message === TYPE_MISMATCH_MESSAGE) {
+      return NextResponse.json({ error: message }, { status: 400 });
     }
     // A frame still the rented worker could not read (frame-input.ts) — the
     // customer can fix it by uploading again, so say so instead of "failed".

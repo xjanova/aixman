@@ -49,7 +49,7 @@ export async function GET(request: NextRequest) {
   // Build where clause
   const where: Prisma.AiGenerationWhereInput = { userId };
 
-  if (type && ['image', 'video', 'edit', 'audio'].includes(type)) {
+  if (type && ['image', 'video', 'edit', 'audio', 'model3d'].includes(type)) {
     where.type = type;
   }
 
@@ -116,6 +116,10 @@ export async function GET(request: NextRequest) {
       resultUrl: g.resultUrl,
       resultUrls: g.resultUrls,
       thumbnailUrl: g.thumbnailUrl,
+      // The picture a 3D model was made from, so the 3D studio can show it
+      // while the model is still rendering. Only a stored URL — a still sent
+      // inline as base64 would put megabytes into every page of the list.
+      inputImageUrl: typeof g.inputImage === 'string' && /^https?:\/\//i.test(g.inputImage) ? g.inputImage : null,
       creditsUsed: g.creditsUsed,
       // Stated plainly so a failed item reads as "credits returned" rather than
       // leaving the customer to work out whether they were charged.

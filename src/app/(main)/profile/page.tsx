@@ -171,6 +171,15 @@ export default function ProfilePage() {
                   }}>
                     {gen.type === "audio" ? (
                       <AudioCover seed={gen.prompt || ""} bars={7} label={false} style={{ width: "100%", height: "100%", opacity: 0.85 }} />
+                    ) : gen.type === "model3d" ? (
+                      // A GLB is no picture: the still it was made from stands in for it.
+                      gen.thumbnailUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={gen.thumbnailUrl} alt={gen.prompt}
+                          style={{ width: "100%", height: "100%", objectFit: "contain", display: "block", opacity: 0.9 }} />
+                      ) : (
+                        <div style={{ width: "100%", height: "100%", display: "grid", placeItems: "center", fontSize: 24, color: "rgba(165,243,252,0.45)" }}>◆</div>
+                      )
                     ) : (gen.resultUrl || gen.thumbnailUrl) && (gen.type === "video" || gen.resultUrl?.endsWith(".mp4"))
                       && !/\.(png|jpe?g|webp|gif|avif)(\?|$)/i.test(gen.thumbnailUrl || gen.resultUrl || "") ? (
                       // <img> cannot draw an mp4; #t=0.1 paints the first frame.

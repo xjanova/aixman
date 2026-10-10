@@ -30,13 +30,17 @@ import { basename, dirname, extname, join, resolve } from 'node:path';
 
 import prisma from '@/lib/db';
 import { GenerationService } from '@/lib/services/generation';
+import { getCatalogEntry } from '@/lib/gpu/catalog';
 import { uploadBuffer } from '@/lib/storage/r2';
 
 interface BatchJob {
   id: string;
   model: string;
   prompt: string;
-  type?: 'image' | 'video' | 'edit' | 'audio';
+  /** Defaults to 'model3d' for a 3D model and 'image' for everything else. */
+  type?: 'image' | 'video' | 'edit' | 'audio' | 'model3d';
+  /** Quality mode id, for models that have them (hunyuan3d-2.1: standard | game | ultra). */
+  quality?: string;
   image?: string;
   seed?: number;
   width?: number;
@@ -93,11 +97,12 @@ async function submit(path: string): Promise<void> {
       manifest.userId,
       {
         modelId: models.get(job.model)!,
-        type: job.type ?? 'image',
+        type: job.type ?? (getCatalogEntry(job.model)?.outputKind === 'model3d' ? 'model3d' : 'image'),
         prompt: job.prompt,
         inputImage,
         params: {
           ...(job.seed !== undefined ? { seed: job.seed } : {}),
+          ...(job.quality ? { quality: job.quality } : {}),
           ...(job.width ? { width: job.width } : {}),
           ...(job.height ? { height: job.height } : {}),
         },

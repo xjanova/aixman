@@ -1777,6 +1777,41 @@ const HY3D_TUNABLES: WorkflowTunable[] = [
 
 const HY3D = tunableReader(HY3D_TUNABLES);
 
+/**
+ * What the 3D studio offers. 'standard' renders the tunables exactly as an
+ * admin left them; the other two override only what makes them what they are,
+ * so a change in /admin/workflows still reaches every mode.
+ */
+const HY3D_QUALITY_MODES: QualityMode[] = [
+  {
+    id: 'standard',
+    label: 'มาตรฐาน',
+    description: 'รายละเอียดสมดุลกับเวลา เหมาะกับงานโชว์ ภาพประกอบ และพิมพ์ 3D',
+    creditsMultiplier: 1,
+    isDefault: true,
+  },
+  {
+    id: 'game',
+    label: 'โลว์โพลีสำหรับเกม',
+    description: 'ลดเหลือราว 15,000 หน้า ไฟล์เบา โหลดเร็ว พร้อมใช้ในเกมและเว็บ',
+    creditsMultiplier: 1,
+  },
+  {
+    id: 'ultra',
+    label: 'ละเอียดสูงสุด',
+    description: 'รูปทรงละเอียดราว 200,000 หน้า พื้นผิว 4K — ใช้เวลาราว 2 เท่า',
+    creditsMultiplier: 2,
+    // A 512 octree, 4K bake and 1024 views have not run on a rental yet.
+    adminOnly: true,
+  },
+];
+
+/** The most faces a game-ready model keeps, whatever the admin's default is. */
+const HY3D_GAME_FACES = 15_000;
+const HY3D_ULTRA = { octree: 512, faces: 200_000, textureSize: 4096, viewSize: 1024, minShapeSteps: 50 };
+/** The paint model's view size in the vendored template. */
+const HY3D_VIEW_SIZE = 768;
+
 const HUNYUAN3D_21: CatalogEntry = {
   key: 'hunyuan3d-2.1',
   name: 'ภาพเป็นโมเดล 3D (Hunyuan3D-2.1)',
@@ -1805,19 +1840,30 @@ const HUNYUAN3D_21: CatalogEntry = {
   customNodes: [{ repo: 'https://github.com/visualbruno/ComfyUI-Hunyuan3d-2-1', ref: 'a0b26fbb94c9a9d32720526c52e64f87e05d2b53' }],
   runtime: { image: 'pytorch/pytorch', tag: '2.13.0-cuda13.0-cudnn9-devel', setupScript: HY3D_SETUP },
   needs: { image: true },
-  bind: (p) => [
-    { nodeId: '14', input: 'image', value: p.imageFilename ?? '' },
-    { nodeId: '60', input: 'model', value: 'birefnet-general' },
-    { nodeId: '37', input: 'seed', value: p.seed },
-    { nodeId: '37', input: 'steps', value: Math.round(HY3D.num(p.tuning, 'shapeSteps')) },
-    { nodeId: '37', input: 'guidance_scale', value: HY3D.num(p.tuning, 'shapeGuidance') },
-    { nodeId: '9', input: 'octree_resolution', value: Math.round(HY3D.num(p.tuning, 'octree')) },
-    { nodeId: '43', input: 'max_facenum', value: Math.round(HY3D.num(p.tuning, 'faces')) },
-    { nodeId: '20', input: 'seed', value: p.seed },
-    { nodeId: '20', input: 'texture_size', value: Math.round(HY3D.num(p.tuning, 'textureSize')) },
-    { nodeId: '20', input: 'steps', value: Math.round(HY3D.num(p.tuning, 'paintSteps')) },
-    { nodeId: '44', input: 'filename_prefix', value: '3D/aixman' },
-  ],
+  qualityModes: HY3D_QUALITY_MODES,
+  bind: (p) => {
+    const ultra = p.quality === 'ultra';
+    const steps = Math.round(HY3D.num(p.tuning, 'shapeSteps'));
+    const faces = Math.round(HY3D.num(p.tuning, 'faces'));
+    return [
+      { nodeId: '14', input: 'image', value: p.imageFilename ?? '' },
+      { nodeId: '60', input: 'model', value: 'birefnet-general' },
+      { nodeId: '37', input: 'seed', value: p.seed },
+      { nodeId: '37', input: 'steps', value: ultra ? Math.max(steps, HY3D_ULTRA.minShapeSteps) : steps },
+      { nodeId: '37', input: 'guidance_scale', value: HY3D.num(p.tuning, 'shapeGuidance') },
+      { nodeId: '9', input: 'octree_resolution', value: ultra ? HY3D_ULTRA.octree : Math.round(HY3D.num(p.tuning, 'octree')) },
+      {
+        nodeId: '43',
+        input: 'max_facenum',
+        value: ultra ? HY3D_ULTRA.faces : p.quality === 'game' ? Math.min(faces, HY3D_GAME_FACES) : faces,
+      },
+      { nodeId: '20', input: 'seed', value: p.seed },
+      { nodeId: '20', input: 'view_size', value: ultra ? HY3D_ULTRA.viewSize : HY3D_VIEW_SIZE },
+      { nodeId: '20', input: 'texture_size', value: ultra ? HY3D_ULTRA.textureSize : Math.round(HY3D.num(p.tuning, 'textureSize')) },
+      { nodeId: '20', input: 'steps', value: Math.round(HY3D.num(p.tuning, 'paintSteps')) },
+      { nodeId: '44', input: 'filename_prefix', value: '3D/aixman' },
+    ];
+  },
   // One model is one unit: about three minutes on an A100 for shape and
   // texture together, until real rentals report.
   baselineSecondsPerUnit: 180,

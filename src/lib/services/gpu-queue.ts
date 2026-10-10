@@ -1228,7 +1228,9 @@ export class GpuQueue {
           status: 'completed',
           resultUrl: durableUrls[0],
           resultUrls: durableUrls as unknown as Prisma.InputJsonValue,
-          thumbnailUrl: durableUrls[0],
+          // A GLB is no picture: every list that shows thumbnails would draw a
+          // broken image. The still it was made from stands in for it.
+          thumbnailUrl: entry?.outputKind === 'model3d' ? modelThumbnail(generation?.inputImage) : durableUrls[0],
           costUsd,
           processingMs,
           completedAt: now,
@@ -1832,6 +1834,15 @@ function userFacingError(technical: string): string {
     return 'คิวเต็มอยู่ในขณะนี้ กรุณาลองใหม่ภายหลัง' + REFUNDED;
   }
   return 'สร้างผลงานไม่สำเร็จ กรุณาลองใหม่อีกครั้ง' + REFUNDED;
+}
+
+/**
+ * The thumbnail for a 3D model: the still it was made from, when that is a
+ * stored URL. A still sent inline as base64 is no thumbnail anyone should
+ * download in a list, so the model then has none and the lists draw an icon.
+ */
+function modelThumbnail(inputImage: string | null | undefined): string | null {
+  return typeof inputImage === 'string' && /^https?:\/\//i.test(inputImage) ? inputImage : null;
 }
 
 /**
