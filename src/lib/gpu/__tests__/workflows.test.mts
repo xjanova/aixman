@@ -379,7 +379,7 @@ test('the 3D entry boots a devel image and builds its texture extensions', () =>
   for (const ext of ['custom_rasterizer', 'DifferentiableRenderer']) assert.ok(script.includes(ext), `builds ${ext}`);
   assert.match(script, /aixman_rembg\.py <<'AIXMAN_PY'\n[\s\S]*class AixmanRemoveBackground[\s\S]*\nAIXMAN_PY\n/, 'writes the remover node');
   assert.ok(!/TORCH_CUDA_ARCH_LIST/.test(script), 'builds for the card in the machine only');
-  assert.match(script, /pip_install "[^"]*" "transformers>=4\.50\.3,<5" "diffusers>=0\.30,<0\.40"/, "5.x renamed DINOv2's layers; diffusers 0.40+ needs a huggingface_hub that transformers 4.x refuses");
+  assert.match(script, /pip_install "[^"]*" "transformers>=4\.50\.3,<5" "diffusers>=0\.30,<0\.35"/, "5.x renamed DINOv2's layers; diffusers 0.35+ refuses the paint unet's code and 0.40+ needs a huggingface_hub transformers 4.x refuses");
   // Every pack class the template uses is in the schema the tests and the admin dry run read.
   const used = new Set((entry.template as { nodes: { type: string }[] }).nodes.map((n) => n.type));
   for (const cls of used) assert.ok(cls in hunyuan3dPack.classes || cls in baseline.classes, `${cls} has a schema`);

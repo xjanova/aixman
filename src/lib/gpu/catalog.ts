@@ -1683,9 +1683,12 @@ const HY3D_SETUP = [
   // so the image encoder inside the DiT checkpoint no longer loads: "Missing
   // key(s) in state_dict for SingleImageEncoder" (job #104). ComfyUI v0.36
   // asks for >=4.50.3. transformers 4.x holds huggingface_hub below 1.0, and
-  // diffusers 0.40+ needs 1.x (0.41 imports resolve_revision, job #105), so
-  // diffusers is held below 0.40 in the same install for pip to resolve both.
-  'pip_install "transformers 4.x and diffusers" "transformers>=4.50.3,<5" "diffusers>=0.30,<0.40"',
+  // diffusers 0.40+ needs 1.x (0.41 imports resolve_revision, job #105).
+  // From 0.35 diffusers also refuses the paint model's own unet code unless
+  // the caller passes trust_remote_code, which the pack does not (job #106,
+  // after the shape stage had passed). Tencent pins 0.30.0; 0.34 is the
+  // newest without that refusal. One install, so pip resolves both together.
+  'pip_install "transformers 4.x and diffusers" "transformers>=4.50.3,<5" "diffusers>=0.30,<0.35"',
   'echo "[aixman] building the Hunyuan3D-2.1 texture extensions"',
   'apt-get install -y -qq build-essential libgl1 libglib2.0-0 > /dev/null 2>&1 || true',
   // No TORCH_CUDA_ARCH_LIST: torch then builds for the card in this machine
