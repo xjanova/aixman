@@ -1431,6 +1431,11 @@ export class GpuQueue {
       void this.purgeOnNode(job.id, job.externalJobId, worker, false);
     }
 
+    // The worker row's lastError is overwritten as soon as the machine is
+    // reaped ("Idle for more than…"), and the customer sees a generic line, so
+    // this is the only place the reason survives for whoever debugs it.
+    console.warn(`[gpu] job #${job.id} (${job.modelKey}, generation #${job.generationId}) failed on worker #${worker?.id ?? '-'}: ${message.slice(0, 1000)}`);
+
     if (worker) {
       await prisma.aiGpuWorker.update({
         where: { id: worker.id },

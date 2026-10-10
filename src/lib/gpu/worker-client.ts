@@ -611,10 +611,14 @@ export class WorkerClient {
     }
     if (entry.video?.lastFrame && lastSource) frames.last = await this.uploadImage(lastSource, 'last');
 
-    // LoadImage's schema lists the input dir as it was when /object_info was
+    // A loader's schema lists the input dir as it was when /object_info was
     // cached, and validateGraph checks combo values against that list — so a
     // file uploaded a moment ago would read as "not available on the worker".
-    if (frames.first || frames.last) await this.refreshNodeSpec(objectInfo, 'LoadImage');
+    // Every loader the template uses is refreshed, not only core LoadImage:
+    // Hunyuan3D reads its picture through its own alpha-keeping loader.
+    if (frames.first || frames.last) {
+      for (const cls of imageLoaderClasses(entry, objectInfo)) await this.refreshNodeSpec(objectInfo, cls);
+    }
 
     if (entry.needs?.audio) {
       const source = params.extra?.inputAudio;
@@ -1042,6 +1046,25 @@ export class WorkerClient {
     if (assetUrls.length === 0) return { state: 'failed', error: 'Worker completed but returned no output' };
     return { state: 'completed', assetUrls };
   }
+}
+
+/**
+ * Node classes in an entry's template that pick a file from ComfyUI's input
+ * dir: core LoadImage, plus any class whose schema marks an input
+ * `image_upload` (a pack's own image loader).
+ */
+export function imageLoaderClasses(entry: Pick<CatalogEntry, 'template'>, objectInfo: ComfyObjectInfo): string[] {
+  const used = new Set<string>(['LoadImage']);
+  const walk = (nodes: { type?: string }[] | undefined) => nodes?.forEach((n) => n.type && used.add(n.type));
+  walk(entry.template.nodes);
+  for (const sg of entry.template.definitions?.subgraphs ?? []) walk(sg.nodes);
+  return [...used].filter((cls) => {
+    if (cls === 'LoadImage') return true;
+    const required = (objectInfo[cls]?.input?.required ?? {}) as Record<string, unknown>;
+    return Object.values(required).some(
+      (def) => Array.isArray(def) && (def[1] as { image_upload?: unknown } | undefined)?.image_upload === true
+    );
+  });
 }
 
 /**

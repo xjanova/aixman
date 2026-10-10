@@ -360,3 +360,13 @@ test('the 3D entry boots a devel image and builds its texture extensions', () =>
   const used = new Set((entry.template as { nodes: { type: string }[] }).nodes.map((n) => n.type));
   for (const cls of used) assert.ok(cls in hunyuan3dPack.classes || cls in baseline.classes, `${cls} has a schema`);
 });
+
+test("an upload is looked for in every loader the template uses, not only LoadImage's list", async () => {
+  const { imageLoaderClasses } = await import('@/lib/gpu/worker-client');
+  const s = schema() as never;
+  const hy3d = imageLoaderClasses(getCatalogEntry('hunyuan3d-2.1')!, s);
+  assert.ok(hy3d.includes('Hy3D21LoadImageWithTransparency'), 'the pack loader is refreshed after the upload');
+  assert.ok(hy3d.includes('LoadImage'));
+  // A core-only template still refreshes exactly LoadImage.
+  assert.deepEqual(imageLoaderClasses(getCatalogEntry('qwen-image')!, s), ['LoadImage']);
+});
