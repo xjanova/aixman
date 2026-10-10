@@ -37,21 +37,62 @@ function detailOf(body: string): string {
 }
 
 /**
+ * How long a read waits before each retry. Vendors' gateways answer 502/503/504
+ * for a few seconds at a time, and this server's outbound fetch drops the odd
+ * connection ("fetch failed"): the orphan sweep and the balance check logged
+ * dozens of those a day, and a balance nobody could read for one tick is a
+ * balance check that failed.
+ */
+const READ_RETRY_DELAYS_MS = [1_500, 4_000];
+/** Gateway answers that say "try again shortly", not "no". */
+const RETRYABLE_STATUSES = new Set([502, 503, 504]);
+
+type VendorInit = RequestInit & {
+  timeoutMs?: number;
+  text?: boolean;
+  /**
+   * Waits before each retry of a read. Only GET and HEAD are ever retried: a
+   * POST that may have landed (a rental, a termination) must not be sent twice.
+   */
+  retryDelaysMs?: number[];
+};
+
+/**
  * `text: true` returns the body as it came, for endpoints that answer an id as
  * plain text on some calls and as a JSON string on others (Verda).
+ *
+ * A read that got no answer at all, or a gateway's 502/503/504, is tried again
+ * twice. A timeout is not: the vendor is slow rather than gone, and waiting
+ * three times as long would hold up the whole tick.
  */
-export async function vendorFetch<T>(
-  vendor: string,
-  url: string,
-  init: RequestInit & { timeoutMs?: number; text?: boolean } = {}
-): Promise<T> {
+export async function vendorFetch<T>(vendor: string, url: string, init: VendorInit = {}): Promise<T> {
+  const method = (init.method || 'GET').toUpperCase();
+  const delays = method === 'GET' || method === 'HEAD' ? (init.retryDelaysMs ?? READ_RETRY_DELAYS_MS) : [];
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await vendorFetchOnce<T>(vendor, url, init);
+    } catch (error) {
+      const retryable =
+        error instanceof VendorHttpError &&
+        (RETRYABLE_STATUSES.has(error.status) || (error.status === 0 && !error.message.endsWith('timed out')));
+      if (!retryable || attempt >= delays.length) throw error;
+      await sleep(delays[attempt]);
+    }
+  }
+}
+
+async function vendorFetchOnce<T>(vendor: string, url: string, init: VendorInit): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), init.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const method = init.method || 'GET';
   const path = url.replace(/^https?:\/\/[^/]+/, '').split('?')[0];
   try {
+    const { timeoutMs: _timeout, text: _text, retryDelaysMs: _delays, ...request } = init;
+    void _timeout;
+    void _text;
+    void _delays;
     const res = await fetch(url, {
-      ...init,
+      ...request,
       headers: { Accept: 'application/json', ...(init.headers || {}) },
       signal: controller.signal,
       cache: 'no-store',

@@ -18,6 +18,8 @@ const TOKEN_KEY = 'notify_telegram_bot_token';
 const CHAT_KEY = 'notify_telegram_chat_id';
 const SETTING_GROUP = 'notify';
 const SEND_TIMEOUT_MS = 10_000;
+/** Wait before sending again after a request that got no answer at all. */
+const RETRY_AFTER_MS = 2_000;
 /** Telegram rejects a message over 4096 characters. */
 const MAX_TEXT = 4000;
 
@@ -95,20 +97,30 @@ export async function sendTelegram(text: string): Promise<{ ok: true } | { ok: f
   const body = text.length > MAX_TEXT ? `${text.slice(0, MAX_TEXT - 1)}…` : text;
   const errors: string[] = [];
   for (const chatId of cfg.chatIds) {
-    try {
-      const res = await fetch(`https://api.telegram.org/bot${cfg.token}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text: body, disable_web_page_preview: true }),
-        signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
-      });
-      if (!res.ok) {
-        // Telegram's own words, e.g. "Unauthorized" or "Bad Request: chat not found".
-        const data = (await res.json().catch(() => ({}))) as { description?: string };
-        errors.push(`${chatId}: HTTP ${res.status} ${data.description ?? ''}`.trim());
+    // One more try when the request never got an answer ("fetch failed"): this
+    // server's outbound connections drop the odd one, and an alert lost that
+    // way is gone for good. A second copy, if the first did land, costs less.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetch(`https://api.telegram.org/bot${cfg.token}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, text: body, disable_web_page_preview: true }),
+          signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+        });
+        if (!res.ok) {
+          // Telegram's own words, e.g. "Unauthorized" or "Bad Request: chat not found".
+          const data = (await res.json().catch(() => ({}))) as { description?: string };
+          errors.push(`${chatId}: HTTP ${res.status} ${data.description ?? ''}`.trim());
+        }
+        break;
+      } catch (error) {
+        if (attempt === 0 && (error as Error).name !== 'TimeoutError') {
+          await new Promise((r) => setTimeout(r, RETRY_AFTER_MS));
+          continue;
+        }
+        errors.push(`${chatId}: ${(error as Error).message}`);
       }
-    } catch (error) {
-      errors.push(`${chatId}: ${(error as Error).message}`);
     }
   }
   return errors.length > 0 ? { ok: false, error: scrub(errors.join('; '), cfg.token) } : { ok: true };
