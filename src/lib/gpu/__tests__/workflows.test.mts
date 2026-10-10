@@ -24,6 +24,7 @@ const { alternativeTunables, coerceTunable, resolveTunables } = await import('@/
 const { buildJobGraph, sampleJob, shapePrompt } = await import('@/lib/gpu/workflow-build');
 const { effectiveWorkflow, pickQualityMode, sanitizeOverride, visibleQualityModes } = await import('@/lib/gpu/workflow-overrides');
 const baseline = (await import('@/lib/gpu/workflows/schema/baseline-v0.36.0.json')).default as { classes: Record<string, unknown> };
+const hunyuan3dPack = (await import('@/lib/gpu/workflows/schema/hunyuan3d21-pack.json')).default as { classes: Record<string, unknown> };
 
 type Graph = Record<string, { class_type: string; inputs: Record<string, unknown> }>;
 type Schema = Parameters<typeof validateGraph>[1];
@@ -34,7 +35,8 @@ const AUDIO = 'aixman-source-test.mp3';
 
 /** The baseline with the test's stand-in uploads present in the input dir. */
 function schema(): Schema {
-  const s = JSON.parse(JSON.stringify(baseline.classes)) as Record<string, { input?: { required?: Record<string, unknown[]> } }>;
+  // The packs catalogue entries install, as a worker that booted them would report.
+  const s = JSON.parse(JSON.stringify({ ...baseline.classes, ...hunyuan3dPack.classes })) as Record<string, { input?: { required?: Record<string, unknown[]> } }>;
   const add = (cls: string, input: string, names: string[]) => {
     const def = s[cls]?.input?.required?.[input];
     if (!def) return;
@@ -47,6 +49,7 @@ function schema(): Schema {
   };
   // …and its own stand-in portrait for entries that make one speak.
   add('LoadImage', 'image', [FIRST, LAST, 'aixman-first-sample.png']);
+  add('Hy3D21LoadImageWithTransparency', 'image', [FIRST, 'aixman-first-sample.png']);
   // `sampleJob` names its own stand-in song for entries that need one.
   add('LoadAudio', 'audio', [AUDIO, 'aixman-source-sample.mp3']);
   return s as Schema;
@@ -319,4 +322,41 @@ test('an empty prompt still tells the model the person is talking to camera', ()
   assert.match(String(empty['478_319'].inputs.value), /^action: the person talks directly to the camera/);
   const scene = build('ltx-2.3-talking', { prompt: 'พิธีกรหญิงยิ้มแย้มในสตูดิโอข่าว' }).graph;
   assert.match(String(scene['478_319'].inputs.value), /^พิธีกรหญิงยิ้มแย้มในสตูดิโอข่าว\naction:/);
+});
+
+test('a picture becomes a textured mesh, cut out first and exported after painting', () => {
+  const { graph: g } = build('hunyuan3d-2.1', { imageFilename: FIRST, seed: 777 });
+  // The customer's picture, through the background remover, into both the
+  // shape model and the painter — a backdrop left in comes back as a slab.
+  assert.equal(g['14'].inputs.image, FIRST);
+  assert.deepEqual(g['60'].inputs.image, ['14', 2], 'the remover reads the picture with its alpha');
+  assert.deepEqual(g['37'].inputs.image, ['60', 0]);
+  assert.deepEqual(g['20'].inputs.image, ['60', 0]);
+  // The export carries the painted mesh, not the white one.
+  assert.deepEqual(g['44'].inputs.trimesh, ['49', 2]);
+  assert.equal(g['44'].inputs.file_format, 'glb');
+  // The pack's seeds have no "randomize" after them: the widget after each
+  // seed must still be what it says, not shifted by one.
+  assert.equal(g['37'].inputs.attention_mode, 'sdpa');
+  assert.equal(g['37'].inputs.seed, 777);
+  assert.equal(g['20'].inputs.seed, 777);
+  assert.equal(g['20'].inputs.unwrap_mesh, false, 'the mesh is already unwrapped upstream');
+  // The defaults are the high-quality ones the owner asked for.
+  assert.equal(g['9'].inputs.octree_resolution, 384);
+  assert.equal(g['20'].inputs.texture_size, 2048);
+  assert.equal(g['43'].inputs.max_facenum, 60000);
+});
+
+test('the 3D entry boots a devel image and builds its texture extensions', () => {
+  const entry = getCatalogEntry('hunyuan3d-2.1');
+  assert.ok(entry);
+  assert.equal(entry.outputKind, 'model3d');
+  assert.equal(entry.runtime?.tag, '2.13.0-cuda13.0-cudnn9-devel', 'the runtime image has no nvcc');
+  const script = entry.runtime?.setupScript ?? '';
+  for (const ext of ['custom_rasterizer', 'DifferentiableRenderer']) assert.ok(script.includes(ext), `builds ${ext}`);
+  assert.match(script, /aixman_rembg\.py <<'AIXMAN_PY'\n[\s\S]*class AixmanRemoveBackground[\s\S]*\nAIXMAN_PY\n/, 'writes the remover node');
+  assert.ok(!/TORCH_CUDA_ARCH_LIST/.test(script), 'builds for the card in the machine only');
+  // Every pack class the template uses is in the schema the tests and the admin dry run read.
+  const used = new Set((entry.template as { nodes: { type: string }[] }).nodes.map((n) => n.type));
+  for (const cls of used) assert.ok(cls in hunyuan3dPack.classes || cls in baseline.classes, `${cls} has a schema`);
 });

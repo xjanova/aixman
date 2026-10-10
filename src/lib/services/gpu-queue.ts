@@ -1119,7 +1119,7 @@ export class GpuQueue {
       // PC, examined) before any is stored, so a rejected one leaves nothing
       // behind in R2.
       const files = community
-        ? await this.collectCommunityFiles(job, worker, assetUrls, client, entry?.outputKind ?? null, reviewNotes)
+        ? await this.collectCommunityFiles(job, worker, assetUrls, client, entry && entry.outputKind !== 'model3d' ? entry.outputKind : null, reviewNotes)
         : await Promise.all(
             assetUrls.map(async (url) => {
               const downloaded = await client.download(url);
@@ -1856,6 +1856,8 @@ function extensionFor(contentType: string, url: string): string {
     'image/avif': 'avif',
     'video/x-matroska': 'mkv',
     'video/x-msvideo': 'avi',
+    // Image-to-3D models (Hunyuan3D) export binary glTF.
+    'model/gltf-binary': 'glb',
   };
   const hit = byType[contentType.split(';')[0].trim().toLowerCase()];
   if (hit) return hit;

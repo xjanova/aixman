@@ -1,0 +1,737 @@
+{
+  "source": "visualbruno/ComfyUI-Hunyuan3d-2-1@a0b26fbb94c9a9d32720526c52e64f87e05d2b53 nodes.py, transcribed by hand; AixmanRemoveBackground is written by the hunyuan3d-2.1 setup script (catalog.ts)",
+  "note": "Only the classes the hunyuan3d-2.1 template uses. Merged over the ComfyUI baseline by tests and the admin dry run. Re-transcribe when the pack ref in catalog.ts moves.",
+  "classes": {
+    "Hy3D21VAELoader": {
+      "input": {
+        "required": {
+          "model_name": [
+            [
+              "Hunyuan3D-vae-v2-1-fp16.ckpt"
+            ],
+            {}
+          ]
+        },
+        "optional": {
+          "vae_config": [
+            "HY3D21VAECONFIG"
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "model_name"
+        ],
+        "optional": [
+          "vae_config"
+        ]
+      },
+      "output": [
+        "HY3DVAE"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "vae"
+      ],
+      "name": "Hy3D21VAELoader",
+      "display_name": "Hy3D21VAELoader",
+      "description": "",
+      "python_module": "custom_nodes.ComfyUI-Hunyuan3d-2-1",
+      "category": "Hunyuan3D21Wrapper",
+      "output_node": false
+    },
+    "Hy3D21MeshGenerator": {
+      "input": {
+        "required": {
+          "model": [
+            [
+              "hunyuan3d-dit-v2-1-fp16.ckpt"
+            ],
+            {}
+          ],
+          "image": [
+            "IMAGE"
+          ],
+          "steps": [
+            "INT",
+            {
+              "default": 50,
+              "min": 1,
+              "max": 100,
+              "step": 1
+            }
+          ],
+          "guidance_scale": [
+            "FLOAT",
+            {
+              "default": 5.0,
+              "min": 1,
+              "max": 30,
+              "step": 0.1
+            }
+          ],
+          "seed": [
+            "INT",
+            {
+              "default": 0,
+              "min": 0,
+              "max": 18446744073709551615
+            }
+          ],
+          "attention_mode": [
+            [
+              "sdpa",
+              "sageattn"
+            ],
+            {
+              "default": "sdpa"
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "model",
+          "image",
+          "steps",
+          "guidance_scale",
+          "seed",
+          "attention_mode"
+        ]
+      },
+      "output": [
+        "HY3DLATENT"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "latents"
+      ],
+      "name": "Hy3D21MeshGenerator",
+      "display_name": "Hy3D21MeshGenerator",
+      "description": "",
+      "python_module": "custom_nodes.ComfyUI-Hunyuan3d-2-1",
+      "category": "Hunyuan3D21Wrapper",
+      "output_node": false
+    },
+    "Hy3D21LoadImageWithTransparency": {
+      "input": {
+        "required": {
+          "image": [
+            [],
+            {
+              "image_upload": true
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "image"
+        ]
+      },
+      "output": [
+        "IMAGE",
+        "MASK",
+        "IMAGE"
+      ],
+      "output_is_list": [
+        false,
+        false,
+        false
+      ],
+      "output_name": [
+        "image",
+        "mask",
+        "image_with_alpha"
+      ],
+      "name": "Hy3D21LoadImageWithTransparency",
+      "display_name": "Hy3D21LoadImageWithTransparency",
+      "description": "",
+      "python_module": "custom_nodes.ComfyUI-Hunyuan3d-2-1",
+      "category": "Hunyuan3D21Wrapper",
+      "output_node": false
+    },
+    "Hy3D21VAEDecode": {
+      "input": {
+        "required": {
+          "vae": [
+            "HY3DVAE"
+          ],
+          "latents": [
+            "HY3DLATENT"
+          ],
+          "box_v": [
+            "FLOAT",
+            {
+              "default": 1.01,
+              "min": -10.0,
+              "max": 10.0,
+              "step": 0.001
+            }
+          ],
+          "octree_resolution": [
+            "INT",
+            {
+              "default": 384,
+              "min": 8,
+              "max": 4096,
+              "step": 8
+            }
+          ],
+          "num_chunks": [
+            "INT",
+            {
+              "default": 8000,
+              "min": 1,
+              "max": 10000000,
+              "step": 1
+            }
+          ],
+          "mc_level": [
+            "FLOAT",
+            {
+              "default": 0,
+              "min": -1.0,
+              "max": 1.0,
+              "step": 0.0001
+            }
+          ],
+          "mc_algo": [
+            [
+              "mc",
+              "dmc"
+            ],
+            {
+              "default": "mc"
+            }
+          ]
+        },
+        "optional": {
+          "enable_flash_vdm": [
+            "BOOLEAN",
+            {
+              "default": true
+            }
+          ],
+          "force_offload": [
+            "BOOLEAN",
+            {
+              "default": false
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "vae",
+          "latents",
+          "box_v",
+          "octree_resolution",
+          "num_chunks",
+          "mc_level",
+          "mc_algo"
+        ],
+        "optional": [
+          "enable_flash_vdm",
+          "force_offload"
+        ]
+      },
+      "output": [
+        "TRIMESH"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "trimesh"
+      ],
+      "name": "Hy3D21VAEDecode",
+      "display_name": "Hy3D21VAEDecode",
+      "description": "",
+      "python_module": "custom_nodes.ComfyUI-Hunyuan3d-2-1",
+      "category": "Hunyuan3D21Wrapper",
+      "output_node": false
+    },
+    "Hy3D21PostprocessMesh": {
+      "input": {
+        "required": {
+          "trimesh": [
+            "TRIMESH"
+          ],
+          "remove_floaters": [
+            "BOOLEAN",
+            {
+              "default": true
+            }
+          ],
+          "remove_degenerate_faces": [
+            "BOOLEAN",
+            {
+              "default": true
+            }
+          ],
+          "reduce_faces": [
+            "BOOLEAN",
+            {
+              "default": true
+            }
+          ],
+          "max_facenum": [
+            "INT",
+            {
+              "default": 40000,
+              "min": 1,
+              "max": 10000000,
+              "step": 1
+            }
+          ],
+          "smooth_normals": [
+            "BOOLEAN",
+            {
+              "default": false
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "trimesh",
+          "remove_floaters",
+          "remove_degenerate_faces",
+          "reduce_faces",
+          "max_facenum",
+          "smooth_normals"
+        ]
+      },
+      "output": [
+        "TRIMESH"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "trimesh"
+      ],
+      "name": "Hy3D21PostprocessMesh",
+      "display_name": "Hy3D21PostprocessMesh",
+      "description": "",
+      "python_module": "custom_nodes.ComfyUI-Hunyuan3d-2-1",
+      "category": "Hunyuan3D21Wrapper",
+      "output_node": false
+    },
+    "Hy3D21MeshUVWrap": {
+      "input": {
+        "required": {
+          "trimesh": [
+            "TRIMESH"
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "trimesh"
+        ]
+      },
+      "output": [
+        "TRIMESH"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "trimesh"
+      ],
+      "name": "Hy3D21MeshUVWrap",
+      "display_name": "Hy3D21MeshUVWrap",
+      "description": "",
+      "python_module": "custom_nodes.ComfyUI-Hunyuan3d-2-1",
+      "category": "Hunyuan3D21Wrapper",
+      "output_node": false
+    },
+    "Hy3D21ExportMesh": {
+      "input": {
+        "required": {
+          "trimesh": [
+            "TRIMESH"
+          ],
+          "filename_prefix": [
+            "STRING",
+            {
+              "default": "3D/Trellis2"
+            }
+          ],
+          "file_format": [
+            [
+              "glb",
+              "obj",
+              "ply",
+              "stl",
+              "3mf",
+              "dae"
+            ],
+            {}
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "trimesh",
+          "filename_prefix",
+          "file_format"
+        ]
+      },
+      "output": [
+        "STRING",
+        "STRING",
+        "FILE_3D"
+      ],
+      "output_is_list": [
+        false,
+        false,
+        false
+      ],
+      "output_name": [
+        "glb_path",
+        "relative_path",
+        "model_3d"
+      ],
+      "name": "Hy3D21ExportMesh",
+      "display_name": "Hy3D21ExportMesh",
+      "description": "",
+      "python_module": "custom_nodes.ComfyUI-Hunyuan3d-2-1",
+      "category": "Hunyuan3D21Wrapper",
+      "output_node": true
+    },
+    "Hy3DMultiViewsGenerator": {
+      "input": {
+        "required": {
+          "trimesh": [
+            "TRIMESH"
+          ],
+          "camera_config": [
+            "HY3D21CAMERA"
+          ],
+          "view_size": [
+            "INT",
+            {
+              "default": 512,
+              "min": 512,
+              "max": 1024,
+              "step": 256
+            }
+          ],
+          "image": [
+            "IMAGE"
+          ],
+          "steps": [
+            "INT",
+            {
+              "default": 10,
+              "min": 1,
+              "max": 100,
+              "step": 1
+            }
+          ],
+          "guidance_scale": [
+            "FLOAT",
+            {
+              "default": 3.0,
+              "min": 1,
+              "max": 10,
+              "step": 0.1
+            }
+          ],
+          "texture_size": [
+            "INT",
+            {
+              "default": 1024,
+              "min": 512,
+              "max": 4096,
+              "step": 512
+            }
+          ],
+          "unwrap_mesh": [
+            "BOOLEAN",
+            {
+              "default": true
+            }
+          ],
+          "seed": [
+            "INT",
+            {
+              "default": 0,
+              "min": 0,
+              "max": 18446744073709551615
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "trimesh",
+          "camera_config",
+          "view_size",
+          "image",
+          "steps",
+          "guidance_scale",
+          "texture_size",
+          "unwrap_mesh",
+          "seed"
+        ]
+      },
+      "output": [
+        "HY3DPIPELINE",
+        "IMAGE",
+        "IMAGE",
+        "IMAGE",
+        "IMAGE",
+        "HY3D21CAMERA",
+        "HY3D21METADATA"
+      ],
+      "output_is_list": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "output_name": [
+        "pipeline",
+        "albedo",
+        "mr",
+        "positions",
+        "normals",
+        "camera_config",
+        "metadata"
+      ],
+      "name": "Hy3DMultiViewsGenerator",
+      "display_name": "Hy3DMultiViewsGenerator",
+      "description": "",
+      "python_module": "custom_nodes.ComfyUI-Hunyuan3d-2-1",
+      "category": "Hunyuan3D21Wrapper",
+      "output_node": false
+    },
+    "Hy3D21CameraConfig": {
+      "input": {
+        "required": {
+          "camera_azimuths": [
+            "STRING",
+            {
+              "default": "0, 90, 180, 270, 0, 180",
+              "multiline": false
+            }
+          ],
+          "camera_elevations": [
+            "STRING",
+            {
+              "default": "0, 0, 0, 0, 90, -90",
+              "multiline": false
+            }
+          ],
+          "view_weights": [
+            "STRING",
+            {
+              "default": "1, 0.1, 0.5, 0.1, 0.05, 0.05",
+              "multiline": false
+            }
+          ],
+          "ortho_scale": [
+            "FLOAT",
+            {
+              "default": 1.0,
+              "min": 0.1,
+              "max": 2.0,
+              "step": 0.01
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "camera_azimuths",
+          "camera_elevations",
+          "view_weights",
+          "ortho_scale"
+        ]
+      },
+      "output": [
+        "HY3D21CAMERA"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "camera_config"
+      ],
+      "name": "Hy3D21CameraConfig",
+      "display_name": "Hy3D21CameraConfig",
+      "description": "",
+      "python_module": "custom_nodes.ComfyUI-Hunyuan3d-2-1",
+      "category": "Hunyuan3D21Wrapper",
+      "output_node": false
+    },
+    "Hy3DBakeMultiViews": {
+      "input": {
+        "required": {
+          "pipeline": [
+            "HY3DPIPELINE"
+          ],
+          "camera_config": [
+            "HY3D21CAMERA"
+          ],
+          "albedo": [
+            "IMAGE"
+          ],
+          "mr": [
+            "IMAGE"
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "pipeline",
+          "camera_config",
+          "albedo",
+          "mr"
+        ]
+      },
+      "output": [
+        "HY3DPIPELINE",
+        "NPARRAY",
+        "NPARRAY",
+        "NPARRAY",
+        "NPARRAY",
+        "IMAGE",
+        "IMAGE"
+      ],
+      "output_is_list": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "output_name": [
+        "pipeline",
+        "albedo",
+        "albedo_mask",
+        "mr",
+        "mr_mask",
+        "albedo_texture",
+        "mr_texture"
+      ],
+      "name": "Hy3DBakeMultiViews",
+      "display_name": "Hy3DBakeMultiViews",
+      "description": "",
+      "python_module": "custom_nodes.ComfyUI-Hunyuan3d-2-1",
+      "category": "Hunyuan3D21Wrapper",
+      "output_node": false
+    },
+    "Hy3DInPaint": {
+      "input": {
+        "required": {
+          "pipeline": [
+            "HY3DPIPELINE"
+          ],
+          "albedo": [
+            "NPARRAY"
+          ],
+          "albedo_mask": [
+            "NPARRAY"
+          ],
+          "mr": [
+            "NPARRAY"
+          ],
+          "mr_mask": [
+            "NPARRAY"
+          ],
+          "output_mesh_name": [
+            "STRING"
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "pipeline",
+          "albedo",
+          "albedo_mask",
+          "mr",
+          "mr_mask",
+          "output_mesh_name"
+        ]
+      },
+      "output": [
+        "IMAGE",
+        "IMAGE",
+        "TRIMESH",
+        "STRING"
+      ],
+      "output_is_list": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "output_name": [
+        "albedo",
+        "mr",
+        "trimesh",
+        "output_glb_path"
+      ],
+      "name": "Hy3DInPaint",
+      "display_name": "Hy3DInPaint",
+      "description": "",
+      "python_module": "custom_nodes.ComfyUI-Hunyuan3d-2-1",
+      "category": "Hunyuan3D21Wrapper",
+      "output_node": true
+    },
+    "AixmanRemoveBackground": {
+      "input": {
+        "required": {
+          "image": [
+            "IMAGE"
+          ],
+          "model": [
+            [
+              "birefnet-general",
+              "isnet-general-use",
+              "u2net"
+            ],
+            {
+              "default": "birefnet-general"
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "image",
+          "model"
+        ]
+      },
+      "output": [
+        "IMAGE"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "IMAGE"
+      ],
+      "name": "AixmanRemoveBackground",
+      "display_name": "AixmanRemoveBackground",
+      "description": "",
+      "python_module": "custom_nodes.ComfyUI-Hunyuan3d-2-1",
+      "category": "aixman",
+      "output_node": false
+    }
+  }
+}

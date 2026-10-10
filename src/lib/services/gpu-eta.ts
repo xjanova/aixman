@@ -243,7 +243,8 @@ export class GpuEta {
     if (!entry) return DEFAULT_RENDER_SECONDS;
 
     const p = (payload ?? {}) as { duration?: number };
-    const units = entry.outputKind === 'image' ? 1 : Math.max(1, Number(p.duration) || 5);
+    // A picture and a mesh are one unit each; clips and songs are priced by length.
+    const units = entry.outputKind === 'image' || entry.outputKind === 'model3d' ? 1 : Math.max(1, Number(p.duration) || 5);
     return Math.round(entry.baselineSecondsPerUnit * units);
   }
 

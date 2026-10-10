@@ -105,7 +105,7 @@ interface Summary {
   key: string;
   name: string;
   kind: "video" | "image" | "audio" | "lipsync";
-  outputKind: "video" | "image" | "audio";
+  outputKind: "video" | "image" | "audio" | "model3d";
   description: string;
   source: { file: string; title: string; url?: string } | null;
   nodeCount: number;

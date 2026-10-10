@@ -22,6 +22,7 @@ import qwenImageTemplate from './workflows/templates/qwen_image.json';
 import yue2Text2MusicTemplate from './workflows/templates/yue2_text2music.json';
 import yue2MusicCoverTemplate from './workflows/templates/yue2_music_cover.json';
 import ltxTalkingTemplate from './workflows/templates/ltx23_image_speech_to_video.json';
+import hunyuan3d21Template from './workflows/templates/hunyuan3d21_image_to_3d.json';
 
 /**
  * Catalogue of self-hostable models customers can choose from.
@@ -148,9 +149,9 @@ export interface CatalogEntry {
    * off sale. Only entries built for home cards list `community`.
    */
   pools: readonly CatalogPool[];
-  kind: 'video' | 'image' | 'audio' | 'lipsync';
+  kind: 'video' | 'image' | 'audio' | 'lipsync' | 'model3d';
   /** What the job produces, so the queue knows how to store it. */
-  outputKind: 'video' | 'image' | 'audio';
+  outputKind: 'video' | 'image' | 'audio' | 'model3d';
   /** Thai copy shown to the customer. */
   description: string;
   template: UiWorkflow;
@@ -193,6 +194,15 @@ export interface CatalogEntry {
    * without them ComfyUI reports the node as missing at submit time.
    */
   customNodes?: { repo: string; ref?: string }[];
+  /**
+   * For a model whose node pack compiles CUDA code at install: the container
+   * to boot instead of the default runtime image (which has no nvcc), and bash
+   * run after the node packs are installed and before ComfyUI starts. The
+   * script runs inside the generated start script, so its helpers
+   * (`pip_install`, `fail_boot`) are in scope. An operator's
+   * `gpu_worker_profiles` startScript replaces it.
+   */
+  runtime?: { image?: string; tag?: string; setupScript?: string };
   /** Node classes to strip — paid API nodes the template demoed with. */
   prune?: string[];
   /** Extra nodes to add, e.g. a LoadAudio for an uploaded track. */
@@ -1622,7 +1632,192 @@ const LTX23_TALKING: CatalogEntry = {
   limits: { maxWidth: 1280, maxHeight: 1280, maxDuration: TALK_MAX_SECONDS },
 };
 
-export const MODEL_CATALOG: CatalogEntry[] = [MINIMAX_H3, ACE_STEP, QWEN_IMAGE, YUE2_MUSIC, YUE2_COVER, SDXL_COMMUNITY, LTX23_TALKING];
+// ---------------------------------------------------------------------------
+// Hunyuan3D-2.1 — one picture in, a textured (PBR) GLB out
+// ---------------------------------------------------------------------------
+// There is no official Comfy-Org template with texturing, so the template is
+// visualbruno/ComfyUI-Hunyuan3d-2-1's own Full_Workflow with its preview,
+// Set/Get and constant nodes taken out, the textured mesh (not the white one)
+// wired into the export, and a background remover in front: the shape model
+// expects a cut-out subject, and a picture with its backdrop comes back as a
+// slab. The pack's seeds carry no `control_after_generate`, so the template's
+// widgets_values have no "randomize" after them, or every later widget would
+// shift by one.
+
+/** Where the node pack lands; its texture stage imports two compiled extensions from here. */
+const HY3D_NODE_DIR = '/workspace/aixman/ComfyUI/custom_nodes/ComfyUI-Hunyuan3d-2-1';
+
+/**
+ * A one-file ComfyUI node that cuts the subject out with rembg (MIT). Written
+ * by the setup script rather than cloned, because it is twenty lines.
+ */
+const AIXMAN_REMBG_NODE = [
+  'import numpy as np',
+  'import torch',
+  'from PIL import Image',
+  '_sessions = {}',
+  'class AixmanRemoveBackground:',
+  '    @classmethod',
+  '    def INPUT_TYPES(cls):',
+  '        return {"required": {"image": ("IMAGE",), "model": (["birefnet-general", "isnet-general-use", "u2net"], {"default": "birefnet-general"})}}',
+  '    RETURN_TYPES = ("IMAGE",)',
+  '    FUNCTION = "run"',
+  '    CATEGORY = "aixman"',
+  '    def run(self, image, model):',
+  '        from rembg import new_session, remove',
+  '        if model not in _sessions:',
+  '            _sessions[model] = new_session(model)',
+  '        out = []',
+  '        for frame in image:',
+  '            rgb = (frame[..., :3].cpu().numpy() * 255).clip(0, 255).astype(np.uint8)',
+  '            rgba = remove(Image.fromarray(rgb), session=_sessions[model]).convert("RGBA")',
+  '            out.append(torch.from_numpy(np.asarray(rgba).astype(np.float32) / 255.0))',
+  '        return (torch.stack(out),)',
+  'NODE_CLASS_MAPPINGS = {"AixmanRemoveBackground": AixmanRemoveBackground}',
+  'NODE_DISPLAY_NAME_MAPPINGS = {"AixmanRemoveBackground": "Remove background (aixman)"}',
+].join('\n');
+
+const HY3D_SETUP = [
+  'echo "[aixman] building the Hunyuan3D-2.1 texture extensions"',
+  'apt-get install -y -qq build-essential libgl1 libglib2.0-0 > /dev/null 2>&1 || true',
+  // No TORCH_CUDA_ARCH_LIST: torch then builds for the card in this machine
+  // only, which is the one that will run it, and the build is a fraction as long.
+  'for ext in custom_rasterizer DifferentiableRenderer; do',
+  `  if ! (cd ${HY3D_NODE_DIR}/hy3dpaint/$ext && python3 -m pip install --no-build-isolation --no-cache-dir .) >> /workspace/aixman/hy3d-build.log 2>&1; then`,
+  `    fail_boot "Hunyuan3D $ext failed to build: $(grep -iE 'error' /workspace/aixman/hy3d-build.log | tail -n 3 | tr '\\n' ' ' | cut -c1-400)"`,
+  '  fi',
+  'done',
+  'pip_install "rembg" rembg onnxruntime',
+  "cat > /workspace/aixman/ComfyUI/custom_nodes/aixman_rembg.py <<'AIXMAN_PY'",
+  AIXMAN_REMBG_NODE,
+  'AIXMAN_PY',
+  // The texture model, its image encoder and the matting model are fetched by
+  // their own code on first use; start that now, beside ComfyUI, so the first
+  // order does not sit through ~10 GB of downloads.
+  "(hf download tencent/Hunyuan3D-2.1 --include 'hunyuan3d-paintpbr-v2-1/*'; hf download facebook/dinov2-giant; python3 -c \"from rembg import new_session; new_session('birefnet-general')\") > /workspace/aixman/hy3d-prefetch.log 2>&1 &",
+].join('\n');
+
+const HY3D_TUNABLES: WorkflowTunable[] = [
+  {
+    id: 'shapeSteps',
+    label: 'สเต็ปสร้างรูปทรง',
+    help: 'มากขึ้นได้รายละเอียดรูปทรงดีขึ้นแต่ช้าลง — เทมเพลตของแพ็กใช้ 25 ค่าเริ่มต้นของโหนดคือ 50',
+    type: 'int',
+    default: 30,
+    min: 10,
+    max: 60,
+    step: 5,
+    group: 'sampler',
+  },
+  {
+    id: 'shapeGuidance',
+    label: 'Guidance รูปทรง',
+    help: 'ความยึดภาพต้นฉบับของรูปทรง — เทมเพลตใช้ 7.5',
+    type: 'float',
+    default: 7.5,
+    min: 3,
+    max: 12,
+    step: 0.5,
+    group: 'sampler',
+  },
+  {
+    id: 'octree',
+    label: 'ความละเอียดตาข่าย (octree)',
+    help: '384 คือค่าเริ่มต้นของโหนด ละเอียดกว่าเทมเพลต (256) แต่ใช้ VRAM และเวลามากขึ้น',
+    type: 'int',
+    default: 384,
+    min: 256,
+    max: 512,
+    step: 64,
+    group: 'quality',
+    risky: true,
+  },
+  {
+    id: 'faces',
+    label: 'จำนวนหน้าสูงสุด',
+    help: 'ลดหน้าก่อนลงสี — 60,000 พอสำหรับตัวละครในเกม อาวุธใช้น้อยกว่านี้ได้',
+    type: 'int',
+    default: 60000,
+    min: 5000,
+    max: 200000,
+    step: 5000,
+    group: 'quality',
+  },
+  {
+    id: 'textureSize',
+    label: 'ขนาด texture',
+    help: '2048 คมพอเมื่อซูมเข้า 1024 เร็วกว่าและไฟล์เล็กกว่า',
+    type: 'int',
+    default: 2048,
+    min: 1024,
+    max: 4096,
+    step: 512,
+    group: 'quality',
+  },
+  {
+    id: 'paintSteps',
+    label: 'สเต็ปลงสี',
+    help: 'สเต็ปของโมเดลวาดภาพหลายมุม — เทมเพลตใช้ 10',
+    type: 'int',
+    default: 10,
+    min: 5,
+    max: 30,
+    step: 1,
+    group: 'sampler',
+  },
+];
+
+const HY3D = tunableReader(HY3D_TUNABLES);
+
+const HUNYUAN3D_21: CatalogEntry = {
+  key: 'hunyuan3d-2.1',
+  name: 'ภาพเป็นโมเดล 3D (Hunyuan3D-2.1)',
+  pools: ['rented'],
+  kind: 'model3d',
+  outputKind: 'model3d',
+  description: 'อัปโหลดภาพวัตถุหรือตัวละคร 1 ภาพ → ได้โมเดล 3D พร้อมพื้นผิว PBR เป็นไฟล์ GLB • ระบบตัดพื้นหลังให้เอง',
+  template: hunyuan3d21Template as UiWorkflow,
+  source: {
+    file: 'hunyuan3d21_image_to_3d.json',
+    title: 'Full_Workflow (visualbruno/ComfyUI-Hunyuan3d-2-1) — ตัดโหนดพรีวิว/Set-Get ออก ส่งโมเดลที่ลงสีแล้วออก และเพิ่มตัวตัดพื้นหลัง',
+    url: 'https://github.com/visualbruno/ComfyUI-Hunyuan3d-2-1/blob/main/example_workflows/Full_Workflow.json',
+  },
+  tunables: HY3D_TUNABLES,
+  // Sizes from Hugging Face. The texture model (hunyuan3d-paintpbr-v2-1,
+  // ~6.9 GB) and facebook/dinov2-giant are loaded by the pack's own code from
+  // the HF cache, which the setup script fills in the background.
+  downloads: [
+    { repo: 'tencent/Hunyuan3D-2.1', file: 'hunyuan3d-dit-v2-1/model.fp16.ckpt', dest: 'diffusion_models', bytes: 7_366_389_768, as: 'hunyuan3d-dit-v2-1-fp16.ckpt' },
+    { repo: 'tencent/Hunyuan3D-2.1', file: 'hunyuan3d-vae-v2-1/model.fp16.ckpt', dest: 'vae', bytes: 655_648_152, as: 'Hunyuan3D-vae-v2-1-fp16.ckpt' },
+  ],
+  // Tencent's README: 10 GB for the shape, 21 GB for the texture, 29 GB for
+  // both in one process. Disk: the devel image, these weights, the texture
+  // model and DINOv2, and the pack's Python dependencies.
+  hardware: { minVramMb: 40000, diskGb: 90, gpuModels: [], minArch: 'ampere' },
+  customNodes: [{ repo: 'https://github.com/visualbruno/ComfyUI-Hunyuan3d-2-1', ref: 'a0b26fbb94c9a9d32720526c52e64f87e05d2b53' }],
+  runtime: { image: 'pytorch/pytorch', tag: '2.13.0-cuda13.0-cudnn9-devel', setupScript: HY3D_SETUP },
+  needs: { image: true },
+  bind: (p) => [
+    { nodeId: '14', input: 'image', value: p.imageFilename ?? '' },
+    { nodeId: '60', input: 'model', value: 'birefnet-general' },
+    { nodeId: '37', input: 'seed', value: p.seed },
+    { nodeId: '37', input: 'steps', value: Math.round(HY3D.num(p.tuning, 'shapeSteps')) },
+    { nodeId: '37', input: 'guidance_scale', value: HY3D.num(p.tuning, 'shapeGuidance') },
+    { nodeId: '9', input: 'octree_resolution', value: Math.round(HY3D.num(p.tuning, 'octree')) },
+    { nodeId: '43', input: 'max_facenum', value: Math.round(HY3D.num(p.tuning, 'faces')) },
+    { nodeId: '20', input: 'seed', value: p.seed },
+    { nodeId: '20', input: 'texture_size', value: Math.round(HY3D.num(p.tuning, 'textureSize')) },
+    { nodeId: '20', input: 'steps', value: Math.round(HY3D.num(p.tuning, 'paintSteps')) },
+    { nodeId: '44', input: 'filename_prefix', value: '3D/aixman' },
+  ],
+  // One model is one unit: about three minutes on an A100 for shape and
+  // texture together, until real rentals report.
+  baselineSecondsPerUnit: 180,
+  pricing: { creditsPerUnit: 15, costPerUnit: 0.04 },
+  limits: { maxWidth: 2048, maxHeight: 2048 },
+};
+
+export const MODEL_CATALOG: CatalogEntry[] = [MINIMAX_H3, ACE_STEP, QWEN_IMAGE, YUE2_MUSIC, YUE2_COVER, SDXL_COMMUNITY, LTX23_TALKING, HUNYUAN3D_21];
 
 export function getCatalogEntry(key: string): CatalogEntry | undefined {
   return MODEL_CATALOG.find((m) => m.key === key);

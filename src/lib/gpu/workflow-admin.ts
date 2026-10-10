@@ -18,6 +18,7 @@ import {
   type WorkflowOverride,
 } from './workflow-overrides';
 import baseline from './workflows/schema/baseline-v0.36.0.json';
+import hunyuan3dPack from './workflows/schema/hunyuan3d21-pack.json';
 
 /**
  * The read side of /admin/workflows: what each catalogue workflow is, what it
@@ -31,7 +32,16 @@ import baseline from './workflows/schema/baseline-v0.36.0.json';
 // Schema — a live worker's copy when there is one, the vendored baseline under it
 // ---------------------------------------------------------------------------
 
-const BASELINE = baseline as { comfyVersion: string; capturedAt: string; classes: ComfyObjectInfo };
+const CORE = baseline as { comfyVersion: string; capturedAt: string; classes: ComfyObjectInfo };
+/**
+ * The core baseline plus the node packs catalogue entries install. A pack's
+ * classes are transcribed from its source at the pinned ref (see the file's
+ * `source`), since a CPU ComfyUI cannot load a pack that compiles CUDA code.
+ */
+const BASELINE = {
+  ...CORE,
+  classes: { ...CORE.classes, ...(hunyuan3dPack.classes as unknown as ComfyObjectInfo) },
+};
 
 export interface SchemaInfo {
   source: 'worker' | 'baseline';
@@ -82,6 +92,8 @@ function withStagedFiles(schema: ComfyObjectInfo, files: { image: string[]; audi
     out[cls] = { ...spec, input: { ...spec.input, required: { ...spec.input?.required, [input]: next } } };
   };
   add('LoadImage', 'image', files.image);
+  // Hunyuan3D's loader keeps the picture's alpha; same input dir.
+  add('Hy3D21LoadImageWithTransparency', 'image', files.image);
   add('LoadAudio', 'audio', files.audio);
   return out;
 }

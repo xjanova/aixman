@@ -250,8 +250,9 @@ export async function getGpuConfig(): Promise<GpuBudgetConfig> {
  */
 function profileFromCatalog(entry: CatalogEntry): WorkerProfile {
   return {
-    image: DEFAULT_BASE_IMAGE,
-    tag: DEFAULT_BASE_TAG,
+    // An entry that compiles CUDA code at install names its own (devel) image.
+    image: entry.runtime?.image ?? DEFAULT_BASE_IMAGE,
+    tag: entry.runtime?.tag ?? DEFAULT_BASE_TAG,
     // The token-gated proxy. ComfyUI itself stays on loopback inside the
     // container — never expose 8188, it has no authentication.
     apiPort: 8189,
@@ -273,6 +274,9 @@ function profileFromCatalog(entry: CatalogEntry): WorkerProfile {
       as: d.as,
     })),
     customNodes: entry.customNodes,
+    // Runs where the operator script does (after node packs, before ComfyUI);
+    // an operator startScript in gpu_worker_profiles replaces it.
+    ...(entry.runtime?.setupScript ? { startScript: entry.runtime.setupScript } : {}),
   };
 }
 

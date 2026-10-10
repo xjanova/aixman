@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import type { WorkerProfile } from './config';
 import { buildMiniMaxH3Workflow, frameLengthFor } from './workflows/minimax-h3';
-import { getCatalogEntry, type CatalogJobParams } from './catalog';
+import { getCatalogEntry, type CatalogEntry, type CatalogJobParams } from './catalog';
 import type { MusicStyleParams } from '@/lib/music-style';
 import { isAcceptedAudioSource, readAudioSource, readFrameSource } from './frame-input';
 import { PROGRESS_PATH } from './provision';
@@ -16,7 +16,7 @@ import {
 import { applyWorkflowVars, buildJobGraph, schemaSubset, templateClasses } from './workflow-build';
 import type { EffectiveWorkflow } from './workflow-overrides';
 import { NodeRefusedError, parseNodeRefusal } from './community-dispatch';
-import { RejectedOutputError, communityOutputBudget, oversizeReason } from './community-plausibility';
+import { RejectedOutputError, communityOutputBudget, oversizeReason, type MediaKind } from './community-plausibility';
 
 export { applyWorkflowVars };
 
@@ -425,7 +425,7 @@ export class WorkerClient {
     const maxBytes =
       opts.maxBytes ??
       (this.options.community
-        ? communityOutputBudget(this.modelKey ? getCatalogEntry(this.modelKey)?.outputKind : undefined)
+        ? communityOutputBudget(communityMediaKind(this.modelKey ? getCatalogEntry(this.modelKey)?.outputKind : undefined))
         : undefined);
     const controller = new AbortController();
     // A *stall* timeout, not a total one. The old fixed 120 s cap was a
@@ -955,7 +955,8 @@ export class WorkerClient {
       if (!node) continue;
       // Video nodes vary by extension pack: gifs/videos/images all appear.
       // Core SaveVideo reports its file under `images` with `animated: true`.
-      for (const bucket of ['videos', 'gifs', 'images', 'audio'] as const) {
+      // Mesh exporters (core SaveGLB, Hunyuan3D's ExportMesh) report under `3d`.
+      for (const bucket of ['videos', 'gifs', 'images', 'audio', '3d'] as const) {
         const items = node[bucket];
         if (!Array.isArray(items)) continue;
         for (const item of items) {
@@ -1043,11 +1044,20 @@ export class WorkerClient {
   }
 }
 
-function mediaKindOf(filename: string): 'video' | 'image' | 'audio' | undefined {
+/**
+ * The kinds a home PC can deliver. Mesh models run on rented machines only
+ * (their pool is 'rented'), so a 3D output never reaches the community checks.
+ */
+function communityMediaKind(kind: CatalogEntry['outputKind'] | undefined): MediaKind | undefined {
+  return kind === 'model3d' ? undefined : kind;
+}
+
+function mediaKindOf(filename: string): 'video' | 'image' | 'audio' | 'model3d' | undefined {
   const ext = /\.([a-z0-9]+)$/i.exec(filename)?.[1]?.toLowerCase() ?? '';
   if (['mp4', 'webm', 'mov', 'mkv', 'gif'].includes(ext)) return 'video';
   if (['png', 'jpg', 'jpeg', 'webp'].includes(ext)) return 'image';
   if (['flac', 'mp3', 'wav', 'ogg', 'opus', 'm4a'].includes(ext)) return 'audio';
+  if (['glb', 'gltf', 'obj', 'ply', 'stl'].includes(ext)) return 'model3d';
   return undefined;
 }
 
