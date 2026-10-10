@@ -1678,6 +1678,12 @@ const AIXMAN_REMBG_NODE = [
 ].join('\n');
 
 const HY3D_SETUP = [
+  // The pack's requirements leave transformers unpinned, and 5.x renamed
+  // DINOv2's attention layers (attention.attention.query → attention.q_proj),
+  // so the image encoder inside the DiT checkpoint no longer loads: "Missing
+  // key(s) in state_dict for SingleImageEncoder" (job #104). ComfyUI v0.36
+  // asks for >=4.50.3.
+  'pip_install "transformers 4.x" "transformers>=4.50.3,<5"',
   'echo "[aixman] building the Hunyuan3D-2.1 texture extensions"',
   'apt-get install -y -qq build-essential libgl1 libglib2.0-0 > /dev/null 2>&1 || true',
   // No TORCH_CUDA_ARCH_LIST: torch then builds for the card in this machine
