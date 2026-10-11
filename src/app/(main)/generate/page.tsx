@@ -690,11 +690,13 @@ type Placement = { up: boolean; left: number; width: number; maxHeight: number }
  *
  * Only files that are actually in public/studio-tabs belong here — a missing
  * one falls back to a text pill, which is better than an <Image> pointed at a
- * 404. Each is a 440px-wide PNG with its own Thai and English label drawn in,
- * downscaled from a ~2,000px original: the button is ~190px on screen, so the
- * full-size art was 1.5MB to draw something a tenth of that. Downscale with
- * premultiplied alpha — these plates are transparent around a neon edge, and
- * a plain resize drags the transparent black into the glow.
+ * 404. Each is a 440px-wide PNG with its own Thai and English label drawn in;
+ * the button is ~190px on screen. The six (these five and MODEL3D_ART) are one
+ * set: generated from one prompt on black with only the icon and label
+ * changed, then widened to the same 3.93:1 by repeating a column of plain
+ * glass beside the label, the black keyed out with the glow kept as light, and
+ * downscaled premultiplied — a plain resize drags the transparent black into
+ * the glow. Redraw one, redraw it the same way, or it stands out of the set.
  */
 /** The second line on each plate, matching what the artwork has drawn in. */
 const TAB_EN: Record<TabType, string> = {
@@ -708,6 +710,9 @@ const TAB_ART: Partial<Record<TabType, string>> = {
   lipsync: "/studio-tabs/tab-lipsync.png",
   audio: "/studio-tabs/tab-music.png",
 };
+
+/** The 3D studio's plate: drawn in the same set, but it links to its own page. */
+const MODEL3D_ART = "/studio-tabs/tab-model3d.png";
 
 function Popover({
   id, open, onToggle, label, value, children, align = "left", width = 300,
@@ -2374,22 +2379,14 @@ export default function GeneratePage() {
               canvas fits a scene you turn around. Dimmed with the reason, like
               the tabs above, while no 3D model can be ordered. */}
           {model3dBlocked ? (
-            <button type="button" className="rp-tab-plate" data-active="false" disabled title={model3dBlocked}>
-              <span className="rp-tab-plate-icon" aria-hidden="true">◆</span>
-              <span className="rp-tab-plate-text">
-                <span className="rp-tab-plate-th">สร้างโมเดล 3D</span>
-                <span className="rp-tab-plate-en">3D Model</span>
-              </span>
-              <span className="rp-tab-plate-go" aria-hidden="true">&rsaquo;</span>
+            <button type="button" className="rp-tab-art" data-active="false" disabled
+              title={model3dBlocked} aria-label="สร้างโมเดล 3D">
+              <Image src={MODEL3D_ART} alt="สร้างโมเดล 3D" width={440} height={147} sizes="220px" />
             </button>
           ) : (
-            <Link href="/generate/3d" className="rp-tab-plate" data-active="false" style={{ textDecoration: "none" }}>
-              <span className="rp-tab-plate-icon" aria-hidden="true">◆</span>
-              <span className="rp-tab-plate-text">
-                <span className="rp-tab-plate-th">สร้างโมเดล 3D</span>
-                <span className="rp-tab-plate-en">3D Model</span>
-              </span>
-              <span className="rp-tab-plate-go" aria-hidden="true">&rsaquo;</span>
+            <Link href="/generate/3d" className="rp-tab-art" data-active="false"
+              title="สร้างโมเดล 3D" aria-label="สร้างโมเดล 3D">
+              <Image src={MODEL3D_ART} alt="สร้างโมเดล 3D" width={440} height={147} sizes="220px" />
             </Link>
           )}
         </div>
