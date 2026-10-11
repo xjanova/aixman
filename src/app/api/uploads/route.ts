@@ -3,6 +3,7 @@ import { getCurrentUserId } from '@/lib/auth';
 import { isStorageConfigured, uploadBuffer } from '@/lib/storage/r2';
 import { MAX_BYTES, isUploadKind, maxBytesLabel, sniff, uploadKey, type UploadKind } from '@/lib/uploads';
 import { audioDurationSeconds } from '@/lib/audio-duration';
+import { probeVideoBuffer } from '@/lib/video-probe';
 
 /**
  * Accept an input file for a generation and return a URL the model can fetch.
@@ -121,6 +122,10 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // A clip's length and picture, read the way the order path will read them,
+  // so the studio can say before ordering whether a model takes it.
+  const clip = kind === 'video' ? await probeVideoBuffer(buffer, detected.ext) : null;
+
   try {
     const key = uploadKey(userId, kind, detected.ext);
     const url = await uploadBuffer(buffer, key, detected.contentType);
@@ -133,7 +138,8 @@ export async function POST(request: NextRequest) {
       // The length the order path will read from this same file, so the
       // studio can show the price a voice-driven model will charge for it.
       // Null when the headers do not say (the order is then refused there).
-      durationSeconds: kind === 'audio' ? audioDurationSeconds(buffer, detected.ext) : null,
+      durationSeconds: kind === 'audio' ? audioDurationSeconds(buffer, detected.ext) : clip?.seconds ?? null,
+      ...(clip ? { width: clip.width, height: clip.height } : {}),
     });
   } catch (error) {
     // The S3 client's message can carry the bucket name and endpoint. Log it,

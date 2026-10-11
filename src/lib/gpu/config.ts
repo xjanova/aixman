@@ -92,7 +92,7 @@ export interface WorkerProfile {
   /** Weight files to fetch, from the catalogue entry for this model. */
   downloads?: { repo: string; file: string; dest: string; as?: string }[];
   /** Community node packs the model's template needs. */
-  customNodes?: { repo: string; ref?: string }[];
+  customNodes?: { repo: string; ref?: string; requirements?: boolean }[];
   /** Extra bash appended to the generated start script. */
   startScript?: string;
   env?: Record<string, string>;

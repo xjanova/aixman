@@ -19,6 +19,7 @@ import {
 } from './workflow-overrides';
 import baseline from './workflows/schema/baseline-v0.36.0.json';
 import hunyuan3dPack from './workflows/schema/hunyuan3d21-pack.json';
+import latentsyncPack from './workflows/schema/latentsync-pack.json';
 
 /**
  * The read side of /admin/workflows: what each catalogue workflow is, what it
@@ -40,7 +41,11 @@ const CORE = baseline as { comfyVersion: string; capturedAt: string; classes: Co
  */
 const BASELINE = {
   ...CORE,
-  classes: { ...CORE.classes, ...(hunyuan3dPack.classes as unknown as ComfyObjectInfo) },
+  classes: {
+    ...CORE.classes,
+    ...(hunyuan3dPack.classes as unknown as ComfyObjectInfo),
+    ...(latentsyncPack.classes as unknown as ComfyObjectInfo),
+  },
 };
 
 export interface SchemaInfo {
@@ -137,6 +142,8 @@ export interface PreviewResult {
 const PREVIEW_FIRST = 'aixman-first-preview.png';
 const PREVIEW_LAST = 'aixman-last-preview.png';
 const PREVIEW_AUDIO = 'aixman-source-preview.mp3';
+/** The clip loader takes a name as text, so nothing has to list it. */
+const PREVIEW_VIDEO = 'aixman-clip-preview.mp4';
 
 function num(value: unknown, fallback: number, min: number, max: number): number {
   const n = Number(value);
@@ -173,6 +180,7 @@ export async function previewWorkflow(
     imageFilename: firstFrame || entry.needs?.image ? PREVIEW_FIRST : undefined,
     lastImageFilename: lastFrame ? PREVIEW_LAST : undefined,
     audioFilename: entry.needs?.audio ? PREVIEW_AUDIO : undefined,
+    videoFilename: entry.needs?.video ? PREVIEW_VIDEO : undefined,
     checkpoints: checkpointsIn(classes),
   };
   delete (job as Partial<CatalogJobParams>).tuning;
@@ -202,6 +210,7 @@ export async function previewWorkflow(
       first: job.imageFilename,
       last: job.lastImageFilename,
       audio: job.audioFilename,
+      video: job.videoFilename,
     });
     const validated = validateGraph(built.graph, schema);
     return {

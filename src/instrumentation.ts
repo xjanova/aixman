@@ -1,10 +1,11 @@
 /**
  * Next.js startup hook — runs once per server process.
  *
- * Starts the background schedulers. Both exist so the app does not depend on an
- * operator remembering a crontab: without the GPU tick a rented machine bills
- * indefinitely, and without the retention sweep stored media grows without
- * bound. The matching /api/cron/* routes remain available for external
+ * Starts the background schedulers. They exist so the app does not depend on
+ * an operator remembering a crontab: without the GPU tick a rented machine
+ * bills indefinitely, without the retention sweep stored media grows without
+ * bound, and without the API order sweep an order cut off by a restart stays
+ * charged and spinning. The matching /api/cron/* routes remain available for external
  * scheduling.
  */
 export async function register() {
@@ -26,5 +27,11 @@ export async function register() {
     startRetentionScheduler();
   } catch (error) {
     console.error('[retention] could not start scheduler:', (error as Error).message);
+  }
+  try {
+    const { startApiOrderSweep } = await import('@/lib/services/api-order-sweep');
+    startApiOrderSweep();
+  } catch (error) {
+    console.error('[api-orders] could not start the sweep:', (error as Error).message);
   }
 }

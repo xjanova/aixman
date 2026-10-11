@@ -11,6 +11,7 @@ import { isInHouse, publicProvider } from '@/lib/public-provider';
 import { communityListing, NO_MACHINE_LISTING_TEXT } from '@/lib/gpu/community-dispatch';
 import { communityMachineAvailable } from '@/lib/gpu/community-availability';
 import { getAllStoredWorkflows, visibleQualityModes } from '@/lib/gpu/workflow-overrides';
+import { apiVideoLipsyncRule, type ClipRule, type LipsyncBilling, type VoiceRule } from '@/lib/lipsync-rules';
 
 /**
  * Public model list for the studio and the mobile app.
@@ -44,6 +45,24 @@ const UNAVAILABLE_TEXT: Record<Exclude<Availability, 'ok'>, string> = {
  * already decide how the job is built, and a second copy in the database would
  * drift the moment a template changes.
  */
+/**
+ * A model that re-dubs an uploaded clip: what the clip may be and — on an API
+ * row — the voice beside it and how the order is billed, from the same rules
+ * GenerationService checks the stored files against. A rented model prices by
+ * its voice instead (`lengthFromAudio`), so it has no billing here.
+ */
+function videoLipsyncOptions(
+  modelKey: string,
+  inHouse: boolean
+): { clip: ClipRule; voice: VoiceRule | null; billing: LipsyncBilling | null } | null {
+  if (inHouse) {
+    const clip = getCatalogEntry(modelKey)?.sourceVideo;
+    return clip ? { clip, voice: null, billing: null } : null;
+  }
+  const rule = apiVideoLipsyncRule(modelKey);
+  return rule ? { clip: rule.clip, voice: rule.voice, billing: rule.billing } : null;
+}
+
 function musicOptions(modelKey: string): {
   lyrics: boolean;
   sourceSong: boolean;
@@ -230,6 +249,9 @@ export async function GET() {
         // applies (voice-length.ts) and prices that, instead of a length
         // control. Null for every other model.
         lengthFromAudio: inHouse ? getCatalogEntry(m.modelId)?.lengthFromAudio ?? null : null,
+        // A model that re-dubs a clip: its rules, so the studio can say before
+        // the order whether the clip fits and what it costs. Null otherwise.
+        videoLipsync: videoLipsyncOptions(m.modelId, inHouse),
         // Quality modes the studio may offer (Qwen-Image เร็ว / คุณภาพสูง), each
         // with the multiplier GenerationService prices it at. Null when the
         // model has none; admin-only modes reach admins only.

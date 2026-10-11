@@ -175,9 +175,9 @@ export async function POST() {
       // ฿0.7255 would look like double margin and deliver about 13%.
       //
       // LatentSync is flat-rate to 40s, so one row covers every clip length.
-      // Above 40s fal adds $0.005/s; the upload cap in src/lib/uploads.ts is
-      // what keeps that from running away, since we cannot read a clip's
-      // duration server-side before paying for it.
+      // Above 40s fal adds $0.005/s; GenerationService reads the stored clip
+      // and voice (lipsync-rules.ts) and refuses either past 40 s before
+      // anything is charged.
       { providerSlug: 'fal', modelId: 'fal-ai/latentsync', name: 'พากย์ทับคลิป (LatentSync)', category: 'video', subcategory: 'lipsync', costPerUnit: 0.20, creditsPerUnit: 36, maxDuration: 40, readiness: 'tuning', description: 'อัปโหลดคลิป + ไฟล์เสียงไทย → ปากขยับตรงเสียงใหม่ • เก็บภาพเดิมไว้ทั้งหมด • ยาวได้ถึง 40 วินาที' },
       // Billed per output second, so the length is set by the adapter from
       // maxDuration rather than by fal's 145-frame default. 5s at $0.20/s is
@@ -186,6 +186,12 @@ export async function POST() {
       // `lipsync-portrait` rather than `lipsync`: the suffix is what tells the
       // studio to ask for a still instead of a clip, so the two cannot be
       // confused by a UI that would otherwise have to match on model id.
+      // Kling bills $0.014 per second of *input video*, rounded up to 5 s
+      // blocks, so `creditsPerUnit` is per started 5 s of clip
+      // (lipsync-rules.ts): $0.07 a block at ~2x is 13 credits. It refuses a
+      // clip outside 2–10 s or 720–1920 px after charging for the attempt,
+      // so those limits are checked against the stored file first.
+      { providerSlug: 'fal', modelId: 'fal-ai/kling-video/lipsync/audio-to-video', name: 'พากย์ทับคลิป (Kling LipSync)', category: 'video', subcategory: 'lipsync', costPerUnit: 0.07, creditsPerUnit: 13, maxDuration: 10, readiness: 'tuning', description: 'อัปโหลดคลิป 2–10 วินาที (720p–1080p) + ไฟล์เสียงไทย → ปากขยับตรงเสียงใหม่ คุณภาพสูง • คิดเครดิตตามความยาวคลิป ช่วงละ 5 วินาที' },
       { providerSlug: 'fal', modelId: 'fal-ai/infinitalk', name: 'ภาพนิ่งพูดได้ (InfiniTalk)', category: 'video', subcategory: 'lipsync-portrait', costPerUnit: 1.00, creditsPerUnit: 177, maxWidth: 1280, maxHeight: 720, maxDuration: 5, readiness: 'tuning', description: 'อัปโหลดรูปหน้าคน + ไฟล์เสียงไทย → ได้คลิปคนพูด • 5 วินาที • ราคาสูงเพราะคิดตามวินาที' },
 
       // Runway — Video

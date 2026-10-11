@@ -1,3 +1,4 @@
+import type { ClipRule, LipsyncBilling, VoiceRule } from '@/lib/lipsync-rules';
 import { create } from 'zustand';
 import type { DurationCurve } from '@/lib/pricing';
 import type { LengthFromAudio } from '@/lib/voice-length';
@@ -61,6 +62,12 @@ interface AIModel {
    * GenerationService reads from the file. Null for every other model.
    */
   lengthFromAudio?: LengthFromAudio | null;
+  /**
+   * Set for a model that re-dubs an uploaded clip: what the clip (and, on an
+   * API row, the voice) may be and how the order is billed — the rules
+   * GenerationService checks the stored files against. Null otherwise.
+   */
+  videoLipsync?: { clip: ClipRule; voice: VoiceRule | null; billing: LipsyncBilling | null } | null;
   /**
    * Quality modes (rented-GPU models, e.g. Qwen-Image เร็ว / คุณภาพสูง), each
    * priced at the base price times its multiplier — the same sum

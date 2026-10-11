@@ -150,6 +150,12 @@ export interface ProviderGenerateParams {
   apiSecret?: string;
   apiEndpoint?: string;
   extraParams?: Record<string, unknown>;
+  /**
+   * How long a queued job may take before the adapter gives up, in seconds.
+   * Set for slow renders (video lip-sync, lipsync-rules.ts); unset keeps the
+   * adapter's own limit.
+   */
+  maxWaitSeconds?: number;
 }
 
 // Admin types

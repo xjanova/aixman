@@ -3,7 +3,7 @@ import type { WorkerProfile } from './config';
 import { buildMiniMaxH3Workflow, frameLengthFor } from './workflows/minimax-h3';
 import { getCatalogEntry, type CatalogEntry, type CatalogJobParams } from './catalog';
 import type { MusicStyleParams } from '@/lib/music-style';
-import { isAcceptedAudioSource, readAudioSource, readFrameSource } from './frame-input';
+import { isAcceptedAudioSource, isAcceptedVideoSource, readAudioSource, readFrameSource, readVideoSource } from './frame-input';
 import { PROGRESS_PATH } from './provision';
 import {
   cacheSchema,
@@ -80,6 +80,8 @@ interface StagedFrames {
   last?: string;
   /** Reference song for a cover, by its name in the worker's input dir. */
   audio?: string;
+  /** A clip to re-dub, by its name in the worker's input dir. */
+  video?: string;
 }
 
 export type PollOutcome =
@@ -120,6 +122,8 @@ export interface WorkerProgress {
 }
 
 const SUBMIT_TIMEOUT_MS = 60_000;
+/** A clip to re-dub is tens of megabytes through a tunnel, not a still. */
+const CLIP_UPLOAD_TIMEOUT_MS = 4 * 60_000;
 const POLL_TIMEOUT_MS = 20_000;
 /** Progress is read while a customer waits on the page — never make them wait on it. */
 const PROGRESS_TIMEOUT_MS = 4_000;
@@ -597,7 +601,7 @@ export class WorkerClient {
   private async stageFrames(params: WorkerJobParams, objectInfo: ComfyObjectInfo): Promise<StagedFrames> {
     const entry = this.modelKey ? getCatalogEntry(this.modelKey) : undefined;
     if (this.profile.workflow || !entry) return {};
-    if (!entry.video && !entry.needs?.audio && !entry.needs?.image) return {};
+    if (!entry.video && !entry.needs?.audio && !entry.needs?.image && !entry.needs?.video) return {};
 
     const lastSource = typeof params.extra?.inputImageEnd === 'string' ? params.extra.inputImageEnd : undefined;
     const frames: StagedFrames = {};
@@ -631,6 +635,17 @@ export class WorkerClient {
       frames.audio = await this.uploadAudio(source);
       await this.refreshNodeSpec(objectInfo, 'LoadAudio');
     }
+
+    // The clip a voice is dubbed onto. Its loader takes the name as text, not
+    // from a list of the input dir, so there is no schema to refresh.
+    if (entry.needs?.video) {
+      const source = params.extra?.inputVideo;
+      if (!isAcceptedVideoSource(source)) {
+        throw new Error(`"${entry.key}" needs an uploaded clip, and this job has none`);
+      }
+      const { bytes, contentType, ext } = await readVideoSource(source);
+      frames.video = await this.uploadInput(`aixman-clip-${randomUUID()}.${ext}`, contentType, bytes, 'the source clip', CLIP_UPLOAD_TIMEOUT_MS);
+    }
     return frames;
   }
 
@@ -643,47 +658,22 @@ export class WorkerClient {
    */
   private async uploadAudio(source: string): Promise<string> {
     const { bytes, contentType, ext } = await readAudioSource(source);
-    const filename = `aixman-source-${randomUUID()}.${ext}`;
-    const boundary = `----aixman${randomUUID().replace(/-/g, '')}`;
-    const body = Buffer.concat([
-      Buffer.from(
-        `--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="${filename}"\r\n` +
-          `Content-Type: ${contentType}\r\n\r\n`
-      ),
-      bytes,
-      Buffer.from(
-        `\r\n--${boundary}\r\nContent-Disposition: form-data; name="overwrite"\r\n\r\ntrue\r\n--${boundary}--\r\n`
-      ),
-    ]);
-
-    const res = await this.request('/upload/image', {
-      method: 'POST',
-      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
-      body: new Uint8Array(body),
-      timeout: SUBMIT_TIMEOUT_MS,
-    });
-    const text = res.ok ? await this.body(res, COMMUNITY_BODY_LIMITS.json, SUBMIT_TIMEOUT_MS) : await this.errorBody(res);
-    if (!res.ok) {
-      const refused = this.refusal(res.status, text, 'the reference song');
-      if (refused) throw refused;
-      throw new Error(`Worker refused the reference song (HTTP ${res.status}): ${text.slice(0, 200)}`);
-    }
-    const data = JSON.parse(text) as { name?: string; subfolder?: string };
-    if (!data.name) throw new Error('Worker returned no name for the reference song');
-    return data.subfolder ? `${data.subfolder}/${data.name}` : data.name;
+    return this.uploadInput(`aixman-source-${randomUUID()}.${ext}`, contentType, bytes, 'the reference song');
   }
 
   /**
-   * POST one still to ComfyUI's `/upload/image` and return the name to put in a
-   * LoadImage node.
-   *
-   * The multipart body is built by hand as one buffer: the container's proxy
-   * forwards exactly `Content-Length` bytes, and a streamed FormData body could
-   * go out chunked with no length at all.
+   * POST one file to ComfyUI's `/upload/image` and return the name it was
+   * stored under. The multipart body is built by hand as one buffer: the
+   * container's proxy forwards exactly `Content-Length` bytes, and a streamed
+   * FormData body could go out chunked with no length at all.
    */
-  private async uploadImage(source: string, role: 'first' | 'last'): Promise<string> {
-    const { bytes, contentType, ext } = await readFrameSource(source);
-    const filename = `aixman-${role}-${randomUUID()}.${ext}`;
+  private async uploadInput(
+    filename: string,
+    contentType: string,
+    bytes: Buffer,
+    label: string,
+    timeout: number = SUBMIT_TIMEOUT_MS
+  ): Promise<string> {
     const boundary = `----aixman${randomUUID().replace(/-/g, '')}`;
     const body = Buffer.concat([
       Buffer.from(
@@ -700,17 +690,23 @@ export class WorkerClient {
       method: 'POST',
       headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
       body: new Uint8Array(body),
-      timeout: SUBMIT_TIMEOUT_MS,
+      timeout,
     });
     const text = res.ok ? await this.body(res, COMMUNITY_BODY_LIMITS.json, SUBMIT_TIMEOUT_MS) : await this.errorBody(res);
     if (!res.ok) {
-      const refused = this.refusal(res.status, text, `the ${role} frame`);
+      const refused = this.refusal(res.status, text, label);
       if (refused) throw refused;
-      throw new Error(`Worker refused the ${role} frame (HTTP ${res.status}): ${text.slice(0, 200)}`);
+      throw new Error(`Worker refused ${label} (HTTP ${res.status}): ${text.slice(0, 200)}`);
     }
     const data = JSON.parse(text) as { name?: string; subfolder?: string };
-    if (!data.name) throw new Error(`Worker returned no name for the ${role} frame`);
+    if (!data.name) throw new Error(`Worker returned no name for ${label}`);
     return data.subfolder ? `${data.subfolder}/${data.name}` : data.name;
+  }
+
+  /** Put one still in the worker's input dir and return the name to put in a LoadImage node. */
+  private async uploadImage(source: string, role: 'first' | 'last'): Promise<string> {
+    const { bytes, contentType, ext } = await readFrameSource(source);
+    return this.uploadInput(`aixman-${role}-${randomUUID()}.${ext}`, contentType, bytes, `the ${role} frame`);
   }
 
   /** Re-read one node class's schema into the cached `/object_info`. */
@@ -779,6 +775,7 @@ export class WorkerClient {
         lastImageFilename: frames.last,
         // The staged name, never the URL the customer uploaded to.
         audioFilename: frames.audio,
+        videoFilename: frames.video,
         lyrics: typeof params.extra?.lyrics === 'string' ? params.extra.lyrics : undefined,
         // The song controls the customer picked. Stored on the generation and
         // carried here untouched — the catalogue entry is what turns them into

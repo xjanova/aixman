@@ -1,3 +1,4 @@
+import type { ClipRule } from '@/lib/lipsync-rules';
 import type { ParameterBinding, UiWorkflow } from './comfy-convert';
 import type { DurationCurve } from '@/lib/pricing';
 import {
@@ -23,6 +24,7 @@ import yue2Text2MusicTemplate from './workflows/templates/yue2_text2music.json';
 import yue2MusicCoverTemplate from './workflows/templates/yue2_music_cover.json';
 import ltxTalkingTemplate from './workflows/templates/ltx23_image_speech_to_video.json';
 import hunyuan3d21Template from './workflows/templates/hunyuan3d21_image_to_3d.json';
+import latentsyncTemplate from './workflows/templates/latentsync16_video_dub.json';
 
 /**
  * Catalogue of self-hostable models customers can choose from.
@@ -47,7 +49,13 @@ export type ModelDest =
   | 'checkpoints'
   | 'audio_encoders'
   | 'clip_vision'
-  | 'latent_upscale_models';
+  | 'latent_upscale_models'
+  // Not a ComfyUI folder: the LatentSync pack loads its own weights, and the
+  // setup script links these where it (and whisper, and face-alignment) look.
+  | 'latentsync'
+  | 'latentsync/vae'
+  | 'latentsync/whisper'
+  | 'latentsync/face';
 
 export interface ModelDownload {
   repo: string;
@@ -66,6 +74,18 @@ export interface ModelDownload {
   as?: string;
 }
 
+/** A community node pack, pinned. */
+export interface CustomNodePack {
+  repo: string;
+  ref?: string;
+  /**
+   * `false` skips the pack's requirements.txt. For a pack whose list pins
+   * something that cannot install on the worker — a failed install fails the
+   * boot — and whose entry's setup script installs what it really needs.
+   */
+  requirements?: boolean;
+}
+
 export interface CatalogJobParams {
   prompt: string;
   negativePrompt?: string;
@@ -81,6 +101,8 @@ export interface CatalogJobParams {
   lastImageFilename?: string;
   /** Filename of an uploaded audio track (lip-sync, audio-driven video). */
   audioFilename?: string;
+  /** Filename of an uploaded clip to re-dub (video lip-sync). */
+  videoFilename?: string;
   /** Song lyrics (music models). Empty means an instrumental. */
   lyrics?: string;
   /**
@@ -193,7 +215,7 @@ export interface CatalogEntry {
    * community nodes (Chatterbox TTS is `FL_*`, from a third-party pack) and
    * without them ComfyUI reports the node as missing at submit time.
    */
-  customNodes?: { repo: string; ref?: string }[];
+  customNodes?: CustomNodePack[];
   /**
    * For a model whose node pack compiles CUDA code at install: the container
    * to boot instead of the default runtime image (which has no nvcc), and bash
@@ -209,7 +231,13 @@ export interface CatalogEntry {
   inject?: (p: CatalogJobParams) => Record<string, { class_type: string; inputs: Record<string, unknown> }>;
   bind: (p: CatalogJobParams) => ParameterBinding[];
   /** Uploads the customer must supply before this model can run. */
-  needs?: { image?: boolean; audio?: boolean };
+  needs?: { image?: boolean; audio?: boolean; video?: boolean };
+  /**
+   * What a clip to re-dub may be (needs.video): length, picture, file size.
+   * GenerationService checks it against the stored file before charging; the
+   * limits are what one rented card and its tunnel can take.
+   */
+  sourceVideo?: ClipRule;
   /**
    * The render is as long as the uploaded audio — a voice track a portrait
    * speaks. GenerationService reads that length from the stored file itself
@@ -1874,7 +1902,373 @@ const HUNYUAN3D_21: CatalogEntry = {
   limits: { maxWidth: 2048, maxHeight: 2048 },
 };
 
-export const MODEL_CATALOG: CatalogEntry[] = [MINIMAX_H3, ACE_STEP, QWEN_IMAGE, YUE2_MUSIC, YUE2_COVER, SDXL_COMMUNITY, LTX23_TALKING, HUNYUAN3D_21];
+// ---------------------------------------------------------------------------
+// LatentSync 1.6 — a clip re-dubbed with an uploaded voice
+// ---------------------------------------------------------------------------
+// Comfy-Org has no video lip-sync template, so the template is our own six
+// nodes (latentsync16_video_dub.json) around vinavfx's maintained fork of the
+// LatentSync wrapper; the original pack (ShmuelRonen) is unmaintained and
+// breaks on torchvision 0.26.
+//
+// Two things of the pack's are not used as shipped:
+//  - its face detector. It is InsightFace, whose buffalo_l weights are for
+//    non-commercial research only. The setup script writes one built on
+//    face-alignment (BSD-3) over it — LATENTSYNC_FACE_DETECTOR.
+//  - its requirements.txt. It pins insightface (an sdist that needs a
+//    compiler) and onnxruntime-gpu, and a failed install fails the boot. The
+//    setup script installs what the inference path actually imports instead.
+//
+// The weights: LatentSync-1.6 is OpenRAIL++-M (commercial use allowed, with
+// the licence's use restrictions), sd-vae-ft-mse is MIT.
+
+/** Where the pack lands; its `checkpoints/` folder is pointed at the downloads. */
+const LS_NODE_DIR = '/workspace/aixman/ComfyUI/custom_nodes/ComfyUI-LatentSyncWrapper';
+const LS_MODELS = '/workspace/aixman/models/latentsync';
+
+/**
+ * Replaces the pack's `latentsync/utils/face_detector.py`. Same class, same
+ * call: a box and the 106-point array ImageProcessor reads three points from
+ * (eyebrow centres, nose centre) — filled from face-alignment's 68 points the
+ * way LatentSync 1.5 computed the same three.
+ */
+const LATENTSYNC_FACE_DETECTOR = [
+  '# Written by AIXMAN over the pack\'s own file. The pack finds faces with',
+  '# InsightFace, whose buffalo_l weights are licensed for non-commercial research',
+  '# only. This finds them with face-alignment (BSD-3): S3FD for the box, FAN for',
+  '# 68 landmarks. ImageProcessor reads three points from the 106-point array it',
+  '# expects (eyebrow centres and nose centre), so those slots are filled from the',
+  '# 68 points the way LatentSync 1.5 computed the same three.',
+  'import numpy as np',
+  'import face_alignment',
+  '',
+  '_LEFT_BROW = [43, 48, 49, 51, 50]',
+  '_RIGHT_BROW = [101, 102, 103, 104, 105]',
+  '_NOSE = [74, 77, 83, 86]',
+  '_MIN_SIDE = 40',
+  '',
+  '',
+  'class FaceDetector:',
+  '    def __init__(self, device="cuda"):',
+  '        device = str(device)',
+  '        self.fa = face_alignment.FaceAlignment(',
+  '            face_alignment.LandmarksType.TWO_D,',
+  '            device=device if device.startswith("cuda") or device == "cpu" else "cuda",',
+  '            flip_input=False,',
+  '            compile=False,',
+  '        )',
+  '',
+  '    def __call__(self, frame, threshold=0.5):',
+  '        image = np.ascontiguousarray(np.asarray(frame)[..., :3])',
+  '        landmarks, _, boxes = self.fa.get_landmarks_from_image(image, return_bboxes=True)',
+  '        if not landmarks or boxes is None:',
+  '            return None, None',
+  '        best = None',
+  '        best_area = 0.0',
+  '        for points, box in zip(landmarks, boxes):',
+  '            x1, y1, x2, y2 = (float(v) for v in box[:4])',
+  '            score = float(box[4]) if len(box) > 4 else 1.0',
+  '            w, h = x2 - x1, y2 - y1',
+  '            if score < threshold or w < _MIN_SIDE or h < _MIN_SIDE:',
+  '                continue',
+  '            if w * h > best_area:',
+  '                best, best_area = (points, (x1, y1, x2, y2)), w * h',
+  '        if best is None:',
+  '            return None, None',
+  '        points, (x1, y1, x2, y2) = best',
+  '        points = np.asarray(points, dtype=np.float32)[:, :2]',
+  '        lmk = np.zeros((106, 2), dtype=np.float32)',
+  '        lmk[_LEFT_BROW] = points[17:22].mean(axis=0)',
+  '        lmk[_RIGHT_BROW] = points[22:27].mean(axis=0)',
+  '        lmk[_NOSE] = points[27:36].mean(axis=0)',
+  '        height, width = image.shape[:2]',
+  '        bbox = (max(0, int(x1)), max(0, int(y1)), min(width, int(x2)), min(height, int(y2)))',
+  '        return bbox, lmk',
+].join('\n');
+
+/**
+ * A one-file loader. Core LoadVideo hands over every frame at the clip's own
+ * size and rate as float32 — a 20 s 1080p clip is 15 GB, and the pack copies
+ * the batch onto the card. This decodes with ffmpeg at the 25 fps LatentSync
+ * renders at, only as many seconds as the voice runs, long side capped.
+ * Errors that are the clip's fault say `AIXMAN_INPUT:` (gpu-queue.ts).
+ */
+const AIXMAN_LOAD_VIDEO_NODE = [
+  'import os',
+  'import shutil',
+  'import subprocess',
+  '',
+  'import numpy as np',
+  '',
+  'import folder_paths',
+  '',
+  '',
+  'def _ffmpeg():',
+  '    exe = shutil.which("ffmpeg")',
+  '    if exe:',
+  '        return exe',
+  '    from imageio_ffmpeg import get_ffmpeg_exe',
+  '',
+  '    return get_ffmpeg_exe()',
+  '',
+  '',
+  'def read_clip(path, max_seconds, max_side):',
+  '    """The clip\'s frames at 25 fps as uint8 RGB, at most max_seconds long, long side at most max_side."""',
+  '    side = int(max_side)',
+  '    scale = (',
+  '        f"scale=w=\'min(iw,{side})\':h=\'min(ih,{side})\'"',
+  '        ":force_original_aspect_ratio=decrease:force_divisible_by=2"',
+  '    )',
+  '    cmd = [',
+  '        _ffmpeg(), "-v", "error", "-nostdin", "-i", path,',
+  '        "-t", f"{float(max_seconds):.3f}", "-an",',
+  '        "-vf", f"fps=25,{scale},format=rgb24",',
+  '        "-f", "image2pipe", "-c:v", "ppm", "-",',
+  '    ]',
+  '    run = subprocess.run(cmd, capture_output=True, timeout=900)',
+  '    data = run.stdout',
+  '    if run.returncode != 0 or not data.startswith(b"P6"):',
+  '        reason = run.stderr.decode(errors="replace").strip()[-300:]',
+  '        raise RuntimeError(f"AIXMAN_INPUT: the clip could not be decoded ({reason or \'no frames\'})")',
+  '    # Each frame is one binary PPM: "P6", width and height, "255", then w*h*3 bytes.',
+  '    magic, dims, depth, _ = data.split(b"\\n", 3)',
+  '    width, height = (int(v) for v in dims.split())',
+  '    header = len(magic) + len(dims) + len(depth) + 3',
+  '    size = header + width * height * 3',
+  '    count = len(data) // size',
+  '    if count == 0 or int(depth) != 255:',
+  '        raise RuntimeError("AIXMAN_INPUT: the clip has no readable frames")',
+  '    frames = np.empty((count, height, width, 3), dtype=np.uint8)',
+  '    for i in range(count):',
+  '        start = i * size + header',
+  '        frames[i] = np.frombuffer(data, dtype=np.uint8, count=width * height * 3, offset=start).reshape(height, width, 3)',
+  '    return frames',
+  '',
+  '',
+  'class AixmanLoadVideo25:',
+  '    @classmethod',
+  '    def INPUT_TYPES(cls):',
+  '        return {',
+  '            "required": {',
+  '                "video": ("STRING", {"default": ""}),',
+  '                "max_seconds": ("FLOAT", {"default": 10.0, "min": 0.5, "max": 120.0, "step": 0.01}),',
+  '                "max_side": ("INT", {"default": 1280, "min": 256, "max": 1920, "step": 8}),',
+  '            }',
+  '        }',
+  '',
+  '    RETURN_TYPES = ("IMAGE",)',
+  '    RETURN_NAMES = ("images",)',
+  '    FUNCTION = "load"',
+  '    CATEGORY = "aixman"',
+  '',
+  '    def load(self, video, max_seconds, max_side):',
+  '        import torch',
+  '',
+  '        root = os.path.realpath(folder_paths.get_input_directory())',
+  '        path = os.path.realpath(os.path.join(root, str(video)))',
+  '        if not path.startswith(root + os.sep) or not os.path.isfile(path):',
+  '            raise RuntimeError("AIXMAN_INPUT: the clip is not in the input folder")',
+  '        frames = read_clip(path, max_seconds, max_side)',
+  '        out = torch.empty(frames.shape, dtype=torch.float32)',
+  '        for i in range(frames.shape[0]):',
+  '            out[i] = torch.from_numpy(frames[i]).float().div_(255.0)',
+  '        return (out,)',
+  '',
+  '',
+  'NODE_CLASS_MAPPINGS = {"AixmanLoadVideo25": AixmanLoadVideo25}',
+  'NODE_DISPLAY_NAME_MAPPINGS = {"AixmanLoadVideo25": "Load clip at 25 fps (aixman)"}',
+].join('\n');
+
+/**
+ * face-alignment's landmark model. Not on Hugging Face, so it comes from its
+ * author's own host, checked against its whole SHA-256 (torch.hub checks
+ * before moving the file into place; its name carries only the first ten
+ * digits). Its detector (S3FD) is in the downloads, from a Hugging Face mirror
+ * whose file has the same hash as the author's.
+ */
+const FAN_URL = 'https://www.adrianbulat.com/downloads/python-fan/2DFAN4-11f355bf06.pth.tar';
+const FETCH_FAN = [
+  'import os',
+  'import socket',
+  'import sys',
+  'import time',
+  'from torch.hub import download_url_to_file',
+  '',
+  'socket.setdefaulttimeout(60)',
+  'target = os.path.join(sys.argv[1], "2DFAN4-11f355bf06.pth.tar")',
+  'for attempt in range(3):',
+  '    if os.path.exists(target):',
+  '        break',
+  '    try:',
+  '        download_url_to_file(sys.argv[2], target, hash_prefix="11f355bf0693120222f5955ce3f9dc8fb5763ebb30a47d7906e509490d32e4aa", progress=False)',
+  '    except Exception as error:',
+  '        print(f"[aixman] 2DFAN4 download attempt {attempt + 1} failed: {error}")',
+  '        time.sleep(10)',
+  'sys.exit(0 if os.path.exists(target) else 1)',
+].join('\n');
+
+/** Where a library will look, as Python works it out — HOME may be unset in a vendor's runner. */
+const pyPath = (expr: string) => `"$(python3 -c '${expr}')"`;
+
+const LATENTSYNC_SETUP = [
+  `LS_DIR=${LS_NODE_DIR}`,
+  `LS_MODELS=${LS_MODELS}`,
+  '[ -d "$LS_DIR/latentsync" ] || fail_boot "the LatentSync node pack is missing"',
+  // ffmpeg on PATH: the pack re-encodes through it, whisper reads the voice
+  // through it, and the loader decodes the clip with it. imageio-ffmpeg's
+  // static binary is the loader's fallback.
+  'apt-get install -y -qq ffmpeg libgl1 libglib2.0-0 > /dev/null 2>&1 || echo "[aixman] no ffmpeg from apt; the imageio-ffmpeg binary will be used"',
+  // diffusers and DeepCache at the versions LatentSync 1.6 ships with: its
+  // UNet imports diffusers internals by module path. transformers 4.x, as for
+  // Hunyuan3D, keeps huggingface_hub below 1.0, which diffusers 0.32 needs.
+  'pip_install "LatentSync dependencies" "diffusers==0.32.2" "DeepCache==0.1.1" "transformers>=4.50.3,<5" accelerate omegaconf einops "decord==0.6.0" ffmpeg-python soundfile librosa imageio imageio-ffmpeg kornia matplotlib scipy scikit-image numba opencv-python-headless tqdm requests',
+  // Without its declared dependencies: they name opencv-python, whose GUI
+  // build fights the headless one over the cv2 module. The rest are above.
+  'pip_install "face-alignment" --no-deps "face-alignment==1.5.0"',
+  `PY_HOME=${pyPath('import os; print(os.path.expanduser("~"))')}`,
+  // The pack installs whatever it thinks is missing on first use unless this
+  // flag exists, and its list names pytorch_lightning, which nothing imports.
+  'touch "$PY_HOME/.latentsync16_dependencies_installed"',
+  // Weights land in models/latentsync like every other download. The pack
+  // reads them from its own checkpoints/ folder, whisper from its cache dir,
+  // face-alignment from torch.hub's.
+  'rm -rf "$LS_DIR/checkpoints" && ln -sfn "$LS_MODELS" "$LS_DIR/checkpoints"',
+  `WHISPER_DIR=${pyPath('import os; print(os.getenv("XDG_CACHE_HOME", os.path.join(os.path.expanduser("~"), ".cache", "whisper")))')}`,
+  'mkdir -p "$WHISPER_DIR" "$PY_HOME/.latentsync16_models"',
+  'ln -sfn "$LS_MODELS/whisper/tiny.pt" "$WHISPER_DIR/tiny.pt"',
+  // The pack pre-downloads S3FD under this name on its first job (sic, e19a).
+  'ln -sfn "$LS_MODELS/face/s3fd-619a316812.pth" "$PY_HOME/.latentsync16_models/s3fd-e19a316812.pth"',
+  `HUB_DIR=${pyPath('import torch; print(torch.hub.get_dir())')}/checkpoints`,
+  'mkdir -p "$HUB_DIR"',
+  'ln -sfn "$LS_MODELS/face/s3fd-619a316812.pth" "$HUB_DIR/s3fd-619a316812.pth"',
+  // A machine that cannot find a face cannot render; better it never says ready.
+  `python3 - "$HUB_DIR" '${FAN_URL}' <<'AIXMAN_PY' || fail_boot "face-alignment's landmark model (2DFAN4) could not be downloaded"`,
+  FETCH_FAN,
+  'AIXMAN_PY',
+  `cat > "$LS_DIR/latentsync/utils/face_detector.py" <<'AIXMAN_PY'`,
+  LATENTSYNC_FACE_DETECTOR,
+  'AIXMAN_PY',
+  "cat > /workspace/aixman/ComfyUI/custom_nodes/aixman_load_video.py <<'AIXMAN_PY'",
+  AIXMAN_LOAD_VIDEO_NODE,
+  'AIXMAN_PY',
+].join('\n');
+
+const LS_TUNABLES: WorkflowTunable[] = [
+  {
+    id: 'lipsExpression',
+    label: 'ความชัดของปาก',
+    help: 'น้ำหนักของเสียงต่อรูปปาก (guidance) — ค่าของโหนดคือ 1.5 สูงขึ้นปากขยับชัดขึ้นแต่อาจดูเกร็ง',
+    type: 'float',
+    default: 1.5,
+    min: 1,
+    max: 3,
+    step: 0.1,
+    group: 'quality',
+  },
+  {
+    id: 'steps',
+    label: 'สเต็ป',
+    help: 'สเต็ปของ diffusion — ค่าของโหนดคือ 20 มากขึ้นละเอียดขึ้น แต่ช้าลงตามสัดส่วน',
+    type: 'int',
+    default: 20,
+    min: 10,
+    max: 50,
+    step: 1,
+    group: 'sampler',
+  },
+  {
+    id: 'maxSide',
+    label: 'ความละเอียดสูงสุด (ด้านยาว)',
+    help: 'คลิปที่ใหญ่กว่านี้ถูกย่อก่อนเข้าโมเดล หน้าถูกวาดที่ 512 px อยู่แล้ว แต่ทุกเฟรมทั้งภาพอยู่ในหน่วยความจำ — เกิน 1280 กับคลิปยาวอาจทำให้หน่วยความจำไม่พอ',
+    type: 'int',
+    default: 1280,
+    min: 720,
+    max: 1920,
+    step: 8,
+    group: 'quality',
+    risky: true,
+  },
+];
+
+const LS = tunableReader(LS_TUNABLES);
+
+/** LatentSync renders at 25 fps, whatever the clip's own rate was. */
+const LS_FPS = 25;
+const LS_MAX_SECONDS = 20;
+
+const LATENTSYNC_16: CatalogEntry = {
+  key: 'latentsync-1.6',
+  name: 'พากย์ทับคลิป (LatentSync 1.6)',
+  pools: ['rented'],
+  kind: 'lipsync',
+  outputKind: 'video',
+  description: `อัปโหลดคลิปที่เห็นหน้าคน + ไฟล์เสียงพูด (ภาษาไทยได้) → ปากในคลิปขยับตามเสียงใหม่ ภาพส่วนอื่นคงเดิม • ยาวตามไฟล์เสียง สูงสุด ${LS_MAX_SECONDS} วินาที`,
+  template: latentsyncTemplate as UiWorkflow,
+  source: {
+    file: 'latentsync16_video_dub.json',
+    title: 'เขียนเอง — LatentSync 1.6 (vinavfx/ComfyUI-LatentSyncWrapper) พากย์ทับคลิปด้วยเสียงที่อัปโหลด',
+    url: 'https://github.com/vinavfx/ComfyUI-LatentSyncWrapper',
+  },
+  tunables: LS_TUNABLES,
+  // Sizes from Hugging Face. The landmark model (2DFAN4, ~96 MB) is fetched by
+  // the setup script — see FAN_URL.
+  downloads: [
+    { repo: 'ByteDance/LatentSync-1.6', file: 'latentsync_unet.pt', dest: 'latentsync', bytes: 5_072_222_488 },
+    { repo: 'stabilityai/sd-vae-ft-mse', file: 'diffusion_pytorch_model.safetensors', dest: 'latentsync/vae', bytes: 334_643_276 },
+    { repo: 'vinthony/SadTalker', file: 'hub/checkpoints/s3fd-619a316812.pth', dest: 'latentsync/face', bytes: 89_843_225 },
+    { repo: 'ByteDance/LatentSync-1.6', file: 'whisper/tiny.pt', dest: 'latentsync/whisper', bytes: 75_572_083 },
+    { repo: 'stabilityai/sd-vae-ft-mse', file: 'config.json', dest: 'latentsync/vae', bytes: 547 },
+  ],
+  // ByteDance: 18 GB of VRAM for 1.6 at 512 px, and the pack caps itself at
+  // 80% of the card — 24 GB is the smallest that holds it. fp16 needs Ampere
+  // (the pack falls back to fp32 below compute 8, which does not fit).
+  hardware: { minVramMb: 24576, diskGb: 60, gpuModels: [], minArch: 'ampere' },
+  customNodes: [
+    { repo: 'https://github.com/vinavfx/ComfyUI-LatentSyncWrapper', ref: '4902c3957c027acd1e333659e1c48bcdb7cf9d55', requirements: false },
+  ],
+  runtime: { setupScript: LATENTSYNC_SETUP },
+  needs: { audio: true, video: true },
+  // A clip is uploaded to the machine whole, so it is kept to what crosses a
+  // tunnel in seconds. Only as much of it as the voice runs is decoded.
+  sourceVideo: { minSeconds: 1, maxSeconds: 60, minSide: 256, maxBytes: 50 * 1024 * 1024 },
+  lengthFromAudio: { minSeconds: 1, stepSeconds: 1 / LS_FPS },
+  bind: (p) => [
+    { nodeId: '1', input: 'audio', value: p.audioFilename ?? '' },
+    // One number decides the voice, the clip read and the frame count.
+    { nodeId: '2', input: 'start_index', value: 0 },
+    { nodeId: '2', input: 'duration', value: p.durationSeconds },
+    { nodeId: '3', input: 'video', value: p.videoFilename ?? '' },
+    // A clip shorter than the voice is played back and forth by the pack.
+    { nodeId: '3', input: 'max_seconds', value: p.durationSeconds },
+    { nodeId: '3', input: 'max_side', value: Math.round(LS.num(p.tuning, 'maxSide')) },
+    // numpy's seed must fit in 32 bits; a client may send any number.
+    { nodeId: '4', input: 'seed', value: Math.abs(Math.trunc(p.seed)) % 2_147_483_647 },
+    { nodeId: '4', input: 'lips_expression', value: LS.num(p.tuning, 'lipsExpression') },
+    { nodeId: '4', input: 'inference_steps', value: Math.round(LS.num(p.tuning, 'steps')) },
+    // The file carries the customer's recording as trimmed, not the pack's
+    // 16 kHz copy.
+    { nodeId: '5', input: 'fps', value: LS_FPS },
+    { nodeId: '6', input: 'filename_prefix', value: 'video/aixman' },
+  ],
+  // A guess until rentals report: ByteDance's numbers put 1.6 at a few frames
+  // a second on a 4090, plus face detection and paste-back for every frame.
+  baselineSecondsPerUnit: 30,
+  // Priced by the voice: ≤5 s 10 credits, 10 s 23, 20 s 53. A smaller card
+  // and model than the portrait (LTX), so a gentler curve.
+  pricing: { creditsPerUnit: 10, costPerUnit: 0.03, durationCurve: { unitSeconds: 5, exponent: 1.2 } },
+  limits: { maxDuration: LS_MAX_SECONDS },
+};
+
+export const MODEL_CATALOG: CatalogEntry[] = [
+  MINIMAX_H3,
+  ACE_STEP,
+  QWEN_IMAGE,
+  YUE2_MUSIC,
+  YUE2_COVER,
+  SDXL_COMMUNITY,
+  LTX23_TALKING,
+  HUNYUAN3D_21,
+  LATENTSYNC_16,
+];
 
 export function getCatalogEntry(key: string): CatalogEntry | undefined {
   return MODEL_CATALOG.find((m) => m.key === key);

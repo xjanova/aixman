@@ -37,6 +37,7 @@ export interface StagedInputs {
   first?: string;
   last?: string;
   audio?: string;
+  video?: string;
 }
 
 /**
@@ -83,6 +84,7 @@ export const CUSTOM_GRAPH_PLACEHOLDERS: { name: string; description: string }[] 
   { name: 'first_frame', description: 'ชื่อไฟล์ภาพแรกในโฟลเดอร์ input ของเครื่อง (ใส่ใน LoadImage)' },
   { name: 'last_frame', description: 'ชื่อไฟล์ภาพสุดท้ายในโฟลเดอร์ input' },
   { name: 'input_audio', description: 'ชื่อไฟล์เสียงที่อัปโหลด (ใส่ใน LoadAudio)' },
+  { name: 'input_video', description: 'ชื่อไฟล์คลิปที่อัปโหลดสำหรับพากย์ทับ (ในโฟลเดอร์ input)' },
   { name: 'lyrics', description: 'เนื้อเพลง (ว่าง = บรรเลง)' },
   { name: 'music_tags', description: 'แท็กสไตล์เพลงที่ประกอบจากตัวเลือกของลูกค้า' },
   { name: 'quality', description: 'โหมดคุณภาพที่ลูกค้าเลือก (id)' },
@@ -133,6 +135,7 @@ export function buildJobGraph(
       first_frame: staged.first ?? '',
       last_frame: staged.last ?? '',
       input_audio: staged.audio ?? '',
+      input_video: staged.video ?? '',
       lyrics: job.music?.instrumental ? '' : (job.lyrics ?? ''),
       music_tags: composeMusicTags(job.prompt, job.music),
       quality: job.quality ?? '',
@@ -323,6 +326,7 @@ export function sampleJob(entry: CatalogEntry, overrides: Partial<CatalogJobPara
     seed: 123456789,
     lyrics: audio ? '[Verse]\nแสงไฟยามค่ำ\n\n[Chorus]\nฝันไปด้วยกัน' : undefined,
     audioFilename: entry.needs?.audio ? 'aixman-source-sample.mp3' : undefined,
+    videoFilename: entry.needs?.video ? 'aixman-clip-sample.mp4' : undefined,
     imageFilename: entry.needs?.image ? 'aixman-first-sample.png' : undefined,
     quality: entry.qualityModes?.find((m) => m.isDefault)?.id,
     tuning: resolveTunables(entry.tunables, null),

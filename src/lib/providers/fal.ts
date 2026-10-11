@@ -97,7 +97,7 @@ export class FalProvider extends BaseProvider {
         }
 
         return { done: false };
-      }, 120, this.pollIntervalMs);
+      }, pollAttempts(params.maxWaitSeconds, this.pollIntervalMs), this.pollIntervalMs);
     } catch (error) {
       return { success: false, error: `fal.ai request failed: ${(error as Error).message}` };
     }
@@ -128,8 +128,10 @@ export class FalProvider extends BaseProvider {
    * Two shapes exist and the driving input tells them apart, so no model-id
    * table has to be kept in sync with the catalogue:
    *
-   *  - a source clip (`fal-ai/latentsync`) re-dubs existing footage and takes
-   *    `video_url` + `audio_url` and nothing else meaningful;
+   *  - a source clip re-dubs existing footage from `video_url` + `audio_url`.
+   *    LatentSync also takes `loop_mode` (what to do when the voice outlasts
+   *    the clip), a guidance and a seed; Kling's lip-sync documents the two
+   *    URLs and nothing else, so it is sent nothing else;
    *  - a still (`fal-ai/infinitalk`) animates a portrait and additionally
    *    requires `prompt`.
    *
@@ -145,6 +147,7 @@ export class FalProvider extends BaseProvider {
 
     if (params.inputVideo) {
       input.video_url = params.inputVideo;
+      if (!LOOPING_CLIP_ENDPOINTS.has(params.modelId)) return input;
       // Audio longer than the clip has to resolve somehow, and silently
       // truncating the voice would cut a sentence mid-word. Looping the
       // picture keeps every word the customer paid to say.
@@ -169,6 +172,15 @@ export class FalProvider extends BaseProvider {
 
     return input;
   }
+}
+
+/** Clip re-dubbing endpoints that take `loop_mode`, a guidance and a seed besides the two URLs. */
+const LOOPING_CLIP_ENDPOINTS = new Set(['fal-ai/latentsync']);
+
+/** Status reads before giving up: the adapter's six minutes, or the job's own wait. */
+function pollAttempts(maxWaitSeconds: number | undefined, intervalMs: number): number {
+  if (!maxWaitSeconds || maxWaitSeconds <= 0) return 120;
+  return Math.ceil((maxWaitSeconds * 1000) / Math.max(intervalMs, 1000));
 }
 
 /**

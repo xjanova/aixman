@@ -85,8 +85,12 @@ export interface ProvisionOptions {
   env?: Record<string, string>;
   /** Weight files this model needs, from the catalogue entry. */
   downloads?: { repo: string; file: string; dest: string; as?: string }[];
-  /** Community node packs the model's template depends on. */
-  customNodes?: { repo: string; ref?: string }[];
+  /**
+   * Community node packs the model's template depends on. `requirements:
+   * false` skips the pack's requirements.txt (the entry's setup script
+   * installs what it needs instead).
+   */
+  customNodes?: { repo: string; ref?: string; requirements?: boolean }[];
   /**
    * The vendor gives only a bare IP and port (GpuExposure 'tunnel'): fetch
    * cloudflared, keep the proxy on loopback, and let it open an HTTPS tunnel
@@ -571,7 +575,8 @@ export function buildComfyUiStartScript(opts: ProvisionOptions): string {
   );
 
   const customNodes = (opts.customNodes ?? []).map(
-    (n) => `install_custom_node ${shellQuote(n.repo)} ${shellQuote(n.ref ?? '')}`
+    (n) =>
+      `install_custom_node ${shellQuote(n.repo)} ${shellQuote(n.ref ?? '')}${n.requirements === false ? ' no-requirements' : ''}`
   );
 
   return `#!/usr/bin/env bash
@@ -777,7 +782,7 @@ fi
 # the catalogue supplies one, because an unpinned pack can change its node
 # names and break a workflow that worked yesterday.
 install_custom_node() {
-  local repo="$1" ref="$2" name dir
+  local repo="$1" ref="$2" deps="\${3:-}" name dir
   name="$(basename "$repo" .git)"
   dir="${ROOT}/ComfyUI/custom_nodes/$name"
   if [ ! -d "$dir" ]; then
@@ -786,7 +791,11 @@ install_custom_node() {
   if [ -n "$ref" ]; then
     (cd "$dir" && git fetch --depth 1 origin "$ref" && git checkout -q FETCH_HEAD) || true
   fi
-  [ -f "$dir/requirements.txt" ] && pip_install "$name requirements" -r "$dir/requirements.txt"
+  if [ "$deps" = no-requirements ]; then
+    echo "[aixman] $name: its requirements.txt is skipped; the model's setup installs what it needs"
+  elif [ -f "$dir/requirements.txt" ]; then
+    pip_install "$name requirements" -r "$dir/requirements.txt"
+  fi
   echo "[aixman] custom node ready: $name"
 }
 ${customNodes.join('\n')}

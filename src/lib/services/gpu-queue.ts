@@ -57,6 +57,7 @@ import { GpuWorkerManager } from './gpu-worker';
 import { GpuBalance, INSUFFICIENT_BALANCE_GRACE_MS, RENDERING_PAUSED_MESSAGE } from './gpu-balance';
 import { maybeSendDailyReport } from './gpu-report';
 import { raiseAlert } from '@/lib/notify/alerts';
+import { isCustomerInputFault } from '@/lib/gpu/input-fault';
 import { GenerationService } from './generation';
 import { ModelReadiness } from './model-readiness';
 import { prewarmDemand } from './studio-presence';
@@ -1027,7 +1028,10 @@ export class GpuQueue {
         }
 
         if (outcome.state === 'failed') {
-          await this.settleFailure(job, worker, outcome.error, true);
+          // A clip with no face in it fails the same way on every machine:
+          // refund now, and do not count it against the model.
+          const inputFault = isCustomerInputFault(outcome.error);
+          await this.settleFailure(job, worker, outcome.error, !inputFault, inputFault ? { countAgainstModel: false } : {});
           failed += 1;
           continue;
         }
@@ -1814,6 +1818,13 @@ function userFacingError(technical: string): string {
   }
   if (/^Stopped by admin/i.test(technical)) {
     return 'ผู้ดูแลระบบหยุดระบบสร้างงานชั่วคราว กรุณาลองใหม่ภายหลัง' + REFUNDED;
+  }
+  // The customer's own file: say what to change, or they will order it again.
+  if (/Face not detected/i.test(technical)) {
+    return 'ไม่พบใบหน้าในบางช่วงของคลิป ทุกเฟรมต้องเห็นหน้าคนชัดเจน ลองตัดช่วงที่ไม่มีหน้าหรือหันข้างมากออกแล้วสั่งใหม่' + REFUNDED;
+  }
+  if (/AIXMAN_INPUT:/.test(technical)) {
+    return 'อ่านไฟล์คลิปที่อัปโหลดไม่ได้ กรุณาแปลงเป็น MP4 แล้วอัปโหลดใหม่' + REFUNDED;
   }
   if (/terminated mid-render|worker was terminated|no longer exists/i.test(technical)) {
     return 'ระบบขัดข้องระหว่างสร้างงาน กรุณาลองใหม่อีกครั้ง' + REFUNDED;

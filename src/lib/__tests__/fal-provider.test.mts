@@ -168,3 +168,69 @@ test("an upscaler's single `image` output is delivered too", async () => {
   assert.equal(out.success, true, out.error);
   assert.equal(out.resultUrl, 'https://fal.media/up.png');
 });
+
+// ---------------------------------------------------------------------------
+// Re-dubbing a clip: LatentSync and Kling take different bodies
+// ---------------------------------------------------------------------------
+
+const clipOrder = (modelId: string): ProviderGenerateParams => ({
+  modelId,
+  prompt: '',
+  inputVideo: 'https://cdn.example.test/uploads/7/video/clip.mp4',
+  inputAudio: 'https://cdn.example.test/uploads/7/audio/voice.mp3',
+  cfgScale: 1.5,
+  seed: 42,
+  apiKey: 'test-key',
+  extraParams: { resolution: '768p', width: 1344, loop_mode: 'pingpong' },
+});
+
+test('Kling lip-sync is sent the two URLs it documents and nothing else', async () => {
+  const kling = 'fal-ai/kling-video/lipsync/audio-to-video';
+  const base = `https://queue.fal.run/${kling}/requests/req-k`;
+  const calls = stubFetch([
+    [/\/status$/, () => json({ status: 'COMPLETED' })],
+    [/requests\/req-k$/, () => json({ video: { url: 'https://fal.media/dubbed.mp4' } })],
+    [/audio-to-video$/, () => json({ request_id: 'req-k', status_url: `${base}/status`, response_url: base })],
+  ]);
+  const out = await new FastFal().generateVideo(clipOrder(kling));
+  assert.equal(out.success, true);
+  assert.equal(out.resultUrl, 'https://fal.media/dubbed.mp4');
+  assert.deepEqual(calls[0].body, {
+    audio_url: 'https://cdn.example.test/uploads/7/audio/voice.mp3',
+    video_url: 'https://cdn.example.test/uploads/7/video/clip.mp4',
+  });
+});
+
+test('LatentSync loops the picture under a longer voice, with its guidance and seed', async () => {
+  const base = 'https://queue.fal.run/fal-ai/latentsync/requests/req-l';
+  const calls = stubFetch([
+    [/\/status$/, () => json({ status: 'COMPLETED' })],
+    [/requests\/req-l$/, () => json({ video: { url: 'https://fal.media/synced.mp4' } })],
+    [/fal-ai\/latentsync$/, () => json({ request_id: 'req-l', status_url: `${base}/status`, response_url: base })],
+  ]);
+  await new FastFal().generateVideo(clipOrder('fal-ai/latentsync'));
+  assert.deepEqual(calls[0].body, {
+    audio_url: 'https://cdn.example.test/uploads/7/audio/voice.mp3',
+    video_url: 'https://cdn.example.test/uploads/7/video/clip.mp4',
+    loop_mode: 'pingpong',
+    guidance_scale: 1.5,
+    seed: 42,
+  });
+});
+
+test('a slow render is waited on for as long as its order allows', async () => {
+  const base = 'https://queue.fal.run/fal-ai/latentsync/requests/req-s';
+  let reads = 0;
+  stubFetch([
+    [/\/status$/, () => {
+      reads += 1;
+      return json({ status: reads < 200 ? 'IN_PROGRESS' : 'COMPLETED' });
+    }],
+    [/requests\/req-s$/, () => json({ video: { url: 'https://fal.media/late.mp4' } })],
+    [/fal-ai\/latentsync$/, () => json({ request_id: 'req-s', status_url: `${base}/status`, response_url: base })],
+  ]);
+  // The default gives up after 120 reads; 20 minutes at one read a second is 1,200.
+  const out = await new FastFal().generateVideo({ ...clipOrder('fal-ai/latentsync'), maxWaitSeconds: 20 * 60 });
+  assert.equal(out.success, true);
+  assert.equal(reads, 200);
+});

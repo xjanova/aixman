@@ -25,6 +25,7 @@ const { buildJobGraph, sampleJob, shapePrompt } = await import('@/lib/gpu/workfl
 const { effectiveWorkflow, pickQualityMode, sanitizeOverride, visibleQualityModes } = await import('@/lib/gpu/workflow-overrides');
 const baseline = (await import('@/lib/gpu/workflows/schema/baseline-v0.36.0.json')).default as { classes: Record<string, unknown> };
 const hunyuan3dPack = (await import('@/lib/gpu/workflows/schema/hunyuan3d21-pack.json')).default as { classes: Record<string, unknown> };
+const latentsyncPack = (await import('@/lib/gpu/workflows/schema/latentsync-pack.json')).default as { classes: Record<string, unknown> };
 
 type Graph = Record<string, { class_type: string; inputs: Record<string, unknown> }>;
 type Schema = Parameters<typeof validateGraph>[1];
@@ -36,7 +37,7 @@ const AUDIO = 'aixman-source-test.mp3';
 /** The baseline with the test's stand-in uploads present in the input dir. */
 function schema(): Schema {
   // The packs catalogue entries install, as a worker that booted them would report.
-  const s = JSON.parse(JSON.stringify({ ...baseline.classes, ...hunyuan3dPack.classes })) as Record<string, { input?: { required?: Record<string, unknown[]> } }>;
+  const s = JSON.parse(JSON.stringify({ ...baseline.classes, ...hunyuan3dPack.classes, ...latentsyncPack.classes })) as Record<string, { input?: { required?: Record<string, unknown[]> } }>;
   const add = (cls: string, input: string, names: string[]) => {
     const def = s[cls]?.input?.required?.[input];
     if (!def) return;
@@ -77,6 +78,7 @@ function build(key: string, job: Record<string, unknown> = {}, workflow: Record<
     first: base.imageFilename,
     last: base.lastImageFilename,
     audio: base.audioFilename,
+    video: base.videoFilename,
   });
   const validated = validateGraph(built.graph, s);
   return { graph: validated.graph as Graph, warnings: [...built.warnings, ...validated.warnings], custom: built.custom };
@@ -393,4 +395,107 @@ test("an upload is looked for in every loader the template uses, not only LoadIm
   assert.ok(hy3d.includes('LoadImage'));
   // A core-only template still refreshes exactly LoadImage.
   assert.deepEqual(imageLoaderClasses(getCatalogEntry('qwen-image')!, s), ['LoadImage']);
+});
+
+// ---------------------------------------------------------------------------
+// LatentSync 1.6 — a clip re-dubbed with the customer's voice
+// ---------------------------------------------------------------------------
+
+const CLIP = 'aixman-clip-test.mp4';
+
+test('a clip is re-dubbed with the uploaded voice: one length drives the trim, the clip read and the frames', () => {
+  const g = build('latentsync-1.6', { audioFilename: AUDIO, videoFilename: CLIP, durationSeconds: 7.36, seed: 4_294_967_295 }).graph;
+  assert.equal(g['1'].inputs.audio, AUDIO);
+  assert.equal(g['3'].inputs.video, CLIP);
+  // The voice is trimmed to the priced length, and only that much clip is read.
+  assert.equal(g['2'].inputs.duration, 7.36);
+  assert.equal(g['3'].inputs.max_seconds, 7.36);
+  assert.deepEqual(g['4'].inputs.images, ['3', 0]);
+  assert.deepEqual(g['4'].inputs.audio, ['2', 0]);
+  // The file carries the trimmed recording, not the node's 16 kHz copy.
+  assert.deepEqual(g['5'].inputs.images, ['4', 0]);
+  assert.deepEqual(g['5'].inputs.audio, ['2', 0]);
+  assert.equal(g['5'].inputs.fps, 25);
+  assert.equal(g['6'].inputs.filename_prefix, 'video/aixman');
+  // numpy refuses a seed past 32 bits.
+  assert.ok(Number(g['4'].inputs.seed) < 2 ** 31);
+  // The node's own defaults, stated.
+  assert.equal(g['4'].inputs.lips_expression, 1.5);
+  assert.equal(g['4'].inputs.inference_steps, 20);
+  assert.equal(g['3'].inputs.max_side, 1280);
+  assert.ok(!Object.values(g).some((n) => n.class_type === 'MarkdownNote'));
+});
+
+test('the re-dub entry asks for a clip and a voice, and is a lip-sync row with no portrait', async () => {
+  const entry = getCatalogEntry('latentsync-1.6')!;
+  assert.deepEqual(entry.needs, { audio: true, video: true });
+  assert.deepEqual(entry.pools, ['rented'], 'an uploaded clip never goes to a home PC');
+  const { catalogSubcategory } = await import('@/lib/gpu/model-sync');
+  assert.equal(catalogSubcategory(entry), 'lipsync', 'the studio asks for a clip, not a still');
+  // 25 fps grid; priced by the voice on a gentler curve than the portrait.
+  const { voiceRenderSeconds } = await import('@/lib/voice-length');
+  const { creditsForDuration } = await import('@/lib/pricing');
+  const v = voiceRenderSeconds(7.379, entry.lengthFromAudio!, entry.limits?.maxDuration);
+  assert.ok(v.ok && Math.abs(v.seconds - 7.36) < 1e-6);
+  const price = (s: number) => creditsForDuration(entry.pricing.creditsPerUnit, entry.pricing.durationCurve, s);
+  assert.deepEqual([price(3), price(5), price(10), price(20)], [10, 10, 23, 53]);
+  assert.equal(voiceRenderSeconds(25, entry.lengthFromAudio!, entry.limits?.maxDuration).ok, false, 'past 20 s is refused');
+});
+
+test('the re-dub worker finds faces without InsightFace and skips the pack’s requirements', async () => {
+  const entry = getCatalogEntry('latentsync-1.6')!;
+  const script = entry.runtime?.setupScript ?? '';
+  // The detector written over the pack's: face-alignment, filling the three
+  // points ImageProcessor reads from the 68 it gives.
+  const detector = script.match(/face_detector\.py" <<'AIXMAN_PY'\n([\s\S]*?)\nAIXMAN_PY\n/)?.[1] ?? '';
+  assert.match(detector, /^import face_alignment$/m);
+  assert.ok(!/insightface/i.test(detector.replace(/^#.*$/gm, '')), 'no InsightFace import');
+  assert.match(detector, /lmk\[_LEFT_BROW\] = points\[17:22\]/);
+  assert.match(detector, /lmk\[_RIGHT_BROW\] = points\[22:27\]/);
+  assert.match(detector, /lmk\[_NOSE\] = points\[27:36\]/);
+  assert.match(detector, /_LEFT_BROW = \[43, 48, 49, 51, 50\]/, 'the indices image_processor.py reads');
+  // The loader node, and the weights where each library looks for them.
+  assert.match(script, /aixman_load_video\.py <<'AIXMAN_PY'\n[\s\S]*class AixmanLoadVideo25[\s\S]*\nAIXMAN_PY/);
+  assert.match(script, /ln -sfn "\$LS_MODELS" "\$LS_DIR\/checkpoints"/);
+  assert.match(script, /\.latentsync16_dependencies_installed/);
+  assert.match(script, /hash_prefix="11f355bf0693120222f5955ce3f9dc8fb5763ebb30a47d7906e509490d32e4aa"/, "the landmark model is checked against its whole SHA-256 before it is used");
+  assert.match(script, /"face-alignment" --no-deps "face-alignment==1\.5\.0"/);
+  assert.match(script, /"diffusers==0\.32\.2" "DeepCache==0\.1\.1"/);
+  assert.ok(!/\$HOME/.test(script), 'HOME may be unset under set -u');
+
+  const { buildComfyUiStartScript } = await import('@/lib/gpu/provision');
+  const boot = buildComfyUiStartScript({
+    publicPort: 8189,
+    extraScript: script,
+    downloads: entry.downloads,
+    customNodes: entry.customNodes,
+  });
+  assert.match(boot, /install_custom_node 'https:\/\/github\.com\/vinavfx\/ComfyUI-LatentSyncWrapper' '4902c39[0-9a-f]+' no-requirements/);
+  // Another pack still installs its requirements.
+  const hy3d = getCatalogEntry('hunyuan3d-2.1')!;
+  assert.doesNotMatch(buildComfyUiStartScript({ publicPort: 8189, customNodes: hy3d.customNodes }), /no-requirements'?$/m);
+  for (const f of ['latentsync/latentsync_unet.pt', 'latentsync/whisper/tiny.pt', 'latentsync/vae/config.json', 'latentsync/face/s3fd-619a316812.pth']) {
+    assert.ok(boot.includes(`'${f}'`), `${f} is checked before the machine says ready`);
+  }
+
+  // A heredoc left open or a quote unbalanced would end every boot: let bash read it.
+  const { spawnSync } = await import('node:child_process');
+  const bash = spawnSync('bash', ['-n'], { input: boot, encoding: 'utf8' });
+  if (bash.error) return; // no bash here; CI has one
+  assert.equal(bash.status, 0, bash.stderr);
+
+  // Every class the template uses has a schema for the tests and the admin dry run.
+  const used = new Set((entry.template as { nodes: { type: string }[] }).nodes.map((n) => n.type));
+  for (const cls of used) {
+    if (cls === 'MarkdownNote') continue;
+    assert.ok(cls in latentsyncPack.classes || cls in baseline.classes, `${cls} has a schema`);
+  }
+});
+
+test('a render that failed on the customer’s clip is not retried and says why', async () => {
+  const { isCustomerInputFault } = await import('@/lib/gpu/input-fault');
+  assert.ok(isCustomerInputFault('LatentSyncNode: RuntimeError: Face not detected'));
+  assert.ok(isCustomerInputFault('AIXMAN_INPUT: the clip could not be decoded (moov atom not found)'));
+  assert.ok(!isCustomerInputFault('CUDA out of memory. Tried to allocate 2.00 GiB'));
+  assert.ok(!isCustomerInputFault('Render exceeded 30 min'));
 });

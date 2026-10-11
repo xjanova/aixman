@@ -9,7 +9,9 @@ import { persistAssetSafe, isStorageConfigured } from '@/lib/storage/r2';
 import type { GenerationRequest, GenerationResult, ProviderSlug } from '@/types';
 import { fitFrame } from '@/lib/gpu/frame';
 import { getCatalogEntry, isAdminOnlyPreset, isCommunityOnlyModel, orderNeedsProviderAccount } from '@/lib/gpu/catalog';
-import { isAcceptedAudioSource, isAcceptedFrameSource, readAudioSource } from '@/lib/gpu/frame-input';
+import { isAcceptedAudioSource, isAcceptedFrameSource, isAcceptedVideoSource, openVideoSource, readAudioSource } from '@/lib/gpu/frame-input';
+import { probeVideo } from '@/lib/video-probe';
+import { apiVideoLipsyncRule, checkClip, checkVoice, lipsyncCredits, type ClipFacts } from '@/lib/lipsync-rules';
 import { audioDurationSeconds } from '@/lib/audio-duration';
 import { voiceRenderSeconds, type LengthFromAudio } from '@/lib/voice-length';
 import { creditsForDuration } from '@/lib/pricing';
@@ -28,6 +30,19 @@ import { OrderRefusedError } from './order-refusal';
  * a 3D model is coming. Thai, because /api/generate shows it as it is.
  */
 export const TYPE_MISMATCH_MESSAGE = 'โมเดลนี้ไม่รองรับงานประเภทนี้';
+
+/** An API order already charged, handed to the call that runs it. */
+interface ApiOrderRun {
+  userId: number;
+  generationId: number;
+  model: Prisma.AiModelGetPayload<{ include: { provider: true } }>;
+  request: GenerationRequest;
+  styleSuffix: string;
+  account: NonNullable<Awaited<ReturnType<typeof AccountPoolManager.selectAccount>>>;
+  requiredCredits: number;
+  /** How long the provider may take (lipsync-rules.ts); its own default when unset. */
+  maxWaitSeconds?: number;
+}
 
 /**
  * Generation Service
@@ -164,6 +179,25 @@ export class GenerationService {
       throw new OrderRefusedError('ต้องอัปโหลดรูปคนที่จะให้พูดก่อน', 'missing-image', 422);
     }
 
+    // A clip to re-dub. What it may be — length, picture size, file — is the
+    // vendor's rule for an API row (lipsync-rules.ts) or the card's for a
+    // rented model (`sourceVideo`), checked against the file we stored before
+    // anything is charged. An API row also prices by the clip and checks the
+    // voice beside it; a rented one prices by the voice, below.
+    const apiLipsync = gpuModel ? undefined : apiVideoLipsyncRule(model.modelId);
+    const clipRule = catalogEntry?.sourceVideo ?? apiLipsync?.clip;
+    let clip: ClipFacts | null = null;
+    if (clipRule) {
+      clip = await this.clipFacts(request.inputVideo);
+      const fits = checkClip(clipRule, clip);
+      if (!fits.ok) throw new OrderRefusedError(fits.message, fits.code, 422);
+    }
+    if (apiLipsync && clip) {
+      const voice = await this.voiceFacts(request.inputAudio);
+      const fits = checkVoice(apiLipsync.voice, voice, clip.seconds);
+      if (!fits.ok) throw new OrderRefusedError(fits.message, fits.code, 422);
+    }
+
     // A portrait speaks for as long as its voice runs, so the voice sets the
     // length that is priced and rendered — read here from the file we stored,
     // never from a number the client sends (lipsync is priced per second, and
@@ -220,8 +254,10 @@ export class GenerationService {
         )
       : null;
     const requiredCredits =
-      Math.ceil(creditsForDuration(model.creditsPerUnit, curve, gpuDuration) * (qualityMode?.creditsMultiplier ?? 1)) *
-      numOutputs;
+      apiLipsync && clip
+        ? lipsyncCredits(apiLipsync.billing, model.creditsPerUnit, clip.seconds)
+        : Math.ceil(creditsForDuration(model.creditsPerUnit, curve, gpuDuration) * (qualityMode?.creditsMultiplier ?? 1)) *
+          numOutputs;
 
     // Uploaded inputs are folded into params so they are persisted with the
     // row. `ai_generations` has an `inputImage` column but no audio or video
@@ -384,6 +420,57 @@ export class GenerationService {
     // above; this says so to the compiler for everything below.
     if (!account) throw new Error('No available API accounts for this provider. Please try again later.');
 
+    const run: ApiOrderRun = {
+      userId,
+      generationId: generation.id,
+      model,
+      request,
+      styleSuffix,
+      account,
+      requiredCredits,
+      maxWaitSeconds: apiLipsync?.maxWaitSeconds,
+    };
+
+    // A video lip-sync render takes the vendor minutes (Kling: about twelve),
+    // longer than a request can be held open behind the proxy — the customer
+    // would see a timeout for an order still running and already charged, and
+    // order again. Those run after the response and the studio polls the
+    // order, as it does a rented-GPU one; ApiOrderSweep settles any that a
+    // restart cut off.
+    if (apiLipsync) {
+      await prisma.aiGeneration.update({
+        where: { id: generation.id },
+        data: { status: 'processing', startedAt: new Date() },
+      });
+      let deferred = false;
+      try {
+        after(() =>
+          this.runApiOrder(run).then(
+            () => undefined,
+            (error) => console.error(`[generation] #${generation.id} failed in the background:`, (error as Error).message)
+          )
+        );
+        deferred = true;
+      } catch {
+        // Not in a request scope (a script): run it here instead.
+      }
+      if (deferred) return { id: generation.id, status: 'processing', creditsUsed: requiredCredits };
+    }
+    return this.runApiOrder(run);
+  }
+
+  /**
+   * Call the provider for an order already charged, store what it delivers,
+   * and refund it when it delivers nothing.
+   *
+   * The final status is written only while the order is still `processing`:
+   * a background run that outlives ApiOrderSweep's patience must not turn an
+   * order the sweep already failed and refunded back into a delivered one.
+   */
+  private static async runApiOrder(run: ApiOrderRun): Promise<GenerationResult> {
+    const { userId, model, request, styleSuffix, account, requiredCredits } = run;
+    const generation = { id: run.generationId };
+
     // 6. Execute generation via provider
     try {
       await prisma.aiGeneration.update({
@@ -417,6 +504,7 @@ export class GenerationService {
         apiSecret: account.apiSecret,
         apiEndpoint: account.apiEndpoint,
         extraParams: request.params as Record<string, unknown>,
+        maxWaitSeconds: run.maxWaitSeconds,
       };
 
       let result;
@@ -471,8 +559,8 @@ export class GenerationService {
           }
         }
 
-        await prisma.aiGeneration.update({
-          where: { id: generation.id },
+        const settled = await prisma.aiGeneration.updateMany({
+          where: { id: generation.id, status: 'processing' },
           data: {
             status: 'completed',
             resultUrl: finalUrl,
@@ -484,6 +572,11 @@ export class GenerationService {
             completedAt: new Date(),
           },
         });
+        if (settled.count === 0) {
+          // ApiOrderSweep already failed and refunded it; the file arrived too late.
+          console.warn(`[generation] #${generation.id} delivered after it was settled as failed; result dropped`);
+          return { id: generation.id, status: 'failed', creditsUsed: 0, error: 'settled' };
+        }
 
         // Fix the retention window at the moment the customer received the
         // file, so a later settings change cannot shorten what they were
@@ -519,8 +612,8 @@ export class GenerationService {
         );
         await this.refundCredits(userId, requiredCredits, generation.id);
 
-        await prisma.aiGeneration.update({
-          where: { id: generation.id },
+        await prisma.aiGeneration.updateMany({
+          where: { id: generation.id, status: 'processing' },
           data: {
             status: 'failed',
             errorMessage: result.error,
@@ -541,8 +634,8 @@ export class GenerationService {
       await AccountPoolManager.recordError(account.id, message, this.isRateLimitError(message));
       await this.refundCredits(userId, requiredCredits, generation.id);
 
-      await prisma.aiGeneration.update({
-        where: { id: generation.id },
+      await prisma.aiGeneration.updateMany({
+        where: { id: generation.id, status: 'processing' },
         data: {
           status: 'failed',
           errorMessage: (error as Error).message,
@@ -600,6 +693,52 @@ export class GenerationService {
     const length = voiceRenderSeconds(measured, rule, maxSeconds);
     if (!length.ok) throw new OrderRefusedError(length.message, length.code, 422);
     return length.seconds;
+  }
+
+  /**
+   * A stored clip's length, picture and file, read from the file itself; a
+   * Thai refusal when there is none, it cannot be read, or its headers do not
+   * say (the order is then refused, never priced on a guess).
+   */
+  private static async clipFacts(source: string | undefined): Promise<ClipFacts> {
+    if (!isAcceptedVideoSource(source)) {
+      throw new OrderRefusedError('ต้องอัปโหลดคลิปต้นฉบับที่จะพากย์ทับก่อน', 'missing-video', 422);
+    }
+    let opened: Awaited<ReturnType<typeof openVideoSource>>;
+    try {
+      opened = await openVideoSource(source);
+    } catch (error) {
+      console.warn('[generation] could not read an uploaded clip:', (error as Error).message);
+      throw new OrderRefusedError('อ่านคลิปที่อัปโหลดไม่สำเร็จ กรุณาลองใหม่อีกครั้ง', 'clip-fetch-failed', 503);
+    }
+    const probe = await probeVideo(opened.source, opened.ext);
+    if (!probe) {
+      throw new OrderRefusedError(
+        'อ่านความยาวหรือขนาดของคลิปไม่ได้ กรุณาบันทึกคลิปเป็น MP4 แล้วอัปโหลดใหม่',
+        'clip-unreadable',
+        422
+      );
+    }
+    return { ...probe, bytes: opened.bytes, ext: opened.ext };
+  }
+
+  /** A stored voice track's length and size, for the API lip-sync rows' checks. */
+  private static async voiceFacts(source: string | undefined): Promise<{ seconds: number; bytes: number }> {
+    if (!isAcceptedAudioSource(source)) {
+      throw new OrderRefusedError('ต้องอัปโหลดไฟล์เสียงที่จะให้พูดก่อน', 'missing-audio', 422);
+    }
+    let read: Awaited<ReturnType<typeof readAudioSource>>;
+    try {
+      read = await readAudioSource(source);
+    } catch (error) {
+      console.warn('[generation] could not read an uploaded voice track:', (error as Error).message);
+      throw new OrderRefusedError('อ่านไฟล์เสียงที่อัปโหลดไม่สำเร็จ กรุณาลองใหม่อีกครั้ง', 'voice-fetch-failed', 503);
+    }
+    const seconds = audioDurationSeconds(read.bytes, read.ext);
+    if (seconds === null) {
+      throw new OrderRefusedError('อ่านความยาวของไฟล์เสียงไม่ได้ กรุณาใช้ไฟล์ MP3, WAV หรือ M4A', 'voice-unreadable', 422);
+    }
+    return { seconds, bytes: read.bytes.length };
   }
 
   /**

@@ -1,0 +1,46 @@
+{
+  "source": "vinavfx/ComfyUI-LatentSyncWrapper@4902c3957c027acd1e333659e1c48bcdb7cf9d55 nodes.py, transcribed by hand; AixmanLoadVideo25 is written by the latentsync-1.6 setup script (catalog.ts)",
+  "note": "Only the classes the latentsync-1.6 template uses. Merged over the ComfyUI baseline by tests and the admin dry run. Re-transcribe when the pack ref in catalog.ts moves.",
+  "classes": {
+    "LatentSyncNode": {
+      "input": {
+        "required": {
+          "images": ["IMAGE"],
+          "audio": ["AUDIO"],
+          "seed": ["INT", { "default": 1247 }],
+          "lips_expression": ["FLOAT", { "default": 1.5, "min": 1.0, "max": 3.0, "step": 0.1 }],
+          "inference_steps": ["INT", { "default": 20, "min": 1, "max": 999, "step": 1 }]
+        }
+      },
+      "input_order": { "required": ["images", "audio", "seed", "lips_expression", "inference_steps"] },
+      "output": ["IMAGE", "AUDIO"],
+      "output_is_list": [false, false],
+      "output_name": ["images", "audio"],
+      "name": "LatentSyncNode",
+      "display_name": "LatentSync1.6 Node",
+      "description": "",
+      "python_module": "custom_nodes.ComfyUI-LatentSyncWrapper",
+      "category": "LatentSyncNode",
+      "output_node": false
+    },
+    "AixmanLoadVideo25": {
+      "input": {
+        "required": {
+          "video": ["STRING", { "default": "" }],
+          "max_seconds": ["FLOAT", { "default": 10.0, "min": 0.5, "max": 120.0, "step": 0.01 }],
+          "max_side": ["INT", { "default": 1280, "min": 256, "max": 1920, "step": 8 }]
+        }
+      },
+      "input_order": { "required": ["video", "max_seconds", "max_side"] },
+      "output": ["IMAGE"],
+      "output_is_list": [false],
+      "output_name": ["images"],
+      "name": "AixmanLoadVideo25",
+      "display_name": "Load clip at 25 fps (aixman)",
+      "description": "",
+      "python_module": "custom_nodes.aixman_load_video",
+      "category": "aixman",
+      "output_node": false
+    }
+  }
+}

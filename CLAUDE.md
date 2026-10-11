@@ -461,6 +461,32 @@ off.
 - `comfy-validate` understands V3 autogrow inputs (`values.a` …): this template
   is the first to keep a ComfyMathExpression alive after binding.
 
+## Video lip-sync (พากย์ทับคลิป) — a clip re-dubbed with an uploaded voice
+
+Three routes, all on the studio's lip-sync tab (subcategory `lipsync`; a
+portrait model is `lipsync-portrait`):
+- **API rows** (`fal-ai/kling-video/lipsync/audio-to-video`, `fal-ai/latentsync`;
+  need a fal key in the pool). Their limits and billing live in
+  `src/lib/lipsync-rules.ts`: Kling takes a 2–10 s, 720–1920 px MP4/MOV and a
+  voice no longer than the clip, and bills `creditsPerUnit` per started 5 s of
+  *clip*. GenerationService checks the stored clip (`video-probe.ts`,
+  header-only, range reads) and voice before charging — Kling refuses after
+  charging us. These orders run after the response (`after()`, the studio polls
+  for up to 35 min); `api-order-sweep.ts` fails and refunds any non-GPU order
+  still unfinished after 60 min, and every final status write is conditional
+  on `processing`, so the two cannot both settle one order.
+- **Self-hosted `latentsync-1.6`** (rented GPU, ≥24 GB, Ampere+). vinavfx's
+  fork of the wrapper, pinned, with `requirements: false` (its list pins
+  insightface). The setup script writes two files on the worker: a
+  `face_detector.py` built on face-alignment (BSD-3) over the pack's
+  InsightFace one (buffalo_l is non-commercial), and the `AixmanLoadVideo25`
+  node (ffmpeg at 25 fps, only as many seconds as the voice, long side capped —
+  core LoadVideo would hand over every frame as float32). Priced and rendered
+  by the voice's length (≤ 20 s); a clip shorter than the voice is played back
+  and forth. A clip with a frame without a face fails with "Face not detected":
+  `input-fault.ts` makes that a refund with a Thai reason, not a retry on
+  another machine.
+
 ## Prompt assistant (✨ in the studio)
 
 `/api/studio/enhance-prompt` → `services/prompt-enhancer.ts`. Order: MiniMax's

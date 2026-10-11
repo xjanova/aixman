@@ -48,6 +48,7 @@ import { AUDIO_EXT, AudioCover, AudioResult } from "@/components/xdreamer/audio"
 import { AudioWave } from "@/components/xdreamer/audio-wave";
 import { NO_ORDER_INPUTS, type OrderInputs } from "@/lib/order-inputs";
 import { loginHref } from "@/lib/safe-callback";
+import { checkClip, checkVoice, lipsyncCredits, type ClipFacts } from "@/lib/lipsync-rules";
 
 const HUE = 70;
 
@@ -462,10 +463,23 @@ function probeDuration(file: File, kind: "audio" | "video"): Promise<number | nu
  * cannot have (see `handleMediaUpload`), and errors come back as a value so
  * the caller needs no error handling of its own.
  */
+/** What a re-dub model takes, as one line under the clip picker. */
+function clipRuleHint(
+  rule: { minSeconds?: number; maxSeconds: number; minSide?: number; maxSide?: number; containers?: string[] } | undefined,
+  billing: { kind: "flat" } | { kind: "clipBlocks"; blockSeconds: number } | null,
+): string {
+  if (!rule) return `คลิปยาวไม่เกิน ${MAX_INPUT_SECONDS} วินาที`;
+  const parts = [rule.minSeconds ? `คลิปยาว ${rule.minSeconds}–${rule.maxSeconds} วินาที` : `คลิปยาวไม่เกิน ${rule.maxSeconds} วินาที`];
+  if (rule.minSide && rule.maxSide) parts.push(`ความละเอียดด้านละ ${rule.minSide}–${rule.maxSide} พิกเซล`);
+  if (rule.containers?.length) parts.push("ไฟล์ MP4 หรือ MOV");
+  if (billing?.kind === "clipBlocks") parts.push(`คิดเครดิตตามความยาวคลิป ช่วงละ ${billing.blockSeconds} วินาที`);
+  return parts.join(" · ");
+}
+
 async function uploadMedia(
   file: File,
   kind: "audio" | "video" | "image",
-): Promise<{ url?: string; error?: string; durationSeconds?: number }> {
+): Promise<{ url?: string; error?: string; durationSeconds?: number; width?: number; height?: number; contentType?: string }> {
   try {
     const form = new FormData();
     form.append("file", file);
@@ -475,7 +489,15 @@ async function uploadMedia(
     if (typeof data.url !== "string") return { error: "เซิร์ฟเวอร์ไม่ได้ส่งลิงก์ไฟล์กลับมา" };
     // The server's own reading of the file — the one an order is priced by.
     const seconds = typeof data.durationSeconds === "number" && data.durationSeconds > 0 ? data.durationSeconds : undefined;
-    return { url: data.url, durationSeconds: seconds };
+    // A clip's picture, read the way the order path reads it.
+    const size = (n: unknown) => (typeof n === "number" && n > 0 ? n : undefined);
+    return {
+      url: data.url,
+      durationSeconds: seconds,
+      width: size(data.width),
+      height: size(data.height),
+      contentType: typeof data.contentType === "string" ? data.contentType : undefined,
+    };
   } catch {
     return { error: "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้" };
   }
@@ -1270,6 +1292,8 @@ export default function GeneratePage() {
    * can leave a stale length behind it.
    */
   const [audioLengths, setAudioLengths] = useState<Record<string, number>>({});
+  /** What the server read from each uploaded clip, by URL — the numbers an order is checked against. */
+  const [clipFacts, setClipFacts] = useState<Record<string, ClipFacts>>({});
   /**
    * The natural size of the picture in the image slot, read when it draws. A
    * portrait made to speak keeps its own shape, so this — not the aspect
@@ -1488,6 +1512,22 @@ export default function GeneratePage() {
     voiceRule && inputAudioSeconds !== null ? voiceRenderSeconds(inputAudioSeconds, voiceRule, selectedModel?.maxDuration) : null;
   /** Longest voice the lip-sync picker accepts: the model's own ceiling where it has one. */
   const lipsyncAudioMax = voiceRule && selectedModel?.maxDuration ? selectedModel.maxDuration : MAX_INPUT_SECONDS;
+
+  /**
+   * A model that re-dubs a clip: its rules (length, picture, file; on an API
+   * row the voice beside it and the billing), and what they say about the
+   * clip and voice in the slots — the same checks GenerationService makes on
+   * the stored files, so a clip that will be refused is refused here first.
+   */
+  const videoRule = tab === "lipsync" && lipsyncNeeds === "video" ? selectedModel?.videoLipsync ?? null : null;
+  const sourceClip = sourceVideo ? clipFacts[sourceVideo] ?? null : null;
+  const clipCheck = videoRule && sourceClip ? checkClip(videoRule.clip, sourceClip) : null;
+  const clipVoiceCheck =
+    videoRule?.voice && sourceClip && inputAudioSeconds !== null
+      ? checkVoice(videoRule.voice, { seconds: inputAudioSeconds, bytes: inputAudioFile?.size ?? 0 }, sourceClip.seconds)
+      : null;
+  /** Longest clip the picker takes: the model's own limit where it has one. */
+  const clipMaxSeconds = videoRule?.clip.maxSeconds ?? MAX_INPUT_SECONDS;
   /** The portrait in the slot, at its natural size, once it has drawn. */
   const portraitDims = imageDims && imageDims.src === inputImagePreview ? imageDims : null;
 
@@ -1525,6 +1565,9 @@ export default function GeneratePage() {
     missingLipsyncInput ||
     // A voice the server would refuse (too long, too short, unreadable).
     voiceLength?.ok === false ||
+    // …or a clip (or a voice beside it) the model does not take.
+    clipCheck?.ok === false ||
+    clipVoiceCheck?.ok === false ||
     missingSourceSong ||
     // …or, on a reopened order, without the files it was made from.
     loadingInputs ||
@@ -1626,7 +1669,14 @@ export default function GeneratePage() {
       const length = result.durationSeconds ?? seconds;
       if (length) setAudioLengths((m) => ({ ...m, [result.url!]: length }));
     }
-    else { setSourceVideo(result.url!); setSourceVideoName(file.name); }
+    else {
+      setSourceVideo(result.url!); setSourceVideoName(file.name);
+      const length = result.durationSeconds ?? seconds;
+      if (length && result.width && result.height) {
+        const ext = result.contentType === "video/webm" ? "webm" : "mp4";
+        setClipFacts((m) => ({ ...m, [result.url!]: { seconds: length, width: result.width!, height: result.height!, bytes: file.size, ext } }));
+      }
+    }
   };
 
   /** Last frame → R2. No try/finally, for the same reason as handleMediaUpload. */
@@ -1671,17 +1721,21 @@ export default function GeneratePage() {
     }
   }, [setIsGenerating, fetchCredits, fetchHistory, toast]);
 
-  const pollResult = useCallback(async (generationId: number) => {
+  const pollResult = useCallback(async (generationId: number, slowApi = false) => {
     // API-backed providers answer within a few minutes. GPU-backed ones rent a
     // machine first, and on a cold host that means installing ComfyUI and
     // pulling ~42 GB of weights. The server allows warmup + render (60 + 30
     // min by default), so the client has to outlast that or it would declare a
     // timeout on a job that is still perfectly healthy.
     const API_DEADLINE_MS = 4 * 60_000;
+    // …except a clip re-dub, which the server runs in the background for as
+    // long as the vendor takes (Kling: about twelve minutes; it waits up to
+    // thirty, lipsync-rules.ts).
+    const SLOW_API_DEADLINE_MS = 35 * 60_000;
     const GPU_DEADLINE_MS = 95 * 60_000;
 
     const startedAt = Date.now();
-    let deadlineMs = API_DEADLINE_MS;
+    let deadlineMs = slowApi ? SLOW_API_DEADLINE_MS : API_DEADLINE_MS;
     let sawGpu = false;
     let rendering = false;
     // A transient network blip shouldn't abandon a job the user already paid
@@ -1819,6 +1873,14 @@ export default function GeneratePage() {
       toast("error", "ใช้ไฟล์เสียงนี้ไม่ได้", voiceLength.message);
       return;
     }
+    if (clipCheck && !clipCheck.ok) {
+      toast("error", "ใช้คลิปนี้ไม่ได้", clipCheck.message);
+      return;
+    }
+    if (clipVoiceCheck && !clipVoiceCheck.ok) {
+      toast("error", "ใช้ไฟล์เสียงนี้ไม่ได้", clipVoiceCheck.message);
+      return;
+    }
     if (missingSourceSong) {
       toast("error", "ยังไม่ได้อัปโหลดเพลงต้นฉบับ", "โหมดคัฟเวอร์ต้องมีเพลงให้ AI ถอดทำนองก่อน");
       return;
@@ -1859,6 +1921,8 @@ export default function GeneratePage() {
     const music = tab === "audio";
     // The song keeps the name it was made under, not whatever is typed next.
     if (music) setSongTitle(prompt.trim());
+    // An API row that bills by the clip is a re-dub the server finishes in the background.
+    const slowApi = Boolean(videoRule?.billing);
     const sent = await postGeneration({
       modelId: selectedModelId,
       // Lip-sync has no generation type of its own on the server: what it
@@ -1930,7 +1994,7 @@ export default function GeneratePage() {
       setFocusId(data.id);
     }
     if (data.status === "completed" || data.status === "failed") settleJob(data.id, data);
-    else pollResult(data.id);
+    else pollResult(data.id, slowApi);
   };
 
   /** "✨ ปรับพรอมต์ด้วย AI": rewrite what was typed into what this model reads best. */
@@ -2173,7 +2237,7 @@ export default function GeneratePage() {
       const kind = file.type.startsWith("audio/") ? "audio" : "video";
       if (kind === "audio" && tab === "lipsync") return uploadMediaFile(file, "audio", lipsyncAudioMax);
       if (kind === "audio" && musicOpts?.sourceSong) return uploadMediaFile(file, "audio", coverSourceSeconds);
-      if (kind === "video" && tab === "lipsync" && lipsyncNeeds === "video") return uploadMediaFile(file, "video", MAX_INPUT_SECONDS);
+      if (kind === "video" && tab === "lipsync" && lipsyncNeeds === "video") return uploadMediaFile(file, "video", clipMaxSeconds);
       toast(
         "info",
         "แท็บนี้ไม่ได้ใช้ไฟล์ชนิดนี้",
@@ -2278,7 +2342,10 @@ export default function GeneratePage() {
   };
 
   const totalCredits =
-    creditsFor(tab === "video" || tab === "audio" ? duration : voiceLength?.ok ? voiceLength.seconds : null) * outputs;
+    // An API clip re-dub is billed by its own rule: one price, or per started block of the clip.
+    videoRule?.billing && selectedModel
+      ? lipsyncCredits(videoRule.billing, selectedModel.creditsPerUnit, sourceClip?.seconds ?? 0)
+      : creditsFor(tab === "video" || tab === "audio" ? duration : voiceLength?.ok ? voiceLength.seconds : null) * outputs;
   /** The balance is known and this order costs more than it. The server is still the judge. */
   const shortOfCredits = creditsLoaded && totalCredits > 0 && creditBalance < totalCredits;
   /** A song has no picture shape; its in-progress frame is square. */
@@ -2751,7 +2818,7 @@ export default function GeneratePage() {
               busy={uploading === "video"}
               accept="video/mp4,video/webm,video/quicktime"
               hint="อัปโหลดคลิป (MP4 / WebM)"
-              onPick={(e) => handleMediaUpload(e, "video")}
+              onPick={(e) => handleMediaUpload(e, "video", clipMaxSeconds)}
               onClear={() => { setSourceVideo(null); setSourceVideoName(null); }}
             />
             {/* A clip put back from a reopened order: the customer may not
@@ -2761,8 +2828,19 @@ export default function GeneratePage() {
                 onError={() => dropExpiredInput(sourceVideo, () => { setSourceVideo(null); setSourceVideoName(null); })}
                 style={{ width: "100%", maxHeight: 180, marginTop: 8, borderRadius: 10, background: "#000", display: "block" }} />
             )}
+            {sourceClip && (
+              <div style={{ marginTop: 8, fontSize: 11.5, lineHeight: 1.5, color: "#a5f3fc" }}>
+                คลิป {sourceClip.seconds.toFixed(1)} วินาที · {sourceClip.width}×{sourceClip.height}
+                {videoRule?.billing?.kind === "clipBlocks" && clipCheck?.ok !== false ? ` · ✦ ${totalCredits} เครดิต` : ""}
+              </div>
+            )}
+            {clipCheck?.ok === false && (
+              <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 8, fontSize: 11.5, lineHeight: 1.5, background: "hsla(38,90%,55%,0.12)", color: "#fbbf24", border: "1px solid hsla(38,90%,55%,0.25)" }}>
+                {clipCheck.message}
+              </div>
+            )}
             <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
-              คลิปควรเห็นหน้าชัดและยาวไม่เกิน 40 วินาที · เสียงเดิมในคลิปจะถูกแทนที่ทั้งหมด
+              {clipRuleHint(videoRule?.clip, videoRule?.billing ?? null)} · เห็นหน้าชัด · เสียงเดิมในคลิปจะถูกแทนที่ทั้งหมด
             </div>
           </Section>
         )}
@@ -2811,6 +2889,11 @@ export default function GeneratePage() {
                     : `คิดเครดิตตามความยาวเสียง: ✦ ${creditsFor(null)} (ไม่เกิน 5 วิ) ถึง ✦ ${creditsFor(lipsyncAudioMax)} (${lipsyncAudioMax} วิ)`}
                 </div>
               )
+            )}
+            {clipVoiceCheck?.ok === false && (
+              <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 8, fontSize: 11.5, lineHeight: 1.5, background: "hsla(38,90%,55%,0.12)", color: "#fbbf24", border: "1px solid hsla(38,90%,55%,0.25)" }}>
+                {clipVoiceCheck.message}
+              </div>
             )}
             <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
               พูดภาษาอะไรก็ได้รวมถึงไทย — โมเดลอ่านคลื่นเสียงเป็นรูปปาก ไม่ได้อ่านภาษา
