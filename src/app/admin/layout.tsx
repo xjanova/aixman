@@ -15,6 +15,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { usePathname, redirect } from "next/navigation";
 import { XdrThemeStyles } from "@/components/xdreamer/shared";
+import { XdreamerMark } from "@/components/xdreamer/logo";
 
 const HUE = 70;
 
@@ -76,10 +77,9 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           </Link>
 
           <Link href="/admin" style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 28, textDecoration: "none" }}>
-            <Image src="/xdreamer-logo.png" alt="X-DREAMER" width={32} height={32}
-              style={{ borderRadius: 8, objectFit: "cover", boxShadow: `0 0 18px hsla(${270 + HUE},70%,50%,0.45)` }} />
+            <XdreamerMark size={32} />
             <div>
-              <div style={{ fontFamily: "Inter,sans-serif", fontWeight: 800, letterSpacing: "0.2em", fontSize: 12, color: "#fff" }}>X-DREAMER</div>
+              <div style={{ fontFamily: "var(--font-unbounded), Inter, sans-serif", fontWeight: 600, letterSpacing: "0.1em", fontSize: 12, color: "#fff" }}>X-DREAMER</div>
               <div style={{ fontSize: 9, letterSpacing: "0.18em", color: "#a5f3fc", textTransform: "uppercase", marginTop: 2 }}>· admin</div>
             </div>
           </Link>

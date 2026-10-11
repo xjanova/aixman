@@ -14,9 +14,9 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import Image from "next/image";
 import Link from "next/link";
 import { useSession, signOut } from "next-auth/react";
+import { XdreamerMark } from "./logo";
 
 export const HUE = 70;
 
@@ -287,8 +287,8 @@ export function XdrNav({ creditsLabel }: { creditsLabel?: string }) {
       borderBottom: "1px solid rgba(255,255,255,0.06)",
     }}>
       <Link href="/" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none", cursor: "pointer" }}>
-        <Image src="/xdreamer-logo.png" alt="X-DREAMER" width={38} height={38} style={{ borderRadius: 10, objectFit: "cover", boxShadow: "0 0 20px rgba(139,92,246,0.45)" }} />
-        <div className="rp-nav-brand" style={{ fontFamily: "Inter, sans-serif", fontWeight: 900, letterSpacing: "0.22em", fontSize: 14, color: "#fff" }}>X-DREAMER</div>
+        <XdreamerMark size={36} />
+        <div className="rp-nav-brand" style={{ fontFamily: "var(--font-unbounded), Inter, sans-serif", fontWeight: 600, letterSpacing: "0.1em", fontSize: 15, color: "#fff" }}>X-DREAMER</div>
         <div className="rp-nav-badge" style={{ fontSize: 10, letterSpacing: "0.2em", color: "#94a3b8", padding: "3px 8px", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 999, marginLeft: 6 }}>v4 · LIVE</div>
       </Link>
       <div className="rp-nav-links" style={{ display: "flex", gap: 28, fontSize: 14, color: "rgba(255,255,255,0.75)", fontWeight: 500 }}>

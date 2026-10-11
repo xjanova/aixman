@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Geist_Mono, Inter, Noto_Sans_Thai } from "next/font/google";
+import { Geist_Mono, Inter, Noto_Sans_Thai, Unbounded } from "next/font/google";
 import { SessionProvider } from "@/components/layout/session-provider";
 import { ToastProvider } from "@/components/ui/toast-provider";
 import { AmbientBackground } from "@/components/ambient/ambient-background";
@@ -27,6 +27,14 @@ const notoSansThai = Noto_Sans_Thai({
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
+});
+
+// The X-DREAMER wordmark beside the mark in every nav (components/xdreamer/logo).
+const unbounded = Unbounded({
+  variable: "--font-unbounded",
+  subsets: ["latin"],
+  weight: ["600"],
+  display: "swap",
 });
 
 export const viewport: Viewport = {
@@ -78,7 +86,7 @@ export default function RootLayout({
   return (
     <html
       lang="th"
-      className={`${inter.variable} ${notoSansThai.variable} ${geistMono.variable} h-full antialiased dark`}
+      className={`${inter.variable} ${notoSansThai.variable} ${geistMono.variable} ${unbounded.variable} h-full antialiased dark`}
     >
       {/* Body has no opaque bg — AmbientBackground (fixed, z-index 0) supplies the dark base + fiber threads. Adding `bg-background` here would cover them entirely. */}
       <body className="min-h-full flex flex-col text-foreground">

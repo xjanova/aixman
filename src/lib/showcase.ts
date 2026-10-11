@@ -162,68 +162,6 @@ export const SHOWCASE_ITEMS: ShowcaseItem[] = [
   },
 ];
 
-export type ModeCard = {
-  key: string;
-  eyebrow: string;
-  title: string;
-  desc: string;
-  image: string;
-  /** Omitted where the card should stay a still. */
-  video?: string;
-  href: string;
-  cta: string;
-  hue: number;
-  specs: { k: string; l: string }[];
-};
-
-/** The three things the platform actually does, each with a real result. */
-export const MODE_CARDS: ModeCard[] = [
-  {
-    key: "image",
-    eyebrow: "TEXT → IMAGE",
-    title: "ข้อความเป็นภาพ",
-    desc: "พิมพ์สิ่งที่คิด ได้ภาพความละเอียดสูงในไม่กี่วินาที เลือกโมเดลได้เองหรือให้ระบบเลือกให้",
-    // Deliberately a still — a card advertising image generation should not move.
-    image: "/showcase/product.jpg",
-    href: "/generate?tab=image",
-    cta: "เริ่มสร้างภาพ",
-    hue: 190,
-    specs: [
-      { k: "4K", l: "ความละเอียดสูงสุด" },
-      { k: "~10s", l: "ต่อภาพ" },
-    ],
-  },
-  {
-    key: "video",
-    eyebrow: "TEXT / IMAGE → VIDEO",
-    title: "ไอเดียเป็นวิดีโอ",
-    desc: "เปลี่ยนข้อความหรือภาพนิ่งให้เคลื่อนไหว กำหนดมุมกล้องและความยาวได้ พร้อมเสียงในตัวบางโมเดล",
-    image: "/showcase/dancer.jpg",
-    video: "/showcase/dancer.mp4",
-    href: "/generate?tab=video",
-    cta: "สร้างวิดีโอ",
-    hue: 280,
-    specs: [
-      { k: "1080p", l: "ความละเอียด" },
-      { k: "15s", l: "ความยาวสูงสุด" },
-    ],
-  },
-  {
-    key: "edit",
-    eyebrow: "EDIT & UPSCALE",
-    title: "แก้ไขและขยายภาพ",
-    desc: "ปรับแก้ภาพเดิมด้วย prompt หรือขยายความละเอียดให้คมขึ้นหลายเท่า โดยรักษารายละเอียดต้นฉบับไว้",
-    image: "/showcase/macro.jpg",
-    href: "/generate?tab=edit",
-    cta: "ลองแก้ไขภาพ",
-    hue: 160,
-    specs: [
-      { k: "2–4×", l: "ขยายภาพ" },
-      { k: "img2img", l: "แก้ด้วย prompt" },
-    ],
-  },
-];
-
 /**
  * Providers wired into the platform. Kept factual — these are the adapters
  * that exist under `src/lib/providers/` plus our in-house engine. How the

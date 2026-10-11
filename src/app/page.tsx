@@ -1,43 +1,54 @@
 /**
  * X-DREAMER landing page
  *
- * Server component: fetches active credit packages from CreditService
- * (DB), normalises into the Tier shape XdreamerLanding expects, and
- * renders the X-DREAMER themed marketing page.
- *
- * Replaces the previous neumorphism landing — see page.tsx.bak in this
- * directory for the old version.
+ * Server component: fetches the active credit packages from CreditService
+ * (DB), normalises them into the Tier shape XdreamerLanding draws, and loads
+ * the page's own faces — Bai Jamjuree for headings, IBM Plex Sans Thai Looped
+ * for reading. The wordmark's Unbounded comes from the root layout.
  */
 
-import XdreamerLanding from "@/components/xdreamer/landing";
+import { Bai_Jamjuree, IBM_Plex_Sans_Thai_Looped } from "next/font/google";
+import XdreamerLanding, { type Tier } from "@/components/xdreamer/landing";
 import { CreditService } from "@/lib/services/credits";
 
-// Hue palette mapping by slug (keeps brand colours stable across packages)
-const HUE_BY_SLUG: Record<string, number> = {
-  trial: 140,
-  starter: 160,
-  weaver: 200,
-  creator: 220,
-  pro: 260,
-  studio: 280,
-  enterprise: 300,
-};
+const heading = Bai_Jamjuree({
+  variable: "--font-heading",
+  subsets: ["thai", "latin"],
+  weight: ["600", "700"],
+  display: "swap",
+});
 
-type Tier = {
-  slug: string;
-  name: string;
-  price: string;
-  note: string;
-  feats: string[];
-  hue: number;
-  pop: boolean;
-};
+const reading = IBM_Plex_Sans_Thai_Looped({
+  variable: "--font-reading",
+  subsets: ["thai", "latin"],
+  weight: ["400", "500", "600"],
+  display: "swap",
+});
 
+/**
+ * What the packages were when the page was redrawn, shown only if the DB
+ * cannot be read — the same numbers /api/packages served, never invented ones.
+ */
 const FALLBACK_TIERS: Tier[] = [
-  { slug: "trial", name: "ผู้เริ่มฝัน", price: "ฟรี", note: "ตลอดชีพ", feats: ["50 งาน/เดือน", "ความละเอียด 1K", "ชุมชนสาธารณะ", "รุ่น loom-mini"], hue: 160, pop: false },
-  { slug: "creator", name: "นักทอ", price: "฿490", note: "/ เดือน", feats: ["ไม่จำกัดจำนวน", "8K resolution", "ปราสาทส่วนตัว 500 ชิ้น", "รุ่น loom-v4.2", "Video สูงสุด 30 วินาที"], hue: 220, pop: true },
-  { slug: "studio", name: "สตูดิโอ", price: "฿2,490", note: "/ เดือน", feats: ["ทุกอย่างใน นักทอ", "API + webhooks", "ทีมสูงสุด 10 คน", "รุ่น loom-pro", "Commercial license", "Priority queue"], hue: 280, pop: false },
+  { slug: "trial", name: "ทดลองใช้", badge: "ฟรี", price: "ฟรี", credits: "20 เครดิต", feats: ["ภาพ ~5-7 ภาพ", "วิดีโอ ~1 คลิป", "สำหรับสมาชิกใหม่"], featured: false, free: true },
+  { slug: "starter", name: "Starter", badge: null, price: "฿99", credits: "100 เครดิต", feats: ["ภาพ ~25-33 ภาพ", "วิดีโอ ~5-8 คลิป", "ไม่มีวันหมดอายุ"], featured: false, free: false },
+  { slug: "creator", name: "Creator", badge: "ยอดนิยม", price: "฿399", credits: "500 + 50 โบนัส", feats: ["ภาพ ~137 ภาพ", "วิดีโอ ~36 คลิป", "ประหยัด 20%", "ไม่มีวันหมดอายุ"], featured: true, free: false },
+  { slug: "pro", name: "Pro", badge: "คุ้มที่สุด", price: "฿999", credits: "1,500 + 250 โบนัส", feats: ["ภาพ ~437 ภาพ", "วิดีโอ ~116 คลิป", "ประหยัด 33%", "ไม่มีวันหมดอายุ"], featured: true, free: false },
+  { slug: "enterprise", name: "Enterprise", badge: "สำหรับทีม", price: "฿2,499", credits: "5,000 + 1,500 โบนัส", feats: ["ภาพ ~1,625 ภาพ", "วิดีโอ ~433 คลิป", "ประหยัด 50%", "ซัพพอร์ตพิเศษ"], featured: false, free: false },
 ];
+
+function featureList(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.map(String);
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.map(String) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
 
 async function loadTiers(): Promise<Tier[]> {
   try {
@@ -47,24 +58,21 @@ async function loadTiers(): Promise<Tier[]> {
     return packages.map((p) => {
       const slug = String(p.slug ?? p.id);
       const priceThb = Number(p.priceThb ?? 0);
-      const features = Array.isArray(p.features)
-        ? (p.features as string[])
-        : typeof p.features === "string"
-          ? (JSON.parse(p.features) as string[])
-          : [];
-
-      const featList = features.length
-        ? features
-        : ([`${p.credits} credits`, p.bonusCredits ? `+${p.bonusCredits} bonus` : ""].filter(Boolean) as string[]);
-
+      const credits = Number(p.credits ?? 0);
+      const bonus = Number(p.bonusCredits ?? 0);
       return {
         slug,
         name: String(p.name ?? slug),
+        badge: p.badge ? String(p.badge) : null,
         price: priceThb === 0 ? "ฟรี" : `฿${priceThb.toLocaleString("en-US")}`,
-        note: priceThb === 0 ? "ฟรีตลอดชีพ" : "ครั้งเดียว",
-        feats: featList,
-        hue: HUE_BY_SLUG[slug] ?? 220,
-        pop: Boolean(p.isFeatured),
+        credits: bonus > 0
+          ? `${credits.toLocaleString("en-US")} + ${bonus.toLocaleString("en-US")} โบนัส`
+          : `${credits.toLocaleString("en-US")} เครดิต`,
+        // The card states the credits itself; a feature line that repeats
+        // them ("500 + 50 โบนัส เครดิต", "20 เครดิตฟรี") would say it twice.
+        feats: featureList(p.features).filter((f) => !f.includes("เครดิต")),
+        featured: Boolean(p.isFeatured),
+        free: priceThb === 0,
       };
     });
   } catch (e) {
@@ -75,5 +83,9 @@ async function loadTiers(): Promise<Tier[]> {
 
 export default async function HomePage() {
   const tiers = await loadTiers();
-  return <XdreamerLanding tiers={tiers} />;
+  return (
+    <div className={`${heading.variable} ${reading.variable}`}>
+      <XdreamerLanding tiers={tiers} />
+    </div>
+  );
 }

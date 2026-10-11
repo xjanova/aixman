@@ -14,6 +14,7 @@ import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
+import { XdreamerMark } from "@/components/xdreamer/logo";
 
 const HUE = 70;
 const XMAN_URL = process.env.NEXT_PUBLIC_XMAN_URL || "https://xman4289.com";
@@ -105,8 +106,9 @@ export default function LoginPage() {
         {/* Logo */}
         <div style={{ textAlign: "center", marginBottom: 32 }}>
           <Link href="/" style={{ display: "inline-block" }}>
-            <Image src="/xdreamer-logo.png" alt="X-DREAMER" width={64} height={64}
-              style={{ borderRadius: 16, margin: "0 auto 16px", boxShadow: `0 0 50px hsla(${270 + HUE},70%,50%,0.55)`, objectFit: "cover" }} />
+            <span style={{ display: "block", width: 64, margin: "0 auto 16px", filter: `drop-shadow(0 0 22px hsla(${270 + HUE},70%,55%,0.55))` }}>
+              <XdreamerMark size={64} title="X-DREAMER" />
+            </span>
           </Link>
           <div style={{ fontSize: 22, color: "#fff", fontWeight: 300, letterSpacing: "-0.01em" }}>
             {isSignup ? (

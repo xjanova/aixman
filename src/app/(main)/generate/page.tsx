@@ -1148,6 +1148,30 @@ export default function GeneratePage() {
   const [tab, setTab] = useState<TabType>(() => (draft0.tab && draft0.tab in TAB_EN ? draft0.tab : "image"));
   const [selectedModelId, setSelectedModelId] = useState<number | null>(null);
   const [prompt, setPrompt] = useState(() => (typeof draft0.prompt === "string" ? draft0.prompt.slice(0, 10_000) : ""));
+  // A link from the home page names the tab (`?tab=`) and may carry a prompt
+  // (`?prompt=`). Read after mount, not in the initializers above: on a
+  // client-side navigation the address still shows the previous page while
+  // this one first renders. Saved to the draft at once — a visitor who is not
+  // signed in goes through /login, which comes back to /generate without the
+  // query — then taken out of the address, so a reload does not lay it over
+  // whatever was written since.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has("tab") && !url.searchParams.has("prompt")) return;
+    const tabParam = url.searchParams.get("tab");
+    const promptParam = url.searchParams.get("prompt")?.trim();
+    const fromLink: StudioDraft = {};
+    if (tabParam && Object.hasOwn(TAB_EN, tabParam)) fromLink.tab = tabParam as TabType;
+    if (promptParam) fromLink.prompt = promptParam.slice(0, 2000);
+    /* eslint-disable react-hooks/set-state-in-effect -- the address is only readable once mounted */
+    if (fromLink.tab) setTab(fromLink.tab);
+    if (fromLink.prompt) setPrompt(fromLink.prompt);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    if (fromLink.tab || fromLink.prompt) writeDraft({ ...readDraft(), ...fromLink });
+    url.searchParams.delete("tab");
+    url.searchParams.delete("prompt");
+    window.history.replaceState(window.history.state, "", url.pathname + url.search + url.hash);
+  }, []);
   const [negativePrompt, setNegativePrompt] = useState(() => (typeof draft0.negativePrompt === "string" ? draft0.negativePrompt : ""));
   const [selectedStyle, setSelectedStyle] = useState<number | null>(null);
   const [aspectRatio, setAspectRatio] = useState(() =>

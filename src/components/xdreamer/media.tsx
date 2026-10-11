@@ -179,30 +179,3 @@ export function MediaTile({
     </div>
   );
 }
-
-/** Small "this one moves" marker used on the showcase wall. */
-export function ModeBadge({ mode, hue }: { mode: "image" | "video"; hue: number }) {
-  const isVideo = mode === "video";
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-        fontSize: 10,
-        padding: "4px 9px",
-        borderRadius: 999,
-        background: isVideo ? `hsla(${hue},85%,60%,0.22)` : "rgba(255,255,255,0.12)",
-        border: `1px solid ${isVideo ? `hsla(${hue},85%,70%,0.45)` : "rgba(255,255,255,0.16)"}`,
-        backdropFilter: "blur(8px)",
-        color: "#fff",
-        letterSpacing: "0.12em",
-        textTransform: "uppercase",
-        fontWeight: 600,
-      }}
-    >
-      <span style={{ fontSize: 9 }}>{isVideo ? "▶" : "▧"}</span>
-      {isVideo ? "video" : "image"}
-    </span>
-  );
-}
