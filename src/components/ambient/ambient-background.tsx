@@ -33,6 +33,9 @@ export function AmbientBackground() {
   const pathname = usePathname();
   const fiberRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
+  // The 3D studio renders WebGL of its own. There the threads are drawn once,
+  // with the blur baked in, so this layer costs nothing per frame.
+  const still = pathname.startsWith("/generate/3d");
 
   useEffect(() => {
     const isHome = pathname === "/";
@@ -41,16 +44,17 @@ export function AmbientBackground() {
       const fiberOpacity = 0.28 + heroAmount * 0.55; // 0.28..0.83
       const overlayInner = 0.15 + (1 - heroAmount) * 0.35; // 0.15..0.5
       const overlayMid = 0.55 + (1 - heroAmount) * 0.3; // 0.55..0.85
-      const blur = (1 - heroAmount) * 6; // 0..6px
+      const blur = still ? 0 : (1 - heroAmount) * 6; // 0..6px
+      const backdrop = blur > 0 ? `blur(${blur}px)` : "none";
       if (fiberRef.current) {
         fiberRef.current.style.opacity = String(fiberOpacity);
       }
       if (overlayRef.current) {
         overlayRef.current.style.background =
           `radial-gradient(ellipse at 50% 30%, rgba(3,6,18,${overlayInner}) 0%, rgba(3,6,18,${overlayMid}) 55%, rgba(3,6,18,0.85) 100%)`;
-        overlayRef.current.style.backdropFilter = `blur(${blur}px)`;
+        overlayRef.current.style.backdropFilter = backdrop;
         // Safari prefix — TS DOM types don't expose webkitBackdropFilter
-        overlayRef.current.style.setProperty("-webkit-backdrop-filter", `blur(${blur}px)`);
+        overlayRef.current.style.setProperty("-webkit-backdrop-filter", backdrop);
       }
     };
 
@@ -76,7 +80,7 @@ export function AmbientBackground() {
       window.removeEventListener("scroll", onScroll);
       if (raf !== null) cancelAnimationFrame(raf);
     };
-  }, [pathname]);
+  }, [pathname, still]);
 
   return (
     <div
@@ -104,7 +108,7 @@ export function AmbientBackground() {
           transition: "opacity 120ms linear",
         }}
       >
-        <FiberThreads density={50} speed={0.7} hueShift={70} opacity={1} interactive={false} />
+        <FiberThreads density={50} speed={0.7} hueShift={70} opacity={1} interactive={false} still={still} stillBlur={6} />
       </div>
 
       {/* Frosted vignette that intensifies as you scroll (template behaviour) */}

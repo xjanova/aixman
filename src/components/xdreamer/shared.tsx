@@ -27,8 +27,17 @@ export function FiberThreads({
   hueShift = HUE,
   opacity = 0.55,
   interactive = true,
+  still = false,
+  stillBlur = 0,
 }: {
   density?: number; speed?: number; hueShift?: number; opacity?: number; interactive?: boolean;
+  /** Draw one settled frame and stop — for a page that needs the GPU for itself. */
+  still?: boolean;
+  /**
+   * Blur baked into the still frame, in CSS px. A backdrop-filter laid over
+   * even a still layer can be redrawn every frame something above it moves.
+   */
+  stillBlur?: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const palettes = useMemo(() => {
@@ -56,6 +65,9 @@ export function FiberThreads({
       thick: number; hue: number; sat: number; lit: number; alpha: number;
     }[] = [];
 
+    const t0 = performance.now();
+    const frameMs = 1000 / 30;
+
     function resize() {
       const rect = canvas!.getBoundingClientRect();
       w = rect.width; h = rect.height;
@@ -63,6 +75,7 @@ export function FiberThreads({
       canvas!.width = w * dpr; canvas!.height = h * dpr;
       ctx!.setTransform(dpr, 0, 0, dpr, 0, 0);
       spawn();
+      if (still) paintStill();
     }
     function spawn() {
       threads = [];
@@ -91,23 +104,7 @@ export function FiberThreads({
     }
     function onLeave() { mouse.active = false; }
 
-    resize();
-    window.addEventListener("resize", resize);
-    if (interactive) {
-      window.addEventListener("mousemove", onMove, { passive: true });
-      window.addEventListener("mouseleave", onLeave);
-    }
-    const io = new IntersectionObserver(es => { visible = es[0].isIntersecting; }, { threshold: 0 });
-    io.observe(canvas);
-
-    const t0 = performance.now();
-    let lastFrame = 0;
-    const frameMs = 1000 / 30;
-    function draw(now: number) {
-      raf = requestAnimationFrame(draw);
-      if (!visible) return;
-      if (now - lastFrame < frameMs) return;
-      lastFrame = now;
+    function paint(now: number) {
       const t = (now - t0) * speed;
       ctx!.globalCompositeOperation = "source-over";
       ctx!.fillStyle = "rgba(3,6,18,0.08)";
@@ -146,6 +143,44 @@ export function FiberThreads({
         ctx!.stroke();
       }
     }
+
+    /** The trails a second of animation leaves, drawn once — what `still` shows. */
+    function paintStill() {
+      const now = performance.now();
+      for (let i = 40; i >= 0; i--) paint(now - i * frameMs);
+      if (stillBlur <= 0) return;
+      const copy = document.createElement("canvas");
+      copy.width = canvas!.width; copy.height = canvas!.height;
+      copy.getContext("2d")?.drawImage(canvas!, 0, 0);
+      ctx!.setTransform(1, 0, 0, 1, 0, 0);
+      ctx!.globalCompositeOperation = "source-over";
+      ctx!.clearRect(0, 0, canvas!.width, canvas!.height);
+      ctx!.filter = `blur(${stillBlur * dpr}px)`;
+      ctx!.drawImage(copy, 0, 0);
+      ctx!.filter = "none";
+      ctx!.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    let lastFrame = 0;
+    function draw(now: number) {
+      raf = requestAnimationFrame(draw);
+      if (!visible) return;
+      if (now - lastFrame < frameMs) return;
+      lastFrame = now;
+      paint(now);
+    }
+
+    resize();
+    window.addEventListener("resize", resize);
+    if (still) {
+      return () => window.removeEventListener("resize", resize);
+    }
+    if (interactive) {
+      window.addEventListener("mousemove", onMove, { passive: true });
+      window.addEventListener("mouseleave", onLeave);
+    }
+    const io = new IntersectionObserver(es => { visible = es[0].isIntersecting; }, { threshold: 0 });
+    io.observe(canvas);
     raf = requestAnimationFrame(draw);
     return () => {
       cancelAnimationFrame(raf);
@@ -154,7 +189,7 @@ export function FiberThreads({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseleave", onLeave);
     };
-  }, [density, speed, palettes, interactive, opacity]);
+  }, [density, speed, palettes, interactive, opacity, still, stillBlur]);
 
   return <canvas ref={canvasRef} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }} />;
 }

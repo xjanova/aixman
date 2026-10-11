@@ -146,9 +146,14 @@ export class ModelStage {
     r.toneMapping = THREE.ACESFilmicToneMapping;
     r.shadowMap.enabled = true;
     r.shadowMap.type = THREE.PCFShadowMap;
+    // The light and the model hold still while the camera orbits, so the shadow
+    // map is drawn only when one of them changes (redrawShadows), not each frame.
+    r.shadowMap.autoUpdate = false;
+    r.shadowMap.needsUpdate = true;
     r.setClearColor(0x000000, 0);
     const canvas = r.domElement;
     Object.assign(canvas.style, { display: 'block', width: '100%', height: '100%', touchAction: 'none', outline: 'none' });
+    canvas.addEventListener('webglcontextrestored', this.redrawShadows);
     container.appendChild(canvas);
 
     this.pmrem = new THREE.PMREMGenerator(r);
@@ -301,6 +306,7 @@ export class ModelStage {
     this.scene.add(root);
     this.model = root;
     this.applyMode();
+    this.redrawShadows();
     this.frame(new THREE.Box3().setFromObject(root));
     this.kick();
 
@@ -333,6 +339,8 @@ export class ModelStage {
   setMode(mode: ViewMode): void {
     this.mode = mode;
     this.applyMode();
+    // A model's own material may cut holes (alphaTest) that the clay look does not.
+    this.redrawShadows();
     this.kick();
   }
 
@@ -346,6 +354,7 @@ export class ModelStage {
     this.key.color.setHex(p.key[0]);
     this.key.intensity = p.key[1];
     this.key.position.set(...p.key[2]);
+    this.redrawShadows();
     this.fill.color.setHex(p.fill[0]);
     this.fill.intensity = p.fill[1];
     this.rimA.color.setHex(p.rimA[0]);
@@ -405,6 +414,7 @@ export class ModelStage {
     (this.grid.material as THREE.Material).dispose();
     this.envTexture.dispose();
     this.pmrem.dispose();
+    this.renderer.domElement.removeEventListener('webglcontextrestored', this.redrawShadows);
     this.renderer.dispose();
     // Hand the context back now rather than whenever the GC gets to it.
     this.renderer.forceContextLoss();
@@ -427,6 +437,11 @@ export class ModelStage {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.kick();
+  };
+
+  /** The shadow map is drawn again with the next frame (it is not drawn per frame). */
+  private readonly redrawShadows = () => {
+    this.renderer.shadowMap.needsUpdate = true;
   };
 
   /**
@@ -525,6 +540,7 @@ export class ModelStage {
     this.model.removeFromParent();
     this.disposeObject(this.model);
     this.model = null;
+    this.redrawShadows();
   }
 
   private disposeObject(root: THREE.Object3D): void {
