@@ -62,37 +62,37 @@ interface Tool {
 
 const TOOLS: Tool[] = [
   {
-    key: "image", label: "สร้างภาพ", en: "Text → Image", plate: "/studio-tabs/tab-image.png", href: "/generate?tab=image",
+    key: "image", label: "สร้างภาพ", en: "Text → Image", plate: "/studio-tabs/tab-image-v3.png", href: "/generate?tab=image",
     desc: "พิมพ์สิ่งที่คิด ได้ภาพความละเอียดสูงในไม่กี่วินาที เลือกโมเดลเองหรือให้ระบบเลือกให้",
     specs: [{ k: "4K", l: "ความละเอียดสูงสุด" }, { k: "~10s", l: "ต่อภาพ" }],
     cta: "เริ่มสร้างภาพ",
   },
   {
-    key: "video", label: "สร้างวิดีโอ", en: "Text / Image → Video", plate: "/studio-tabs/tab-video.png", href: "/generate?tab=video",
+    key: "video", label: "สร้างวิดีโอ", en: "Text / Image → Video", plate: "/studio-tabs/tab-video-v3.png", href: "/generate?tab=video",
     desc: "เปลี่ยนข้อความหรือภาพนิ่งให้เคลื่อนไหว กำหนดมุมกล้องและความยาวได้ พร้อมเสียงในตัวบางโมเดล",
     specs: [{ k: "1080p", l: "ความละเอียด" }, { k: "15s", l: "ความยาวสูงสุด" }],
     cta: "สร้างวิดีโอ",
   },
   {
-    key: "edit", label: "แก้ไขภาพ", en: "Edit & Upscale", plate: "/studio-tabs/tab-edit.png", href: "/generate?tab=edit",
+    key: "edit", label: "แก้ไขภาพ", en: "Edit & Upscale", plate: "/studio-tabs/tab-edit-v3.png", href: "/generate?tab=edit",
     desc: "ปรับแก้ภาพเดิมด้วย prompt หรือขยายความละเอียดให้คมขึ้นหลายเท่า โดยรักษารายละเอียดต้นฉบับไว้",
     specs: [{ k: "2–4×", l: "ขยายภาพ" }, { k: "img2img", l: "แก้ด้วย prompt" }],
     cta: "ลองแก้ไขภาพ",
   },
   {
-    key: "lipsync", label: "ลิปซิงค์", en: "Portrait + Voice → Video", plate: "/studio-tabs/tab-lipsync.png", href: "/generate?tab=lipsync",
+    key: "lipsync", label: "ลิปซิงค์", en: "Portrait + Voice → Video", plate: "/studio-tabs/tab-lipsync-v3.png", href: "/generate?tab=lipsync",
     desc: "อัปโหลดภาพใบหน้าและไฟล์เสียงพูดภาษาใดก็ได้ ได้คลิปคนในภาพพูดตามเสียงนั้น ความยาวและราคาคิดตามความยาวเสียงจริง",
     specs: [{ k: "1–15s", l: "ความยาวเสียง" }, { k: "ทุกภาษา", l: "ปากขยับตามเสียง" }],
     cta: "ลองลิปซิงค์",
   },
   {
-    key: "audio", label: "สร้างเพลง", en: "Lyrics → Song", plate: "/studio-tabs/tab-music.png", href: "/generate?tab=audio",
+    key: "audio", label: "สร้างเพลง", en: "Lyrics → Song", plate: "/studio-tabs/tab-music-v3.png", href: "/generate?tab=audio",
     desc: "บอกแนวเพลงและใส่เนื้อร้อง ได้เพลงพร้อมเสียงร้อง หรือวางเพลงต้นฉบับเพื่อทำเวอร์ชันคัฟเวอร์",
     specs: [{ k: "Vocal", l: "ร้องจากเนื้อที่ใส่" }, { k: "Cover", l: "จากเพลงต้นฉบับ" }],
     cta: "แต่งเพลง",
   },
   {
-    key: "model3d", label: "สร้างโมเดล 3D", en: "Image → 3D Model", plate: "/studio-tabs/tab-model3d.png", href: "/generate/3d",
+    key: "model3d", label: "สร้างโมเดล 3D", en: "Image → 3D Model", plate: "/studio-tabs/tab-model3d-v3.png", href: "/generate/3d",
     desc: "อัปโหลดภาพวัตถุหรือตัวละครหนึ่งภาพ ได้โมเดล 3D พร้อมพื้นผิว PBR เป็นไฟล์ GLB หมุนดูในเว็บได้ทันที และใช้ต่อใน Blender, Godot หรือ Unity ได้",
     specs: [{ k: "GLB", l: "ไฟล์พร้อมพื้นผิว" }, { k: "3–6 min", l: "ต่อโมเดล" }],
     cta: "เปิด 3D Studio",
@@ -389,7 +389,7 @@ function Tools() {
             {TOOLS.map((t) => (
               <button key={t.key} type="button" className="xh-plate" aria-pressed={t.key === key}
                 data-active={t.key === key ? "true" : "false"} onClick={() => setKey(t.key)}>
-                <Image src={t.plate} alt={t.label} width={440} height={147} sizes="(max-width: 860px) 45vw, 340px" />
+                <Image src={t.plate} alt={t.label} width={440} height={156} sizes="(max-width: 860px) 45vw, 340px" />
               </button>
             ))}
           </div>
@@ -835,7 +835,7 @@ const CSS = `
 /* tools */
 .xh-tools { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 44px; align-items: start; }
 .xh-rail { display: flex; flex-direction: column; gap: 8px; }
-.xh-plate { display: block; width: 100%; padding: 0; border: 0; background: transparent; cursor: pointer; line-height: 0; border-radius: 14px; filter: saturate(0.7) brightness(0.62); transition: filter 200ms ease, transform 200ms ease; }
+.xh-plate { display: block; width: 100%; padding: 0; border: 0; background: transparent; cursor: pointer; line-height: 0; border-radius: 14px; filter: saturate(0.85) brightness(0.82); transition: filter 200ms ease, transform 200ms ease; }
 .xh-plate img { width: 100%; height: auto; display: block; }
 .xh-plate:hover { filter: saturate(1.05) brightness(1); transform: translateY(-1px); }
 .xh-plate[data-active="true"] { filter: saturate(1.15) brightness(1.12) drop-shadow(0 0 16px rgba(168,85,247,0.55)); }

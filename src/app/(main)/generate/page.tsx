@@ -691,13 +691,18 @@ type Placement = { up: boolean; left: number; width: number; maxHeight: number }
  *
  * Only files that are actually in public/studio-tabs belong here — a missing
  * one falls back to a text pill, which is better than an <Image> pointed at a
- * 404. Each is a 440px-wide PNG with its own Thai and English label drawn in;
+ * 404. Each is a 440x156 PNG with its own Thai and English label drawn in;
  * the button is ~190px on screen. The six (these five and MODEL3D_ART) are one
  * set: generated from one prompt on black with only the icon and label
- * changed, then widened to the same 3.93:1 by repeating a column of plain
- * glass beside the label, the black keyed out with the glow kept as light, and
- * downscaled premultiplied — a plain resize drags the transparent black into
- * the glow. Redraw one, redraw it the same way, or it stands out of the set.
+ * changed, then evened out to 3:1 by repeating a column of plain glass beside
+ * the label (any wider and the label gets small), the black keyed out with the
+ * glow kept as light, and downscaled premultiplied — a plain resize drags the
+ * transparent black into the glow. Redraw one, redraw it the same way, or it
+ * stands out of the set.
+ *
+ * The file names carry a version (-v3): public/sw.js used to keep every image
+ * forever, so a redrawn plate under its old name never reached a browser that
+ * had the old one. Bump the suffix when the art changes.
  */
 /** The second line on each plate, matching what the artwork has drawn in. */
 const TAB_EN: Record<TabType, string> = {
@@ -705,15 +710,15 @@ const TAB_EN: Record<TabType, string> = {
 };
 
 const TAB_ART: Partial<Record<TabType, string>> = {
-  image: "/studio-tabs/tab-image.png",
-  video: "/studio-tabs/tab-video.png",
-  edit: "/studio-tabs/tab-edit.png",
-  lipsync: "/studio-tabs/tab-lipsync.png",
-  audio: "/studio-tabs/tab-music.png",
+  image: "/studio-tabs/tab-image-v3.png",
+  video: "/studio-tabs/tab-video-v3.png",
+  edit: "/studio-tabs/tab-edit-v3.png",
+  lipsync: "/studio-tabs/tab-lipsync-v3.png",
+  audio: "/studio-tabs/tab-music-v3.png",
 };
 
 /** The 3D studio's plate: drawn in the same set, but it links to its own page. */
-const MODEL3D_ART = "/studio-tabs/tab-model3d.png";
+const MODEL3D_ART = "/studio-tabs/tab-model3d-v3.png";
 
 function Popover({
   id, open, onToggle, label, value, children, align = "left", width = 300,
@@ -2376,7 +2381,7 @@ export default function GeneratePage() {
                   disabled={disabled} onClick={pick}
                   title={blocked ?? t.label} aria-label={t.label}
                   aria-current={tab === t.key ? "true" : undefined}>
-                  <Image src={art} alt={t.label} width={440} height={147} sizes="220px" priority={t.key === "image"} />
+                  <Image src={art} alt={t.label} width={440} height={156} sizes="220px" priority={t.key === "image"} />
                 </button>
               );
             }
@@ -2406,12 +2411,12 @@ export default function GeneratePage() {
           {model3dBlocked ? (
             <button type="button" className="rp-tab-art" data-active="false" disabled
               title={model3dBlocked} aria-label="สร้างโมเดล 3D">
-              <Image src={MODEL3D_ART} alt="สร้างโมเดล 3D" width={440} height={147} sizes="220px" />
+              <Image src={MODEL3D_ART} alt="สร้างโมเดล 3D" width={440} height={156} sizes="220px" />
             </button>
           ) : (
             <Link href="/generate/3d" className="rp-tab-art" data-active="false"
               title="สร้างโมเดล 3D" aria-label="สร้างโมเดล 3D">
-              <Image src={MODEL3D_ART} alt="สร้างโมเดล 3D" width={440} height={147} sizes="220px" />
+              <Image src={MODEL3D_ART} alt="สร้างโมเดล 3D" width={440} height={156} sizes="220px" />
             </Link>
           )}
         </div>
@@ -3744,7 +3749,7 @@ export default function GeneratePage() {
           border-radius: 10px;
           line-height: 0;
           cursor: pointer;
-          filter: saturate(0.7) brightness(0.62);
+          filter: saturate(0.85) brightness(0.82);
           transition: filter 220ms ease, transform 220ms ease;
         }
         .rp-tab-art :global(img) { width: 100%; height: auto; display: block; }
