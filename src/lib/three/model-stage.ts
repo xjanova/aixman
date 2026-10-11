@@ -122,6 +122,7 @@ export class ModelStage {
   private readonly home = { position: new THREE.Vector3(2.4, 1.5, 3.2), target: new THREE.Vector3(0, 1, 0) };
   private raf = 0;
   private last = 0;
+  private ticking = false;
   private onScreen = true;
   private disposed = false;
   private loadSeq = 0;
@@ -428,9 +429,14 @@ export class ModelStage {
     this.kick();
   };
 
-  /** Start the loop if it is stopped and anything could be seen. */
+  /**
+   * Start the loop if it is stopped and anything could be seen. A no-op inside
+   * a frame: `controls.update()` there fires 'change', and queueing from it
+   * beside the frame `tick` queues itself doubled the frames every frame — on
+   * auto-rotate the page froze within a second.
+   */
   private readonly kick = () => {
-    if (this.raf || this.disposed || !this.onScreen || document.hidden) return;
+    if (this.raf || this.ticking || this.disposed || !this.onScreen || document.hidden) return;
     this.last = 0;
     this.raf = requestAnimationFrame(this.tick);
   };
@@ -451,7 +457,9 @@ export class ModelStage {
       this.placeholder.children[2].rotation.z += dt * 0.35;
       this.placeholder.position.y = 1 + Math.sin(now / 900) * 0.05;
     }
+    this.ticking = true;
     const moved = this.controls.update(dt);
+    this.ticking = false;
     this.renderer.render(this.scene, this.camera);
     if (moved || this.controls.autoRotate || this.placeholder) {
       this.raf = requestAnimationFrame(this.tick);
