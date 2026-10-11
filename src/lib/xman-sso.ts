@@ -137,12 +137,7 @@ export function ssoRedirectUri(): string {
 }
 
 /**
- * Only same-site, path-absolute destinations survive. `//evil.com` and
- * `https://evil.com` are both rejected — this value comes in on the query
- * string, so treating it as trusted would hand us an open redirect.
+ * Only same-site paths survive — this value comes in on the query string.
+ * Lives in ./safe-callback so the /login page can use the same check.
  */
-export function safeCallbackPath(raw: string | null, fallback = '/generate'): string {
-  if (!raw) return fallback;
-  if (!raw.startsWith('/') || raw.startsWith('//')) return fallback;
-  return raw;
-}
+export { safeCallbackPath } from './safe-callback';

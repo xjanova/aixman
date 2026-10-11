@@ -341,7 +341,7 @@ export default function PricingPage() {
             <p style={{ fontSize: 13, color: "rgba(203,213,225,0.78)", margin: 0, lineHeight: 1.55 }}>
               เติมเงินเข้า Wallet ที่{" "}
               <a href="https://xman4289.com" target="_blank" rel="noopener noreferrer" style={{ color: "#a5f3fc", textDecoration: "none" }}>xman4289.com</a>{" "}
-              แล้ว <Link href="/login" style={{ color: "#a5f3fc", textDecoration: "none" }}>เข้าสู่ระบบ</Link> เพื่อจ่ายซื้อเครดิตได้ทันทีบนหน้านี้
+              แล้ว <Link href="/login?callbackUrl=%2Fpricing" style={{ color: "#a5f3fc", textDecoration: "none" }}>เข้าสู่ระบบ</Link> เพื่อจ่ายซื้อเครดิตได้ทันทีบนหน้านี้
             </p>
           )}
         </div>

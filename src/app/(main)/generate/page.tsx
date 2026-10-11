@@ -47,6 +47,7 @@ import { nextQueueProgress, shownFraction, type QueueProgress, type QueueReading
 import { AUDIO_EXT, AudioCover, AudioResult } from "@/components/xdreamer/audio";
 import { AudioWave } from "@/components/xdreamer/audio-wave";
 import { NO_ORDER_INPUTS, type OrderInputs } from "@/lib/order-inputs";
+import { loginHref } from "@/lib/safe-callback";
 
 const HUE = 70;
 
@@ -1312,7 +1313,7 @@ export default function GeneratePage() {
     []
   );
 
-  useEffect(() => { if (session === null) router.push("/login"); }, [session, router]);
+  useEffect(() => { if (session === null) router.push(loginHref()); }, [session, router]);
   useEffect(() => { fetchModels(); fetchStyles(); fetchTemplates(); fetchCredits(); }, [fetchModels, fetchStyles, fetchTemplates, fetchCredits]);
 
   const fetchHistory = useCallback(async () => {

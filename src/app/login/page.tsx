@@ -15,6 +15,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import { XdreamerMark } from "@/components/xdreamer/logo";
+import { safeCallbackPath } from "@/lib/safe-callback";
 
 const HUE = 70;
 const XMAN_URL = process.env.NEXT_PUBLIC_XMAN_URL || "https://xman4289.com";
@@ -61,14 +62,16 @@ export default function LoginPage() {
     if (failure) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setError(XMAN_ERRORS[failure] ?? XMAN_ERRORS.invalid);
-      window.history.replaceState({}, "", "/login");
+      // Drop the error code, keep the way back for the password form.
+      const back = params.get("callbackUrl");
+      window.history.replaceState({}, "", back ? `/login?callbackUrl=${encodeURIComponent(back)}` : "/login");
       return;
     }
 
     const ticket = params.get("xman_ticket");
     if (!ticket) return;
 
-    const destination = params.get("callbackUrl") || "/generate";
+    const destination = safeCallbackPath(params.get("callbackUrl"));
     // Strip the ticket before anything can put it in history or a Referer.
     window.history.replaceState({}, "", "/login");
 
@@ -79,7 +82,7 @@ export default function LoginPage() {
         setError(XMAN_ERRORS.expired);
         return;
       }
-      router.push(destination.startsWith("/") && !destination.startsWith("//") ? destination : "/generate");
+      router.push(destination);
     });
   }, [router]);
 
@@ -90,7 +93,7 @@ export default function LoginPage() {
     const result = await signIn("credentials", { email, password, redirect: false });
     setLoading(false);
     if (result?.error) setError("อีเมลหรือรหัสผ่านไม่ถูกต้อง");
-    else router.push("/generate");
+    else router.push(safeCallbackPath(new URLSearchParams(window.location.search).get("callbackUrl")));
   };
 
   return (
@@ -141,7 +144,12 @@ export default function LoginPage() {
             with a 302 to xman4289.com, and client-side routing cannot follow a
             redirect off this origin. */}
         <button type="button" disabled={ssoBusy}
-          onClick={() => { setSsoBusy(true); window.location.href = "/api/auth/xman/start"; }}
+          onClick={() => {
+            setSsoBusy(true);
+            // The start route checks this again and carries it through xman4289.com.
+            const back = new URLSearchParams(window.location.search).get("callbackUrl");
+            window.location.href = back ? `/api/auth/xman/start?callbackUrl=${encodeURIComponent(back)}` : "/api/auth/xman/start";
+          }}
           style={{
             display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
             width: "100%", padding: "13px 0", borderRadius: 12,

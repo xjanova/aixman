@@ -32,18 +32,23 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  const callbackPath = safeCallbackPath(request.nextUrl.searchParams.get('callbackUrl'));
+
   // Fail closed and loudly: a half-configured deploy should not silently fall
   // back to something that looks like it worked.
   if (!process.env.XMAN_SSO_SECRET) {
     console.error('XMAN_SSO_SECRET is not set — XMAN ID sign-in is unavailable');
     // Canonical public origin, not `request.url`: behind nginx the latter can
-    // carry the internal one and bounce the customer to localhost.
-    return NextResponse.redirect(new URL('/login?xman_error=unavailable', aixmanBaseUrl()));
+    // carry the internal one and bounce the customer to localhost. The way
+    // back rides along, so the password form can still use it.
+    const back = new URL('/login', aixmanBaseUrl());
+    back.searchParams.set('xman_error', 'unavailable');
+    back.searchParams.set('callbackUrl', callbackPath);
+    return NextResponse.redirect(back);
   }
 
   const verifier = createVerifier();
   const state = createState();
-  const callbackPath = safeCallbackPath(request.nextUrl.searchParams.get('callbackUrl'));
 
   const target = new URL(`${xmanBaseUrl()}/auth/xdreamer/authorize`);
   target.searchParams.set('redirect_uri', ssoRedirectUri());

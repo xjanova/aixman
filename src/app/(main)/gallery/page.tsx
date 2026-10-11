@@ -20,6 +20,7 @@ import { EmptyState } from "@/components/xdreamer/page-hero";
 import { downloadGeneration, extensionOf, saveFavorite } from "@/lib/client-actions";
 import { AudioCover } from "@/components/xdreamer/audio";
 import { ModelViewer } from "@/components/xdreamer/model-viewer";
+import { loginHref } from "@/lib/safe-callback";
 
 const HUE = 70;
 
@@ -102,7 +103,7 @@ export default function GalleryPage() {
     if (typeof window !== "undefined") localStorage.setItem("xdr-gallery-view", view);
   }, [view]);
 
-  useEffect(() => { if (session === null) router.push("/login"); }, [session, router]);
+  useEffect(() => { if (session === null) router.push(loginHref()); }, [session, router]);
 
   useEffect(() => {
     if (searchTimeout.current) clearTimeout(searchTimeout.current);

@@ -16,7 +16,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSession, signOut } from "next-auth/react";
+import { usePathname } from "next/navigation";
 import { XdreamerMark } from "./logo";
+import { loginHrefFor } from "@/lib/safe-callback";
 
 export const HUE = 70;
 
@@ -255,6 +257,8 @@ export function XdrThemeStyles() {
 // ─── NAV ────────────────────────────────────────────────────────────────
 export function XdrNav({ creditsLabel }: { creditsLabel?: string }) {
   const { data: session } = useSession();
+  // Signing in from here comes back here.
+  const loginLink = loginHrefFor(usePathname() ?? "/");
   const [credits, setCredits] = useState<number | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
   const links = [
@@ -306,7 +310,7 @@ export function XdrNav({ creditsLabel }: { creditsLabel?: string }) {
           <UserMenu name={session.user?.name || "User"} email={session.user?.email || ""} />
         ) : (
           <>
-            <Link href="/login" className="rp-nav-cta-ghost" style={{ background: "transparent", color: "#e2e8f0", border: "1px solid rgba(255,255,255,0.15)", padding: "8px 16px", borderRadius: 10, fontSize: 13, fontWeight: 500, cursor: "pointer", textDecoration: "none" }}>เข้าสู่ระบบ</Link>
+            <Link href={loginLink} className="rp-nav-cta-ghost" style={{ background: "transparent", color: "#e2e8f0", border: "1px solid rgba(255,255,255,0.15)", padding: "8px 16px", borderRadius: 10, fontSize: 13, fontWeight: 500, cursor: "pointer", textDecoration: "none" }}>เข้าสู่ระบบ</Link>
             <Link href="/login?signup=1" className="rp-nav-cta-primary" style={{ background: "linear-gradient(135deg, #10b981 0%, #06b6d4 50%, #8b5cf6 100%)", color: "#fff", border: "none", padding: "9px 18px", borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: "pointer", textDecoration: "none", boxShadow: "0 8px 24px -8px rgba(139,92,246,0.6)" }}>เริ่มสร้างฟรี</Link>
           </>
         )}
@@ -342,7 +346,7 @@ export function XdrNav({ creditsLabel }: { creditsLabel?: string }) {
             </>
           ) : (
             <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
-              <Link href="/login" onClick={() => setMobileOpen(false)} style={{ flex: 1, textAlign: "center", padding: "12px 14px", borderRadius: 10, color: "#e2e8f0", textDecoration: "none", fontSize: 14, border: "1px solid rgba(255,255,255,0.15)" }}>เข้าสู่ระบบ</Link>
+              <Link href={loginLink} onClick={() => setMobileOpen(false)} style={{ flex: 1, textAlign: "center", padding: "12px 14px", borderRadius: 10, color: "#e2e8f0", textDecoration: "none", fontSize: 14, border: "1px solid rgba(255,255,255,0.15)" }}>เข้าสู่ระบบ</Link>
               <Link href="/login?signup=1" onClick={() => setMobileOpen(false)} style={{ flex: 1, textAlign: "center", padding: "12px 14px", borderRadius: 10, color: "#fff", textDecoration: "none", fontSize: 14, background: "linear-gradient(135deg, #10b981, #06b6d4, #8b5cf6)" }}>เริ่มฟรี</Link>
             </div>
           )}

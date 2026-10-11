@@ -17,6 +17,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import { AudioCover } from "@/components/xdreamer/audio";
+import { loginHref } from "@/lib/safe-callback";
 
 const HUE = 70;
 
@@ -41,7 +42,7 @@ export default function ProfilePage() {
   const [loadingGens, setLoadingGens] = useState(true);
   const [loadingTxns, setLoadingTxns] = useState(true);
 
-  useEffect(() => { if (status === "unauthenticated") router.push("/login"); }, [status, router]);
+  useEffect(() => { if (status === "unauthenticated") router.push(loginHref()); }, [status, router]);
 
   useEffect(() => {
     if (status !== "authenticated") return;

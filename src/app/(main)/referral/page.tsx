@@ -17,6 +17,7 @@ import { useSession } from "next-auth/react";
 import { PageHero } from "@/components/xdreamer/page-hero";
 import { useRouter } from "next/navigation";
 import { useToast } from "@/components/ui/toast-provider";
+import { loginHref } from "@/lib/safe-callback";
 
 const HUE = 70;
 
@@ -77,7 +78,7 @@ export default function ReferralPage() {
   const [applying, setApplying] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  useEffect(() => { if (session === null) router.push("/login"); }, [session, router]);
+  useEffect(() => { if (session === null) router.push(loginHref()); }, [session, router]);
 
   useEffect(() => {
     if (!session) return;
