@@ -115,7 +115,7 @@ npx prisma db push   # Push schema (ai_ tables only!)
 
 Auto-cooldown on rate limit (5 min), auto-disable after 5 consecutive errors.
 
-## Self-Hosted GPU (SimplePod · RunPod · Vast.ai · Verda → MiniMax H3)
+## Self-Hosted GPU (SimplePod · RunPod · Vast.ai · Verda · Google Cloud → MiniMax H3)
 
 **SimplePod is a GPU rental marketplace, NOT an inference API.** There is no
 `/generate` endpoint and no model list — it rents a Docker container on a GPU
@@ -196,7 +196,7 @@ balance + free machines per model) and "เช่าเครื่องทด�
 that vendor under every guardrail except the scaling rule, taken under the
 tick lock).
 
-**Vendors** (`src/lib/gpu/{simplepod,runpod,vast,verda}.ts`, all behind
+**Vendors** (`src/lib/gpu/{simplepod,runpod,vast,verda,gce}.ts`, all behind
 `GpuRentalProvider`). `addCapacity` asks every enabled vendor at once
 (`gatherMarkets`, 25 s timeout each) — **machine first, never vendor first**:
 all free machines are ranked together, then each must be paid for by its own
@@ -210,6 +210,7 @@ No key anywhere throws (refund); anything else is a reason for the next tick.
 | RunPod | `https://{pod}-{port}.proxy.runpod.net` | REST **v2** only (v1 retires 2026-11-15, its field names 422 on v2); balance only via GraphQL (retires early 2027 → `unknown`, RunPod's 402 does the job); 400 = no capacity; `GET` returns env incl. the token — never log pods |
 | Vast.ai | **own tunnel** | ports are plain TCP; hosts charge `inet_down_cost` per GB (priced in); `stopped` still bills storage → treated as error and destroyed; `/users/current` returns the API key |
 | Verda | **own tunnel** | whole VMs: first-boot script starts our container; scripts are readable via API and hold the token → deleted once running; `offline` bills → error; delete **must name the OS volume** or it keeps billing; ids come back as plain text |
+| Google Cloud (gce) | **own tunnel** | Compute Engine VMs, credential = service-account **JSON key** (setup form textarea, JWT signed in-process). **Not Colab** — consumer Colab has no runtime API and its terms forbid serving third parties. No balance API → `unknown`; daily budget is the only cap. **GPU quota** (`GPUS_ALL_REGIONS` + per-region, e.g. `NVIDIA_L4_GPUS`) is the usual blocker: offers only where quota is free, setup warns via `readiness()`. Prices from a static table (us-central1, non-US ×1.25). Every card on demand **and Spot** (H100 a3-highgpu-1g Spot-only); all VMs `instanceTerminationAction: DELETE` + `maxRunDuration` 12 h (Google-side kill switch); stockouts fail the *operation*, so `rent` waits ≤20 s on it; ids are `zone/name`; logs = serial port 1 |
 
 Tunnel mode (`GpuExposure 'tunnel'`): the proxy stays on loopback, the boot
 downloads cloudflared, the proxy opens a quick tunnel and POSTs its URL to

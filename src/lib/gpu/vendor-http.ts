@@ -30,6 +30,9 @@ function detailOf(body: string): string {
       const value = parsed[key];
       if (typeof value === 'string' && value.trim()) return value.trim().slice(0, 300);
     }
+    // Google nests it: {"error": {"code": 403, "message": "..."}}.
+    const nested = (parsed.error as { message?: unknown } | undefined)?.message;
+    if (typeof nested === 'string' && nested.trim()) return nested.trim().slice(0, 300);
     return '';
   } catch {
     return body.replace(/\s+/g, ' ').trim().slice(0, 300);

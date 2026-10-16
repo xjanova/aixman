@@ -14,9 +14,9 @@
 
 import type { GpuArch } from './gpu-specs';
 
-export type GpuProviderSlug = 'simplepod' | 'runpod' | 'vast' | 'verda' | 'gpuxmine';
+export type GpuProviderSlug = 'simplepod' | 'runpod' | 'vast' | 'verda' | 'gce' | 'gpuxmine';
 
-export const GPU_PROVIDER_SLUGS: readonly GpuProviderSlug[] = ['simplepod', 'runpod', 'vast', 'verda', 'gpuxmine'];
+export const GPU_PROVIDER_SLUGS: readonly GpuProviderSlug[] = ['simplepod', 'runpod', 'vast', 'verda', 'gce', 'gpuxmine'];
 
 export function isGpuProviderSlug(value: unknown): value is GpuProviderSlug {
   return typeof value === 'string' && (GPU_PROVIDER_SLUGS as readonly string[]).includes(value);
@@ -212,6 +212,8 @@ export interface GpuBalance {
   unknown?: boolean;
 }
 
+export type GpuCredentialKind = 'api-key' | 'client-id-secret' | 'service-account-json';
+
 export interface GpuRentalProvider {
   readonly slug: GpuProviderSlug;
   /** What admins see. */
@@ -220,9 +222,15 @@ export interface GpuRentalProvider {
   /**
    * How the stored credential is shaped, for the setup form: most vendors take
    * one API key; Verda's OAuth needs a client id and secret, stored together as
-   * `id:secret`.
+   * `id:secret`; Google Cloud takes the service account's JSON key file whole.
    */
-  readonly credential: 'api-key' | 'client-id-secret';
+  readonly credential: GpuCredentialKind;
+
+  /**
+   * Why renting would fail although the credential works (Google Cloud: no GPU
+   * quota yet), shown at setup. Null when renting can proceed.
+   */
+  readiness?(credential: string): Promise<string | null>;
 
   /** Cheapest-first list of machines matching `filter`. */
   findOffers(filter: GpuOfferFilter, apiKey: string): Promise<GpuOffer[]>;

@@ -60,6 +60,11 @@ test('a real refusal is not asked again', async () => {
   assert.equal(f.calls(), 1);
 });
 
+test("Google's nested error message reaches the error text", async () => {
+  scripted([status(403, '{"error":{"code":403,"message":"Quota NVIDIA_L4_GPUS exceeded"}}')]);
+  await assert.rejects(vendorFetch('Google Cloud', 'https://g.example/compute/v1/x', fast), /403: Quota NVIDIA_L4_GPUS exceeded/);
+});
+
 test('a timeout is not tried again', async () => {
   let n = 0;
   globalThis.fetch = ((_url: string, init?: RequestInit) => {

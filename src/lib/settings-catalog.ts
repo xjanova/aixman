@@ -58,7 +58,7 @@ export const SETTING_CATEGORIES: SettingCategory[] = [
   { id: 'general', label: 'ทั่วไป', description: 'ข้อมูลเว็บไซต์และสถานะการติดตั้ง' },
   { id: 'credits', label: 'เครดิตและสมาชิก', description: 'เครดิตที่แจกและกติกาการใช้เครดิต' },
   { id: 'storage', label: 'ไฟล์และการเก็บรักษา', description: 'ไฟล์ผลงานเก็บนานแค่ไหน และรูปแบบไฟล์' },
-  { id: 'gpu', label: 'GPU เช่า', description: 'เพดานค่าใช้จ่ายและเวลาของเครื่องที่เช่ามาเรนเดอร์ (SimplePod, RunPod, Vast.ai, Verda) — แก้ได้ที่หน้า GPU' },
+  { id: 'gpu', label: 'GPU เช่า', description: 'เพดานค่าใช้จ่ายและเวลาของเครื่องที่เช่ามาเรนเดอร์ (SimplePod, RunPod, Vast.ai, Verda, Google Cloud) — แก้ได้ที่หน้า GPU' },
   { id: 'notify', label: 'การแจ้งเตือน', description: 'Telegram แจ้งยอดเงินและรายงานประจำวัน' },
   { id: 'mobile', label: 'แอปมือถือ', description: 'บังคับอัปเดตแอป XDreamer' },
   { id: 'generation', label: 'การสร้างงาน', description: 'ค่าเริ่มต้นของสตูดิโอ (ส่วนใหญ่ยังไม่ได้เชื่อมกับระบบ)' },
@@ -156,7 +156,7 @@ export const SETTINGS_CATALOG: Record<string, SettingMeta> = {
   },
   gpu_providers: {
     label: 'ผู้ให้เช่าที่ระบบเลือกเช่าได้',
-    tip: 'รายชื่อคั่นจุลภาค (simplepod, runpod, vast, verda) · ระบบดูเครื่องว่างจากทุกเจ้าในรายการแล้วเลือกเครื่องที่คุ้มสุดที่บัญชีเจ้านั้นมีเงินพอ · เจ้าที่ไม่อยู่ในรายการยังถูกตรวจและปิดเครื่องตกค้างตามปกติ · เปิด/ปิดแต่ละเจ้าที่หน้า GPU',
+    tip: 'รายชื่อคั่นจุลภาค (simplepod, runpod, vast, verda, gce) · ระบบดูเครื่องว่างจากทุกเจ้าในรายการแล้วเลือกเครื่องที่คุ้มสุดที่บัญชีเจ้านั้นมีเงินพอ · เจ้าที่ไม่อยู่ในรายการยังถูกตรวจและปิดเครื่องตกค้างตามปกติ · เปิด/ปิดแต่ละเจ้าที่หน้า GPU',
     category: 'gpu', input: 'text', managedAt: GPU_PAGE,
   },
   gpu_max_worker_lifetime_minutes: {

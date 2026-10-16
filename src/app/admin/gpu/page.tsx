@@ -135,7 +135,7 @@ interface GpuConfig {
 interface VendorRow {
   slug: string;
   label: string;
-  credential: "api-key" | "client-id-secret";
+  credential: "api-key" | "client-id-secret" | "service-account-json";
   connected: boolean;
   enabled: boolean;
   balanceUsd: number | null;
@@ -246,6 +246,12 @@ const VENDOR_INFO: Record<string, { keyUrl: string; billingUrl: string; keyHint:
     billingUrl: "https://console.verda.com/",
     keyHint: "Keys → Cloud API credentials (Client ID + Client Secret)",
     blurb: "ศูนย์ข้อมูลฟินแลนด์ RTX PRO 6000/H100/A100/L40S • เป็น VM บูตช้ากว่า ~3 นาที",
+  },
+  gce: {
+    keyUrl: "https://console.cloud.google.com/iam-admin/serviceaccounts",
+    billingUrl: "https://console.cloud.google.com/billing",
+    keyHint: "Service Accounts → Keys → Add key → JSON • ต้องขอโควตา GPU ที่ IAM & Admin → Quotas ก่อน",
+    blurb: "Compute Engine T4/L4/A100/H100 แบบปกติและ Spot (ถูกกว่า 60–90% แต่ Google ดึงคืนได้) • ไม่มียอดเงินให้อ่าน คุมด้วยงบรายวัน • VM บูต ~4 นาที",
   },
 };
 
@@ -1091,6 +1097,11 @@ function VendorsSection({
                            onChange={(e) => onCreds(v.slug, { ...c, clientSecret: e.target.value })}
                            className="flex-1 min-w-[140px] px-3 py-2 rounded-lg glass text-sm outline-none" />
                   </>
+                ) : v.credential === "service-account-json" ? (
+                  <textarea value={c.apiKey ?? ""} autoComplete="off" spellCheck={false} rows={3}
+                            placeholder={v.connected ? "วาง JSON key ใหม่ (ถ้าจะเปลี่ยน)" : 'วางเนื้อหาไฟล์ JSON ทั้งไฟล์ { "type": "service_account", ... }'}
+                            onChange={(e) => onCreds(v.slug, { ...c, apiKey: e.target.value })}
+                            className="flex-1 min-w-[200px] px-3 py-2 rounded-lg glass text-xs font-mono outline-none resize-y [-webkit-text-security:disc] focus:[-webkit-text-security:none]" />
                 ) : (
                   <input type="password" value={c.apiKey ?? ""} autoComplete="off"
                          placeholder={v.connected ? "API key ใหม่ (ถ้าจะเปลี่ยน)" : `${v.label} API key`}

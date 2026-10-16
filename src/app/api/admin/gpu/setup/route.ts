@@ -5,7 +5,8 @@ import { encrypt } from '@/lib/utils/encryption';
 import { getGpuProvider } from '@/lib/gpu';
 import { GPU_DEFAULTS, getGpuConfig } from '@/lib/gpu/config';
 import { syncCatalogModels } from '@/lib/gpu/model-sync';
-import { isGpuProviderSlug, type GpuProviderSlug } from '@/lib/gpu/types';
+import { isGpuProviderSlug, type GpuCredentialKind, type GpuProviderSlug } from '@/lib/gpu/types';
+import { parseServiceAccount } from '@/lib/gpu/gce';
 import { relayBaseUrl } from '@/lib/gpu/gpuxmine';
 import { GpuBalance } from '@/lib/services/gpu-balance';
 
@@ -51,6 +52,11 @@ const VENDOR_ROWS: Record<GpuProviderSlug, { name: string; baseUrl: string; desc
     baseUrl: 'https://api.verda.com/v1',
     description: 'ศูนย์ข้อมูลของ Verda (DataCrunch เดิม) ที่ฟินแลนด์ — RTX PRO 6000, H100, A100, L40S',
   },
+  gce: {
+    name: 'Google Cloud (เช่า GPU)',
+    baseUrl: 'https://compute.googleapis.com/compute/v1',
+    description: 'VM ของ Google Compute Engine — T4, L4, A100, H100 ทั้งแบบปกติและ Spot (ถูกกว่าแต่ Google ดึงคืนได้)',
+  },
   // Not a marketplace. The credential is the relay's admin key, and it only
   // buys the admin pages a live view of who is online. The pool itself works
   // without one: XMAN Studio pushes each node's endpoint and tunnel token, and
@@ -74,14 +80,36 @@ const DEFAULT_SETTINGS: Array<{ key: string; value: string; type: string }> = [
   { key: 'gpu_job_timeout_minutes', value: String(GPU_DEFAULTS.jobTimeoutMinutes), type: 'number' },
 ];
 
-/** The stored credential: an API key, or Verda's `client_id:client_secret`. */
-function credentialFrom(body: Record<string, unknown>, kind: 'api-key' | 'client-id-secret'): string {
+/**
+ * The stored credential: an API key, Verda's `client_id:client_secret`, or a
+ * Google service account's JSON key (re-serialised compact; an unreadable one
+ * is empty, so the admin is told what to paste rather than "cannot connect").
+ */
+function credentialFrom(body: Record<string, unknown>, kind: GpuCredentialKind): string {
   if (kind === 'client-id-secret') {
     const id = typeof body.clientId === 'string' ? body.clientId.trim() : '';
     const secret = typeof body.clientSecret === 'string' ? body.clientSecret.trim() : '';
     return id && secret ? `${id}:${secret}` : '';
   }
-  return typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
+  const raw = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
+  if (kind === 'service-account-json') {
+    try {
+      const compact = JSON.stringify(JSON.parse(raw));
+      parseServiceAccount(compact);
+      return compact;
+    } catch {
+      return '';
+    }
+  }
+  return raw;
+}
+
+function missingCredentialMessage(kind: GpuCredentialKind, label: string): string {
+  if (kind === 'client-id-secret') return `กรุณาระบุ Client ID และ Client Secret ของ ${label}`;
+  if (kind === 'service-account-json') {
+    return `กรุณาวางเนื้อหาไฟล์ JSON ของ Service Account ทั้งไฟล์ (ต้องมี "type": "service_account", project_id, client_email และ private_key)`;
+  }
+  return `กรุณาระบุ API key ของ ${label}`;
 }
 
 async function upsertVendorRow(slug: GpuProviderSlug) {
@@ -122,15 +150,7 @@ export async function POST(request: NextRequest) {
 
   const credential = credentialFrom(body, provider.credential);
   if (!credential) {
-    return NextResponse.json(
-      {
-        error:
-          provider.credential === 'client-id-secret'
-            ? `กรุณาระบุ Client ID และ Client Secret ของ ${provider.label}`
-            : `กรุณาระบุ API key ของ ${provider.label}`,
-      },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: missingCredentialMessage(provider.credential, provider.label) }, { status: 400 });
   }
 
   // Verify before persisting — a credential that cannot read the balance
@@ -148,6 +168,16 @@ export async function POST(request: NextRequest) {
       { error: `ใช้ข้อมูลนี้เชื่อมต่อ ${provider.label} ไม่ได้ กรุณาตรวจสอบว่าคัดลอกมาครบและมีสิทธิ์เข้าถึง` },
       { status: 400 }
     );
+  }
+
+  // A working key can still be unable to rent (Google Cloud with no GPU quota
+  // yet). Saved anyway — quota arrives later — but the admin hears it now.
+  let readinessWarning: string | null = null;
+  if (provider.readiness) {
+    readinessWarning = await provider.readiness(credential).catch((error) => {
+      console.error(`[gpu] ${slug} readiness check failed:`, (error as Error).message);
+      return null;
+    });
   }
 
   try {
@@ -240,9 +270,10 @@ export async function POST(request: NextRequest) {
       modelsActivated: activated,
       // Surfaced so the admin immediately sees whether renting is even viable.
       warning:
-        balanceUsd !== null && balanceUsd < GPU_DEFAULTS.maxPricePerHourUsd
+        readinessWarning ??
+        (balanceUsd !== null && balanceUsd < GPU_DEFAULTS.maxPricePerHourUsd
           ? `ยอดเงินใน ${provider.label} เหลือ $${balanceUsd.toFixed(2)} ซึ่งไม่พอเช่าเครื่อง 1 ชั่วโมง กรุณาเติมเงินก่อนใช้งาน`
-          : null,
+          : null),
     });
   } catch (error) {
     console.error('[gpu] setup failed:', error);
