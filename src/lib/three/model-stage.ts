@@ -122,6 +122,8 @@ export class ModelStage {
   private readonly home = { position: new THREE.Vector3(2.4, 1.5, 3.2), target: new THREE.Vector3(0, 1, 0) };
   private raf = 0;
   private last = 0;
+  /** Frame pacing (see tick): the display's measured frame time in ms, and when anything last moved. */
+  private readonly pacing = { vsync: 1000 / 60, lastRaw: 0, count: 0, active: 0 };
   private ticking = false;
   private onScreen = true;
   private disposed = false;
@@ -139,7 +141,8 @@ export class ModelStage {
   }
 
   private constructor(private readonly container: HTMLElement) {
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    // Near 2x pixels the edges are already smooth: MSAA there only costs bandwidth.
+    this.renderer = new THREE.WebGLRenderer({ antialias: (window.devicePixelRatio || 1) < 1.75, alpha: true });
     const r = this.renderer;
     r.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     r.outputColorSpace = THREE.SRGBColorSpace;
@@ -451,6 +454,8 @@ export class ModelStage {
    * auto-rotate the page froze within a second.
    */
   private readonly kick = () => {
+    // Anything but the frame's own 'change' is a real change: full pace for a while.
+    if (!this.ticking) this.pacing.active = performance.now();
     if (this.raf || this.ticking || this.disposed || !this.onScreen || document.hidden) return;
     this.last = 0;
     this.raf = requestAnimationFrame(this.tick);
@@ -464,6 +469,21 @@ export class ModelStage {
   private readonly tick = (now: number) => {
     this.raf = 0;
     if (this.disposed || !this.onScreen || document.hidden) return;
+    // Pacing. A 120/144 Hz screen would otherwise draw every vsync — over twice
+    // the work of 60 Hz for a turntable nobody can tell apart — so draw on every
+    // nth vsync to land near 60, and at ~30 once nothing but auto-rotate or the
+    // hologram has moved for a few seconds. Motion is time-based, speeds hold.
+    const p = this.pacing;
+    const raw = now - p.lastRaw;
+    p.lastRaw = now;
+    if (raw > 2 && raw < 50) p.vsync = p.vsync * 0.95 + raw * 0.05;
+    const idle = now - p.active > 3500;
+    const every = Math.max(1, Math.floor(1000 / p.vsync / (idle ? 28 : 55)));
+    if (++p.count < every) {
+      this.raf = requestAnimationFrame(this.tick);
+      return;
+    }
+    p.count = 0;
     const dt = this.last ? Math.min(0.1, (now - this.last) / 1000) : 1 / 60;
     this.last = now;
     if (this.placeholder) {
