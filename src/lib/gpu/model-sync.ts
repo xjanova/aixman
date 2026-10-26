@@ -1,5 +1,5 @@
 import prisma from '@/lib/db';
-import { MODEL_CATALOG, type CatalogEntry } from './catalog';
+import { MODEL_CATALOG, RETIRED_CATALOG_KEYS, type CatalogEntry } from './catalog';
 
 /**
  * Write the catalogue into `ai_models`.
@@ -72,5 +72,10 @@ export async function syncCatalogModels(providerId: number): Promise<{ created: 
     if (isNew) created += 1;
     else updated += 1;
   }
+  // A removed entry's row would stay on sale with nothing to run it.
+  await prisma.aiModel.updateMany({
+    where: { providerId, modelId: { in: [...RETIRED_CATALOG_KEYS] }, isActive: true },
+    data: { isActive: false },
+  });
   return { created, updated };
 }

@@ -18,7 +18,7 @@ import assert from 'node:assert/strict';
 // Nothing here queries a database.
 process.env.DATABASE_URL ??= 'mysql://test:test@127.0.0.1:3306/test';
 
-const { MODEL_CATALOG, getCatalogEntry, nearestBucket, h3Prompt, talkingFrame } = await import('@/lib/gpu/catalog');
+const { MODEL_CATALOG, getCatalogEntry, nearestBucket, h3Prompt, ltxFrame } = await import('@/lib/gpu/catalog');
 const { validateGraph } = await import('@/lib/gpu/comfy-validate');
 const { alternativeTunables, coerceTunable, resolveTunables } = await import('@/lib/gpu/tunables');
 const { buildJobGraph, sampleJob, shapePrompt } = await import('@/lib/gpu/workflow-build');
@@ -285,45 +285,49 @@ test('stored tunables are coerced, never trusted', () => {
 });
 
 // ---------------------------------------------------------------------------
-// LTX-2.3 talking portrait — the customer's voice, not the template's TTS
+// LTX-2.5 — video with its own sound, from text or a first frame
 // ---------------------------------------------------------------------------
 
-test('a portrait speaks the uploaded voice: no paid API node survives, the voice drives the clip', () => {
-  const g = build('ltx-2.3-talking', { audioFilename: AUDIO, imageFilename: FIRST, durationSeconds: 7.6667 }).graph;
+test('LTX-2.5 without a first frame loads no picture and skips the image nodes', () => {
+  const g = build('ltx-2.5', { imageFilename: undefined }).graph;
   const classes = Object.values(g).map((n) => n.class_type);
-  for (const api of ['ElevenLabsTextToSpeech', 'ElevenLabsVoiceSelector', 'GeminiNode', 'RegexExtract', 'SaveAudioMP3', 'PreviewAny']) {
-    assert.ok(!classes.includes(api), `${api} reached the graph`);
+  for (const gone of ['LoadImage', 'LTXVImgToVideoInplace', 'LTXVPreprocess', 'ResizeImageMaskNode']) {
+    assert.ok(!classes.includes(gone), `${gone} reached a text-to-video graph`);
   }
-  assert.equal(g.aix_voice.inputs.audio, AUDIO);
-  assert.deepEqual(g['478_332'].inputs.audio, ['aix_voice', 0], 'the trim reads our LoadAudio');
-  assert.equal(g['440'].inputs.image, FIRST);
-  // One number decides the trim and the frame count.
-  assert.equal(g['478_331'].inputs.value, 7.6667);
-  assert.deepEqual(g['478_332'].inputs.duration, ['478_331', 0]);
-  assert.deepEqual(g['478_329'].inputs['values.a'], ['478_331', 0]);
-  // The file carries the recording itself, not LTX's re-synthesised copy.
-  assert.deepEqual(g['478_312'].inputs.audio, ['478_332', 0]);
-  assert.ok(!classes.includes('LTXVAudioVAEDecode'), 'the unused audio decode is pruned');
-  // Two passes, two seeds.
-  assert.notEqual(g['478_285'].inputs.noise_seed, g['478_286'].inputs.noise_seed);
+  assert.deepEqual(g['398_377'].inputs.video_latent, ['398_356', 0], 'first pass starts from the empty latent');
+  assert.deepEqual(g['398_340'].inputs.video_latent, ['398_348', 0], 'second pass takes the upscaled latent');
 });
 
-test('a portrait keeps its own shape on the 64 px grid', () => {
-  assert.deepEqual(talkingFrame(1080, 1920), { width: 704, height: 1280 });
-  assert.deepEqual(talkingFrame(3024, 4032), { width: 832, height: 1088 });
-  assert.deepEqual(talkingFrame(1000, 1000), { width: 960, height: 960 });
-  assert.deepEqual(talkingFrame(1920, 1080), { width: 1280, height: 704 });
-  assert.deepEqual(talkingFrame(0, 0), { width: 704, height: 1280 }, "unknown shape → the template's portrait");
-  const g = build('ltx-2.3-talking', { width: 1280, height: 720 }).graph;
-  assert.equal(g['478_330'].inputs.value, 1280);
-  assert.equal(g['478_324'].inputs.value, 704);
+test('LTX-2.5 with a first frame conditions both passes on it', () => {
+  const g = build('ltx-2.5', { imageFilename: FIRST }).graph;
+  assert.equal(g['395'].inputs.image, FIRST);
+  assert.equal(g['398_363'].inputs.value, false, 'image nodes are not bypassed');
+  assert.deepEqual(g['398_377'].inputs.video_latent, ['398_357', 0]);
+  assert.deepEqual(g['398_340'].inputs.video_latent, ['398_349', 0]);
+  assert.equal(g['398_357'].inputs.strength, 0.7);
 });
 
-test('an empty prompt still tells the model the person is talking to camera', () => {
-  const empty = build('ltx-2.3-talking', { prompt: '' }).graph;
-  assert.match(String(empty['478_319'].inputs.value), /^action: the person talks directly to the camera/);
-  const scene = build('ltx-2.3-talking', { prompt: 'พิธีกรหญิงยิ้มแย้มในสตูดิโอข่าว' }).graph;
-  assert.match(String(scene['478_319'].inputs.value), /^พิธีกรหญิงยิ้มแย้มในสตูดิโอข่าว\naction:/);
+test("LTX-2.5 gets the customer's prompt directly, never the template's enhancer", () => {
+  const g = build('ltx-2.5', { prompt: '  นักร้องหญิงร้องเพลงบนเวที  ', seed: 41 }).graph;
+  const classes = Object.values(g).map((n) => n.class_type);
+  for (const gone of ['TextGenerateLTX2Prompt', 'ComfySwitchNode', 'PreviewAny', 'ResolutionSelector']) {
+    assert.ok(!classes.includes(gone), `${gone} reached the graph`);
+  }
+  assert.equal(g['398_364'].inputs.text, 'นักร้องหญิงร้องเพลงบนเวที');
+  const clips = Object.values(g).filter((n) => n.class_type === 'CLIPLoader');
+  assert.equal(clips.length, 1, 'only the Gemma 4 12B encoder is loaded');
+  assert.notEqual(g['398_339'].inputs.noise_seed, g['398_338'].inputs.noise_seed, 'two passes, two seeds');
+});
+
+test('LTX-2.5 renders whole seconds on a 64 px grid in the ordered shape', () => {
+  assert.deepEqual(ltxFrame(1920, 1080), { width: 1280, height: 704 });
+  assert.deepEqual(ltxFrame(1080, 1920), { width: 704, height: 1280 });
+  assert.deepEqual(ltxFrame(1000, 1000), { width: 960, height: 960 });
+  assert.deepEqual(ltxFrame(0, 0), { width: 1280, height: 704 }, 'unknown shape → landscape');
+  const g = build('ltx-2.5', { width: 1344, height: 768, durationSeconds: 10.4 }).graph;
+  assert.equal(g['398_372'].inputs.value, 1280);
+  assert.equal(g['398_360'].inputs.value, 704);
+  assert.equal(g['398_362'].inputs.value, 10);
 });
 
 test('a picture becomes a textured mesh, cut out first and exported after painting', () => {

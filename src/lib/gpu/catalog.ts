@@ -18,11 +18,11 @@ import {
   type WorkflowTunable,
 } from './tunables';
 import minimaxH3Template from './workflows/templates/minimax_h3_t2v.json';
+import ltx25I2vTemplate from './workflows/templates/ltx25_i2v.json';
 import aceStepTemplate from './workflows/templates/ace_step_1_5.json';
 import qwenImageTemplate from './workflows/templates/qwen_image.json';
 import yue2Text2MusicTemplate from './workflows/templates/yue2_text2music.json';
 import yue2MusicCoverTemplate from './workflows/templates/yue2_music_cover.json';
-import ltxTalkingTemplate from './workflows/templates/ltx23_image_speech_to_video.json';
 import hunyuan3d21Template from './workflows/templates/hunyuan3d21_image_to_3d.json';
 import latentsyncTemplate from './workflows/templates/latentsync16_video_dub.json';
 
@@ -66,10 +66,10 @@ export interface ModelDownload {
   bytes: number;
   /**
    * Save under this name instead of the repo's basename. Required when a
-   * template hardcodes a filename the upstream repo does not use — the TalkVid
-   * LoRA ships as `lora_weights.safetensors` but the workflow asks for
-   * `ltx-2.3-id-lora-talkvid-3k.safetensors`, and a mismatch shows up only as
-   * an empty dropdown at render time.
+   * template hardcodes a filename the upstream repo does not use — Hunyuan3D's
+   * DiT ships as `model.fp16.ckpt` but the workflow asks for
+   * `hunyuan3d-dit-v2-1-fp16.ckpt`, and a mismatch shows up only as an empty
+   * dropdown at render time.
    */
   as?: string;
 }
@@ -784,6 +784,144 @@ function minimaxFrameLength(durationSeconds: number, fps: number): number {
 }
 
 // ---------------------------------------------------------------------------
+// LTX-2.5 — video with native audio, from text or a first frame
+// ---------------------------------------------------------------------------
+// Template: video_ltx2_5_i2v.json ("LTX-2.5: Image to Video"). Everything runs
+// inside subgraph instance 398, so converted ids are `398_…`; the LoadImage
+// (395), SaveVideo (75) and a ResolutionSelector (403) sit outside it.
+//
+// Two passes of the distilled 22B model: 8 steps at half size, a ×2 latent
+// upscale, 3 more steps at full size. Picture and sound come out of one latent.
+//
+// The template's own text-to-video switch (`398_363`) only bypasses the image
+// nodes, which still need a picture to load. Without a first frame the two
+// LTXVImgToVideoInplace nodes are taken out of the latent path instead, and
+// the image chain is pruned with them. Its prompt enhancer (a second Gemma)
+// is cut off the same way: the prompt goes straight to the encoder, the
+// studio has its own enhancer, and the extra model is never downloaded.
+
+/** The subgraph instance the render lives in. */
+const LTX25 = '398';
+
+/**
+ * Output frames, all multiples of 64 so the half-size first pass lands on
+ * LTX's 32 px latent grid (the template's 720 does not: 360 / 32 = 11.25).
+ * Close to the template's 1280×720 in pixels, so the time per second holds
+ * whichever shape is ordered.
+ */
+const LTX_FRAMES: { aspect: number; width: number; height: number }[] = [
+  { aspect: 9 / 16, width: 704, height: 1280 },
+  { aspect: 3 / 4, width: 832, height: 1088 },
+  { aspect: 1, width: 960, height: 960 },
+  { aspect: 4 / 3, width: 1088, height: 832 },
+  { aspect: 16 / 9, width: 1280, height: 704 },
+];
+
+/** The frame closest in shape to the order's width and height. */
+export function ltxFrame(width: number, height: number): { width: number; height: number } {
+  const ratio = width > 0 && height > 0 ? width / height : 16 / 9;
+  let best = LTX_FRAMES[LTX_FRAMES.length - 1];
+  for (const frame of LTX_FRAMES) {
+    if (Math.abs(Math.log(frame.aspect / ratio)) < Math.abs(Math.log(best.aspect / ratio))) best = frame;
+  }
+  return { width: best.width, height: best.height };
+}
+
+const LTX25_TUNABLES: WorkflowTunable[] = [
+  {
+    id: 'negative',
+    label: 'Negative prompt',
+    help: 'ค่าของ template — มีคำว่า cartoon อยู่ ถ้าลูกค้าสั่งงานการ์ตูน/อนิเมะเยอะ ให้ลบคำนั้นออก',
+    type: 'text',
+    default: 'pc game, console game, video game, cartoon, childish, ugly',
+    maxLength: 1000,
+    group: 'prompt',
+  },
+  {
+    id: 'firstFrameStrength',
+    label: 'ความยึดภาพเฟรมแรก (รอบแรก)',
+    help: 'template ใช้ 0.7 ในรอบครึ่งขนาด (รอบขยายใช้ 1.0 เสมอ) — สูงขึ้นภาพแรกตรงต้นฉบับขึ้นแต่การเคลื่อนไหวน้อยลง',
+    type: 'float',
+    default: 0.7,
+    min: 0.3,
+    max: 1,
+    step: 0.05,
+    group: 'quality',
+    risky: true,
+  },
+];
+
+const LTX25_T = tunableReader(LTX25_TUNABLES);
+
+const LTX_25: CatalogEntry = {
+  key: 'ltx-2.5',
+  name: 'LTX-2.5 (วิดีโอ + เสียง)',
+  pools: ['rented'],
+  kind: 'video',
+  outputKind: 'video',
+  description: 'วิดีโอพร้อมเสียงในตัวจาก Lightricks • จากข้อความหรือภาพเฟรมแรก • เร็วและถูกกว่า H3',
+  template: ltx25I2vTemplate as UiWorkflow,
+  source: {
+    file: 'ltx25_i2v.json',
+    title: 'video_ltx2_5_i2v (Comfy-Org) — ไม่มีภาพเฟรมแรกก็เป็น text-to-video',
+    url: 'https://github.com/Comfy-Org/workflow_templates/blob/main/templates/video_ltx2_5_i2v.json',
+  },
+  tunables: LTX25_TUNABLES,
+  // Sizes from Hugging Face (paths-info), the int8 files the template names.
+  // Lightricks/LTX-2.5 is gated: the GPU_HF_TOKEN account must have accepted
+  // its licence or every boot fails at the first download.
+  downloads: [
+    { repo: 'Lightricks/LTX-2.5', file: 'diffusion_models/ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors', dest: 'diffusion_models', bytes: 21_504_034_224 },
+    { repo: 'Lightricks/LTX-2.5', file: 'text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors', dest: 'text_encoders', bytes: 15_372_969_374 },
+    { repo: 'Lightricks/LTX-2.5', file: 'vae/ltx-2.5-video-vae-bf16.safetensors', dest: 'vae', bytes: 1_472_223_346 },
+    { repo: 'Lightricks/LTX-2.5', file: 'latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors', dest: 'latent_upscale_models', bytes: 995_778_752 },
+    { repo: 'Lightricks/LTX-2.5', file: 'vae/ltx-2.5-audio-vae-bf16.safetensors', dest: 'vae', bytes: 364_866_540 },
+  ],
+  // 22B at int8 is ~21.5 GB before activations — the size that needed 32 GB
+  // for LTX-2.3 at fp8 without ComfyUI streaming layers per step.
+  hardware: { minVramMb: 32768, diskGb: 110, gpuModels: [], minArch: 'ampere' },
+  // The enhancer's preview is an output node and would keep it alive.
+  prune: ['PreviewAny'],
+  bind: (p) => {
+    const frame = ltxFrame(p.width, p.height);
+    const firstFrame = p.imageFilename
+      ? [
+          { nodeId: '395', input: 'image', value: p.imageFilename },
+          { nodeId: `${LTX25}_363`, input: 'value', value: false },
+          { nodeId: `${LTX25}_357`, input: 'strength', value: LTX25_T.num(p.tuning, 'firstFrameStrength') },
+        ]
+      : [
+          // Text to video: both passes take the latent straight through.
+          { nodeId: `${LTX25}_377`, input: 'video_latent', value: [`${LTX25}_356`, 0] },
+          { nodeId: `${LTX25}_340`, input: 'video_latent', value: [`${LTX25}_348`, 0] },
+        ];
+    return [
+      ...firstFrame,
+      // Straight to the encoder, past the template's prompt-enhancer switch.
+      { nodeId: `${LTX25}_364`, input: 'text', value: p.prompt.trim() },
+      { nodeId: `${LTX25}_373`, input: 'text', value: LTX25_T.str(p.tuning, 'negative') },
+      // Full size; the template halves them for the first pass.
+      { nodeId: `${LTX25}_372`, input: 'value', value: frame.width },
+      { nodeId: `${LTX25}_360`, input: 'value', value: frame.height },
+      // Whole seconds at 24 fps: seconds × 24 + 1 is always LTX's 8k+1.
+      { nodeId: `${LTX25}_362`, input: 'value', value: Math.max(1, Math.round(p.durationSeconds)) },
+      // Both passes, so a new seed is a new take.
+      { nodeId: `${LTX25}_339`, input: 'noise_seed', value: p.seed },
+      { nodeId: `${LTX25}_338`, input: 'noise_seed', value: p.seed + 1 },
+      { nodeId: '75', input: 'filename_prefix', value: 'video/aixman', optional: true },
+    ];
+  },
+  // A guess until the first rentals report: 8 + 3 distilled steps against
+  // H3's 4, at a similar pixel count.
+  baselineSecondsPerUnit: 15,
+  // Cheaper than H3 (12) for the same 5 s, same growth with length — 10 s is
+  // 23 credits, 15 s 42 — until real render times say otherwise.
+  pricing: { creditsPerUnit: 8, costPerUnit: 0.03, durationCurve: { unitSeconds: 5, exponent: 1.5 } },
+  limits: { maxWidth: 1280, maxHeight: 1280, maxDuration: 15 },
+  video: { firstFrame: true },
+};
+
+// ---------------------------------------------------------------------------
 // ACE-Step 1.5 — music and audio
 // ---------------------------------------------------------------------------
 // Template: audio_ace_step_1_5_split.json. Flat graph, so ids are as authored.
@@ -1476,191 +1614,6 @@ const SDXL_COMMUNITY: CatalogEntry = {
 };
 
 // ---------------------------------------------------------------------------
-// LTX-2.3 + TalkVid — a portrait that speaks the customer's own voice track
-// ---------------------------------------------------------------------------
-// Template: template_image_speech_to_video.json ("Image → Speech → Video").
-// Comfy-Org built it around paid API nodes — Gemini writes the script and the
-// scene, ElevenLabs speaks it — with a muted "bring your own voice" LoadAudio.
-// Here the customer's upload is the voice: an injected LoadAudio feeds the
-// subgraph's TrimAudioDuration, the customer's words become the scene prompt,
-// and every API node is pruned.
-//
-// Why this model for Thai: LTX-2 generates sound and picture as one latent, and
-// the template keeps the voice's audio latent fixed (SolidMask 0 →
-// SetLatentNoiseMask) while the picture is denoised around it. The face is
-// driven by the waveform, so the language never has to be understood. The
-// TalkVid ID-LoRA is trained for exactly this — a given face talking.
-//
-// Length is the voice's, decided server-side (`lengthFromAudio`): one
-// `Duration` primitive drives both the audio trim and the frame count
-// (ComfyMathExpression `a * b + 1`). LTX wants 8k+1 frames; at 24 fps that is
-// a duration on a 1/3 s grid, which GenerationService rounds down to.
-// Everything runs inside subgraph instance 478, so converted ids are `478_…`.
-
-/** The subgraph instance the whole render lives in. */
-const TALK = '478';
-/** Our LoadAudio, in place of the template's ElevenLabs voice. */
-const TALK_VOICE_NODE = 'aix_voice';
-
-/**
- * Output frames, all multiples of 64 so the half-size first pass lands on
- * LTX's 32 px latent grid (the template's 720 does not: 360 / 32 = 11.25).
- * Close to the template's 720×1280 in pixels, so the time per second holds
- * whichever shape the portrait is.
- */
-const TALK_FRAMES: { aspect: number; width: number; height: number }[] = [
-  { aspect: 9 / 16, width: 704, height: 1280 },
-  { aspect: 3 / 4, width: 832, height: 1088 },
-  { aspect: 1, width: 960, height: 960 },
-  { aspect: 4 / 3, width: 1088, height: 832 },
-  { aspect: 16 / 9, width: 1280, height: 704 },
-];
-
-/**
- * The frame closest in shape to the portrait. The template resizes the still
- * to cover the frame and crops the centre, so a near match keeps the face.
- * GenerationService passes the portrait's own width and height through.
- */
-export function talkingFrame(width: number, height: number): { width: number; height: number } {
-  const ratio = width > 0 && height > 0 ? width / height : 9 / 16;
-  let best = TALK_FRAMES[0];
-  for (const frame of TALK_FRAMES) {
-    if (Math.abs(Math.log(frame.aspect / ratio)) < Math.abs(Math.log(best.aspect / ratio))) best = frame;
-  }
-  return { width: best.width, height: best.height };
-}
-
-/** 24 fps and 8k+1 frames: durations on a 1/3 s grid. */
-const TALK_STEP_SECONDS = 1 / 3;
-const TALK_MIN_SECONDS = 1;
-const TALK_MAX_SECONDS = 15;
-
-const LTX_TALK_TUNABLES: WorkflowTunable[] = [
-  {
-    id: 'direction',
-    label: 'คำสั่งท่าทางที่ต่อท้ายพรอมต์',
-    help: 'ต่อท้ายคำอธิบายของลูกค้าเสมอ (หรือใช้แทนเมื่อลูกค้าเว้นว่าง) — บอกโมเดลว่าคนในภาพกำลังพูดกับกล้อง ปากขยับตามเสียง ซึ่งเป็นสิ่งที่ LoRA TalkVid ถูกฝึกมา',
-    type: 'text',
-    default:
-      'action: the person talks directly to the camera, lips moving in sync with the speech, natural facial expressions, subtle head movement and gestures.\ncamera: eye-level, steady, direct-to-camera framing.',
-    maxLength: 1000,
-    group: 'prompt',
-  },
-  {
-    id: 'negative',
-    label: 'Negative prompt',
-    help: 'ค่าของ template — มีคำว่า cartoon อยู่ ถ้าลูกค้าส่งรูปการ์ตูน/อนิเมะเยอะ ให้ลบคำนั้นออก',
-    type: 'text',
-    default: 'pc game, console game, video game, cartoon, childish, ugly',
-    maxLength: 1000,
-    group: 'prompt',
-  },
-  {
-    id: 'talkvidStrength',
-    label: 'ความแรง LoRA TalkVid',
-    help: 'LoRA ที่ทำให้หน้าคงเดิมและปากตรงเสียง — template ใช้ 1.0',
-    type: 'float',
-    default: 1,
-    min: 0,
-    max: 1.5,
-    step: 0.05,
-    group: 'quality',
-    risky: true,
-  },
-  {
-    id: 'distilledStrength',
-    label: 'ความแรง LoRA distilled',
-    help: 'ตัวที่ทำให้ 8+3 สเต็ปพอ — template ใช้ 0.5 ค่าอื่นอาจทำให้ภาพไม่สุกหรือไหม้',
-    type: 'float',
-    default: 0.5,
-    min: 0,
-    max: 1,
-    step: 0.05,
-    group: 'sampler',
-    risky: true,
-  },
-];
-
-const LTX_TALK = tunableReader(LTX_TALK_TUNABLES);
-
-/** The customer's words, then how a talking-head clip is framed. */
-function talkingPrompt(p: CatalogJobParams): string {
-  const direction = LTX_TALK.str(p.tuning, 'direction').trim();
-  const scene = p.prompt.trim();
-  return scene ? `${scene}\n${direction}` : direction;
-}
-
-const LTX23_TALKING: CatalogEntry = {
-  key: 'ltx-2.3-talking',
-  name: 'ภาพพูดได้ (LTX-2.3)',
-  pools: ['rented'],
-  kind: 'lipsync',
-  outputKind: 'video',
-  description: 'อัปโหลดรูปคน + ไฟล์เสียงพูด (ภาษาไทยได้) → ได้คลิปคนในรูปพูดตามเสียง • ยาวตามไฟล์เสียง สูงสุด 15 วินาที',
-  template: ltxTalkingTemplate as UiWorkflow,
-  source: {
-    file: 'ltx23_image_speech_to_video.json',
-    title: 'template_image_speech_to_video (Comfy-Org) — เสียงของลูกค้าแทน ElevenLabs',
-    url: 'https://github.com/Comfy-Org/workflow_templates/blob/main/templates/template_image_speech_to_video.json',
-  },
-  tunables: LTX_TALK_TUNABLES,
-  // Sizes from Hugging Face (Content-Length), not the template's notes. The
-  // template's Gemma "abliterated" LoRA only feeds its bypassed prompt writer
-  // and is not downloaded.
-  downloads: [
-    { repo: 'Lightricks/LTX-2.3-fp8', file: 'ltx-2.3-22b-dev-fp8.safetensors', dest: 'checkpoints', bytes: 29_145_431_166 },
-    { repo: 'Comfy-Org/ltx-2', file: 'split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors', dest: 'text_encoders', bytes: 9_447_702_218 },
-    { repo: 'Lightricks/LTX-2.3', file: 'ltx-2.3-22b-distilled-lora-384.safetensors', dest: 'loras', bytes: 7_605_507_256 },
-    { repo: 'Comfy-Org/ltx-2.3', file: 'split_files/loras/ltx-2.3-id-lora-talkvid-3k.safetensors', dest: 'loras', bytes: 1_157_884_304 },
-    { repo: 'Lightricks/LTX-2.3', file: 'ltx-2.3-spatial-upscaler-x2-1.1.safetensors', dest: 'latent_upscale_models', bytes: 995_743_560 },
-  ],
-  // 22B at fp8 is ~22 GB of weights before activations; 32 GB is the smallest
-  // card that holds it without ComfyUI streaming layers in and out per step.
-  hardware: { minVramMb: 32768, diskGb: 130, gpuModels: [], minArch: 'ampere' },
-  needs: { image: true, audio: true },
-  lengthFromAudio: { minSeconds: TALK_MIN_SECONDS, stepSeconds: TALK_STEP_SECONDS },
-  prune: ['ElevenLabsTextToSpeech', 'ElevenLabsVoiceSelector', 'ElevenLabsInstantVoiceClone', 'GeminiNode'],
-  inject: (p) => ({
-    // The name `stageFrames` put in the worker's input dir, never the URL.
-    [TALK_VOICE_NODE]: { class_type: 'LoadAudio', inputs: { audio: p.audioFilename ?? '' } },
-  }),
-  bind: (p) => {
-    const frame = talkingFrame(p.width, p.height);
-    return [
-      { nodeId: '440', input: 'image', value: p.imageFilename ?? '' },
-      // The voice replaces ElevenLabs before the prune runs, so the cascade
-      // from the TTS node stops here instead of eating the whole render.
-      { nodeId: `${TALK}_332`, input: 'audio', value: [TALK_VOICE_NODE, 0] },
-      { nodeId: `${TALK}_332`, input: 'start_index', value: 0 },
-      // One number drives the trim and the frame count: the voice's length.
-      { nodeId: `${TALK}_331`, input: 'value', value: p.durationSeconds },
-      { nodeId: `${TALK}_330`, input: 'value', value: frame.width },
-      { nodeId: `${TALK}_324`, input: 'value', value: frame.height },
-      // The scene prompt Gemini would have written; replaces its wire.
-      { nodeId: `${TALK}_319`, input: 'value', value: talkingPrompt(p) },
-      { nodeId: `${TALK}_314`, input: 'text', value: LTX_TALK.str(p.tuning, 'negative') },
-      // Both passes, so a new seed is a new take.
-      { nodeId: `${TALK}_285`, input: 'noise_seed', value: p.seed },
-      { nodeId: `${TALK}_286`, input: 'noise_seed', value: p.seed + 1 },
-      { nodeId: `${TALK}_601`, input: 'strength_model', value: LTX_TALK.num(p.tuning, 'talkvidStrength') },
-      { nodeId: `${TALK}_293`, input: 'strength_model', value: LTX_TALK.num(p.tuning, 'distilledStrength') },
-      // The customer's recording itself goes into the file, not its trip
-      // through LTX's audio VAE and vocoder: same timing (the latent was held
-      // fixed), none of the codec's colouring.
-      { nodeId: `${TALK}_312`, input: 'audio', value: [`${TALK}_332`, 0] },
-      { nodeId: '479', input: 'filename_prefix', value: 'video/aixman', optional: true },
-    ];
-  },
-  // A guess until the first rentals report: two LTX passes (8 steps at half
-  // size, 3 after the latent upscale) per second of 24 fps footage.
-  baselineSecondsPerUnit: 12,
-  // Priced by the voice's length on H3's curve: render time grows faster than
-  // the footage. ≤5 s 15 credits, 10 s 43, 15 s 78.
-  pricing: { creditsPerUnit: 15, costPerUnit: 0.04, durationCurve: { unitSeconds: 5, exponent: 1.5 } },
-  limits: { maxWidth: 1280, maxHeight: 1280, maxDuration: TALK_MAX_SECONDS },
-};
-
-// ---------------------------------------------------------------------------
 // Hunyuan3D-2.1 — one picture in, a textured (PBR) GLB out
 // ---------------------------------------------------------------------------
 // There is no official Comfy-Org template with texturing, so the template is
@@ -2260,15 +2213,29 @@ const LATENTSYNC_16: CatalogEntry = {
 
 export const MODEL_CATALOG: CatalogEntry[] = [
   MINIMAX_H3,
+  LTX_25,
   ACE_STEP,
   QWEN_IMAGE,
   YUE2_MUSIC,
   YUE2_COVER,
   SDXL_COMMUNITY,
-  LTX23_TALKING,
   HUNYUAN3D_21,
   LATENTSYNC_16,
 ];
+
+/**
+ * Keys that once had an entry. Their `ai_models` rows outlive the entry, and a
+ * key with no entry falls back to the H3 worker profile, so an order for one
+ * would rent a machine that cannot run it. Orders are refused and the model
+ * sync turns the rows off.
+ *
+ * `ltx-2.3-talking`: the LTX-2.3 talking portrait, removed for LTX-2.5.
+ */
+export const RETIRED_CATALOG_KEYS: readonly string[] = ['ltx-2.3-talking'];
+
+export function isRetiredCatalogKey(key: string): boolean {
+  return RETIRED_CATALOG_KEYS.includes(key);
+}
 
 export function getCatalogEntry(key: string): CatalogEntry | undefined {
   return MODEL_CATALOG.find((m) => m.key === key);

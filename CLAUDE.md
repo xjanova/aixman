@@ -432,35 +432,29 @@ Never build a graph any other way — the dry run would stop telling the truth.
   mode, every tunable moved, every frame mode) and regenerate the baseline with
   `scripts/dump-baseline-schema.ts`. Offline: `npx tsx --test src/lib/gpu/__tests__/workflows.test.mts`.
 
-## Lip-sync (ภาพพูดได้) — self-hosted, `ltx-2.3-talking`
+## LTX-2.5 — video with native audio, `ltx-2.5`
 
-A portrait + an uploaded voice (any language — the face follows the waveform)
-→ a clip of that person speaking it. Rented GPU only; the old fal rows
-(`fal-ai/latentsync`, `fal-ai/infinitalk`) stay in the DB but their pool key is
-off.
-- **Template:** Comfy-Org `template_image_speech_to_video` (LTX-2.3 22B fp8 +
-  TalkVid ID-LoRA, ~48 GB of weights, 32 GB VRAM). It was built around paid
-  API nodes: Gemini writes the scene, ElevenLabs speaks it. The entry injects
-  its own `LoadAudio` (`aix_voice`) into `TrimAudioDuration`, binds the
-  customer's prompt + a talking-to-camera `direction` tunable over Gemini's
-  wire, then prunes every API node. The output file carries the customer's
-  own recording (CreateVideo ← the trim), not LTX's vocoded copy.
-- **The voice is the length, and the price.** `lengthFromAudio` on the entry:
-  GenerationService reads the stored file (`audio-duration.ts` — header-only
-  MP3/WAV/FLAC/Ogg/M4A, no deps; production runs Node 20), applies
-  `voice-length.ts` (1–15 s, rounded *down* to LTX's 1/3 s grid, nudged up at
-  the 4th decimal because ComfyMathExpression `int()`s seconds × 24 + 1), and
-  prices + renders exactly that on H3's 1.5 curve. The client's `duration` is
-  ignored. `/api/uploads` returns the same reading so the studio shows the
-  price it will charge; `/api/models` exposes the rule.
-- **Shape** follows the portrait (`talkingFrame`: 9:16, 3:4, 1:1, 4:3, 16:9 on a
-  64 px grid); the studio sends the image's natural size.
-- Rows from the catalogue get `subcategory` from `catalogSubcategory`
-  (`lipsync-portrait` here) — that is what puts them in the studio's lip-sync
-  tab. A new catalogue entry needs Admin → GPU → "ซิงก์โมเดล" after deploy, and
-  starts `tuning` until an admin's order renders.
-- `comfy-validate` understands V3 autogrow inputs (`values.a` …): this template
-  is the first to keep a ComfyMathExpression alive after binding.
+Text or a first frame → a clip with its own sound (Lightricks, 22B distilled,
+int8; ~39.7 GB of weights, 32 GB VRAM). Rented GPU only, ComfyUI v0.36.0 core
+nodes — no pack. Replaced the LTX-2.3 talking portrait (`ltx-2.3-talking`),
+which is gone: its key is in `RETIRED_CATALOG_KEYS`, GenerationService refuses
+it (a key with no entry would rent an H3 machine), and "ซิงก์โมเดล" turns its
+row off. A voice + clip dub is still `latentsync-1.6` / the fal rows.
+- **Template:** Comfy-Org `video_ltx2_5_i2v` (subgraph 398). Without a first
+  frame both `LTXVImgToVideoInplace` nodes are bound out of the latent path
+  (the template's own t2v switch only bypasses them and still loads an image);
+  the prompt goes straight to `398_364`, so the template's Gemma prompt
+  enhancer and its second text encoder are pruned and never downloaded.
+- **Gated weights.** `Lightricks/LTX-2.5` requires accepting its licence on
+  Hugging Face; the account behind `GPU_HF_TOKEN` must have done so, or every
+  boot fails at the first download. Community licence: free under $10M ARR.
+- **Shape** `ltxFrame`: 9:16, 3:4, 1:1, 4:3, 16:9 on a 64 px grid (the first
+  pass runs at half size on LTX's 32 px latent grid). Length is whole seconds,
+  so seconds × 24 + 1 is always LTX's 8k+1 frames.
+- Price and `baselineSecondsPerUnit` are estimates until real rentals report.
+  After deploy: Admin → GPU → "ซิงก์โมเดล"; it starts `tuning` until an
+  admin's order renders.
+- `comfy-validate` understands V3 autogrow inputs (`values.a` …).
 
 ## Video lip-sync (พากย์ทับคลิป) — a clip re-dubbed with an uploaded voice
 

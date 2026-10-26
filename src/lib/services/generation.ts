@@ -8,7 +8,7 @@ import { ModelReadiness, TUNING_MESSAGE } from './model-readiness';
 import { persistAssetSafe, isStorageConfigured } from '@/lib/storage/r2';
 import type { GenerationRequest, GenerationResult, ProviderSlug } from '@/types';
 import { fitFrame } from '@/lib/gpu/frame';
-import { getCatalogEntry, isAdminOnlyPreset, isCommunityOnlyModel, orderNeedsProviderAccount } from '@/lib/gpu/catalog';
+import { getCatalogEntry, isAdminOnlyPreset, isCommunityOnlyModel, isRetiredCatalogKey, orderNeedsProviderAccount } from '@/lib/gpu/catalog';
 import { isAcceptedAudioSource, isAcceptedFrameSource, isAcceptedVideoSource, openVideoSource, readAudioSource } from '@/lib/gpu/frame-input';
 import { probeVideo } from '@/lib/video-probe';
 import { apiVideoLipsyncRule, checkClip, checkVoice, lipsyncCredits, type ClipFacts } from '@/lib/lipsync-rules';
@@ -114,6 +114,11 @@ export class GenerationService {
     // the queue will not rent without it. Refuse here, before credits move,
     // instead of charging and refunding a tick later.
     const gpuModel = getGpuProvider(model.provider.slug) !== null;
+    // Its row can still be active until an admin syncs the catalogue, and with
+    // no entry the queue would rent an H3 machine for it.
+    if (gpuModel && isRetiredCatalogKey(model.modelId)) {
+      throw new OrderRefusedError('โมเดลนี้ถูกปลดออกแล้ว กรุณาเลือกโมเดลอื่น', 'model-retired', 422);
+    }
     if (gpuModel && !isStorageConfigured()) {
       raiseAlert({
         type: 'config-error',

@@ -1896,7 +1896,7 @@ export default function GeneratePage() {
     // while the request is out — an API model can take half a minute to
     // answer the POST itself.
     const pendingId = -clickedAt;
-    // A portrait made to speak keeps its own shape (talkingFrame on the server).
+    // A portrait made to speak keeps its own shape.
     const portrait = tab === "lipsync" && lipsyncNeeds === "image" ? portraitDims : null;
     const jobAspect = tab === "audio" ? "1:1" : portrait ? `${portrait.width}:${portrait.height}` : aspectRatio;
     setJobs((js) => [

@@ -14,7 +14,7 @@
  * ComfyUI rejects. A live worker's schema, once one has run, is laid over this
  * file anyway — this is only the floor.
  */
-import { writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { MODEL_CATALOG } from '../src/lib/gpu/catalog';
 import type { ComfyObjectInfo } from '../src/lib/gpu/comfy-validate';
 import { COMFYUI_REF } from '../src/lib/gpu/provision';
@@ -47,6 +47,14 @@ async function main(): Promise<void> {
       for (const node of Object.values(entry.inject(variant))) classes.add(node.class_type);
     }
   }
+  // Node packs some entries install have their own vendored schema files; a
+  // core-only ComfyUI does not need them to dump this one.
+  const packed = new Set(
+    ['hunyuan3d21-pack', 'latentsync-pack'].flatMap((name) =>
+      Object.keys(JSON.parse(readFileSync(`src/lib/gpu/workflows/schema/${name}.json`, 'utf8')).classes)
+    )
+  );
+  for (const cls of packed) if (!info[cls]) classes.delete(cls);
   const missing = [...classes].filter((c) => !info[c]);
   if (missing.length > 0) throw new Error(`ComfyUI has no ${missing.join(', ')} — wrong version, or a pack is missing`);
 
