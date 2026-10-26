@@ -507,6 +507,18 @@ OpenAI-compatible `POST /api/v1/chat/completions` (streamed or not) and
   streams always ask for `include_usage`, and the response's `model` is our id.
 - Per-key rate limit `ai_settings.llm_api_rate_per_minute` (default 60), in
   process like `rate-limit.ts`.
+- **Customer caps per key** (`key-limits.ts`, `ai_api_keys.daily_limit_credits`
+  / `monthly_limit_credits`, Bangkok day/month, NULL = none): checked before
+  the hold against settled spend + the key's running holds (`keyHolds`, in
+  process) + this request's worst case → 402 `key_limit_reached`.
+- **Cache hits and off-peak** (`LlmModelConfig`): cached prompt tokens
+  (`prompt_cache_hit_tokens` or `prompt_tokens_details.cached_tokens`) are
+  priced at `cachedInput*PerMTok` (null = full input price); a UTC
+  `offPeakStart/EndUtc` window multiplies cost by `offPeakCostFactor` and price
+  by `offPeakPriceFactor` (1 = keep the saving), priced at request start. A
+  hold never assumes either discount.
+- **Alerts:** `llm-upstream` (5 failures in a row per provider or GPU model),
+  `no-accounts` (key `llm:<slug>`), `llm-budget` (80%/100% of the API GPU budget).
 - **Backend is picked before credits are held** (`openTarget`): an upstream
   account from the pool, or one of our machines (`gpu-target.ts`, least
   in-flight). No machine ready → 503 `model_warming` + Retry-After, nothing

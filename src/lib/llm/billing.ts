@@ -38,6 +38,7 @@ export interface RequestOutcome {
   held: number;
   promptTokens: number;
   completionTokens: number;
+  cachedTokens?: number;
   millicredits: number;
   costUsd: number;
   status: 'ok' | 'error' | 'aborted';
@@ -90,7 +91,7 @@ export async function settleRequest(o: RequestOutcome): Promise<void> {
             amount: -charged,
             balanceAfter: credit.balance,
             description: `API ${o.modelName}`.slice(0, 500),
-            metadata: { apiKeyId: o.apiKeyId, promptTokens: o.promptTokens, completionTokens: o.completionTokens },
+            metadata: { apiKeyId: o.apiKeyId, promptTokens: o.promptTokens, completionTokens: o.completionTokens, cachedTokens: o.cachedTokens ?? 0 },
           },
         });
       }
@@ -103,6 +104,7 @@ export async function settleRequest(o: RequestOutcome): Promise<void> {
           backend: o.backend,
           promptTokens: o.promptTokens,
           completionTokens: o.completionTokens,
+          cachedTokens: o.cachedTokens ?? 0,
           millicredits: o.millicredits,
           costUsd: o.costUsd,
           status: o.status,

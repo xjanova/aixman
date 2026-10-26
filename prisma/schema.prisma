@@ -780,6 +780,9 @@ model AiApiKey {
   keyHash           String    @unique @map("key_hash") @db.Char(64)
   // Thousandths of a credit used but not yet taken from the whole-credit balance.
   carryMillicredits Int       @default(0) @map("carry_millicredits")
+  // The customer's own caps per Bangkok day / month, in credits. Null = none.
+  dailyLimitCredits   Int?    @map("daily_limit_credits")
+  monthlyLimitCredits Int?    @map("monthly_limit_credits")
   lastUsedAt        DateTime? @map("last_used_at")
   revokedAt         DateTime? @map("revoked_at")
   createdAt         DateTime  @default(now()) @map("created_at")
@@ -799,6 +802,8 @@ model AiApiUsage {
   backend          String   @db.VarChar(50)
   promptTokens     Int      @default(0) @map("prompt_tokens")
   completionTokens Int      @default(0) @map("completion_tokens")
+  // Of promptTokens, how many the upstream served from its cache.
+  cachedTokens     Int      @default(0) @map("cached_tokens")
   millicredits     Int      @default(0)
   costUsd          Decimal  @default(0) @map("cost_usd") @db.Decimal(12, 6)
   // ok | error | aborted

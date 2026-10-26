@@ -14,6 +14,12 @@ interface LlmConfig {
   outputUsdPerMTok: number;
   contextLength: number;
   maxOutputTokens: number;
+  cachedInputCreditsPerMTok: number | null;
+  cachedInputUsdPerMTok: number | null;
+  offPeakStartUtc: string;
+  offPeakEndUtc: string;
+  offPeakCostFactor: number;
+  offPeakPriceFactor: number;
 }
 
 interface LlmModelRow {
@@ -47,14 +53,23 @@ interface Data {
   usage: UsageRow[];
 }
 
-const CONFIG_FIELDS: { key: keyof LlmConfig; label: string; step?: string }[] = [
-  { key: "upstreamModel", label: "ชื่อโมเดลฝั่งต้นทาง (GPU: คีย์ llm-…)" },
-  { key: "inputCreditsPerMTok", label: "ราคาขาย input (เครดิต/1M token)", step: "0.1" },
-  { key: "outputCreditsPerMTok", label: "ราคาขาย output (เครดิต/1M token)", step: "0.1" },
-  { key: "inputUsdPerMTok", label: "ต้นทุน input (USD/1M)", step: "0.01" },
-  { key: "outputUsdPerMTok", label: "ต้นทุน output (USD/1M)", step: "0.01" },
-  { key: "contextLength", label: "Context (token)" },
-  { key: "maxOutputTokens", label: "Output สูงสุดต่อคำขอ" },
+/** `optional`: a number or empty (= unset); `time`: UTC "HH:MM" or empty. */
+type FieldKind = "text" | "number" | "optional" | "time";
+
+const CONFIG_FIELDS: { key: keyof LlmConfig; label: string; step?: string; kind: FieldKind; hint?: string }[] = [
+  { key: "upstreamModel", label: "ชื่อโมเดลฝั่งต้นทาง (GPU: คีย์ llm-…)", kind: "text" },
+  { key: "inputCreditsPerMTok", label: "ราคาขาย input (เครดิต/1M token)", step: "0.1", kind: "number" },
+  { key: "outputCreditsPerMTok", label: "ราคาขาย output (เครดิต/1M token)", step: "0.1", kind: "number" },
+  { key: "cachedInputCreditsPerMTok", label: "ราคาขาย input ที่ cache (ว่าง = เท่า input)", step: "0.1", kind: "optional" },
+  { key: "inputUsdPerMTok", label: "ต้นทุน input (USD/1M)", step: "0.01", kind: "number" },
+  { key: "outputUsdPerMTok", label: "ต้นทุน output (USD/1M)", step: "0.01", kind: "number" },
+  { key: "cachedInputUsdPerMTok", label: "ต้นทุน input ที่ cache (USD/1M)", step: "0.001", kind: "optional" },
+  { key: "contextLength", label: "Context (token)", kind: "number" },
+  { key: "maxOutputTokens", label: "Output สูงสุดต่อคำขอ", kind: "number" },
+  { key: "offPeakStartUtc", label: "ช่วงราคาถูก เริ่ม (UTC)", kind: "time", hint: "ว่าง = ไม่มี · ดูช่วงเวลาที่หน้าราคาของผู้ให้บริการ" },
+  { key: "offPeakEndUtc", label: "ช่วงราคาถูก สิ้นสุด (UTC)", kind: "time" },
+  { key: "offPeakCostFactor", label: "ต้นทุนช่วงราคาถูก (×)", step: "0.05", kind: "number", hint: "DeepSeek ลดครึ่ง = 0.5" },
+  { key: "offPeakPriceFactor", label: "ราคาขายช่วงราคาถูก (×)", step: "0.05", kind: "number", hint: "1 = เก็บส่วนต่างเป็นกำไร · 0.5 = ลดให้ลูกค้าเท่ากัน" },
 ];
 
 const fmt = (n: number, digits = 0) => n.toLocaleString("th-TH", { maximumFractionDigits: digits });
@@ -115,10 +130,11 @@ export default function AdminLlmPage() {
     load();
   };
 
-  const setField = (id: number, key: keyof LlmConfig, value: string) => {
+  const setField = (id: number, key: keyof LlmConfig, kind: FieldKind, value: string) => {
+    const parsed = kind === "text" || kind === "time" ? value : kind === "optional" && value === "" ? null : Number(value);
     setDrafts((d) => ({
       ...d,
-      [id]: { ...d[id], [key]: key === "upstreamModel" || key === "backend" ? value : Number(value) },
+      [id]: { ...d[id], [key]: parsed },
     }));
   };
 
@@ -222,12 +238,14 @@ export default function AdminLlmPage() {
                       <label key={f.key} className="text-xs text-muted">
                         {f.label}
                         <input
-                          type={f.key === "upstreamModel" ? "text" : "number"}
+                          type={f.kind === "text" ? "text" : f.kind === "time" ? "time" : "number"}
                           step={f.step}
-                          value={String(d[f.key])}
-                          onChange={(e) => setField(m.id, f.key, e.target.value)}
+                          value={d[f.key] === null ? "" : String(d[f.key])}
+                          title={f.hint}
+                          onChange={(e) => setField(m.id, f.key, f.kind, e.target.value)}
                           className="mt-1 w-full px-2 py-1.5 rounded bg-surface-light border border-border text-sm text-foreground"
                         />
+                        {f.hint && <span className="block mt-0.5 text-[10px]">{f.hint}</span>}
                       </label>
                     ))}
                   </div>

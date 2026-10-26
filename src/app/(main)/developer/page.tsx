@@ -20,6 +20,10 @@ interface ApiKeyRow {
   keyPrefix: string;
   lastUsedAt: string | null;
   createdAt: string;
+  dailyLimitCredits: number | null;
+  monthlyLimitCredits: number | null;
+  spentToday: number;
+  spentThisMonth: number;
 }
 
 interface ApiModel {
@@ -27,7 +31,12 @@ interface ApiModel {
   name: string;
   description: string | null;
   context_length: number;
-  pricing: { credits_per_million_input_tokens: number; credits_per_million_output_tokens: number };
+  pricing: {
+    credits_per_million_input_tokens: number;
+    credits_per_million_output_tokens: number;
+    credits_per_million_cached_input_tokens: number;
+    off_peak?: { start_utc: string; end_utc: string; price_factor: number };
+  };
 }
 
 interface Usage {
@@ -70,6 +79,44 @@ async function getJson<T>(url: string, init?: RequestInit): Promise<{ ok: true; 
   } catch {
     return { ok: false, error: "เชื่อมต่อไม่ได้" };
   }
+}
+
+/** "12.5 / 100" — spent against a cap, or just spent when there is none. */
+function spentOf(spent: number, limit: number | null): string {
+  return limit === null ? fmt(spent, 2) : `${fmt(spent, 2)} / ${fmt(limit)}`;
+}
+
+/** UTC "HH:MM" as Bangkok time (UTC+7). */
+function bkk(utc: string): string {
+  const m = (Number(utc.slice(0, 2)) * 60 + Number(utc.slice(3, 5)) + 7 * 60) % (24 * 60);
+  return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+}
+
+/** A key's own caps, edited in place. Empty = no cap. */
+function KeyLimitsEditor({ k, onSaved }: { k: ApiKeyRow; onSaved: (ok: boolean, message: string) => void }) {
+  const [daily, setDaily] = useState(k.dailyLimitCredits === null ? "" : String(k.dailyLimitCredits));
+  const [monthly, setMonthly] = useState(k.monthlyLimitCredits === null ? "" : String(k.monthlyLimitCredits));
+  const [saving, setSaving] = useState(false);
+  const field: React.CSSProperties = { width: 72, padding: "5px 8px", borderRadius: 8, background: "rgba(2,6,23,0.55)", border: "1px solid rgba(255,255,255,0.1)", color: "#fff", fontFamily: "inherit" };
+  const save = async () => {
+    setSaving(true);
+    const r = await getJson("/api/developer/keys/" + k.id, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dailyLimitCredits: daily, monthlyLimitCredits: monthly }),
+    });
+    setSaving(false);
+    onSaved(r.ok, r.ok ? "บันทึกเพดานแล้ว" : r.error);
+  };
+  return (
+    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+      <input style={field} inputMode="numeric" placeholder="ไม่จำกัด" value={daily} onChange={(e) => setDaily(e.target.value.replace(/[^0-9]/g, ""))} title="เครดิตต่อวัน (เวลาไทย)" />
+      <span style={{ color: "#94a3b8" }}>/วัน</span>
+      <input style={field} inputMode="numeric" placeholder="ไม่จำกัด" value={monthly} onChange={(e) => setMonthly(e.target.value.replace(/[^0-9]/g, ""))} title="เครดิตต่อเดือน" />
+      <span style={{ color: "#94a3b8" }}>/เดือน</span>
+      <button style={{ ...btn, padding: "5px 10px" }} disabled={saving} onClick={save}>บันทึก</button>
+    </div>
+  );
 }
 
 export default function DeveloperPage() {
@@ -187,8 +234,10 @@ export default function DeveloperPage() {
                   <tr>
                     <th style={th}>ชื่อ</th>
                     <th style={th}>คีย์</th>
+                    <th style={th}>ใช้วันนี้</th>
+                    <th style={th}>ใช้เดือนนี้</th>
+                    <th style={th}>เพดานการใช้ (เครดิต)</th>
                     <th style={th}>ใช้ล่าสุด</th>
-                    <th style={th}>สร้างเมื่อ</th>
                     <th style={th} />
                   </tr>
                 </thead>
@@ -197,8 +246,12 @@ export default function DeveloperPage() {
                     <tr key={k.id}>
                       <td style={td}>{k.name}</td>
                       <td style={{ ...td, ...mono }}>{k.keyPrefix}…</td>
+                      <td style={td}>{spentOf(k.spentToday, k.dailyLimitCredits)}</td>
+                      <td style={td}>{spentOf(k.spentThisMonth, k.monthlyLimitCredits)}</td>
+                      <td style={td}>
+                        <KeyLimitsEditor k={k} onSaved={(ok, message) => { toast(ok ? "success" : "error", message); if (ok) load(); }} />
+                      </td>
                       <td style={td}>{k.lastUsedAt ? new Date(k.lastUsedAt).toLocaleString("th-TH") : "—"}</td>
-                      <td style={td}>{new Date(k.createdAt).toLocaleDateString("th-TH")}</td>
                       <td style={{ ...td, textAlign: "right" }}>
                         <button style={{ ...btn, color: "#fca5a5", padding: "5px 12px" }} onClick={() => revoke(k)}>ลบ</button>
                       </td>
@@ -223,6 +276,7 @@ export default function DeveloperPage() {
                     <th style={th}>รายละเอียด</th>
                     <th style={{ ...th, textAlign: "right" }}>Context</th>
                     <th style={{ ...th, textAlign: "right" }}>Input / 1M token</th>
+                    <th style={{ ...th, textAlign: "right" }}>Input ซ้ำ (cache)</th>
                     <th style={{ ...th, textAlign: "right" }}>Output / 1M token</th>
                   </tr>
                 </thead>
@@ -233,7 +287,15 @@ export default function DeveloperPage() {
                       <td style={td}>{m.description || m.name}</td>
                       <td style={{ ...td, textAlign: "right" }}>{fmt(m.context_length)}</td>
                       <td style={{ ...td, textAlign: "right" }}>{fmt(m.pricing.credits_per_million_input_tokens, 1)} ✦</td>
-                      <td style={{ ...td, textAlign: "right" }}>{fmt(m.pricing.credits_per_million_output_tokens, 1)} ✦</td>
+                      <td style={{ ...td, textAlign: "right" }}>{fmt(m.pricing.credits_per_million_cached_input_tokens, 1)} ✦</td>
+                      <td style={{ ...td, textAlign: "right" }}>
+                        {fmt(m.pricing.credits_per_million_output_tokens, 1)} ✦
+                        {m.pricing.off_peak && (
+                          <div style={{ fontSize: 11, color: "#6ee7b7" }}>
+                            ลด {Math.round((1 - m.pricing.off_peak.price_factor) * 100)}% ช่วง {bkk(m.pricing.off_peak.start_utc)}–{bkk(m.pricing.off_peak.end_utc)} น.
+                          </div>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -251,7 +313,8 @@ export default function DeveloperPage() {
           <p style={{ fontSize: 13, color: "#94a3b8", marginTop: 12, lineHeight: 1.7 }}>
             ใช้กับไลบรารี OpenAI ได้เลย: ตั้ง <code style={mono}>base_url</code> เป็น <code style={mono}>{origin}/api/v1</code> และ{" "}
             <code style={mono}>api_key</code> เป็นคีย์ของคุณ · ก่อนเริ่มแต่ละคำขอ ระบบกันเครดิตตามจำนวนสูงสุดที่ใช้ได้ไว้ก่อน
-            แล้วคืนส่วนที่ไม่ได้ใช้เมื่อจบ · ถ้า <code style={mono}>max_tokens</code> สูง ต้องมีเครดิตพอสำหรับกรณีที่ใช้ครบ
+            แล้วคืนส่วนที่ไม่ได้ใช้เมื่อจบ · ถ้า <code style={mono}>max_tokens</code> สูง ต้องมีเครดิตพอสำหรับกรณีที่ใช้ครบ · ตั้งเพดานต่อคีย์ได้ในตารางด้านบน
+            กันโปรแกรมเอเจนต์วนเรียกจนเครดิตหมด · ข้อความที่ส่งซ้ำ (เช่น ไฟล์เดิมในบทสนทนา) คิดราคา input ที่ cache ซึ่งถูกกว่า
           </p>
         </div>
 

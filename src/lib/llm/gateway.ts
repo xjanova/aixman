@@ -13,8 +13,11 @@ import {
   promptTokenCeiling,
   reserveCredits,
   type LlmModelConfig,
+  type Usage,
 } from './pricing';
 import { SseRelay, readUsage, tokensFromChars } from './sse';
+import { breachedLimit, spentByKey } from './key-limits';
+import { noteBackendResult, noteNoAccount } from './alerts';
 
 /**
  * The OpenAI-compatible gateway behind /api/v1.
@@ -125,7 +128,14 @@ export async function listModels() {
       description: row.description,
       context_length: cfg.contextLength,
       max_output_tokens: cfg.maxOutputTokens,
-      pricing: { credits_per_million_input_tokens: cfg.inputCreditsPerMTok, credits_per_million_output_tokens: cfg.outputCreditsPerMTok },
+      pricing: {
+        credits_per_million_input_tokens: cfg.inputCreditsPerMTok,
+        credits_per_million_output_tokens: cfg.outputCreditsPerMTok,
+        credits_per_million_cached_input_tokens: cfg.cachedInputCreditsPerMTok ?? cfg.inputCreditsPerMTok,
+        ...(cfg.offPeakStartUtc && cfg.offPeakEndUtc && cfg.offPeakPriceFactor < 1
+          ? { off_peak: { start_utc: cfg.offPeakStartUtc, end_utc: cfg.offPeakEndUtc, price_factor: cfg.offPeakPriceFactor } }
+          : {}),
+      },
     }));
 }
 
@@ -201,6 +211,29 @@ function validate(body: unknown): Record<string, unknown> {
 
 const ENCODER = new TextEncoder();
 
+/** Credits held by each key's requests still running (instances: 1, like rate-limit.ts). */
+const keyHolds = new Map<number, number>();
+
+/** Refuse a request its key's own cap cannot cover. */
+async function checkKeyLimits(caller: ApiCaller, worstCase: number): Promise<void> {
+  const limits = await prisma.aiApiKey.findUnique({
+    where: { id: caller.apiKeyId },
+    select: { dailyLimitCredits: true, monthlyLimitCredits: true },
+  });
+  if (!limits || (limits.dailyLimitCredits === null && limits.monthlyLimitCredits === null)) return;
+  const spent = await spentByKey(caller.apiKeyId, Date.now());
+  const breach = breachedLimit(limits, spent, keyHolds.get(caller.apiKeyId) ?? 0, worstCase);
+  if (breach) {
+    throw new ApiError(
+      402,
+      `This key's ${breach.period === 'day' ? 'daily' : 'monthly'} limit of ${breach.limit} credits would be passed ` +
+        `(${breach.spent.toFixed(2)} used, this request can cost up to ${worstCase}). Raise it on /developer or lower max_tokens.`,
+      'insufficient_quota',
+      'key_limit_reached'
+    );
+  }
+}
+
 /** Where one request goes, and what its outcome means for that backend. */
 interface Target {
   url: string;
@@ -241,16 +274,21 @@ async function openTarget(model: ResolvedModel): Promise<Target> {
       backend: 'gpu',
       extraFields: VLLM_EXTRA,
       release: t.release,
-      onSuccess: async () => {},
-      // The machine's own health is the reconcile pass's to judge.
+      onSuccess: async () => noteBackendResult(`gpu:${model.cfg.upstreamModel}`, model.name, true),
+      // The machine's own health is the reconcile pass's to judge; a run of
+      // failures is still worth a message.
       onFailure: async (status, detail) => {
         console.error(`[llm] worker #${t.workerId} answered ${status ?? 'nothing'}: ${detail.slice(0, 200)}`);
+        noteBackendResult(`gpu:${model.cfg.upstreamModel}`, model.name, false, `เครื่อง #${t.workerId} ตอบ ${status ?? 'ไม่ได้'}: ${detail}`);
       },
     };
   }
 
   const account = await AccountPoolManager.selectAccount(model.providerId).catch(() => null);
-  if (!account) throw new ApiError(503, 'The model is busy. Try again shortly.', 'api_error', 'backend_unavailable');
+  if (!account) {
+    noteNoAccount(model.providerSlug, model.name);
+    throw new ApiError(503, 'The model is busy. Try again shortly.', 'api_error', 'backend_unavailable');
+  }
   return {
     url: upstreamChatUrl(model.providerSlug, model.providerBaseUrl, account.apiEndpoint),
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${account.apiKey}` },
@@ -258,9 +296,11 @@ async function openTarget(model: ResolvedModel): Promise<Target> {
     extraFields: [],
     release: () => {},
     onSuccess: async (costUsd) => {
+      noteBackendResult(model.providerSlug, model.name, true);
       await AccountPoolManager.recordSuccess(account.id, costUsd).catch(() => {});
     },
     onFailure: async (status, detail) => {
+      noteBackendResult(model.providerSlug, model.name, false, `${account.label}: ${status ?? 'ติดต่อไม่ได้'} ${detail}`);
       await AccountPoolManager.recordError(account.id, `api gateway ${status ?? 'unreachable'}: ${detail}`, status === 429).catch(() => {});
     },
   };
@@ -284,12 +324,22 @@ export async function chatCompletion(caller: ApiCaller, rawBody: unknown, signal
 
   // Where it runs is settled before any credit moves: a machine still booting
   // or an empty account pool costs the customer nothing.
-  const target = await openTarget(model);
   const held = reserveCredits(promptCeiling, maxTokens, model.cfg);
+  await checkKeyLimits(caller, held);
+  const target = await openTarget(model);
   if (!(await holdCredits(caller.userId, held))) {
     target.release();
     throw new ApiError(402, `Not enough credits: this request can cost up to ${held}. Lower max_tokens or top up.`, 'insufficient_quota', 'insufficient_credits');
   }
+  keyHolds.set(caller.apiKeyId, (keyHolds.get(caller.apiKeyId) ?? 0) + held);
+  let settled = false;
+  /** Every path that held credits ends here, once. */
+  const settle = async (o: RequestOutcome) => {
+    if (settled) return;
+    settled = true;
+    keyHolds.set(caller.apiKeyId, Math.max(0, (keyHolds.get(caller.apiKeyId) ?? 0) - held));
+    await settleRequest(o);
+  };
 
   const started = Date.now();
   const outcome = (o: Partial<RequestOutcome>): RequestOutcome => ({
@@ -326,7 +376,7 @@ export async function chatCompletion(caller: ApiCaller, rawBody: unknown, signal
     signal.removeEventListener('abort', onAbort);
     target.release();
     const aborted = signal.aborted;
-    await settleRequest(outcome({ status: aborted ? 'aborted' : 'error', error: String(error) }));
+    await settle(outcome({ status: aborted ? 'aborted' : 'error', error: String(error) }));
     if (!aborted) await target.onFailure(null, String(error));
     throw new ApiError(502, 'The model did not answer. Nothing was charged.', 'api_error', 'upstream_unreachable');
   }
@@ -337,7 +387,7 @@ export async function chatCompletion(caller: ApiCaller, rawBody: unknown, signal
     signal.removeEventListener('abort', onAbort);
     target.release();
     const detail = (await res.text().catch(() => '')).slice(0, 300);
-    await settleRequest(outcome({ status: 'error', error: `upstream ${res.status}: ${detail}` }));
+    await settle(outcome({ status: 'error', error: `upstream ${res.status}: ${detail}` }));
     // A client mistake (bad tool schema, …) is theirs to see; an account
     // problem is ours, and the key gets a cooldown.
     if (res.status === 400 || res.status === 422) {
@@ -347,11 +397,25 @@ export async function chatCompletion(caller: ApiCaller, rawBody: unknown, signal
     throw new ApiError(res.status === 429 ? 429 : 502, 'The model is busy or failed. Nothing was charged; try again.', 'api_error', 'upstream_error');
   }
 
-  const bill = async (promptTokens: number, completionTokens: number, status: RequestOutcome['status'], error?: string) => {
-    const millicredits = millicreditsFor(promptTokens, completionTokens, model.cfg);
-    const costUsd = costUsdFor(promptTokens, completionTokens, model.cfg);
+  const bill = async (usage: Usage, status: RequestOutcome['status'], error?: string) => {
+    // Priced at when the request started: an answer that runs past the end of
+    // an off-peak window was still bought inside it.
+    const at = new Date(started);
+    const millicredits = millicreditsFor(usage, model.cfg, at);
+    const costUsd = costUsdFor(usage, model.cfg, at);
     target.release();
-    await settleRequest(outcome({ promptTokens, completionTokens, millicredits, costUsd, status, error, latencyMs: Date.now() - started }));
+    await settle(
+      outcome({
+        promptTokens: usage.promptTokens,
+        completionTokens: usage.completionTokens,
+        cachedTokens: usage.cachedTokens ?? 0,
+        millicredits,
+        costUsd,
+        status,
+        error,
+        latencyMs: Date.now() - started,
+      })
+    );
     if (status === 'ok') await target.onSuccess(costUsd);
   };
 
@@ -361,13 +425,11 @@ export async function chatCompletion(caller: ApiCaller, rawBody: unknown, signal
       const json = (await res.json()) as Record<string, unknown>;
       const usage = readUsage(json.usage);
       const text = JSON.stringify(json.choices ?? '');
-      const promptTokens = usage?.promptTokens ?? tokensFromChars(promptCeiling);
-      const completionTokens = usage?.completionTokens ?? tokensFromChars(text.length);
-      await bill(promptTokens, completionTokens, 'ok');
+      await bill(usage ?? { promptTokens: tokensFromChars(promptCeiling), completionTokens: tokensFromChars(text.length) }, 'ok');
       json.model = model.modelId;
       return Response.json(json);
     } catch (error) {
-      await bill(0, 0, signal.aborted ? 'aborted' : 'error', String(error));
+      await bill({ promptTokens: 0, completionTokens: 0 }, signal.aborted ? 'aborted' : 'error', String(error));
       throw new ApiError(502, 'The model answer could not be read. Nothing was charged.', 'api_error', 'upstream_error');
     } finally {
       clearTimeout(total);
@@ -378,15 +440,14 @@ export async function chatCompletion(caller: ApiCaller, rawBody: unknown, signal
   const relay = new SseRelay(model.modelId);
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
-  let settled = false;
+  let finished = false;
   const finish = async (status: RequestOutcome['status'], error?: string) => {
-    if (settled) return;
-    settled = true;
+    if (finished) return;
+    finished = true;
     signal.removeEventListener('abort', onAbort);
     const u = relay.usage;
     await bill(
-      u?.promptTokens ?? tokensFromChars(promptCeiling),
-      u?.completionTokens ?? tokensFromChars(relay.streamedChars),
+      u ?? { promptTokens: tokensFromChars(promptCeiling), completionTokens: tokensFromChars(relay.streamedChars) },
       u ? status : status === 'ok' ? 'aborted' : status,
       error
     );

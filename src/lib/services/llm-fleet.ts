@@ -3,6 +3,7 @@ import type { GpuBudgetConfig } from '@/lib/gpu/config';
 import { LLM_CATALOG } from '@/lib/gpu/llm-catalog';
 import { getDemand, getFleetConfig, getPolicies, wantedMachines } from '@/lib/gpu/llm-policy';
 import { LLM_CATEGORY, parseLlmConfig } from '@/lib/llm/pricing';
+import { raiseAlert } from '@/lib/notify/alerts';
 import { GpuWorkerManager } from './gpu-worker';
 
 /**
@@ -37,6 +38,7 @@ export class LlmFleet {
     const [policies, demand, fleet, onSale] = await Promise.all([getPolicies(), getDemand(), getFleetConfig(), modelsOnSale()]);
     const notes: string[] = [];
     const now = new Date();
+    await this.watchBudget(fleet.dailyBudgetUsd, now);
     for (const entry of LLM_CATALOG) {
       const policy = policies[entry.key];
       if (!policy || policy.mode === 'off' || !onSale.has(entry.key)) continue;
@@ -60,5 +62,25 @@ export class LlmFleet {
     }
     if (notes.length > 0) console.log(`[llm] fleet: ${notes.join(' · ')}`.slice(0, 1000));
     return notes;
+  }
+
+  /** Once a day per level: 80% of the API machines' budget, then all of it. */
+  private static async watchBudget(budgetUsd: number, now: Date): Promise<void> {
+    if (budgetUsd <= 0) return;
+    const spent = await GpuWorkerManager.todaySpendUsd('llm');
+    const used = spent / budgetUsd;
+    if (used < 0.8) return;
+    const full = used >= 1;
+    raiseAlert({
+      type: 'llm-budget',
+      key: `${full ? 100 : 80}:${now.toDateString()}`,
+      level: 'warning',
+      title: full
+        ? 'งบเครื่อง GPU ของ API โมเดลภาษาวันนี้หมดแล้ว — ปิดเครื่อง API และไม่เช่าใหม่จนขึ้นวันใหม่'
+        : `งบเครื่อง GPU ของ API โมเดลภาษาวันนี้ใช้ไปแล้ว ${Math.round(used * 100)}%`,
+      lines: [`ใช้ไป $${spent.toFixed(2)} จากงบ $${budgetUsd.toFixed(2)}`, 'ปรับงบได้ที่หน้า API โมเดลภาษา → รันเองบน GPU'],
+      cooldownMs: 24 * 3_600_000,
+      path: '/admin/llm',
+    });
   }
 }

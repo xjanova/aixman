@@ -2,8 +2,20 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth';
 import prisma from '@/lib/db';
 import { generateApiKey } from '@/lib/llm/keys';
+import { spentByKey } from '@/lib/llm/key-limits';
 
 export const dynamic = 'force-dynamic';
+
+/** What a customer sees of their keys; the hash never leaves the server. */
+const KEY_FIELDS = {
+  id: true,
+  name: true,
+  keyPrefix: true,
+  lastUsedAt: true,
+  createdAt: true,
+  dailyLimitCredits: true,
+  monthlyLimitCredits: true,
+} as const;
 
 /** A customer may hold this many live keys. */
 const MAX_KEYS = 10;
@@ -14,9 +26,11 @@ export async function GET() {
   const keys = await prisma.aiApiKey.findMany({
     where: { userId, revokedAt: null },
     orderBy: { createdAt: 'desc' },
-    select: { id: true, name: true, keyPrefix: true, lastUsedAt: true, createdAt: true },
+    select: KEY_FIELDS,
   });
-  return NextResponse.json({ keys });
+  const now = Date.now();
+  const spent = await Promise.all(keys.map((k) => spentByKey(k.id, now)));
+  return NextResponse.json({ keys: keys.map((k, i) => ({ ...k, spentToday: spent[i].day, spentThisMonth: spent[i].month })) });
 }
 
 /** Make a key. The key itself is in this response only. */
@@ -32,7 +46,7 @@ export async function POST(request: NextRequest) {
   const { key, prefix, hash } = generateApiKey();
   const row = await prisma.aiApiKey.create({
     data: { userId, name, keyPrefix: prefix, keyHash: hash },
-    select: { id: true, name: true, keyPrefix: true, lastUsedAt: true, createdAt: true },
+    select: KEY_FIELDS,
   });
   return NextResponse.json({ key: row, secret: key }, { status: 201 });
 }

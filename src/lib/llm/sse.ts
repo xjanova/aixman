@@ -14,16 +14,29 @@
 export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
+  /** Prompt tokens served from the upstream's cache. */
+  cachedTokens: number;
 }
 
-/** Read an OpenAI-style `usage` object; null when it carries no counts. */
+/**
+ * Read an OpenAI-style `usage` object; null when it carries no counts. Cached
+ * prompt tokens come as OpenAI's `prompt_tokens_details.cached_tokens` (vLLM
+ * too) or DeepSeek's own `prompt_cache_hit_tokens`.
+ */
 export function readUsage(raw: unknown): TokenUsage | null {
   if (!raw || typeof raw !== 'object') return null;
   const u = raw as Record<string, unknown>;
   const p = Number(u.prompt_tokens);
   const c = Number(u.completion_tokens);
   if (!Number.isFinite(p) && !Number.isFinite(c)) return null;
-  return { promptTokens: Number.isFinite(p) ? Math.max(0, p) : 0, completionTokens: Number.isFinite(c) ? Math.max(0, c) : 0 };
+  const details = u.prompt_tokens_details as Record<string, unknown> | null | undefined;
+  const cached = Number(u.prompt_cache_hit_tokens ?? details?.cached_tokens);
+  const promptTokens = Number.isFinite(p) ? Math.max(0, p) : 0;
+  return {
+    promptTokens,
+    completionTokens: Number.isFinite(c) ? Math.max(0, c) : 0,
+    cachedTokens: Number.isFinite(cached) ? Math.min(promptTokens, Math.max(0, cached)) : 0,
+  };
 }
 
 export class SseRelay {

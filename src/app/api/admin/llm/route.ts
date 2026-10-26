@@ -107,6 +107,9 @@ export async function POST(request: NextRequest) {
       ...p.cfg,
       inputCreditsPerMTok: salePrice(p.cfg.inputUsdPerMTok, pb.usdToThb, pb.thbPerCredit),
       outputCreditsPerMTok: salePrice(p.cfg.outputUsdPerMTok, pb.usdToThb, pb.thbPerCredit),
+      // The cache saving is passed on at the same markup.
+      cachedInputCreditsPerMTok:
+        p.cfg.cachedInputUsdPerMTok === null ? null : salePrice(p.cfg.cachedInputUsdPerMTok, pb.usdToThb, pb.thbPerCredit),
     };
     await prisma.aiModel.create({
       data: {

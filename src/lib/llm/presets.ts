@@ -10,7 +10,7 @@ export interface LlmPreset {
   modelId: string;
   name: string;
   description: string;
-  cfg: Omit<LlmModelConfig, 'inputCreditsPerMTok' | 'outputCreditsPerMTok'>;
+  cfg: Omit<LlmModelConfig, 'inputCreditsPerMTok' | 'outputCreditsPerMTok' | 'cachedInputCreditsPerMTok'>;
 }
 
 export const DEEPSEEK_PROVIDER = {
@@ -19,6 +19,12 @@ export const DEEPSEEK_PROVIDER = {
   baseUrl: 'https://api.deepseek.com',
   website: 'https://platform.deepseek.com',
 };
+
+/**
+ * DeepSeek halves its prices off-peak, but the window was not published where
+ * we looked; the admin sets it (and how much of the saving to pass on).
+ */
+const NO_OFF_PEAK = { offPeakStartUtc: '', offPeakEndUtc: '', offPeakCostFactor: 0.5, offPeakPriceFactor: 1 };
 
 export const DEEPSEEK_PRESETS: LlmPreset[] = [
   {
@@ -30,8 +36,11 @@ export const DEEPSEEK_PRESETS: LlmPreset[] = [
       upstreamModel: 'deepseek-flash',
       inputUsdPerMTok: 0.3,
       outputUsdPerMTok: 1.2,
+      // Not published where we looked; a tenth of input, as for the other tiers.
+      cachedInputUsdPerMTok: 0.03,
       contextLength: 131_072,
       maxOutputTokens: 32_768,
+      ...NO_OFF_PEAK,
     },
   },
   {
@@ -43,8 +52,10 @@ export const DEEPSEEK_PRESETS: LlmPreset[] = [
       upstreamModel: 'deepseek-v4-pro',
       inputUsdPerMTok: 1.32,
       outputUsdPerMTok: 3.96,
+      cachedInputUsdPerMTok: 0.044,
       contextLength: 131_072,
       maxOutputTokens: 32_768,
+      ...NO_OFF_PEAK,
     },
   },
 ];

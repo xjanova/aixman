@@ -12,6 +12,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  costUsdFor,
+  isOffPeak,
   isSellable,
   millicreditsFor,
   outputBudget,
@@ -47,10 +49,11 @@ test('config: bad values fall back, missing fields get defaults', () => {
 
 test('cost: millicredits round up, never down', () => {
   // 1,000 input × 20/M = 0.02 credit = 20 millicredits; 500 output × 80/M = 0.04 = 40.
-  assert.equal(millicreditsFor(1000, 500, cfg), 60);
-  assert.equal(millicreditsFor(1, 0, cfg), 1, 'one token is never free');
-  assert.equal(millicreditsFor(0, 0, cfg), 0);
-  assert.equal(millicreditsFor(1_000_000, 1_000_000, cfg), 100_000);
+  const u = (promptTokens: number, completionTokens: number, cachedTokens = 0) => ({ promptTokens, completionTokens, cachedTokens });
+  assert.equal(millicreditsFor(u(1000, 500), cfg), 60);
+  assert.equal(millicreditsFor(u(1, 0), cfg), 1, 'one token is never free');
+  assert.equal(millicreditsFor(u(0, 0), cfg), 0);
+  assert.equal(millicreditsFor(u(1_000_000, 1_000_000), cfg), 100_000);
 });
 
 test('hold: the worst case, in whole credits, at least one', () => {
@@ -105,7 +108,7 @@ test('stream: model relabelled, usage kept, split lines held back', () => {
   const out2 = relay.push('el":"deepseek-flash","choices":[{"delta":{"reasoning_content":"ab","content":"ดี"}}]}\n\n');
   assert.match(out2, /"model":"deepseek-v4.1-flash"/);
   relay.push('data: {"id":"1","model":"deepseek-flash","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":7}}\n\ndata: [DONE]\n\n');
-  assert.deepEqual(relay.usage, { promptTokens: 12, completionTokens: 7 });
+  assert.deepEqual(relay.usage, { promptTokens: 12, completionTokens: 7, cachedTokens: 0 });
   assert.equal(relay.streamedChars, 4 + 2 + 2);
   assert.equal(relay.flush(), '');
 });
@@ -119,7 +122,7 @@ test('stream: comments, keep-alives and garbage pass through untouched', () => {
 });
 
 test('usage: read when present, estimated from text when not', () => {
-  assert.deepEqual(readUsage({ prompt_tokens: 3, completion_tokens: 4 }), { promptTokens: 3, completionTokens: 4 });
+  assert.deepEqual(readUsage({ prompt_tokens: 3, completion_tokens: 4 }), { promptTokens: 3, completionTokens: 4, cachedTokens: 0 });
   assert.equal(readUsage({}), null);
   assert.equal(readUsage(null), null);
   assert.equal(tokensFromChars(9), 5);
@@ -150,4 +153,58 @@ test('upstream: only priced fields go out, under its own model id, with usage in
   assert.equal(upstreamChatUrl('deepseek', 'https://api.deepseek.com/v1/'), 'https://api.deepseek.com/v1/chat/completions');
   assert.equal(upstreamChatUrl('x', null, 'https://proxy.example/v1/chat/completions'), 'https://proxy.example/v1/chat/completions');
   assert.throws(() => upstreamChatUrl('unknown-provider'));
+});
+
+test('cache hits are priced apart, and only where a price is set', () => {
+  const cached = parseLlmConfig({ ...cfg, cachedInputCreditsPerMTok: 2, inputUsdPerMTok: 0.3, cachedInputUsdPerMTok: 0.03 });
+  // 10,000 prompt tokens, 8,000 of them cached: 2,000 × 20 + 8,000 × 2 = 56,000 → 56 millicredits.
+  assert.equal(millicreditsFor({ promptTokens: 10_000, completionTokens: 0, cachedTokens: 8_000 }, cached), 56);
+  assert.equal(millicreditsFor({ promptTokens: 10_000, completionTokens: 0, cachedTokens: 8_000 }, cfg), 200, 'no cached price: full input price');
+  assert.ok(Math.abs(costUsdFor({ promptTokens: 10_000, completionTokens: 0, cachedTokens: 8_000 }, cached) - 0.00084) < 1e-12);
+  // More cached than prompt (a confused upstream) never makes tokens free.
+  assert.equal(millicreditsFor({ promptTokens: 100, completionTokens: 0, cachedTokens: 5_000 }, cached), 1);
+  assert.equal(parseLlmConfig({ cachedInputCreditsPerMTok: '' }).cachedInputCreditsPerMTok, null);
+  assert.equal(parseLlmConfig({ cachedInputCreditsPerMTok: 0 }).cachedInputCreditsPerMTok, 0, '0 is a real price (free), not "unset"');
+});
+
+test('off-peak: a UTC window, possibly across midnight; the price factor is ours, the cost factor theirs', () => {
+  const op = parseLlmConfig({ ...cfg, offPeakStartUtc: '16:30', offPeakEndUtc: '00:30', offPeakCostFactor: 0.5, offPeakPriceFactor: 0.8 });
+  assert.equal(isOffPeak(op, new Date('2026-10-26T16:29:00Z')), false);
+  assert.equal(isOffPeak(op, new Date('2026-10-26T16:30:00Z')), true);
+  assert.equal(isOffPeak(op, new Date('2026-10-27T00:29:00Z')), true);
+  assert.equal(isOffPeak(op, new Date('2026-10-27T00:30:00Z')), false);
+  const at = new Date('2026-10-26T20:00:00Z');
+  assert.equal(millicreditsFor({ promptTokens: 0, completionTokens: 1000 }, op, at), 64, '80 × 0.8');
+  assert.equal(millicreditsFor({ promptTokens: 0, completionTokens: 1000 }, op), 80, 'no time given: the full price a hold needs');
+  assert.ok(Math.abs(costUsdFor({ promptTokens: 0, completionTokens: 1_000_000 }, { ...op, outputUsdPerMTok: 1.2 }, at) - 0.6) < 1e-12);
+  assert.equal(isOffPeak(parseLlmConfig({ offPeakStartUtc: '25:00', offPeakEndUtc: '01:00' }), at), false, 'a bad time is no window');
+  assert.equal(parseLlmConfig({ offPeakPriceFactor: 3 }).offPeakPriceFactor, 1, 'a factor never raises the price');
+});
+
+test('usage: cached tokens read from OpenAI and DeepSeek shapes, never above the prompt', () => {
+  assert.equal(readUsage({ prompt_tokens: 100, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 64 } })?.cachedTokens, 64);
+  assert.equal(readUsage({ prompt_tokens: 100, completion_tokens: 5, prompt_cache_hit_tokens: 80, prompt_cache_miss_tokens: 20 })?.cachedTokens, 80);
+  assert.equal(readUsage({ prompt_tokens: 10, completion_tokens: 5, prompt_cache_hit_tokens: 99 })?.cachedTokens, 10);
+  assert.equal(readUsage({ prompt_tokens: 10, completion_tokens: 5 })?.cachedTokens, 0);
+});
+
+test('key caps: Bangkok day and month, running holds counted, null is no cap', async () => {
+  process.env.DATABASE_URL ??= 'mysql://test:test@127.0.0.1:3306/test';
+  const { breachedLimit, parseLimit, periodStarts } = await import('@/lib/llm/key-limits');
+  // 2026-10-26 23:30 UTC is 06:30 on the 27th in Bangkok.
+  const now = Date.parse('2026-10-26T23:30:00Z');
+  const { day, month } = periodStarts(now);
+  assert.equal(day.toISOString(), '2026-10-26T17:00:00.000Z', 'midnight Bangkok, 27 Oct');
+  assert.equal(month.toISOString(), '2026-09-30T17:00:00.000Z', '1 Oct Bangkok');
+  assert.equal(periodStarts(Date.parse('2026-10-31T18:00:00Z')).month.toISOString(), '2026-10-31T17:00:00.000Z', '01:00 on 1 Nov is November');
+
+  const limits = { dailyLimitCredits: 100, monthlyLimitCredits: null };
+  assert.equal(breachedLimit(limits, { day: 90, month: 500 }, 0, 10), null, 'exactly at the cap is allowed');
+  assert.deepEqual(breachedLimit(limits, { day: 90, month: 500 }, 5, 10), { period: 'day', limit: 100, spent: 90 });
+  assert.deepEqual(breachedLimit({ dailyLimitCredits: null, monthlyLimitCredits: 1000 }, { day: 0, month: 995 }, 0, 6), { period: 'month', limit: 1000, spent: 995 });
+  assert.equal(breachedLimit({ dailyLimitCredits: null, monthlyLimitCredits: null }, { day: 1e9, month: 1e9 }, 1e9, 1e9), null);
+  assert.equal(parseLimit(''), null);
+  assert.equal(parseLimit('150.7'), 150);
+  assert.equal(parseLimit(-1), null);
+  assert.equal(parseLimit(0), 0, '0 blocks the key without revoking it');
 });

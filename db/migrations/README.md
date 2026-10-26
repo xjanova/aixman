@@ -27,6 +27,9 @@ would be unsafe (e.g. would drop legacy tables that still hold data).
   from the node. Apply before the code that reads the columns starts.
 - `20261026_api_keys.sql` — `ai_api_keys` (customer keys, stored as SHA-256) and
   `ai_api_usage` (one row per /api/v1 request) for the LLM API. Additive.
+- `20261026b_api_key_limits.sql` — `ai_api_keys.daily_limit_credits` /
+  `monthly_limit_credits` (customer caps, NULL = none) and
+  `ai_api_usage.cached_tokens`. Additive; apply before the code.
 - `20260925c_gpu_ledger.sql` — `ai_gpu_jobs.free_share`, `pro`, `owner_user_id`
   and `review_reason`: stamped when a community (GPUxMINE) machine claims a job,
   read when its `gpu_job_earnings` row is written after delivery. Apply before

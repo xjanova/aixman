@@ -29,6 +29,21 @@ export interface LlmModelConfig {
   contextLength: number;
   /** The most a request may ask for; also what is reserved when it asks for nothing. */
   maxOutputTokens: number;
+  /**
+   * Prompt tokens the upstream served from its cache (DeepSeek bills them at a
+   * fraction). Null: priced like any input token.
+   */
+  cachedInputCreditsPerMTok: number | null;
+  cachedInputUsdPerMTok: number | null;
+  /**
+   * A daily window, in UTC "HH:MM", when the upstream is cheaper (DeepSeek's
+   * off-peak). Empty: none. Cost and price are multiplied by their factor
+   * inside it — the price factor is ours to choose (1 keeps the saving).
+   */
+  offPeakStartUtc: string;
+  offPeakEndUtc: string;
+  offPeakCostFactor: number;
+  offPeakPriceFactor: number;
 }
 
 export const DEFAULT_LLM_CONFIG: LlmModelConfig = {
@@ -40,7 +55,26 @@ export const DEFAULT_LLM_CONFIG: LlmModelConfig = {
   outputUsdPerMTok: 0,
   contextLength: 131_072,
   maxOutputTokens: 8192,
+  cachedInputCreditsPerMTok: null,
+  cachedInputUsdPerMTok: null,
+  offPeakStartUtc: '',
+  offPeakEndUtc: '',
+  offPeakCostFactor: 1,
+  offPeakPriceFactor: 1,
 };
+
+const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+function optionalNum(value: unknown, max: number): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? Math.min(n, max) : null;
+}
+
+function factor(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 && n <= 1 ? n : 1;
+}
 
 function num(value: unknown, fallback: number, max = Number.MAX_SAFE_INTEGER): number {
   const n = Number(value);
@@ -60,7 +94,31 @@ export function parseLlmConfig(raw: unknown): LlmModelConfig {
     outputUsdPerMTok: num(o.outputUsdPerMTok, d.outputUsdPerMTok, 1e6),
     contextLength: Math.round(num(o.contextLength, d.contextLength, 10_000_000)) || d.contextLength,
     maxOutputTokens: Math.max(1, Math.round(num(o.maxOutputTokens, d.maxOutputTokens, 1_000_000))),
+    cachedInputCreditsPerMTok: optionalNum(o.cachedInputCreditsPerMTok, 1e9),
+    cachedInputUsdPerMTok: optionalNum(o.cachedInputUsdPerMTok, 1e6),
+    offPeakStartUtc: typeof o.offPeakStartUtc === 'string' && HHMM.test(o.offPeakStartUtc) ? o.offPeakStartUtc : '',
+    offPeakEndUtc: typeof o.offPeakEndUtc === 'string' && HHMM.test(o.offPeakEndUtc) ? o.offPeakEndUtc : '',
+    offPeakCostFactor: factor(o.offPeakCostFactor),
+    offPeakPriceFactor: factor(o.offPeakPriceFactor),
   };
+}
+
+/** Whether `at` falls in the model's off-peak window (UTC; may cross midnight). */
+export function isOffPeak(cfg: LlmModelConfig, at: Date): boolean {
+  if (!cfg.offPeakStartUtc || !cfg.offPeakEndUtc || cfg.offPeakStartUtc === cfg.offPeakEndUtc) return false;
+  const m = at.getUTCHours() * 60 + at.getUTCMinutes();
+  const toMin = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
+  const start = toMin(cfg.offPeakStartUtc);
+  const end = toMin(cfg.offPeakEndUtc);
+  return start < end ? m >= start && m < end : m >= start || m < end;
+}
+
+/** What a request actually used, as the upstream reported it. */
+export interface Usage {
+  promptTokens: number;
+  completionTokens: number;
+  /** Of `promptTokens`, how many came from the upstream's cache. */
+  cachedTokens?: number;
 }
 
 /** Whether a model can be sold: it has a price, and an upstream model when it needs one. */
@@ -69,17 +127,31 @@ export function isSellable(cfg: LlmModelConfig): boolean {
   return cfg.backend === 'gpu' || cfg.upstreamModel !== '';
 }
 
-/** What a request costs the customer, in millicredits. Rounded up: a token is never free. */
-export function millicreditsFor(promptTokens: number, completionTokens: number, cfg: LlmModelConfig): number {
-  const p = Math.max(0, Math.round(promptTokens));
-  const c = Math.max(0, Math.round(completionTokens));
+/** Prompt tokens split into fresh and cached, both whole and never negative. */
+function split(u: Usage): { fresh: number; cached: number; completion: number } {
+  const prompt = Math.max(0, Math.round(u.promptTokens));
+  const cached = Math.min(prompt, Math.max(0, Math.round(u.cachedTokens ?? 0)));
+  return { fresh: prompt - cached, cached, completion: Math.max(0, Math.round(u.completionTokens)) };
+}
+
+/**
+ * What a request costs the customer, in millicredits. Rounded up: a token is
+ * never free. Without `at`, no off-peak discount — the worst case a hold needs.
+ */
+export function millicreditsFor(u: Usage, cfg: LlmModelConfig, at?: Date): number {
+  const { fresh, cached, completion } = split(u);
+  const cachedPrice = cfg.cachedInputCreditsPerMTok ?? cfg.inputCreditsPerMTok;
+  const f = at && isOffPeak(cfg, at) ? cfg.offPeakPriceFactor : 1;
   // credits/MTok × tokens × 1000 millicredits / 1e6 tokens = credits/MTok × tokens / 1000.
-  return Math.ceil((p * cfg.inputCreditsPerMTok + c * cfg.outputCreditsPerMTok) / 1000);
+  return Math.ceil(((fresh * cfg.inputCreditsPerMTok + cached * cachedPrice + completion * cfg.outputCreditsPerMTok) * f) / 1000);
 }
 
 /** What a request costs us, in USD. */
-export function costUsdFor(promptTokens: number, completionTokens: number, cfg: LlmModelConfig): number {
-  return (promptTokens * cfg.inputUsdPerMTok + completionTokens * cfg.outputUsdPerMTok) / 1e6;
+export function costUsdFor(u: Usage, cfg: LlmModelConfig, at?: Date): number {
+  const { fresh, cached, completion } = split(u);
+  const cachedCost = cfg.cachedInputUsdPerMTok ?? cfg.inputUsdPerMTok;
+  const f = at && isOffPeak(cfg, at) ? cfg.offPeakCostFactor : 1;
+  return ((fresh * cfg.inputUsdPerMTok + cached * cachedCost + completion * cfg.outputUsdPerMTok) * f) / 1e6;
 }
 
 /**
@@ -100,7 +172,7 @@ export function outputBudget(requested: unknown, cfg: LlmModelConfig): number {
 
 /** Whole credits to hold before a request runs: its worst case, at least one. */
 export function reserveCredits(promptCeiling: number, maxOutput: number, cfg: LlmModelConfig): number {
-  return Math.max(1, Math.ceil(millicreditsFor(promptCeiling, maxOutput, cfg) / 1000));
+  return Math.max(1, Math.ceil(millicreditsFor({ promptTokens: promptCeiling, completionTokens: maxOutput }, cfg) / 1000));
 }
 
 export interface Settlement {
