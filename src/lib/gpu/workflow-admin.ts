@@ -4,6 +4,7 @@ import { validateGraph, type ComfyGraph, type ComfyObjectInfo } from './comfy-va
 import { COMFYUI_REF } from './provision';
 import { alternativeTunables, resolveTunables, type TunableValue, type WorkflowTunable } from './tunables';
 import { buildJobGraph, listTemplateNodes, sampleJob, templateClasses, type TemplateNode } from './workflow-build';
+import { layoutGraph, type GraphView } from './workflow-graph';
 import {
   effectiveQualityModes,
   effectiveWorkflow,
@@ -158,9 +159,10 @@ function num(value: unknown, fallback: number, min: number, max: number): number
 export async function previewWorkflow(
   entry: CatalogEntry,
   override: WorkflowOverride | null,
-  input: PreviewInput = {}
+  input: PreviewInput = {},
+  known?: Awaited<ReturnType<typeof schemaFor>>
 ): Promise<PreviewResult> {
-  const { classes, info } = await schemaFor(entry.key);
+  const { classes, info } = known ?? (await schemaFor(entry.key));
   const base = sampleJob(entry);
   const firstFrame = input.firstFrame === true && entry.video?.firstFrame === true;
   const lastFrame = firstFrame && input.lastFrame === true && entry.video?.lastFrame === true;
@@ -242,6 +244,8 @@ export interface BindingRow {
   optional: boolean;
   /** A wire to another node rather than a literal. */
   link: boolean;
+  /** Ids of the tunables that move this value, so the page can jump to them. */
+  tunables: string[];
 }
 
 function shorten(value: unknown): unknown {
@@ -279,17 +283,22 @@ export function describeBindings(entry: CatalogEntry): BindingRow[] {
   const bb = keyed(entry.bind(b));
   const bt = keyed(entry.bind(t));
   const same = (x: unknown, y: unknown) => JSON.stringify(x) === JSON.stringify(y);
+  const moved = (other: ReturnType<typeof keyed>, key: string, value: unknown) => !other.has(key) || !same(other.get(key)?.value, value);
+
+  // One knob at a time, to learn which values each one moves.
+  const alternatives = alternativeTunables(entry.tunables);
+  const perTunable = (entry.tunables ?? []).map((def) => ({
+    id: def.id,
+    bound: keyed(entry.bind(sampleJob(entry, { tuning: { ...a.tuning, [def.id]: alternatives[def.id] } }))),
+  }));
 
   const rows: BindingRow[] = [];
   for (const [key, { value, optional }] of ba) {
     const [nodeId, input] = key.split('\u0000');
-    const source: BindingSource = !bb.has(key) || !same(bb.get(key)?.value, value)
-      ? 'job'
-      : !bt.has(key) || !same(bt.get(key)?.value, value)
-        ? 'tunable'
-        : 'fixed';
+    const source: BindingSource = moved(bb, key, value) ? 'job' : moved(bt, key, value) ? 'tunable' : 'fixed';
     const link = Array.isArray(value) && value.length === 2 && typeof value[1] === 'number';
-    rows.push({ nodeId, input, value: shorten(value), source, optional, link });
+    const tunables = perTunable.filter((p) => moved(p.bound, key, value)).map((p) => p.id);
+    rows.push({ nodeId, input, value: shorten(value), source, optional, link, tunables });
   }
   return rows;
 }
@@ -536,20 +545,26 @@ export interface WorkflowDetail {
   downloads: CatalogEntry['downloads'];
   lastGraph: LastGraph | null;
   preview: PreviewResult;
+  /** `preview.graph` laid out for the page's diagram; null when it did not build. */
+  graph: GraphView | null;
   video: CatalogEntry['video'] | null;
   needsAudio: boolean;
 }
 
 export async function workflowDetail(entry: CatalogEntry): Promise<WorkflowDetail> {
-  const [stored, history, models, stats, lastGraph] = await Promise.all([
+  const [stored, history, models, stats, lastGraph, schema] = await Promise.all([
     getStoredWorkflow(entry.key),
     getWorkflowHistory(entry.key),
     modelRows([entry.key]),
     statsFor([entry.key]),
     getLastGraph(entry.key).catch(() => null),
+    schemaFor(entry.key),
   ]);
   const values = resolveTunables(entry.tunables, stored?.override.tuning);
-  const preview = await previewWorkflow(entry, stored?.override ?? null);
+  const preview = await previewWorkflow(entry, stored?.override ?? null, {}, schema);
+  // The template the sample job renders from (LTX picks one per frame mode).
+  const template = entry.templateFor?.(sampleJob(entry)) ?? entry.template;
+  const graph = preview.graph ? layoutGraph(preview.graph, listTemplateNodes(template), schema.classes) : null;
   return {
     summary: summarize(entry, stored, models.get(entry.key) ?? [], stats.get(entry.key), lastGraph?.capturedAt ?? null),
     tunables: (entry.tunables ?? []).map((def) => ({
@@ -565,6 +580,7 @@ export async function workflowDetail(entry: CatalogEntry): Promise<WorkflowDetai
     downloads: entry.downloads,
     lastGraph,
     preview,
+    graph,
     video: entry.video ?? null,
     needsAudio: entry.needs?.audio === true,
   };

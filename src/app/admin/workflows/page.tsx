@@ -16,6 +16,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   AlertTriangle,
   Box,
@@ -46,6 +47,13 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { CatalogEntry } from "@/lib/gpu/catalog";
+import type { GraphView } from "@/lib/gpu/workflow-graph";
+
+// React Flow only draws in a browser, and only once the tab is opened.
+const WorkflowDiagram = dynamic(() => import("./WorkflowDiagram"), {
+  ssr: false,
+  loading: () => <div className="h-[640px] rounded-lg border border-border grid place-items-center text-sm text-muted">กำลังวาดกราฟ…</div>,
+});
 
 // ─── Types (mirroring /api/admin/workflows) ────────────────────────────
 
@@ -164,6 +172,8 @@ interface BindingRow {
   source: "job" | "tunable" | "fixed";
   optional: boolean;
   link: boolean;
+  /** The knobs that move this value. */
+  tunables: string[];
 }
 
 interface SchemaInfo {
@@ -209,6 +219,7 @@ interface Detail {
   downloads: { repo: string; file: string; dest: string; bytes: number; as?: string }[];
   lastGraph: LastGraph | null;
   preview: Preview;
+  graph: GraphView | null;
   video: { firstFrame?: boolean; lastFrame?: boolean; resolutions?: { id: string; label: string; aspects: string[]; isDefault?: boolean; adminOnly?: boolean }[] } | null;
   needsAudio: boolean;
 }
@@ -379,6 +390,12 @@ function ReadinessPill({ readiness }: { readiness: string }) {
 
 type DetailTab = "overview" | "nodes" | "tune" | "graph" | "history";
 
+/** A node clicked in the diagram; `seq` makes a second click on the same node scroll again. */
+interface NodeFocus {
+  nodeId: string;
+  seq: number;
+}
+
 export default function AdminWorkflowsPage() {
   const [pageTab, setPageTab] = useState<"workflows" | "assistant">("workflows");
   const [list, setList] = useState<Summary[] | null>(null);
@@ -389,6 +406,7 @@ export default function AdminWorkflowsPage() {
   const [tab, setTab] = useState<DetailTab>("overview");
   const [draft, setDraft] = useState<Draft | null>(null);
   const [baseline, setBaseline] = useState<string>("");
+  const [focus, setFocus] = useState<NodeFocus | null>(null);
 
   const loadList = useCallback(async () => {
     setListError("");
@@ -421,8 +439,14 @@ export default function AdminWorkflowsPage() {
     setSelected(key);
     setDetail(null);
     setDraft(null);
+    setFocus(null);
     setTab("overview");
     loadDetail(key);
+  };
+
+  const focusNode = (nodeId: string) => {
+    setFocus((f) => ({ nodeId, seq: (f?.seq ?? 0) + 1 }));
+    setTab("tune");
   };
 
   const refresh = () => {
@@ -508,7 +532,7 @@ export default function AdminWorkflowsPage() {
               </div>
 
               {tab === "overview" && <OverviewTab d={detail} />}
-              {tab === "nodes" && <NodesTab d={detail} draft={draft} />}
+              {tab === "nodes" && <NodesTab d={detail} draft={draft} onFocusNode={focusNode} />}
               {(tab === "tune" || tab === "graph") && (
                 <EditTabs
                   mode={tab}
@@ -516,6 +540,9 @@ export default function AdminWorkflowsPage() {
                   draft={draft}
                   setDraft={setDraft}
                   dirty={dirty}
+                  focus={tab === "tune" ? focus : null}
+                  onClearFocus={() => setFocus(null)}
+                  onBackToGraph={() => setTab("nodes")}
                   onSaved={() => { loadList(); loadDetail(detail.summary.key); }}
                 />
               )}
@@ -731,12 +758,30 @@ function GraphTable({ graph, marks }: { graph: ApiGraph; marks: Map<string, Bind
   );
 }
 
-function NodesTab({ d, draft }: { d: Detail; draft: Draft }) {
+function NodesTab({ d, draft, onFocusNode }: { d: Detail; draft: Draft; onFocusNode: (nodeId: string) => void }) {
   const [showTemplate, setShowTemplate] = useState(false);
   const marks = useMemo(() => bindingIndex(d.bindings, draft), [d.bindings, draft]);
   const key = d.summary.key;
   return (
     <div className="space-y-4">
+      <Section title={`แผนภาพกราฟ (${d.graph?.nodes.length ?? 0} โหนด · ดูอย่างเดียว)`} icon={<Workflow className="w-4 h-4 text-primary-light" />}>
+        <div className="flex flex-wrap items-center gap-1.5 mb-3">
+          {(["job", "tunable", "fixed", "admin"] as const).map((k) => <Pill key={k} cls={SOURCE_STYLE[k].cls}>{SOURCE_STYLE[k].label}</Pill>)}
+          <Pill>ค่าจากเทมเพลต</Pill>
+          <span className="text-[11px] text-muted">
+            สีขอบโหนดบอกค่าที่สำคัญที่สุดในโหนด (แอดมินตั้ง › จากออเดอร์ › ปรับได้ › คงที่) · ชื่อ input ลงสีทีละช่อง · กรอบเส้นประคือ subgraph ของเทมเพลต ·
+            <b className="text-foreground"> คลิกโหนดเพื่อไปที่ช่องแก้ค่าในแท็บปรับแต่ง</b> · ซูมด้วยปุ่มมุมซ้ายล่างหรือ Ctrl+เลื่อน
+          </span>
+        </div>
+        {d.graph ? (
+          // Keyed per workflow: React Flow keeps each node id's handle positions,
+          // and ids like "1" repeat across workflows with different sockets.
+          <WorkflowDiagram key={key} graph={d.graph} marks={marks} onNodeClick={onFocusNode} />
+        ) : (
+          <div className="text-sm text-error">วาดกราฟไม่ได้เพราะสร้างกราฟตัวอย่างไม่สำเร็จ: {d.preview.error}</div>
+        )}
+      </Section>
+
       <Section title="กราฟที่ระบบจะส่งเข้า ComfyUI (งานตัวอย่าง, ค่าที่บันทึกไว้)" icon={<Boxes className="w-4 h-4 text-primary-light" />}
         right={
           <div className="flex items-center gap-3 text-xs">
@@ -951,8 +996,25 @@ function PreviewBox({ d, draft }: { d: Detail; draft: Draft }) {
   );
 }
 
+/** The tunables that move any value of `nodeId`, in form order. */
+function tunablesOf(nodeId: string, d: Detail): Tunable[] {
+  const ids = new Set(d.bindings.filter((b) => b.nodeId === nodeId).flatMap((b) => b.tunables));
+  return d.tunables.filter((t) => ids.has(t.id));
+}
+
+/** Pulse an element of the form (scrolling to it first), so the eye lands on it. */
+function flash(id: string, scroll = true) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (scroll) el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.animate(
+    [{ boxShadow: "0 0 0 2px rgba(167,139,250,0.95)" }, { boxShadow: "0 0 0 2px rgba(167,139,250,0)" }],
+    { duration: 1600, iterations: 2 }
+  );
+}
+
 function EditTabs({
-  mode, d, draft, setDraft, dirty, onSaved,
+  mode, d, draft, setDraft, dirty, onSaved, focus, onClearFocus, onBackToGraph,
 }: {
   mode: "tune" | "graph";
   d: Detail;
@@ -960,11 +1022,32 @@ function EditTabs({
   setDraft: (d: Draft) => void;
   dirty: boolean;
   onSaved: () => void;
+  /** A node clicked in the diagram, to point the form at. */
+  focus: NodeFocus | null;
+  onClearFocus: () => void;
+  onBackToGraph: () => void;
 }) {
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const [canForce, setCanForce] = useState(false);
   const [savedMsg, setSavedMsg] = useState("");
+
+  // A click in the diagram lands on the knob that edits that node, or on the
+  // raw node-input rows when no knob does. Keyed on the click, not the draft,
+  // so typing in the form never scrolls the page.
+  useEffect(() => {
+    if (!focus) return;
+    const knobs = tunablesOf(focus.nodeId, d);
+    const timer = window.setTimeout(() => {
+      if (knobs.length === 0) flash("wf-node-inputs");
+      else knobs.forEach((t, i) => flash(`wf-tunable-${t.id}`, i === 0));
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [focus, d]);
+
+  const focusedNode = focus ? d.preview.graph?.[focus.nodeId] ?? null : null;
+  const focusedKnobs = focus ? tunablesOf(focus.nodeId, d) : [];
+  const focusedBindings = focus ? d.bindings.filter((b) => b.nodeId === focus.nodeId) : [];
 
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setDraft({ ...draft, [k]: v });
   const groups = useMemo(() => {
@@ -1060,7 +1143,9 @@ function EditTabs({
             <Section key={g} title={GROUP_LABEL[g] ?? g} icon={<Wand2 className="w-4 h-4 text-primary-light" />}>
               <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))" }}>
                 {items.map((t) => (
-                  <TunableField key={t.id} t={t} value={draft.tuning[t.id]} onChange={(v) => set("tuning", { ...draft.tuning, [t.id]: v })} />
+                  <div key={t.id} id={`wf-tunable-${t.id}`} className="rounded-lg">
+                    <TunableField t={t} value={draft.tuning[t.id]} onChange={(v) => set("tuning", { ...draft.tuning, [t.id]: v })} />
+                  </div>
                 ))}
               </div>
             </Section>
@@ -1108,8 +1193,45 @@ function EditTabs({
             <div className="text-[11px] text-muted mt-2">ใส่ก่อนที่แคตตาล็อกจะจัดรูปพรอมต์ของโมเดลเอง (เช่น magic suffix ของ Qwen, โครงพรอมต์ H3) — ลูกค้าไม่เห็นข้อความนี้</div>
           </Section>
 
+          <div id="wf-node-inputs" className="rounded-xl">
           <Section title="แก้ค่าโหนดโดยตรง (ขั้นสูง)" icon={<Boxes className="w-4 h-4 text-primary-light" />}
             right={<button onClick={() => set("nodeInputs", [...draft.nodeInputs, { nodeId: "", input: "", value: "", note: "" }])} className="flex items-center gap-1 text-xs text-primary-light"><Plus className="w-3.5 h-3.5" />เพิ่มแถว</button>}>
+            {focus && (
+              <div className="mb-3 p-3 rounded-lg border border-primary/40 bg-primary/10 text-xs space-y-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <span className="text-muted">โหนดที่คลิกจากกราฟ: </span>
+                    <span className="font-mono text-primary-light">#{focus.nodeId}</span>
+                    <span className="font-mono"> · {focusedNode?.class_type ?? "ไม่มีในกราฟปัจจุบัน"}</span>
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <button onClick={onBackToGraph} className="text-primary-light hover:underline">กลับไปที่กราฟ</button>
+                    <button onClick={onClearFocus} className="text-muted hover:text-foreground" title="ปิด"><XCircle className="w-4 h-4" /></button>
+                  </div>
+                </div>
+                {focusedBindings.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {focusedBindings.map((b) => (
+                      <Pill key={b.input} cls={SOURCE_STYLE[b.source].cls}><span className="font-mono">{b.input}</span> · {SOURCE_STYLE[b.source].label}</Pill>
+                    ))}
+                  </div>
+                )}
+                {focusedKnobs.length > 0 ? (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-muted">ปรับผ่านค่าที่ประกาศไว้ได้:</span>
+                    {focusedKnobs.map((t) => (
+                      <button key={t.id} onClick={() => flash(`wf-tunable-${t.id}`)} className="px-2 py-0.5 rounded-full border border-violet-400/40 text-violet-200 hover:bg-violet-500/20">{t.label}</button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-muted">โหนดนี้ไม่มีค่าที่ประกาศให้ปรับ — ตั้งค่า input ของโหนดนี้ได้ที่แถวด้านล่าง{focusedBindings.some((b) => b.source === "job") ? " (ค่าที่มาจากออเดอร์ ถ้าตั้งทับ ทุกงานจะได้ค่าเดียวกัน)" : ""}</div>
+                )}
+                {focusedNode && (
+                  <button onClick={() => set("nodeInputs", [...draft.nodeInputs, { nodeId: focus.nodeId, input: "", value: "", note: "" }])}
+                    className="flex items-center gap-1 text-primary-light hover:underline"><Plus className="w-3.5 h-3.5" />เพิ่มแถวสำหรับโหนด #{focus.nodeId}</button>
+                )}
+              </div>
+            )}
             {draft.nodeInputs.length === 0 ? (
               <div className="text-xs text-muted">ยังไม่มี — ใช้เขียนค่าใดก็ได้ลง input ของโหนดในกราฟ (เขียนทับค่าของแคตตาล็อก) เช่น <span className="font-mono">76_3 · denoise · 0.95</span> · ค่าที่เป็น JSON (ตัวเลข true/false [&quot;โหนด&quot;,0]) จะถูกแปลงชนิดให้</div>
             ) : (
@@ -1119,7 +1241,7 @@ function EditTabs({
                   const update = (patch: Partial<Draft["nodeInputs"][number]>) =>
                     set("nodeInputs", draft.nodeInputs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
                   return (
-                    <div key={i} className="grid gap-2 items-center" style={{ gridTemplateColumns: "minmax(140px,1.2fr) minmax(120px,1fr) minmax(140px,1.4fr) minmax(120px,1fr) auto" }}>
+                    <div key={i} className={`grid gap-2 items-center rounded-lg ${focus && row.nodeId === focus.nodeId ? "ring-1 ring-primary/60 p-1" : ""}`} style={{ gridTemplateColumns: "minmax(140px,1.2fr) minmax(120px,1fr) minmax(140px,1.4fr) minmax(120px,1fr) auto" }}>
                       <select value={row.nodeId} onChange={(e) => update({ nodeId: e.target.value, input: "" })} className="p-2 rounded-lg bg-surface-light text-xs font-mono">
                         <option value="">— เลือกโหนด —</option>
                         {nodeOptions.map((n) => <option key={n.id} value={n.id}>{n.id} · {n.cls}</option>)}
@@ -1137,6 +1259,7 @@ function EditTabs({
             )}
             <div className="text-[11px] text-muted mt-2">ถ้าโหนดหรือ input หายไปในอนาคต (เทมเพลตเปลี่ยน) ระบบจะข้ามแถวนั้นและแจ้งเตือน — ไม่ทำให้งานของลูกค้าล้ม</div>
           </Section>
+          </div>
         </>
       )}
 
