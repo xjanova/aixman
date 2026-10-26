@@ -20,10 +20,10 @@ import { SseRelay, readUsage, tokensFromChars } from './sse';
  * The OpenAI-compatible gateway behind /api/v1.
  *
  * A customer's key is checked, the model is looked up among the `text` rows,
- * the request's worst case is held from their credits, and the call goes to the
- * model's backend: an upstream API through the account pool (DeepSeek and any
- * other OpenAI-compatible provider), or — once phase 2 lands — one of our
- * rented machines. The answer is relayed as it arrives and the hold is settled
+ * its backend is picked — an upstream API through the account pool (DeepSeek
+ * and any other OpenAI-compatible provider), or one of our rented machines
+ * running vLLM (gpu-target.ts) — then the request's worst case is held from
+ * their credits. The answer is relayed as it arrives and the hold is settled
  * on what it actually cost.
  */
 
@@ -167,10 +167,23 @@ export function upstreamChatUrl(slug: string, providerBaseUrl?: string | null, a
   return root.endsWith('/chat/completions') ? root : `${root}/chat/completions`;
 }
 
+/**
+ * Sampling controls vLLM takes beyond OpenAI's, which the model cards ask for
+ * (Qwen's thinking switch lives in `chat_template_kwargs`). Only our own
+ * machines get them: another company's API may refuse what it does not know.
+ */
+const VLLM_EXTRA = ['top_k', 'min_p', 'repetition_penalty', 'chat_template_kwargs'] as const;
+
 /** The body the upstream gets: whitelisted fields, its own model id, one choice, a bounded output. */
-export function upstreamBody(body: Record<string, unknown>, cfg: LlmModelConfig, maxTokens: number, stream: boolean): Record<string, unknown> {
+export function upstreamBody(
+  body: Record<string, unknown>,
+  cfg: LlmModelConfig,
+  maxTokens: number,
+  stream: boolean,
+  extraFields: readonly string[] = []
+): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const field of FORWARDED) if (body[field] !== undefined) out[field] = body[field];
+  for (const field of [...FORWARDED, ...extraFields]) if (body[field] !== undefined) out[field] = body[field];
   out.model = cfg.upstreamModel;
   out.max_tokens = maxTokens;
   out.stream = stream;
@@ -188,6 +201,71 @@ function validate(body: unknown): Record<string, unknown> {
 
 const ENCODER = new TextEncoder();
 
+/** Where one request goes, and what its outcome means for that backend. */
+interface Target {
+  url: string;
+  headers: Record<string, string>;
+  backend: string;
+  extraFields: readonly string[];
+  /** Give the slot back (a machine's in-flight count). Safe to call twice. */
+  release(): void;
+  onSuccess(costUsd: number): Promise<void>;
+  onFailure(status: number | null, detail: string): Promise<void>;
+}
+
+/** Retry-After for a model whose machine is booting: weights take 20–40 min on a fresh host. */
+const WARMING_RETRY_SECONDS = 120;
+
+async function openTarget(model: ResolvedModel): Promise<Target> {
+  if (model.cfg.backend === 'gpu') {
+    const { pickGpuTarget } = await import('./gpu-target');
+    const pick = await pickGpuTarget(model.cfg.upstreamModel);
+    if (pick.kind === 'off') {
+      throw new ApiError(503, 'This model is not running right now.', 'api_error', 'model_offline');
+    }
+    if (pick.kind !== 'ready') {
+      throw new ApiError(
+        503,
+        pick.kind === 'warming'
+          ? 'The model is starting up on a GPU (a fresh machine takes 20–40 minutes). Retry later; nothing was charged.'
+          : 'No GPU is running this model; one is being started (20–40 minutes). Retry later; nothing was charged.',
+        'api_error',
+        'model_warming',
+        { 'Retry-After': String(WARMING_RETRY_SECONDS) }
+      );
+    }
+    const t = pick.target;
+    return {
+      url: t.url,
+      headers: { 'Content-Type': 'application/json', ...(t.token ? { Authorization: `Bearer ${t.token}` } : {}) },
+      backend: 'gpu',
+      extraFields: VLLM_EXTRA,
+      release: t.release,
+      onSuccess: async () => {},
+      // The machine's own health is the reconcile pass's to judge.
+      onFailure: async (status, detail) => {
+        console.error(`[llm] worker #${t.workerId} answered ${status ?? 'nothing'}: ${detail.slice(0, 200)}`);
+      },
+    };
+  }
+
+  const account = await AccountPoolManager.selectAccount(model.providerId).catch(() => null);
+  if (!account) throw new ApiError(503, 'The model is busy. Try again shortly.', 'api_error', 'backend_unavailable');
+  return {
+    url: upstreamChatUrl(model.providerSlug, model.providerBaseUrl, account.apiEndpoint),
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${account.apiKey}` },
+    backend: model.providerSlug,
+    extraFields: [],
+    release: () => {},
+    onSuccess: async (costUsd) => {
+      await AccountPoolManager.recordSuccess(account.id, costUsd).catch(() => {});
+    },
+    onFailure: async (status, detail) => {
+      await AccountPoolManager.recordError(account.id, `api gateway ${status ?? 'unreachable'}: ${detail}`, status === 429).catch(() => {});
+    },
+  };
+}
+
 /**
  * One chat completion, streamed or not. Every path that took credits settles
  * them exactly once.
@@ -196,9 +274,6 @@ export async function chatCompletion(caller: ApiCaller, rawBody: unknown, signal
   checkRate(caller, await ratePerMinute());
   const body = validate(rawBody);
   const model = await resolveModel(body.model);
-  if (model.cfg.backend === 'gpu') {
-    throw new ApiError(503, 'Self-hosted models are not available yet.', 'api_error', 'backend_unavailable');
-  }
 
   const stream = body.stream === true;
   const maxTokens = outputBudget(body.max_tokens ?? body.max_completion_tokens, model.cfg);
@@ -206,8 +281,13 @@ export async function chatCompletion(caller: ApiCaller, rawBody: unknown, signal
   if (promptCeiling > model.cfg.contextLength * 4) {
     throw new ApiError(400, `The prompt is longer than this model's ${model.cfg.contextLength}-token context.`, 'invalid_request_error', 'context_length_exceeded');
   }
+
+  // Where it runs is settled before any credit moves: a machine still booting
+  // or an empty account pool costs the customer nothing.
+  const target = await openTarget(model);
   const held = reserveCredits(promptCeiling, maxTokens, model.cfg);
   if (!(await holdCredits(caller.userId, held))) {
+    target.release();
     throw new ApiError(402, `Not enough credits: this request can cost up to ${held}. Lower max_tokens or top up.`, 'insufficient_quota', 'insufficient_credits');
   }
 
@@ -217,7 +297,7 @@ export async function chatCompletion(caller: ApiCaller, rawBody: unknown, signal
     apiKeyId: caller.apiKeyId,
     model: model.modelId,
     modelName: model.name,
-    backend: model.providerSlug,
+    backend: target.backend,
     held,
     promptTokens: 0,
     completionTokens: 0,
@@ -228,12 +308,6 @@ export async function chatCompletion(caller: ApiCaller, rawBody: unknown, signal
     ...o,
   });
 
-  const account = await AccountPoolManager.selectAccount(model.providerId).catch(() => null);
-  if (!account) {
-    await settleRequest(outcome({ status: 'error', error: 'no upstream account' }));
-    throw new ApiError(503, 'The model is busy. Try again shortly.', 'api_error', 'backend_unavailable');
-  }
-
   const upstream = new AbortController();
   const onAbort = () => upstream.abort();
   signal.addEventListener('abort', onAbort);
@@ -241,18 +315,19 @@ export async function chatCompletion(caller: ApiCaller, rawBody: unknown, signal
 
   let res: Response;
   try {
-    res = await fetch(upstreamChatUrl(model.providerSlug, model.providerBaseUrl, account.apiEndpoint), {
+    res = await fetch(target.url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${account.apiKey}` },
-      body: JSON.stringify(upstreamBody(body, model.cfg, maxTokens, stream)),
+      headers: target.headers,
+      body: JSON.stringify(upstreamBody(body, model.cfg, maxTokens, stream, target.extraFields)),
       signal: upstream.signal,
     });
   } catch (error) {
     clearTimeout(firstByte);
     signal.removeEventListener('abort', onAbort);
+    target.release();
     const aborted = signal.aborted;
     await settleRequest(outcome({ status: aborted ? 'aborted' : 'error', error: String(error) }));
-    if (!aborted) await AccountPoolManager.recordError(account.id, `api gateway: ${String(error)}`).catch(() => {});
+    if (!aborted) await target.onFailure(null, String(error));
     throw new ApiError(502, 'The model did not answer. Nothing was charged.', 'api_error', 'upstream_unreachable');
   }
   // Headers are in; from here only the total timeout (non-streamed) applies.
@@ -260,6 +335,7 @@ export async function chatCompletion(caller: ApiCaller, rawBody: unknown, signal
 
   if (!res.ok) {
     signal.removeEventListener('abort', onAbort);
+    target.release();
     const detail = (await res.text().catch(() => '')).slice(0, 300);
     await settleRequest(outcome({ status: 'error', error: `upstream ${res.status}: ${detail}` }));
     // A client mistake (bad tool schema, …) is theirs to see; an account
@@ -267,15 +343,16 @@ export async function chatCompletion(caller: ApiCaller, rawBody: unknown, signal
     if (res.status === 400 || res.status === 422) {
       throw new ApiError(400, `The model rejected the request: ${detail || res.statusText}`, 'invalid_request_error', 'upstream_rejected');
     }
-    await AccountPoolManager.recordError(account.id, `api gateway ${res.status}: ${detail}`, res.status === 429).catch(() => {});
+    await target.onFailure(res.status, detail);
     throw new ApiError(res.status === 429 ? 429 : 502, 'The model is busy or failed. Nothing was charged; try again.', 'api_error', 'upstream_error');
   }
 
   const bill = async (promptTokens: number, completionTokens: number, status: RequestOutcome['status'], error?: string) => {
     const millicredits = millicreditsFor(promptTokens, completionTokens, model.cfg);
     const costUsd = costUsdFor(promptTokens, completionTokens, model.cfg);
+    target.release();
     await settleRequest(outcome({ promptTokens, completionTokens, millicredits, costUsd, status, error, latencyMs: Date.now() - started }));
-    if (status === 'ok') await AccountPoolManager.recordSuccess(account.id, costUsd).catch(() => {});
+    if (status === 'ok') await target.onSuccess(costUsd);
   };
 
   if (!stream) {

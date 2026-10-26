@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { KeyRound, Plus, RefreshCw, Save, ToggleLeft, ToggleRight, Trash2 } from "lucide-react";
+import GpuSection from "./gpu-section";
 
 interface LlmConfig {
   backend: "upstream" | "gpu";
@@ -47,7 +48,7 @@ interface Data {
 }
 
 const CONFIG_FIELDS: { key: keyof LlmConfig; label: string; step?: string }[] = [
-  { key: "upstreamModel", label: "ชื่อโมเดลฝั่งต้นทาง" },
+  { key: "upstreamModel", label: "ชื่อโมเดลฝั่งต้นทาง (GPU: คีย์ llm-…)" },
   { key: "inputCreditsPerMTok", label: "ราคาขาย input (เครดิต/1M token)", step: "0.1" },
   { key: "outputCreditsPerMTok", label: "ราคาขาย output (เครดิต/1M token)", step: "0.1" },
   { key: "inputUsdPerMTok", label: "ต้นทุน input (USD/1M)", step: "0.01" },
@@ -287,6 +288,7 @@ export default function AdminLlmPage() {
           </div>
         </>
       )}
+      <GpuSection />
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import prisma from '@/lib/db';
 import { DEFAULT_BASE_IMAGE, DEFAULT_BASE_TAG, DEFAULT_MIN_CUDA, READY_PATH } from './provision';
 import { getCatalogEntry, type CatalogEntry } from './catalog';
+import { getLlmEntry, type LlmCatalogEntry } from './llm-catalog';
 import type { GpuArch } from './gpu-specs';
 import { isGpuProviderSlug, type GpuProviderSlug } from './types';
 
@@ -70,8 +71,11 @@ export interface WorkerProfile {
   tag: string;
   /** Container port the inference API listens on. */
   apiPort: number;
-  /** Which HTTP dialect the server speaks. */
-  apiKind: 'comfyui' | 'simple';
+  /**
+   * Which HTTP dialect the server speaks. `vllm`: a language model serving the
+   * OpenAI API behind our proxy (llm-catalog.ts), called by the /api/v1 gateway.
+   */
+  apiKind: 'comfyui' | 'simple' | 'vllm';
   /** Health endpoint, relative to the API root. */
   healthPath: string;
   diskGb: number;
@@ -281,6 +285,28 @@ function profileFromCatalog(entry: CatalogEntry): WorkerProfile {
 }
 
 /**
+ * A language-model worker: the same stock image, port and readiness path as a
+ * ComfyUI worker (the proxy is shared), with vLLM installed by the boot
+ * (provision-llm.ts) instead of ComfyUI.
+ */
+function profileFromLlm(entry: LlmCatalogEntry): WorkerProfile {
+  return {
+    image: DEFAULT_BASE_IMAGE,
+    tag: DEFAULT_BASE_TAG,
+    apiPort: 8189,
+    apiKind: 'vllm',
+    healthPath: READY_PATH,
+    diskGb: entry.hardware.diskGb,
+    minVramMb: entry.hardware.minVramMb,
+    gpuModels: [],
+    minArch: entry.hardware.minArch,
+    gpuCount: 1,
+    minDownloadMbps: 500,
+    minCudaVersion: DEFAULT_MIN_CUDA,
+  };
+}
+
+/**
  * Worker profile for a model.
  *
  * Derived from the catalogue, then overlaid with any operator overrides stored
@@ -303,8 +329,9 @@ export async function getWorkerProfile(modelKey: string): Promise<WorkerProfile>
     }
   }
 
+  const llm = getLlmEntry(modelKey);
   const entry = getCatalogEntry(modelKey);
-  const base = entry ? profileFromCatalog(entry) : MINIMAX_H3_PROFILE;
+  const base = llm ? profileFromLlm(llm) : entry ? profileFromCatalog(entry) : MINIMAX_H3_PROFILE;
   return { ...base, ...(stored[modelKey] || {}) };
 }
 

@@ -336,6 +336,16 @@ export class GpuQueue {
       }
     }
 
+    // API machines (vLLM): rented to their uptime policy and demand, not to a queue.
+    if (cfg.enabled) {
+      try {
+        const { LlmFleet } = await import('./llm-fleet');
+        await LlmFleet.tick(cfg);
+      } catch (error) {
+        console.error('[llm] fleet tick failed:', (error as Error).message);
+      }
+    }
+
     report.queued = await prisma.aiGpuJob.count({ where: { status: 'queued' } });
     report.liveWorkers = await prisma.aiGpuWorker.count({
       where: { status: { in: ['provisioning', 'warming', 'ready', 'busy', 'draining'] } },
@@ -344,7 +354,8 @@ export class GpuQueue {
 
     // Early warning, once a day: at 100% renting simply stops (gpu-worker.ts).
     if (cfg.enabled && cfg.dailyBudgetUsd > 0) {
-      const used = report.spentTodayUsd / cfg.dailyBudgetUsd;
+      // The render budget's share only: API machines have their own (llm-policy.ts).
+      const used = (await GpuWorkerManager.todaySpendUsd('media')) / cfg.dailyBudgetUsd;
       if (used >= BUDGET_WARN_AT && used < 1) {
         raiseAlert({
           type: 'budget',

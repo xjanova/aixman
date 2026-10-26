@@ -507,8 +507,43 @@ OpenAI-compatible `POST /api/v1/chat/completions` (streamed or not) and
   streams always ask for `include_usage`, and the response's `model` is our id.
 - Per-key rate limit `ai_settings.llm_api_rate_per_minute` (default 60), in
   process like `rate-limit.ts`.
-- Self-hosted models (`backend: 'gpu'`) answer 503 until phase 2 (vLLM on
-  rented GPUs) lands.
+- **Backend is picked before credits are held** (`openTarget`): an upstream
+  account from the pool, or one of our machines (`gpu-target.ts`, least
+  in-flight). No machine ready → 503 `model_warming` + Retry-After, nothing
+  held, demand noted.
+
+### Self-hosted language models (vLLM on rented GPUs, `llm-*` worker keys)
+`src/lib/gpu/llm-catalog.ts` (Qwen3.8-27B FP8, Devstral Small 2, Qwen3-Coder-
+Next FP8), `llm-policy.ts`, `provision-llm.ts`, `services/llm-fleet.ts`,
+admin section on `/admin/llm` (`/api/admin/llm/gpu`).
+- **A worker whose `modelKey` starts with `llm-` is an API machine.** It holds
+  no render slot (`NOT_LLM` on every slot count and on
+  `releaseIdleWorkerForOtherModel`), spends its own budget
+  (`todaySpendUsd('llm')` vs `llm_gpu_config.dailyBudgetUsd`; the render budget
+  and its alerts use `'media'`), and skips `gpu_max_worker_lifetime_minutes`
+  — its budget is its kill switch. Never let a render path count or reap one.
+- **Uptime policy** (`llm_gpu_policies`, per model): `off` | `on-demand` |
+  `schedule` (Asia/Bangkok, a window past midnight belongs to the day it
+  opened) | `always`. Every mode but `off` answers demand: a request with no
+  ready machine writes `llm_gpu_demand`, `LlmFleet.tick` (end of the GPU tick)
+  rents; a request that finds every machine at `BUSY_INFLIGHT` asks for one
+  more, up to `maxMachines`. The baseline (oldest machines) is never idle-
+  reaped; others close after `idleMinutes` (`reapLlmIfDone`). The gateway
+  stamps `lastJobAt`. Only models with an active `text` row (`backend: 'gpu'`,
+  `upstreamModel` = the key, on the `simplepod` provider row) are rented for.
+- **Boot:** same stock image, port 8189 proxy and `/aixman/ready` contract as
+  ComfyUI. vLLM (`VLLM_VERSION`, 0.31.0) goes in its own venv via
+  `uv pip install --torch-backend=cu129` (its wheels are CUDA 12.9 and pin
+  their torch); weights by `snapshot_download`; vLLM on 127.0.0.1:8188.
+  The vLLM image is not used: its entrypoint is `vllm serve` and every
+  vendor runs our script as the container command.
+- **The proxy is shared** (`proxySource`): `AIXMAN_UPSTREAM`,
+  `AIXMAN_HEALTH_PATH`, `AIXMAN_PROXY_MODE=llm` (no ComfyUI websocket),
+  `AIXMAN_UPSTREAM_TIMEOUT`; `text/event-stream` is relayed with `read1` and
+  flushed per chunk. ComfyUI defaults are unchanged — test any change against
+  a fake ComfyUI *and* a fake SSE server.
+- Untested on a real GPU as of 2026-10-26: VRAM fit at 131k context, boot
+  time, throughput, and the `uv` resolve of vLLM 0.31.0 on the cu130 image.
 
 ## Prompt assistant (✨ in the studio)
 

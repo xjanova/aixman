@@ -42,7 +42,8 @@ export async function GET() {
       orderBy: { rentedAt: 'desc' },
     }),
     prisma.aiGpuJob.groupBy({ by: ['status'], _count: { _all: true } }),
-    GpuWorkerManager.todaySpendUsd(),
+    // Against the render budget; API machines are on /admin/llm with theirs.
+    GpuWorkerManager.todaySpendUsd('media'),
     prisma.aiGpuJob.findMany({
       orderBy: { queuedAt: 'desc' },
       take: 20,

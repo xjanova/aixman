@@ -142,12 +142,18 @@ export function renderEnvExports(env: Record<string, string>): string {
  * body that will not parse is forwarded untouched, and the listener lives on
  * its own thread, reconnecting until ComfyUI is up.
  */
-function proxySource(): string {
+export function proxySource(): string {
   return String.raw`
 import os, sys, json, re, time, socket, base64, struct, threading, subprocess, http.server, socketserver, urllib.request, urllib.error, hmac
 
 TOKEN = os.environ.get("AIXMAN_WORKER_TOKEN", "")
-UPSTREAM = "http://127.0.0.1:8188"
+# ComfyUI unless the boot says otherwise: a vLLM worker (provision-llm.ts)
+# puts its server on the same loopback port and answers health elsewhere.
+UPSTREAM = os.environ.get("AIXMAN_UPSTREAM", "http://127.0.0.1:8188")
+HEALTH = os.environ.get("AIXMAN_HEALTH_PATH", "/system_stats")
+LLM_MODE = os.environ.get("AIXMAN_PROXY_MODE", "") == "llm"
+# Per socket read, not per request: a long non-streamed answer may be silent for minutes.
+UPSTREAM_TIMEOUT = int(os.environ.get("AIXMAN_UPSTREAM_TIMEOUT", "600"))
 PORT = int(os.environ.get("AIXMAN_PROXY_PORT", "8189"))
 # Loopback when a tunnel is the way in; the port is then never published.
 BIND = os.environ.get("AIXMAN_PROXY_BIND", "0.0.0.0")
@@ -412,7 +418,7 @@ def readiness():
     if not os.path.exists(os.path.join(ROOT, "models.ready")):
         return 503, {"ready": False, "stage": "downloading", "bytes": weights_bytes()}
     try:
-        with urllib.request.urlopen(UPSTREAM + "/system_stats", timeout=5) as up:
+        with urllib.request.urlopen(UPSTREAM + HEALTH, timeout=5) as up:
             if up.status == 200:
                 # "auth" lets the platform notice a worker that booted without
                 # its token (the gate fails open) instead of assuming it is shut.
@@ -463,7 +469,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if route == LOG_PATH:
             # The only window into a boot that went wrong: the machine and its
             # disk vanish when it is released. Behind the same token as the rest.
-            self._json(200, {name: tail(os.path.join(ROOT, name)) for name in ("boot.log", "comfyui.log", "proxy.log", "tunnel.log")})
+            self._json(200, {name: tail(os.path.join(ROOT, name)) for name in ("boot.log", "comfyui.log", "server.log", "proxy.log", "tunnel.log")})
             return
         if route == PROGRESS_PATH:
             self._json(200, progress_snapshot())
@@ -485,7 +491,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if k.lower() not in HOP and k.lower() not in skip:
                 req.add_header(k, v)
         try:
-            with urllib.request.urlopen(req, timeout=600) as up:
+            with urllib.request.urlopen(req, timeout=UPSTREAM_TIMEOUT) as up:
                 self.send_response(up.status)
                 for k, v in up.headers.items():
                     if k.lower() not in HOP:
@@ -500,13 +506,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 # Streamed in chunks: renders can be hundreds of megabytes and
                 # buffering one whole in memory would exhaust the container.
                 reply = bytearray() if graph is not None else None
+                # An event stream (a language model's tokens) goes out as it
+                # arrives: read() would hold it until 64 KB had piled up.
+                streaming = (up.headers.get("Content-Type") or "").startswith("text/event-stream")
                 while True:
-                    chunk = up.read(65536)
+                    chunk = up.read1(65536) if streaming else up.read(65536)
                     if not chunk:
                         break
                     if reply is not None and len(reply) < 65536:
                         reply.extend(chunk)
                     self.wfile.write(chunk)
+                    if streaming:
+                        self.wfile.flush()
                 if reply:
                     try:
                         pid = json.loads(bytes(reply)).get("prompt_id")
@@ -538,7 +549,8 @@ class Server(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-threading.Thread(target=ws_listen, daemon=True).start()
+if not LLM_MODE:
+    threading.Thread(target=ws_listen, daemon=True).start()
 if CALLBACK_URL:
     sys.stderr.write("[proxy] tunnel mode: will report to %s\n" % CALLBACK_URL)
     threading.Thread(target=tunnel_loop, daemon=True).start()
@@ -843,7 +855,7 @@ done
  * the platform releases it after TUNNEL_REPORT_TIMEOUT (gpu-worker.ts) — there
  * is no one to read a boot failure recorded here.
  */
-function tunnelFetch(): string {
+export function tunnelFetch(): string {
   return `
 echo "[aixman] fetching cloudflared for the HTTPS tunnel"
 (
@@ -862,6 +874,6 @@ echo "[aixman] fetching cloudflared for the HTTPS tunnel"
 }
 
 /** Single-quote for POSIX sh; the only escape needed is the quote itself. */
-function shellQuote(value: string): string {
+export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }

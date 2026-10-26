@@ -15,6 +15,9 @@ import { MODEL_CATALOG, getCatalogEntry, downloadBytes, isCommunityModel, isComm
 import { cardFamily, isEligibleGpu } from '@/lib/gpu/gpu-specs';
 import { FUNDING_MARGIN, fundedOffers, offerKey, rankOffers, type RankedOffer } from '@/lib/gpu/offer-picker';
 import { buildComfyUiStartScript, LOG_PATH, READY_PATH, renderEnvExports } from '@/lib/gpu/provision';
+import { buildVllmStartScript } from '@/lib/gpu/provision-llm';
+import { LLM_KEY_PREFIX, getLlmEntry, isLlmModelKey } from '@/lib/gpu/llm-catalog';
+import { getPolicies, getFleetConfig, shouldRelease, DEFAULT_LLM_POLICY } from '@/lib/gpu/llm-policy';
 import { clearSchema } from '@/lib/gpu/comfy-validate';
 import { COMMUNITY_BODY_LIMITS, readCapped } from '@/lib/gpu/worker-client';
 import {
@@ -166,6 +169,13 @@ const LIVE_STATUSES: WorkerStatus[] = ['provisioning', 'warming', 'ready', 'busy
  */
 const RENTED_ONLY = { providerSlug: { notIn: [...COMMUNITY_PROVIDER_SLUGS] } };
 const COMMUNITY_ONLY = { providerSlug: { in: [...COMMUNITY_PROVIDER_SLUGS] } };
+/**
+ * Language-model machines (llm-catalog.ts) answer the /api/v1 gateway and are
+ * kept up by their uptime policy (llm-policy.ts). They hold no render slot,
+ * spend their own budget, and are never released to make room for a render.
+ */
+const NOT_LLM = { NOT: { modelKey: { startsWith: LLM_KEY_PREFIX } } };
+const LLM_ONLY = { modelKey: { startsWith: LLM_KEY_PREFIX } };
 
 /** When this process last asked each community row's /aixman/ready (worker id → ms). */
 const communityProbedAt = new Map<number, number>();
@@ -309,13 +319,20 @@ export class GpuWorkerManager {
     return (ms / 3_600_000) * Number(worker.pricePerHourUsd);
   }
 
-  /** Total GPU spend attributable to the current calendar day. */
-  static async todaySpendUsd(): Promise<number> {
+  /**
+   * GPU spend attributable to the current calendar day. `media`: render
+   * machines, what `gpu_daily_budget_usd` caps; `llm`: API machines, capped by
+   * their own budget (llm-policy.ts); `all`: both, for reports.
+   */
+  static async todaySpendUsd(scope: 'all' | 'media' | 'llm' = 'all'): Promise<number> {
     const now = new Date();
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
     const workers = await prisma.aiGpuWorker.findMany({
-      where: { OR: [{ terminatedAt: null }, { terminatedAt: { gte: startOfDay } }] },
+      where: {
+        OR: [{ terminatedAt: null }, { terminatedAt: { gte: startOfDay } }],
+        ...(scope === 'media' ? NOT_LLM : scope === 'llm' ? LLM_ONLY : {}),
+      },
       select: { rentedAt: true, terminatedAt: true, pricePerHourUsd: true },
     });
 
@@ -487,7 +504,10 @@ export class GpuWorkerManager {
     // Once the day's budget is gone, idle machines are pure loss. Reap them on
     // sight instead of waiting out the normal idle timeout. Jobs already
     // rendering are left to finish — that spend is already committed.
-    const overBudget = (await this.todaySpendUsd()) >= cfg.dailyBudgetUsd;
+    const overBudget = (await this.todaySpendUsd('media')) >= cfg.dailyBudgetUsd;
+    const llmOverBudget = workers.some((w) => isLlmModelKey(w.modelKey))
+      ? (await this.todaySpendUsd('llm')) >= (await getFleetConfig()).dailyBudgetUsd
+      : false;
 
     for (const worker of workers) {
       try {
@@ -499,7 +519,8 @@ export class GpuWorkerManager {
               'Restore the key in Admin → GPU, or terminate it in the vendor console.'
           );
         }
-        await this.reconcileOne(worker, vendor.provider, vendor.apiKey, cfg, now, overBudget);
+        const llm = isLlmModelKey(worker.modelKey);
+        await this.reconcileOne(worker, vendor.provider, vendor.apiKey, cfg, now, llm ? llmOverBudget : overBudget);
       } catch (error) {
         // A reconcile failure must never abort the loop — the *next* worker may
         // be the one that needs reaping.
@@ -565,7 +586,9 @@ export class GpuWorkerManager {
       return;
     }
 
-    if (ageMs > cfg.maxWorkerLifetimeMinutes * 60_000) {
+    // An API machine kept up by its uptime policy would be cut every few
+    // hours by the render lifetime; its own budget (overBudget below) is its cap.
+    if (!isLlmModelKey(worker.modelKey) && ageMs > cfg.maxWorkerLifetimeMinutes * 60_000) {
       await this.terminate(worker.id, `Reached maximum lifetime of ${cfg.maxWorkerLifetimeMinutes} min`);
       return;
     }
@@ -676,6 +699,11 @@ export class GpuWorkerManager {
 
     // --- Idle reaping ---
 
+    if (worker.status === 'ready' && isLlmModelKey(worker.modelKey)) {
+      await this.reapLlmIfDone(worker, now, overBudget);
+      return;
+    }
+
     if (worker.status === 'ready') {
       const activeJobs = await prisma.aiGpuJob.count({
         where: { workerId: worker.id, status: { in: ['assigned', 'running'] } },
@@ -721,6 +749,36 @@ export class GpuWorkerManager {
       if (activeJobs === 0) {
         await prisma.aiGpuWorker.updateMany({ where: { id: worker.id, status: 'busy' }, data: { status: 'ready' } });
       }
+    }
+  }
+
+  /**
+   * A ready API machine: closed when the API budget is spent, kept while its
+   * policy's baseline needs it, otherwise closed after its idle time. The
+   * gateway stamps `lastJobAt` as requests arrive.
+   */
+  private static async reapLlmIfDone(worker: AiGpuWorker, now: Date, overBudget: boolean): Promise<void> {
+    if (overBudget) {
+      await this.terminate(worker.id, 'Daily API GPU budget exhausted');
+      return;
+    }
+    const policy = (await getPolicies())[worker.modelKey] ?? DEFAULT_LLM_POLICY;
+    // The oldest machines are the baseline: keeping the same ones up means a
+    // burst's extras are what close.
+    const older = await prisma.aiGpuWorker.count({
+      where: {
+        modelKey: worker.modelKey,
+        status: { in: ['ready', 'busy'] },
+        terminatedAt: null,
+        rentedAt: { lt: worker.rentedAt },
+      },
+    });
+    const lastUsedAt = worker.lastJobAt ?? worker.readyAt ?? worker.rentedAt;
+    if (shouldRelease(policy, now, older, lastUsedAt)) {
+      await this.terminate(
+        worker.id,
+        `API machine idle for ${Math.floor((now.getTime() - lastUsedAt.getTime()) / 60_000)} min (${policy.mode})`
+      );
     }
   }
 
@@ -1025,7 +1083,11 @@ export class GpuWorkerManager {
     modelKey: string,
     cfg: GpuBudgetConfig,
     backlog: { queued: number; oldestQueuedAt: Date | null },
-    opts: { prewarm?: boolean } = {}
+    opts: {
+      prewarm?: boolean;
+      /** An API machine (llm-catalog.ts): its own slot cap and budget, no scaler — LlmFleet decided. */
+      llm?: { maxWorkers: number; dailyBudgetUsd: number };
+    } = {}
   ): Promise<CapacityResult> {
     // A model built for home PCs only is never rented for (owner decision D5):
     // a 1-credit image does not pay for a datacentre boot. Its jobs wait for a
@@ -1052,7 +1114,7 @@ export class GpuWorkerManager {
       },
     });
     if (opts.prewarm && serving > 0) return { reason: 'Pre-warm skipped: the model already has a machine' };
-    if (serving > 0) {
+    if (serving > 0 && !opts.llm) {
       const [unitRenderSeconds, bootSeconds, lengthFactor] = await Promise.all([
         GpuEta.typicalRenderSeconds(modelKey),
         // This model's own boots: its weights decide the download.
@@ -1066,7 +1128,14 @@ export class GpuWorkerManager {
       if (!decision.add) return { reason: decision.reason };
     }
 
-    const liveCount = await prisma.aiGpuWorker.count({ where: { ...RENTED_ONLY, status: { in: LIVE_STATUSES } } });
+    if (opts.llm) {
+      const llmLive = await prisma.aiGpuWorker.count({ where: { ...RENTED_ONLY, ...LLM_ONLY, status: { in: LIVE_STATUSES } } });
+      if (llmLive >= opts.llm.maxWorkers) return { reason: `At API machine capacity (${llmLive}/${opts.llm.maxWorkers})` };
+    }
+    // Render slots: API machines hold none.
+    const liveCount = opts.llm
+      ? 0
+      : await prisma.aiGpuWorker.count({ where: { ...RENTED_ONLY, ...NOT_LLM, status: { in: LIVE_STATUSES } } });
     if (liveCount >= cfg.maxConcurrentWorkers && opts.prewarm) {
       return { reason: `Pre-warm skipped: at worker capacity (${liveCount}/${cfg.maxConcurrentWorkers})` };
     }
@@ -1089,11 +1158,14 @@ export class GpuWorkerManager {
       };
     }
 
-    const spentToday = await this.todaySpendUsd();
+    const spentToday = await this.todaySpendUsd(opts.llm ? 'llm' : 'media');
+    if (opts.llm && spentToday >= opts.llm.dailyBudgetUsd) {
+      return { reason: `Daily API GPU budget reached ($${spentToday.toFixed(2)} of $${opts.llm.dailyBudgetUsd.toFixed(2)})` };
+    }
     if (spentToday >= cfg.dailyBudgetUsd && opts.prewarm) {
       return { reason: 'Pre-warm skipped: daily GPU budget reached' };
     }
-    if (spentToday >= cfg.dailyBudgetUsd) {
+    if (!opts.llm && spentToday >= cfg.dailyBudgetUsd) {
       raiseAlert({
         type: 'budget',
         key: `100:${new Date().toDateString()}`,
@@ -1119,7 +1191,7 @@ export class GpuWorkerManager {
     // The render lives on the worker's tunnel and dies with the machine, so it
     // must be copied to R2 before the worker is released. Without R2 every
     // render would be thrown away after it was paid for — do not rent at all.
-    if (!isStorageConfigured()) {
+    if (!opts.llm && !isStorageConfigured()) {
       throw new Error(
         'R2 storage is not configured, so a GPU render could not be kept once the worker is released. ' +
           'Set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET and R2_PUBLIC_URL.'
@@ -1212,7 +1284,7 @@ export class GpuWorkerManager {
 
     // A machine the budget cannot carry through even one job would be killed
     // mid-boot by the next tick — money spent for nothing.
-    const headroom = cfg.dailyBudgetUsd - spentToday;
+    const headroom = (opts.llm ? opts.llm.dailyBudgetUsd : cfg.dailyBudgetUsd) - spentToday;
     const affordable = funded.filter((r) => r.firstJobCostUsd <= headroom);
     if (affordable.length === 0) {
       return {
@@ -1395,11 +1467,11 @@ export class GpuWorkerManager {
     if (isCommunityOnlyModel(modelKey)) throw new Error('โมเดลนี้รันบนเครื่องชุมชน (GPUxMINE) เท่านั้น — ไม่เช่าเครื่องให้');
     if (!isStorageConfigured()) throw new Error('ยังไม่ได้ตั้งค่า R2 — งานที่เรนเดอร์จะหายไปพร้อมเครื่อง');
 
-    const liveCount = await prisma.aiGpuWorker.count({ where: { ...RENTED_ONLY, status: { in: LIVE_STATUSES } } });
+    const liveCount = await prisma.aiGpuWorker.count({ where: { ...RENTED_ONLY, ...NOT_LLM, status: { in: LIVE_STATUSES } } });
     if (liveCount >= cfg.maxConcurrentWorkers) {
       throw new Error(`เครื่องเต็มเพดานแล้ว (${liveCount}/${cfg.maxConcurrentWorkers}) — ปิดเครื่องอื่นหรือเพิ่มเพดานก่อน`);
     }
-    const spentToday = await this.todaySpendUsd();
+    const spentToday = await this.todaySpendUsd('media');
 
     const profile = await getWorkerProfile(modelKey);
     assertProfileUsable(modelKey, profile);
@@ -1474,7 +1546,7 @@ export class GpuWorkerManager {
             return { slug, offers: [], note: 'needs an https NEXTAUTH_URL for its tunnel to report to' };
           }
           // The tunnel is opened by our ComfyUI proxy; a self-serving image has none.
-          if (profile.apiKind !== 'comfyui') return { slug, offers: [], note: 'reachable only through the ComfyUI worker' };
+          if (profile.apiKind === 'simple') return { slug, offers: [], note: 'reachable only through our proxy' };
         }
         clients.set(slug, vendor);
         try {
@@ -1538,7 +1610,7 @@ export class GpuWorkerManager {
     const candidates = await prisma.aiGpuWorker.findMany({
       // A home PC holds no rental slot, so releasing one frees nothing — and
       // it is somebody's machine, not ours to switch off.
-      where: { ...RENTED_ONLY, status: 'ready', modelKey: { not: wantedModelKey } },
+      where: { ...RENTED_ONLY, ...NOT_LLM, status: 'ready', modelKey: { not: wantedModelKey } },
       orderBy: { lastJobAt: 'asc' }, // least recently useful first
     });
     const now = Date.now();
@@ -1602,7 +1674,7 @@ export class GpuWorkerManager {
       bootingOnOffer.set(key, (bootingOnOffer.get(key) ?? 0) + 1);
     }
     return rankOffers(offers, {
-      weightsGb: entry ? downloadBytes(entry) / 1e9 : 40,
+      weightsGb: entry ? downloadBytes(entry) / 1e9 : (getLlmEntry(modelKey)?.bytes ?? 40e9) / 1e9,
       diskGb: profile.diskGb,
       renderStatsByGpu,
       referenceRenderSeconds: renderProfile.referenceUnitSeconds * lengthFactor,
@@ -1644,8 +1716,11 @@ export class GpuWorkerManager {
     // For a ComfyUI worker on the stock PyTorch image, the start script installs
     // everything — no custom Docker build is needed. A 'simple' profile points
     // at an image that serves itself, so it only gets the env exports.
+    const llmEntry = getLlmEntry(modelKey);
     const scriptFor = (scriptEnv: Record<string, string>, hfToken: string | undefined) =>
-      profile.apiKind === 'comfyui'
+      profile.apiKind === 'vllm' && llmEntry
+        ? buildVllmStartScript({ publicPort: profile.apiPort, entry: llmEntry, hfToken, env: scriptEnv, tunnel })
+        : profile.apiKind === 'comfyui'
         ? buildComfyUiStartScript({
             publicPort: profile.apiPort,
             extraScript: profile.startScript,
