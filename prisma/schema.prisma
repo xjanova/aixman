@@ -764,3 +764,51 @@ model AiUsageLog {
   @@index([status, createdAt])
   @@map("ai_usage_logs")
 }
+
+// ---------------------------------------------------------------------------
+// LLM API — customers' keys and what each request cost
+// (db/migrations/20261026_api_keys.sql)
+// ---------------------------------------------------------------------------
+
+model AiApiKey {
+  id                Int       @id @default(autoincrement())
+  // users.id snapshot (BIGINT UNSIGNED on the shared table), no foreign key.
+  userId            Int       @map("user_id")
+  name              String    @db.VarChar(100)
+  // Shown in lists so a customer can tell keys apart; the key itself is not stored.
+  keyPrefix         String    @map("key_prefix") @db.VarChar(16)
+  keyHash           String    @unique @map("key_hash") @db.Char(64)
+  // Thousandths of a credit used but not yet taken from the whole-credit balance.
+  carryMillicredits Int       @default(0) @map("carry_millicredits")
+  lastUsedAt        DateTime? @map("last_used_at")
+  revokedAt         DateTime? @map("revoked_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@map("ai_api_keys")
+}
+
+model AiApiUsage {
+  id               Int      @id @default(autoincrement())
+  userId           Int      @map("user_id")
+  apiKeyId         Int      @map("api_key_id")
+  // The model id the customer asked for (ai_models.modelId).
+  model            String   @db.VarChar(255)
+  // Where it ran: an upstream provider's slug, or 'gpu' for a rented machine.
+  backend          String   @db.VarChar(50)
+  promptTokens     Int      @default(0) @map("prompt_tokens")
+  completionTokens Int      @default(0) @map("completion_tokens")
+  millicredits     Int      @default(0)
+  costUsd          Decimal  @default(0) @map("cost_usd") @db.Decimal(12, 6)
+  // ok | error | aborted
+  status           String   @db.VarChar(20)
+  error            String?  @db.VarChar(500)
+  latencyMs        Int      @default(0) @map("latency_ms")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@index([apiKeyId, createdAt])
+  @@index([createdAt])
+  @@map("ai_api_usage")
+}

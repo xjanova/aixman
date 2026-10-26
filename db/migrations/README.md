@@ -25,6 +25,8 @@ would be unsafe (e.g. would drop legacy tables that still hold data).
   on `ai_gpu_jobs (status, completed_at)`. Community machines only ever get
   `general` jobs with nothing uploaded; a delivered community job is purged
   from the node. Apply before the code that reads the columns starts.
+- `20261026_api_keys.sql` — `ai_api_keys` (customer keys, stored as SHA-256) and
+  `ai_api_usage` (one row per /api/v1 request) for the LLM API. Additive.
 - `20260925c_gpu_ledger.sql` — `ai_gpu_jobs.free_share`, `pro`, `owner_user_id`
   and `review_reason`: stamped when a community (GPUxMINE) machine claims a job,
   read when its `gpu_job_earnings` row is written after delivery. Apply before

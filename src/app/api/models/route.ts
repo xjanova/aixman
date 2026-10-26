@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
+import { LLM_CATEGORY } from '@/lib/llm/pricing';
 import { isAdmin } from '@/lib/auth';
 import { ModelReadiness, TUNING_MESSAGE } from '@/lib/services/model-readiness';
 import { accountBlock, type AccountBlock } from '@/lib/services/account-pool';
@@ -119,7 +120,8 @@ export async function GET() {
   const now = new Date();
   const [models, admin, accounts, gpuCfg, workflows] = await Promise.all([
     prisma.aiModel.findMany({
-      where: { isActive: true },
+      // Language models are sold through /api/v1, not in the studio.
+      where: { isActive: true, category: { not: LLM_CATEGORY } },
       include: { provider: { select: { id: true, name: true, slug: true, logo: true, isActive: true } } },
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
     }),

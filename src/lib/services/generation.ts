@@ -24,6 +24,7 @@ import { BLOCKED_LABEL, blockedMessage, classifyContent, type ContentAssessment 
 import { communityOrderRefusal, communityRefusalMessage } from '@/lib/gpu/community-dispatch';
 import { communityMachineAvailable } from '@/lib/gpu/community-availability';
 import { OrderRefusedError } from './order-refusal';
+import { LLM_CATEGORY } from '@/lib/llm/pricing';
 
 /**
  * Why an order was refused when its type and its model disagree about whether
@@ -71,7 +72,8 @@ export class GenerationService {
       include: { provider: true },
     });
 
-    if (!model || !model.isActive) {
+    // Language models are sold through /api/v1 by token, not as a studio order.
+    if (!model || !model.isActive || model.category === LLM_CATEGORY) {
       throw new Error('Model not found or inactive');
     }
 

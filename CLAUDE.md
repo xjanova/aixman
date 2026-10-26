@@ -482,6 +482,34 @@ portrait model is `lipsync-portrait`):
   `input-fault.ts` makes that a refund with a Thai reason, not a retry on
   another machine.
 
+## LLM API (`/api/v1`) — language models resold by the token
+
+OpenAI-compatible `POST /api/v1/chat/completions` (streamed or not) and
+`GET /api/v1/models`, authenticated by customer keys (`axm-…`, made on
+`/developer`, stored as SHA-256 in `ai_api_keys`). Code: `src/lib/llm/`.
+- **A model is an `ai_models` row with category `text`**; its prices and
+  upstream id live in `defaultParams` (`LlmModelConfig`, read only through
+  `parseLlmConfig`). Such rows are kept out of the studio (`/api/models`) and
+  refused by GenerationService. Admin → API โมเดลภาษา (`/admin/llm`) edits
+  them; "เพิ่ม DeepSeek" creates the `deepseek` provider + V4.1 Flash / V4 Pro
+  at twice cost. The provider key goes in Account Pools with daily quota 0 —
+  the pool's request quota (default 1,000/day) would otherwise stop the API.
+- **Money:** credits are whole numbers, so everything is millicredits. Before a
+  request runs, its worst case (prompt bytes as a token ceiling + its whole
+  `max_tokens`) is held from the balance with the conditional update; after,
+  `settleRequest` charges the real cost through the key's
+  `carry_millicredits`, returns the rest, writes one `api-usage` credit
+  transaction per whole credit charged and one `ai_api_usage` row. Every path
+  that held credits settles exactly once (stream end, error, client hang-up,
+  5-min stream idle). Never bill from anything but the upstream's `usage`
+  except an interrupted stream (`tokensFromChars`).
+- Only whitelisted fields reach the upstream (`FORWARDED`), `n` must be 1,
+  streams always ask for `include_usage`, and the response's `model` is our id.
+- Per-key rate limit `ai_settings.llm_api_rate_per_minute` (default 60), in
+  process like `rate-limit.ts`.
+- Self-hosted models (`backend: 'gpu'`) answer 503 until phase 2 (vLLM on
+  rented GPUs) lands.
+
 ## Prompt assistant (✨ in the studio)
 
 `/api/studio/enhance-prompt` → `services/prompt-enhancer.ts`. Order: MiniMax's
