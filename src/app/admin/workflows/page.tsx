@@ -18,6 +18,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
+  Box,
   Boxes,
   CheckCircle2,
   ChevronDown,
@@ -42,7 +43,9 @@ import {
   Wand2,
   Workflow,
   XCircle,
+  type LucideIcon,
 } from "lucide-react";
+import type { CatalogEntry } from "@/lib/gpu/catalog";
 
 // ─── Types (mirroring /api/admin/workflows) ────────────────────────────
 
@@ -104,8 +107,8 @@ interface StoredWorkflow {
 interface Summary {
   key: string;
   name: string;
-  kind: "video" | "image" | "audio" | "lipsync";
-  outputKind: "video" | "image" | "audio" | "model3d";
+  kind: CatalogEntry["kind"];
+  outputKind: CatalogEntry["outputKind"];
   description: string;
   source: { file: string; title: string; url?: string } | null;
   nodeCount: number;
@@ -301,8 +304,10 @@ function overrideFrom(draft: Draft, tunables: Tunable[]): Record<string, unknown
 
 // ─── Small pieces ──────────────────────────────────────────────────────
 
-const KIND_ICON = { video: Video, image: ImageIcon, audio: Music, lipsync: Video } as const;
-const KIND_LABEL = { video: "วิดีโอ", image: "ภาพ", audio: "เพลง/เสียง", lipsync: "ลิปซิงค์" } as const;
+// Keyed by the catalogue's own kind type, so a new kind fails the build here
+// instead of rendering an undefined icon and taking the whole page down.
+const KIND_ICON: Record<Summary["kind"], LucideIcon> = { video: Video, image: ImageIcon, audio: Music, lipsync: Video, model3d: Box };
+const KIND_LABEL: Record<Summary["kind"], string> = { video: "วิดีโอ", image: "ภาพ", audio: "เพลง/เสียง", lipsync: "ลิปซิงค์", model3d: "โมเดล 3D" };
 const GROUP_LABEL: Record<string, string> = {
   quality: "คุณภาพและความเร็ว",
   prompt: "พรอมต์",
