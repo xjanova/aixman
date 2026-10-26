@@ -454,6 +454,10 @@ row off. A voice + clip dub is still `latentsync-1.6` / the fal rows.
 - Price and `baselineSecondsPerUnit` are estimates until real rentals report.
   After deploy: Admin → GPU → "ซิงก์โมเดล"; it starts `tuning` until an
   admin's order renders.
+- **First + last frame** uses Comfy-Org `video_ltx2_5_flf2v` (subgraph 251,
+  one pass, guides at frame 0 and −1) on the same weights and machines:
+  `CatalogEntry.templateFor` picks the template per order, `extraTemplates`
+  lists it for the schema baseline. Admin workflow pages show the i2v one.
 - `comfy-validate` understands V3 autogrow inputs (`values.a` …).
 
 ## Video lip-sync (พากย์ทับคลิป) — a clip re-dubbed with an uploaded voice
@@ -523,6 +527,25 @@ OpenAI-compatible `POST /api/v1/chat/completions` (streamed or not) and
   account from the pool, or one of our machines (`gpu-target.ts`, least
   in-flight). No machine ready → 503 `model_warming` + Retry-After, nothing
   held, demand noted.
+
+- **Anthropic format** (`/api/v1/messages`, `/messages/count_tokens`,
+  `anthropic.ts`): for Claude Code (`ANTHROPIC_BASE_URL=…/api`, our key as
+  `ANTHROPIC_AUTH_TOKEN`). The body is translated to OpenAI chat and run
+  through `chatCompletion` — same holds, caps, billing — then translated back,
+  streamed or not. Tool use carries both ways (tool_result → `tool` messages
+  right after the call); thinking blocks are dropped; server tools with no
+  schema are dropped.
+
+### MCP server (`/api/mcp`, `src/lib/mcp/server.ts`)
+Stateless JSON-RPC over Streamable HTTP (POST only; GET 405), authenticated by
+the same `axm-…` key. Tools: list_models, get_credits, generate_image /
+generate_video / generate_music (→ `GenerationService.generate`, the studio's
+path: content gate, readiness, price, refunds), get_generation (waits ≤45 s),
+list_generations, upload_image (base64 → R2), chat (→ the gateway). A frame
+URL must be ours (`keyFromPublicUrl`) — never fetch a stranger's URL. Tool
+failures are `isError` results, not protocol errors. 60 tool calls/min per
+key. Connection snippets (Claude Code, Cursor, Claude Desktop via mcp-remote)
+are on `/developer`.
 
 ### Self-hosted language models (vLLM on rented GPUs, `llm-*` worker keys)
 `src/lib/gpu/llm-catalog.ts` (Qwen3.8-27B FP8, Devstral Small 2, Qwen3-Coder-

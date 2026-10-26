@@ -319,6 +319,25 @@ test("LTX-2.5 gets the customer's prompt directly, never the template's enhancer
   assert.notEqual(g['398_339'].inputs.noise_seed, g['398_338'].inputs.noise_seed, 'two passes, two seeds');
 });
 
+test('LTX-2.5 with both frames runs the FLF2V graph: first at frame 0, last at the end', () => {
+  const g = build('ltx-2.5', { imageFilename: FIRST, lastImageFilename: LAST, prompt: 'ช็อตต่อเนื่อง', seed: 9 }).graph;
+  assert.equal(g['31'].inputs.image, FIRST);
+  assert.equal(g['39'].inputs.image, LAST);
+  assert.equal(g['251_206'].inputs.frame_idx, 0);
+  assert.equal(g['251_204'].inputs.frame_idx, -1);
+  assert.deepEqual(g['251_206'].inputs.image, ['251_199', 0], 'frame 0 is guided by the first still');
+  assert.deepEqual(g['251_199'].inputs.image, ['251_213', 0]);
+  assert.deepEqual(g['251_213'].inputs.input, ['31', 0]);
+  assert.deepEqual(g['251_214'].inputs.input, ['39', 0], 'the last frame is guided by the last still');
+  assert.equal(g['251_222'].inputs.text, 'ช็อตต่อเนื่อง');
+  assert.equal(g['251_196'].inputs.noise_seed, 9);
+  const classes = Object.values(g).map((n) => n.class_type);
+  for (const gone of ['TextGenerateLTX2Prompt', 'PreviewAny']) assert.ok(!classes.includes(gone), `${gone} reached the graph`);
+  assert.equal(classes.filter((c) => c === 'CLIPLoader').length, 1, 'no prompt-enhancer Gemma');
+  // One still alone is still the two-pass image-to-video graph.
+  assert.ok(build('ltx-2.5', { imageFilename: FIRST }).graph['398_357'], 'first frame only: the i2v template');
+});
+
 test('LTX-2.5 renders whole seconds on a 64 px grid in the ordered shape', () => {
   assert.deepEqual(ltxFrame(1920, 1080), { width: 1280, height: 704 });
   assert.deepEqual(ltxFrame(1080, 1920), { width: 704, height: 1280 });

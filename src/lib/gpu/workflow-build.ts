@@ -156,7 +156,7 @@ export function buildJobGraph(
     tuning: workflow?.tuning ?? resolveTunables(entry.tunables, null),
   };
 
-  let graph = convertUiWorkflowToApi(entry.template, objectInfo);
+  let graph = convertUiWorkflowToApi(entry.templateFor?.(params) ?? entry.template, objectInfo);
   if (entry.inject) graph = injectNodes(graph, entry.inject(params));
   // Bind before pruning: pruning cascades through dependants, so redirecting a
   // path first is what stops the cascade from eating it. The schema lets
@@ -295,8 +295,10 @@ export function listTemplateNodes(workflow: UiWorkflow): TemplateNode[] {
 /** The node classes a template, plus what an entry injects, will ask a worker for. */
 export function templateClasses(entry: CatalogEntry, sample?: CatalogJobParams): string[] {
   const classes = new Set<string>();
-  for (const n of listTemplateNodes(entry.template)) {
-    if (!n.editorOnly && n.mode !== 2) classes.add(n.type);
+  for (const template of [entry.template, ...(entry.extraTemplates ?? [])]) {
+    for (const n of listTemplateNodes(template)) {
+      if (!n.editorOnly && n.mode !== 2) classes.add(n.type);
+    }
   }
   if (entry.inject && sample) {
     for (const node of Object.values(entry.inject(sample))) classes.add(node.class_type);

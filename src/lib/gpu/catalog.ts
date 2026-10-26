@@ -19,6 +19,7 @@ import {
 } from './tunables';
 import minimaxH3Template from './workflows/templates/minimax_h3_t2v.json';
 import ltx25I2vTemplate from './workflows/templates/ltx25_i2v.json';
+import ltx25Flf2vTemplate from './workflows/templates/ltx25_flf2v.json';
 import aceStepTemplate from './workflows/templates/ace_step_1_5.json';
 import qwenImageTemplate from './workflows/templates/qwen_image.json';
 import yue2Text2MusicTemplate from './workflows/templates/yue2_text2music.json';
@@ -177,6 +178,14 @@ export interface CatalogEntry {
   /** Thai copy shown to the customer. */
   description: string;
   template: UiWorkflow;
+  /**
+   * A different template for some orders, on the same machines and weights
+   * (LTX-2.5's first-and-last-frame graph). `bind`/`prune` must handle both.
+   * Its classes are listed in `extraTemplates`, so the schema baseline and the
+   * graph validator know them.
+   */
+  templateFor?: (p: CatalogJobParams) => UiWorkflow;
+  extraTemplates?: UiWorkflow[];
   /**
    * Where the vendored template came from — shown on /admin/workflows and used
    * for its export, so an admin can open the same file in ComfyUI.
@@ -861,6 +870,10 @@ const LTX_25: CatalogEntry = {
   outputKind: 'video',
   description: 'วิดีโอพร้อมเสียงในตัวจาก Lightricks • จากข้อความหรือภาพเฟรมแรก • เร็วและถูกกว่า H3',
   template: ltx25I2vTemplate as UiWorkflow,
+  // Both frames: Comfy-Org's FLF2V graph (one pass, the two stills as guides
+  // at frame 0 and the last frame), on the same weights and machines.
+  templateFor: (p) => (p.imageFilename && p.lastImageFilename ? (ltx25Flf2vTemplate as UiWorkflow) : (ltx25I2vTemplate as UiWorkflow)),
+  extraTemplates: [ltx25Flf2vTemplate as UiWorkflow],
   source: {
     file: 'ltx25_i2v.json',
     title: 'video_ltx2_5_i2v (Comfy-Org) — ไม่มีภาพเฟรมแรกก็เป็น text-to-video',
@@ -884,6 +897,7 @@ const LTX_25: CatalogEntry = {
   prune: ['PreviewAny'],
   bind: (p) => {
     const frame = ltxFrame(p.width, p.height);
+    if (p.imageFilename && p.lastImageFilename) return ltxFlfBind(p, frame);
     const firstFrame = p.imageFilename
       ? [
           { nodeId: '395', input: 'image', value: p.imageFilename },
@@ -918,8 +932,28 @@ const LTX_25: CatalogEntry = {
   // 23 credits, 15 s 42 — until real render times say otherwise.
   pricing: { creditsPerUnit: 8, costPerUnit: 0.03, durationCurve: { unitSeconds: 5, exponent: 1.5 } },
   limits: { maxWidth: 1280, maxHeight: 1280, maxDuration: 15 },
-  video: { firstFrame: true },
+  video: { firstFrame: true, lastFrame: true },
 };
+
+/** The FLF2V template's subgraph instance. */
+const LTX25_FLF = '251';
+
+/** First-and-last-frame orders: template video_ltx2_5_flf2v.json. */
+function ltxFlfBind(p: CatalogJobParams, frame: { width: number; height: number }): ParameterBinding[] {
+  return [
+    { nodeId: '31', input: 'image', value: p.imageFilename },
+    { nodeId: '39', input: 'image', value: p.lastImageFilename },
+    { nodeId: `${LTX25_FLF}_222`, input: 'text', value: p.prompt.trim() },
+    { nodeId: `${LTX25_FLF}_217`, input: 'text', value: LTX25_T.str(p.tuning, 'negative') },
+    // Both stills are scaled (and centre-cropped) to this; the latent follows them.
+    { nodeId: `${LTX25_FLF}_215`, input: 'value', value: frame.width },
+    { nodeId: `${LTX25_FLF}_216`, input: 'value', value: frame.height },
+    { nodeId: `${LTX25_FLF}_198`, input: 'value', value: Math.max(1, Math.round(p.durationSeconds)) },
+    { nodeId: `${LTX25_FLF}_196`, input: 'noise_seed', value: p.seed },
+    { nodeId: `${LTX25_FLF}_206`, input: 'strength', value: LTX25_T.num(p.tuning, 'firstFrameStrength') },
+    { nodeId: '68', input: 'filename_prefix', value: 'video/aixman', optional: true },
+  ];
+}
 
 // ---------------------------------------------------------------------------
 // ACE-Step 1.5 — music and audio

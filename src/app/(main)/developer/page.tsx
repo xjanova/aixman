@@ -184,6 +184,38 @@ export default function DeveloperPage() {
   -H "Content-Type: application/json" \\
   -d '{"model": "${firstModel}", "messages": [{"role": "user", "content": "เขียนฟังก์ชัน fibonacci ใน Python"}], "stream": true}'`;
 
+  const keyHint = secret ?? "axm-คีย์ของคุณ";
+  const connect: { id: string; title: string; note: string; code: string }[] = [
+    {
+      id: "claude-code-mcp",
+      title: "Claude Code — ใช้เครื่องมือสร้างภาพ/วิดีโอ/เพลง (MCP)",
+      note: "รันคำสั่งนี้ครั้งเดียว แล้วสั่ง Claude ได้เลย เช่น \"สร้างภาพโลโก้ร้านกาแฟ แล้วทำเป็นวิดีโอ 5 วินาที\"",
+      code: `claude mcp add --transport http xdreamer ${origin}/api/mcp \\\n  --header "Authorization: Bearer ${keyHint}"`,
+    },
+    {
+      id: "cursor-mcp",
+      title: "Cursor / Windsurf / Cline — MCP",
+      note: "ใส่ในไฟล์ .cursor/mcp.json (หรือการตั้งค่า MCP ของโปรแกรมนั้น)",
+      code: JSON.stringify({ mcpServers: { xdreamer: { url: `${origin}/api/mcp`, headers: { Authorization: `Bearer ${keyHint}` } } } }, null, 2),
+    },
+    {
+      id: "claude-desktop-mcp",
+      title: "Claude Desktop — MCP (ผ่าน mcp-remote)",
+      note: "ใส่ใน claude_desktop_config.json แล้วเปิดโปรแกรมใหม่ (ต้องมี Node.js)",
+      code: JSON.stringify(
+        { mcpServers: { xdreamer: { command: "npx", args: ["-y", "mcp-remote", `${origin}/api/mcp`, "--header", `Authorization:Bearer ${keyHint}`] } } },
+        null,
+        2
+      ),
+    },
+    {
+      id: "claude-code-models",
+      title: "Claude Code — ใช้โมเดลของเราเขียนโค้ดแทน (รูปแบบ API ของ Anthropic)",
+      note: "ตั้งค่าตัวแปรก่อนเปิด claude · ตัดเครดิตตาม token เหมือน API ปกติ · ตั้งเพดานต่อคีย์ไว้ด้วยจะปลอดภัยกว่า",
+      code: `export ANTHROPIC_BASE_URL=${origin}/api\nexport ANTHROPIC_AUTH_TOKEN=${keyHint}\nexport ANTHROPIC_MODEL=${firstModel}\nexport ANTHROPIC_SMALL_FAST_MODEL=${firstModel}\nclaude`,
+    },
+  ];
+
   return (
     <>
       <PageHero
@@ -316,6 +348,26 @@ export default function DeveloperPage() {
             แล้วคืนส่วนที่ไม่ได้ใช้เมื่อจบ · ถ้า <code style={mono}>max_tokens</code> สูง ต้องมีเครดิตพอสำหรับกรณีที่ใช้ครบ · ตั้งเพดานต่อคีย์ได้ในตารางด้านบน
             กันโปรแกรมเอเจนต์วนเรียกจนเครดิตหมด · ข้อความที่ส่งซ้ำ (เช่น ไฟล์เดิมในบทสนทนา) คิดราคา input ที่ cache ซึ่งถูกกว่า
           </p>
+        </div>
+
+        <div style={card}>
+          <div style={{ fontSize: 16, fontWeight: 500, marginBottom: 4 }}>เชื่อมต่อกับ Claude, Cursor และเครื่องมือ AI อื่น</div>
+          <p style={{ fontSize: 13, color: "#94a3b8", margin: "0 0 16px", lineHeight: 1.7 }}>
+            ผ่าน MCP ผู้ช่วย AI ของคุณสั่งสร้างภาพ วิดีโอ เพลง ติดตามงาน และเรียกโมเดลภาษาของเราได้เอง ด้วยคีย์และเครดิตเดียวกัน
+            {secret ? " · ตัวอย่างด้านล่างใส่คีย์ที่เพิ่งสร้างให้แล้ว" : " · สร้างคีย์ด้านบนก่อน แล้วแทนที่ axm-คีย์ของคุณ"}
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            {connect.map((c) => (
+              <div key={c.id}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <div style={{ fontSize: 14, fontWeight: 500 }}>{c.title}</div>
+                  <button style={{ ...btn, padding: "5px 12px" }} onClick={() => copy(c.code)}>คัดลอก</button>
+                </div>
+                <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 6 }}>{c.note}</div>
+                <pre style={{ ...mono, fontSize: 12, padding: 14, borderRadius: 12, background: "rgba(2,6,23,0.6)", overflowX: "auto", margin: 0 }}>{c.code}</pre>
+              </div>
+            ))}
+          </div>
         </div>
 
         {usage && (
