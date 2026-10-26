@@ -383,6 +383,7 @@ function UserMenu({ name, email }: { name: string; email: string }) {
             { href: "/gallery", l: "Gallery", i: "▧" },
             { href: "/referral", l: "Referral", i: "♢" },
             { href: "/developer", l: "API นักพัฒนา", i: "⌘" },
+            { href: "/docs", l: "คู่มือ API & MCP", i: "§" },
           ].map(it => (
             <Link key={it.href} href={it.href} onClick={() => setOpen(false)} className="xdr-menu-item">
               <span style={{ color: "#a5f3fc", width: 14, display: "inline-block" }}>{it.i}</span>{it.l}

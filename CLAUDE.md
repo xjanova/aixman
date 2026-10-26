@@ -580,6 +580,16 @@ admin section on `/admin/llm` (`/api/admin/llm/gpu`).
 - Untested on a real GPU as of 2026-10-26: VRAM fit at 131k context, boot
   time, throughput, and the `uv` resolve of vLLM 0.31.0 on the cu130 image.
 
+## Developer guide (`/docs`)
+Public, static (`src/app/(main)/docs/page.tsx`, interactive bits in `parts.tsx`):
+keys, `/api/v1` (OpenAI + Anthropic formats), MCP tools, client setup (Claude
+Code, Cursor, Claude Desktop via mcp-remote with the key in `env`, BrainX,
+CluadeX), billing, limits, error codes. `/docs/mcp` is a 307 to `/docs#mcp` —
+BrainX (Settings ▸ XDREAMER, MCP ≥ 2.10) and CluadeX (Setup ▸ Connections ▸
+XDREAMER, ≥ 3.0.189) link there. It restates facts from `src/lib/llm/*`,
+`src/lib/mcp/server.ts` and `src/app/api/mcp/route.ts` (forwarded fields,
+aspect ratios, rate limits, error codes): change those, change the page.
+
 ## Prompt assistant (✨ in the studio)
 
 `/api/studio/enhance-prompt` → `services/prompt-enhancer.ts`. Order: MiniMax's

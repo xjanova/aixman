@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { PageHero } from "@/components/xdreamer/page-hero";
 import { useToast } from "@/components/ui/toast-provider";
 import { loginHref } from "@/lib/safe-callback";
@@ -201,12 +202,26 @@ export default function DeveloperPage() {
     {
       id: "claude-desktop-mcp",
       title: "Claude Desktop — MCP (ผ่าน mcp-remote)",
-      note: "ใส่ใน claude_desktop_config.json แล้วเปิดโปรแกรมใหม่ (ต้องมี Node.js)",
+      note: "ใส่ใน claude_desktop_config.json แล้วเปิดโปรแกรมใหม่ (ต้องมี Node.js · คีย์อยู่ใน env เพราะ Windows ตัดช่องว่างใน args)",
       code: JSON.stringify(
-        { mcpServers: { xdreamer: { command: "npx", args: ["-y", "mcp-remote", `${origin}/api/mcp`, "--header", `Authorization:Bearer ${keyHint}`] } } },
+        {
+          mcpServers: {
+            xdreamer: {
+              command: "npx",
+              args: ["-y", "mcp-remote", `${origin}/api/mcp`, "--header", "Authorization:${AUTH_HEADER}"],
+              env: { AUTH_HEADER: `Bearer ${keyHint}` },
+            },
+          },
+        },
         null,
         2
       ),
+    },
+    {
+      id: "brainx-cluadex",
+      title: "BrainX / CluadeX — มีปุ่มเชื่อมต่อในตัว",
+      note: "BrainX: Settings → XDREAMER · CluadeX: Setup → การเชื่อมต่อ → XDREAMER — วางคีย์แล้วกดบันทึก เอเจนต์ทุกตัวที่ต่อกับ BrainX ใช้ร่วมกันได้",
+      code: secret ?? "axm-…  (วางคีย์นี้ในช่อง XDREAMER ของโปรแกรม)",
     },
     {
       id: "claude-code-models",
@@ -226,7 +241,11 @@ export default function DeveloperPage() {
         hue={190}
         size="slim"
         sub="เรียกใช้ได้แบบเดียวกับ OpenAI API · ใช้กับ Cursor, Continue, Cline หรือโค้ดของคุณเอง · ตัดเครดิตตามจำนวน token ที่ใช้จริง"
-      />
+      >
+        <Link href="/docs" style={{ display: "inline-flex", marginTop: 14, padding: "9px 16px", borderRadius: 10, fontSize: 13, color: "#fff", textDecoration: "none", background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.16)" }}>
+          อ่านคู่มือ API และ MCP →
+        </Link>
+      </PageHero>
 
       <div style={{ padding: "0 48px 80px", maxWidth: 1100, margin: "0 auto", color: "#f1f5f9", display: "flex", flexDirection: "column", gap: 24 }}>
         {secret && (
@@ -355,6 +374,7 @@ export default function DeveloperPage() {
           <p style={{ fontSize: 13, color: "#94a3b8", margin: "0 0 16px", lineHeight: 1.7 }}>
             ผ่าน MCP ผู้ช่วย AI ของคุณสั่งสร้างภาพ วิดีโอ เพลง ติดตามงาน และเรียกโมเดลภาษาของเราได้เอง ด้วยคีย์และเครดิตเดียวกัน
             {secret ? " · ตัวอย่างด้านล่างใส่คีย์ที่เพิ่งสร้างให้แล้ว" : " · สร้างคีย์ด้านบนก่อน แล้วแทนที่ axm-คีย์ของคุณ"}
+            {" · "}<Link href="/docs#clients" style={{ color: "#67e8f9" }}>วิธีตั้งค่าทุกโปรแกรม</Link>
           </p>
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             {connect.map((c) => (

@@ -684,6 +684,7 @@ function Closing({ signedIn, freeTier }: { signedIn: boolean; freeTier: Tier | n
             <Link href="/pricing">ราคา</Link>
             <Link href="/gallery">แกลเลอรี</Link>
             <Link href="/about">เกี่ยวกับ</Link>
+            <Link href="/docs">นักพัฒนา</Link>
             <Link href="/contact">ติดต่อ</Link>
             <Link href="/terms">ข้อกำหนด</Link>
             <Link href="/privacy">ความเป็นส่วนตัว</Link>
