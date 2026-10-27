@@ -628,6 +628,21 @@ Code: `src/lib/story/{cinematic,service,http}.ts`, `/api/story/*`.
   conditionally; a claim older than 30 min may be retaken. Shot/plan writes
   never overwrite `assembling`. Customer text in ASS is escaped (`assEscape`:
   braces, backslashes, control chars).
+- **MV lip-sync** (`sing.ts` pure + tests, `vocals.ts`, `media.ts`,
+  `/api/story/[id]/{vocals,lipsync}`, migration `20261027b_story_lipsync.sql`).
+  The lead vocal is separated once per project on **our server's CPU** —
+  Demucs htdemucs (MIT) in `~/venvs/demucs` (torch 2.5.1+cpu, torchaudio
+  2.5.1, demucs 4.0.1, soundfile; `DEMUCS_PYTHON` / `DEMUCS_THREADS` override;
+  weights in `~/.cache/torch/hub`). Free; ~2.5 min and ~1.9 GB for a 4-min
+  song on 8 threads, `nice 15`, run with `python -I` from the temp dir. Or the
+  customer uploads a vocal stem (±2 s of the song). Separation and the cut
+  share one in-process queue (`enqueueJob`). Each dub: the shot's own window
+  of the song (`startSec`, ≤ 20 s) sliced by ffmpeg, refused uncharged when
+  silent (mean < −45 dB), then an ordinary `latentsync-1.6` order (video = the
+  shot's clip, audio = the slice), placed in `after()` once the shots are
+  claimed. `lipsync_source_url` pins the clip the dub came from: a re-render
+  makes it stale and the cut falls back to the clip. The cut uses a dub only
+  when `edit.lipsync` and the shot's own `lipsync_use` are on.
 
 ## Developer guide (`/docs`)
 Public, static (`src/app/(main)/docs/page.tsx`, interactive bits in `parts.tsx`):

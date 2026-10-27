@@ -28,6 +28,8 @@ export interface EditSettings {
   coverFakeSubs: boolean;
   transition: 'cut' | 'fade';
   titleCard: boolean;
+  /** MV: a shot with a finished lip-sync dub is cut from the dub (lipsync.ts). */
+  lipsync: boolean;
 }
 
 export function defaultEdit(mode: StoryMode): EditSettings {
@@ -41,6 +43,7 @@ export function defaultEdit(mode: StoryMode): EditSettings {
     coverFakeSubs: true,
     transition: mode === 'mv' ? 'cut' : 'fade',
     titleCard: mode === 'film',
+    lipsync: mode === 'mv',
   };
 }
 
@@ -68,6 +71,8 @@ export function parseEdit(raw: unknown, mode: StoryMode): EditSettings {
     coverFakeSubs: bool(r.coverFakeSubs, d.coverFakeSubs),
     transition: r.transition === 'cut' || r.transition === 'fade' ? r.transition : d.transition,
     titleCard: bool(r.titleCard, d.titleCard),
+    // A film has no song for a singer to mouth.
+    lipsync: mode === 'mv' && bool(r.lipsync, d.lipsync),
   };
 }
 

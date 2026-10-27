@@ -477,6 +477,15 @@ model AiStoryProject {
   songUrl       String?  @map("song_url") @db.MediumText
   songSeconds   Decimal? @map("song_seconds") @db.Decimal(8, 2)
   mood          String?  @db.VarChar(30)
+  // MV lip-sync: the song's lead vocal, alone. separating | done | failed;
+  // source upload | separated; `vocalsSongUrl` is the song it was taken from
+  // (another song makes it stale). src/lib/story/vocals.ts
+  vocalsStatus    String?   @map("vocals_status") @db.VarChar(20)
+  vocalsUrl       String?   @map("vocals_url") @db.MediumText
+  vocalsSource    String?   @map("vocals_source") @db.VarChar(20)
+  vocalsSongUrl   String?   @map("vocals_song_url") @db.MediumText
+  vocalsError     String?   @map("vocals_error") @db.Text
+  vocalsStartedAt DateTime? @map("vocals_started_at")
   // draft | quoted | scripting | rendering | assembling | ready | failed | cancelled
   status        String   @default("draft") @db.VarChar(30)
   // The quote the customer accepted, kept verbatim so a later price change
@@ -559,6 +568,15 @@ model AiStoryShot {
   // attribution and so a retry does not re-bill work already paid for.
   visualGenerationId Int? @map("visual_generation_id")
   errorMessage   String?  @map("error_message") @db.Text
+  // MV lip-sync: the shot's clip re-dubbed to its slice of the vocal.
+  // rendering | done | failed. `lipsyncSourceUrl` is the clip it was made
+  // from — once the shot is re-rendered it no longer matches and is not used.
+  lipsyncStatus       String?  @map("lipsync_status") @db.VarChar(20)
+  lipsyncGenerationId Int?     @map("lipsync_generation_id")
+  lipsyncUrl          String?  @map("lipsync_url") @db.MediumText
+  lipsyncSourceUrl    String?  @map("lipsync_source_url") @db.MediumText
+  lipsyncError        String?  @map("lipsync_error") @db.Text
+  lipsyncUse          Boolean  @default(true) @map("lipsync_use")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 

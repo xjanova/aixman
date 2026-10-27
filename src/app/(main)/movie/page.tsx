@@ -47,6 +47,16 @@ interface Shot {
   mediaUrl: string | null;
   generationId: number | null;
   error: string | null;
+  /** MV only: the shot re-dubbed to its slice of the song's vocal. */
+  lipsync?: {
+    state: "none" | "rendering" | "done" | "stale" | "failed";
+    url: string | null;
+    error: string | null;
+    use: boolean;
+    blocked: string | null;
+    credits: number | null;
+    suggested: boolean;
+  };
 }
 interface Project {
   id: number;
@@ -78,6 +88,15 @@ interface EditSettings {
   coverFakeSubs: boolean;
   transition: "cut" | "fade";
   titleCard: boolean;
+  lipsync: boolean;
+}
+interface Vocals {
+  state: "none" | "separating" | "done" | "failed" | "stale";
+  source: "upload" | "separated" | null;
+  url: string | null;
+  error: string | null;
+  auto: boolean;
+  dubbing: boolean;
 }
 interface ProjectView {
   project: Project;
@@ -85,6 +104,7 @@ interface ProjectView {
   edit: EditSettings;
   music: { available: boolean; credits: number | null; stale: boolean; status: "none" | "rendering" | "done" | "failed"; url: string | null };
   film: { status: "none" | "assembling" | "done"; credits: number; url: string | null; seconds: number | null; error: string | null };
+  vocals: Vocals | null;
 }
 interface ProjectRow {
   id: number;
@@ -387,6 +407,9 @@ function ShotCard({
   onSave,
   onRender,
   onDelete,
+  vocals,
+  onLipsync,
+  onDubUse,
 }: {
   shot: Shot;
   project: Project;
@@ -394,6 +417,9 @@ function ShotCard({
   onSave: (patch: Partial<Shot>) => Promise<boolean>;
   onRender: () => void;
   onDelete: () => void;
+  vocals: Vocals | null;
+  onLipsync: () => void;
+  onDubUse: (use: boolean) => void;
 }) {
   const [draft, setDraft] = useState(shot);
   const [saving, setSaving] = useState(false);
@@ -444,6 +470,7 @@ function ShotCard({
         <video src={shot.mediaUrl} controls playsInline preload="metadata" style={{ width: "100%", maxHeight: 360, borderRadius: 12, background: "#000" }} />
       )}
       {shot.status === "failed" && shot.error && <div style={{ fontSize: 13, color: "#fca5a5" }}>{shot.error}</div>}
+      {shot.lipsync && shot.status === "done" && <DubRow shot={shot} vocals={vocals} onLipsync={onLipsync} onDubUse={onDubUse} />}
 
       <fieldset disabled={locked} style={{ border: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 10, opacity: locked ? 0.6 : 1 }}>
         <div>
@@ -526,6 +553,39 @@ function ShotCard({
         <span style={{ flex: 1 }} />
         <button style={{ ...btn, padding: "6px 10px", color: "#fca5a5" }} disabled={locked} onClick={onDelete}>ลบช็อต</button>
       </div>
+    </div>
+  );
+}
+
+/** One MV shot's lip-sync: its state, the dub, and the button that orders it. */
+function DubRow({ shot, vocals, onLipsync, onDubUse }: { shot: Shot; vocals: Vocals | null; onLipsync: () => void; onDubUse: (use: boolean) => void }) {
+  const dub = shot.lipsync!;
+  const ready = vocals?.state === "done" && vocals.dubbing;
+  const why = dub.blocked ?? (!vocals?.dubbing ? "ตัวลิปซิงก์ยังไม่เปิด" : vocals.state !== "done" ? "แยกเสียงร้องก่อน (ส่วนลิปซิงก์ด้านบน)" : null);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: 10, borderRadius: 12, background: "rgba(2,6,23,0.4)" }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: 13 }}>
+        <span>🎤 ลิปซิงก์</span>
+        {dub.state === "rendering" && <span style={{ color: "#fbbf24" }}>กำลังทำ… (เปิดเครื่องครั้งแรกอาจนานหลายนาที)</span>}
+        {dub.state === "done" && <span style={{ color: "#34d399" }}>เสร็จแล้ว</span>}
+        {dub.state === "stale" && <span style={{ color: "#fbbf24" }}>ช็อตถูกสร้างใหม่ — คลิปลิปซิงก์เดิมไม่ตรงแล้ว</span>}
+        {dub.state === "failed" && <span style={{ color: "#fca5a5" }}>{dub.error ?? "ไม่สำเร็จ"}</span>}
+        {dub.state === "none" && !dub.suggested && <span style={{ color: "#64748b" }}>ช็อตนี้ไม่ได้แนะนำ (ไม่มีเนื้อร้องหรือมุมกว้าง)</span>}
+        <span style={{ flex: 1 }} />
+        {dub.state !== "rendering" && (
+          <button style={{ ...btn, padding: "6px 12px", opacity: ready && !dub.blocked ? 1 : 0.5 }} disabled={!ready || Boolean(dub.blocked)} title={why ?? undefined} onClick={onLipsync}>
+            {dub.state === "none" ? "ลิปซิงก์ช็อตนี้" : "ทำใหม่"}
+            {dub.credits !== null && ` · ${dub.credits} เครดิต`}
+          </button>
+        )}
+      </div>
+      {why && dub.state !== "rendering" && <div style={{ fontSize: 12, color: "#64748b" }}>{why}</div>}
+      {dub.state === "done" && dub.url && (
+        <>
+          <video src={dub.url} controls playsInline preload="metadata" style={{ width: "100%", maxHeight: 300, borderRadius: 10, background: "#000" }} />
+          <Toggle on={dub.use} onChange={onDubUse} label="ใช้คลิปลิปซิงก์นี้ตอนตัดต่อ" hint="ปิด = ใช้คลิปเดิมที่ไม่ได้ขยับปากตามเพลง" />
+        </>
+      )}
     </div>
   );
 }
@@ -619,6 +679,9 @@ function FilmPanel({ view, busy, onEdit, onMusic, onAssemble }: {
                 <span style={{ width: 64 }}>ช็อต {s.number}</span>
                 <span style={{ color: "#94a3b8", flex: 1, minWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.line || s.visual}</span>
                 <a href={s.mediaUrl!} download={`shot-${String(s.number).padStart(2, "0")}.mp4`} target="_blank" rel="noopener noreferrer" style={{ ...btn, padding: "5px 10px", textDecoration: "none" }}>⬇ ดาวน์โหลด</a>
+                {s.lipsync?.state === "done" && s.lipsync.url && (
+                  <a href={s.lipsync.url} download={`shot-${String(s.number).padStart(2, "0")}-lipsync.mp4`} target="_blank" rel="noopener noreferrer" style={{ ...btn, padding: "5px 10px", textDecoration: "none" }}>⬇ ลิปซิงก์</a>
+                )}
               </div>
             ))}
             <div style={{ fontSize: 12, color: "#64748b" }}>ไฟล์คือคลิปจากโมเดลตรง ๆ (มีเสียงในคลิป ยังไม่มีซับ/เพลง)</div>
@@ -690,6 +753,89 @@ function FilmPanel({ view, busy, onEdit, onMusic, onAssemble }: {
   );
 }
 
+// ─── MV lip-sync ────────────────────────────────────────────────────────
+
+/** Shots a bulk dub would order: finished, singing, dub-able, and without a usable dub. */
+const toDub = (shots: Shot[]) =>
+  shots.filter((s) => s.status === "done" && s.lipsync && s.lipsync.suggested && !s.lipsync.blocked && ["none", "failed", "stale"].includes(s.lipsync.state));
+
+function SingPanel({ view, busy, onSeparate, onStem, onDubAll, onEdit }: {
+  view: ProjectView;
+  busy: string | null;
+  onSeparate: () => void;
+  onStem: (file: File) => void;
+  onDubAll: (shots: Shot[]) => void;
+  onEdit: (patch: Partial<EditSettings>) => void;
+}) {
+  const vocals = view.vocals!;
+  const shots = view.project.shots;
+  const pending = toDub(shots);
+  const cost = pending.reduce((n, s) => n + (s.lipsync?.credits ?? 0), 0);
+  const dubbed = shots.filter((s) => s.lipsync?.state === "done").length;
+  const flying = shots.filter((s) => s.lipsync?.state === "rendering").length;
+  const stemInput = useRef<HTMLInputElement>(null);
+  const working = vocals.state === "separating";
+  const canDub = vocals.state === "done" && vocals.dubbing && pending.length > 0 && busy === null;
+  return (
+    <div style={{ ...card, display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ fontSize: 17, fontWeight: 600 }}>🎤 ลิปซิงก์เสียงร้อง</div>
+      <div style={{ fontSize: 12, color: "#64748b" }}>
+        ให้นักร้องในคลิปขยับปากตรงกับเพลง: ระบบแยกเสียงร้องออกจากเพลง ตัดเฉพาะช่วงของแต่ละช็อต แล้วทำลิปซิงก์ทีละช็อต (คิดเครดิตตามความยาวช็อต ไม่สำเร็จคืนเครดิต) · ได้ผลดีกับช็อตใกล้–ครึ่งตัวที่เห็นหน้าชัดตลอด
+      </div>
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: 12, borderRadius: 12, background: "rgba(2,6,23,0.4)" }}>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>1. เสียงร้อง</span>
+        {vocals.state === "done" && vocals.url && <audio src={vocals.url} controls preload="none" style={{ flex: 1, minWidth: 220 }} />}
+        {vocals.state === "done" && <span style={{ fontSize: 12, color: "#94a3b8" }}>{vocals.source === "upload" ? "จากไฟล์ที่อัปโหลด" : "แยกจากเพลงแล้ว"}</span>}
+        {working && <span style={{ fontSize: 13, color: "#fbbf24" }}>กำลังแยกเสียงร้อง… ประมาณ 2–5 นาที ปิดหน้านี้ได้</span>}
+        {vocals.state === "none" && <span style={{ fontSize: 13, color: "#94a3b8" }}>ยังไม่มี</span>}
+        {vocals.state === "stale" && <span style={{ fontSize: 13, color: "#fbbf24" }}>เสียงร้องเป็นของเพลงเดิม — แยกใหม่</span>}
+        {vocals.state === "failed" && vocals.error && <span style={{ fontSize: 13, color: "#fca5a5" }}>{vocals.error}</span>}
+        {!working && (
+          <>
+            {vocals.auto && (
+              <button style={btn} disabled={busy !== null} onClick={onSeparate}>
+                {busy === "separate" ? "กำลังเริ่ม…" : vocals.state === "done" ? "แยกใหม่" : "แยกเสียงร้องจากเพลง (ฟรี)"}
+              </button>
+            )}
+            <button style={btn} disabled={busy !== null} onClick={() => stemInput.current?.click()}>
+              {busy === "stem" ? "กำลังอัปโหลด…" : "อัปโหลดไฟล์เสียงร้องแยก"}
+            </button>
+            <input
+              ref={stemInput}
+              type="file"
+              accept="audio/*"
+              hidden
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (file) onStem(file);
+              }}
+            />
+          </>
+        )}
+      </div>
+      {!vocals.auto && vocals.state !== "done" && (
+        <div style={{ fontSize: 12, color: "#64748b" }}>อัปโหลดแทร็กเสียงร้องล้วน (vocal stem) ของเพลงนี้ ยาวเท่าเพลง</div>
+      )}
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>2. ลิปซิงก์</span>
+        <button style={{ ...primary, opacity: canDub ? 1 : 0.5 }} disabled={!canDub} onClick={() => onDubAll(pending)}>
+          {busy === "lipsync" ? "กำลังสั่ง…" : `ลิปซิงก์ช็อตที่ร้อง ${pending.length} ช็อต`}
+          {pending.length > 0 && ` · ${cost.toLocaleString()} เครดิต`}
+        </button>
+        <span style={{ fontSize: 12, color: "#94a3b8" }}>
+          เสร็จ {dubbed} ช็อต{flying > 0 ? ` · กำลังทำ ${flying}` : ""} · เลือกทำ/ไม่ทำทีละช็อตได้ที่การ์ดช็อต
+        </span>
+      </div>
+      {!vocals.dubbing && <div style={{ fontSize: 12, color: "#94a3b8" }}>ตัวลิปซิงก์ยังไม่เปิดให้ใช้</div>}
+
+      <Toggle on={view.edit.lipsync} onChange={(v) => onEdit({ lipsync: v })} label="ใช้คลิปลิปซิงก์ตอนตัดต่อหนัง" hint="ปิด = ตัดต่อจากคลิปเดิมทั้งหมด" />
+    </div>
+  );
+}
+
 // ─── Project editor ─────────────────────────────────────────────────────
 
 function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
@@ -721,7 +867,12 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
 
   // Poll only while something renders; stop when the page goes away.
   const rendering = view?.project.shots.some((s) => s.status === "rendering") ?? false;
-  const working = rendering || view?.film.status === "assembling" || view?.music.status === "rendering";
+  const working =
+    rendering ||
+    view?.film.status === "assembling" ||
+    view?.music.status === "rendering" ||
+    view?.vocals?.state === "separating" ||
+    (view?.project.shots.some((s) => s.lipsync?.state === "rendering") ?? false);
   useEffect(() => {
     if (!working) return;
     let active = true;
@@ -852,6 +1003,47 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
     if (data) setView(data);
   };
 
+  const separate = async () => {
+    if (view.vocals?.state === "done" && !confirm("แยกเสียงร้องใหม่? เสียงร้องเดิมจะถูกแทนที่ (ฟรี)")) return;
+    const data = await act<ProjectView>("separate", `/api/story/${id}/vocals`, sendJson("POST", { action: "separate" }));
+    if (data) {
+      setView(data);
+      toast("success", "เริ่มแยกเสียงร้องแล้ว", "ประมาณ 2–5 นาที ปิดหน้านี้ได้");
+    }
+  };
+
+  const uploadStem = async (file: File) => {
+    if (busy) return;
+    if (view.vocals?.state === "done" && !confirm("ใช้ไฟล์นี้แทนเสียงร้องเดิม?")) return;
+    setBusy("stem");
+    const up = await uploadFile(file, "audio");
+    setBusy(null);
+    if (!up.ok) return toast("error", up.error);
+    const data = await act<ProjectView>("stem", `/api/story/${id}/vocals`, sendJson("POST", { uploadUrl: up.data.url }));
+    if (data) {
+      setView(data);
+      toast("success", "ใช้ไฟล์เสียงร้องนี้แล้ว");
+    }
+  };
+
+  const lipsync = async (shots: Shot[]) => {
+    const total = shots.reduce((n, s) => n + (s.lipsync?.credits ?? 0), 0);
+    const msg = shots.length === 1
+      ? `ลิปซิงก์ช็อต ${shots[0].number}? ใช้ ${total} เครดิต (ถ้าช่วงนี้ไม่มีเสียงร้องจะไม่ทำและไม่เสียเครดิต)`
+      : `ลิปซิงก์ ${shots.length} ช็อต? ใช้รวม ${total.toLocaleString()} เครดิต (ช่วงที่ไม่มีเสียงร้องจะข้ามและไม่เสียเครดิต)`;
+    if (!confirm(msg)) return;
+    const data = await act<ProjectView & { ordered: number }>("lipsync", `/api/story/${id}/lipsync`, sendJson("POST", { shotIds: shots.map((s) => s.id) }));
+    if (data) {
+      setView(data);
+      toast("success", `กำลังสั่งลิปซิงก์ ${data.ordered} ช็อต`, "เครื่องแรกอาจใช้เวลาเปิดเครื่องสักครู่ ปิดหน้านี้ได้");
+    }
+  };
+
+  const dubUse = async (shot: Shot, use: boolean) => {
+    const data = await act<ProjectView>(`dub-${shot.id}`, `/api/story/${id}/shots/${shot.id}`, sendJson("PATCH", { lipsyncUse: use }));
+    if (data) setView(data);
+  };
+
   const remove = async () => {
     if (!confirm(`ลบโปรเจกต์ "${project.title}"? สตอรีบอร์ดจะหายถาวร (คลิปที่สร้างแล้วยังอยู่ในแกลเลอรี)`)) return;
     const data = await act("delete", `/api/story/${id}`, { method: "DELETE" });
@@ -911,6 +1103,10 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
         </div>
       </div>
 
+      {project.shots.length > 0 && view.vocals && (
+        <SingPanel view={view} busy={busy} onSeparate={separate} onStem={uploadStem} onDubAll={lipsync} onEdit={saveEdit} />
+      )}
+
       {project.shots.length > 0 && (
         <FilmPanel view={view} busy={busy} onEdit={saveEdit} onMusic={orderMusic} onAssemble={assemble} />
       )}
@@ -929,6 +1125,9 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
             onSave={(patch) => saveShot(s, patch)}
             onRender={() => render([s])}
             onDelete={() => deleteShot(s)}
+            vocals={view.vocals}
+            onLipsync={() => lipsync([s])}
+            onDubUse={(use) => dubUse(s, use)}
           />
         ))
       )}

@@ -16,6 +16,8 @@ import {
 } from './cinematic';
 import { assemblePrice, musicSeconds, parseEdit, parseMusicState } from './edit';
 import { assemblyStale } from './assemble';
+import { dubState, suggestedForLipsync, voiceWindow } from './sing';
+import { demucsPython, lipsyncCredits, lipsyncModel, projectVocalsState } from './vocals';
 import type { Prisma } from '@/generated/prisma/client';
 import {
   StoryError,
@@ -58,8 +60,8 @@ export function isOwnUpload(url: unknown, userId: number, kind: 'image' | 'audio
 
 const SONG_FETCH_LIMIT = 40 * 1024 * 1024;
 
-/** Length of a song in our bucket, read from its bytes — never from a number the client sends. */
-async function songSeconds(url: string): Promise<number> {
+/** Length of a song (or its vocal stem) in our bucket, read from its bytes — never from a number the client sends. */
+export async function songSeconds(url: string): Promise<number> {
   const ext = (url.split('?')[0].split('.').pop() ?? '').toLowerCase();
   const res = await fetch(url, { signal: AbortSignal.timeout(30_000) }).catch(() => null);
   if (!res?.ok || !res.body) throw new StoryError('เปิดไฟล์เพลงไม่ได้ ลองอัปโหลดใหม่', 422);
@@ -178,6 +180,8 @@ export function shotPatch(body: Record<string, unknown>, project: StoryProjectFu
     const id = Number(body.speakerId);
     data.speakerId = body.speakerId !== null && castIds.has(id) ? id : null;
   }
+  // Whether the cut uses this shot's lip-sync dub (sing.ts usableDub).
+  if (typeof body.lipsyncUse === 'boolean') data.lipsyncUse = body.lipsyncUse;
   if (body.modelId !== undefined) {
     const id = Number(body.modelId);
     if (!models.some((m) => m.id === id)) throw new StoryError('โมเดลนี้ใช้กับโหมดหนังไม่ได้');
@@ -195,10 +199,12 @@ export function shotPatch(body: Record<string, unknown>, project: StoryProjectFu
 
 /** What the page gets: the project, its shots with prices, and the models it may pick. */
 export async function serializeProject(project: StoryProjectFull, admin: boolean) {
-  const [models, score, price] = await Promise.all([
+  const isMv = project.mode === 'mv';
+  const [models, score, price, dubber] = await Promise.all([
     movieModels(admin),
     project.mode === 'film' ? musicModel(admin) : null,
     assemblePriceSettings(),
+    isMv ? lipsyncModel(admin) : null,
   ]);
   const charById = new Map(project.characters.map((c) => [c.id, c]));
   const script = (project.scriptJson ?? {}) as Record<string, unknown>;
@@ -246,6 +252,23 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
           mediaUrl: s.mediaUrl,
           generationId: s.visualGenerationId,
           error: s.errorMessage,
+          ...(isMv
+            ? {
+                lipsync: {
+                  state: dubState(s),
+                  url: s.lipsyncStatus === 'done' ? s.lipsyncUrl : null,
+                  error: s.lipsyncStatus === 'failed' ? s.lipsyncError : null,
+                  use: s.lipsyncUse,
+                  // Why this shot cannot be dubbed, or null when it can.
+                  blocked: (() => {
+                    const w = voiceWindow(s.startSec === null ? null : Number(s.startSec), Number(s.durationSec));
+                    return w.ok ? null : w.message;
+                  })(),
+                  credits: lipsyncCredits(dubber, Number(s.durationSec)),
+                  suggested: suggestedForLipsync({ line: s.narration ?? '', characterIds: idList(s.characterIds), shotSize: s.shotSize }),
+                },
+              }
+            : {}),
         };
       }),
     },
@@ -259,6 +282,18 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
       status: musicGen ? (musicGen.status === 'completed' && musicGen.resultUrl ? 'done' : ['failed', 'cancelled'].includes(musicGen.status) ? 'failed' : 'rendering') : 'none',
       url: musicGen?.status === 'completed' ? musicGen.resultUrl : null,
     },
+    vocals: isMv
+      ? {
+          state: projectVocalsState(project),
+          source: project.vocalsSource,
+          url: project.vocalsStatus === 'done' ? project.vocalsUrl : null,
+          error: project.vocalsStatus === 'failed' ? project.vocalsError : projectVocalsState(project) === 'failed' ? 'การแยกเสียงร้องครั้งก่อนค้าง ลองใหม่อีกครั้ง' : null,
+          // This server can separate a song itself (Demucs installed).
+          auto: demucsPython() !== null,
+          // The dubbing model is open to this caller.
+          dubbing: Boolean(dubber?.orderable),
+        }
+      : null,
     film: {
       status: assembling ? 'assembling' : project.finalVideoUrl ? 'done' : 'none',
       // What the cut of the finished shots costs now (admins are not charged).

@@ -3,11 +3,13 @@ import { getCurrentUserId, isAdmin } from '@/lib/auth';
 import prisma from '@/lib/db';
 import { LIMITS } from '@/lib/story/cinematic';
 import { StoryError, loadOwnedProject, syncShots } from '@/lib/story/service';
+import { syncDubs } from '@/lib/story/vocals';
 import { editPatch, parseCharacters, projectSettings, serializeProject, storyErrorReply, text } from '@/lib/story/http';
 
 /**
- * GET    /api/story/[id] — the project with its shots (rendering shots are
- *                          brought up to date with their orders first).
+ * GET    /api/story/[id] — the project with its shots (rendering shots and
+ *                          lip-sync dubs are brought up to date with their
+ *                          orders first).
  * PATCH  /api/story/[id] — title, story/lyrics, look, mood, frame, characters,
  *                          and the edit's switches (`edit`, see edit.ts).
  * DELETE /api/story/[id] — the project and its storyboard. The rendered clips
@@ -31,6 +33,7 @@ export async function GET(_request: NextRequest, { params }: Ctx) {
         await prisma.aiStoryProject.updateMany({ where: { id, status: 'rendering' }, data: { status: 'draft' } });
       }
     }
+    if (await syncDubs(project)) project = (await loadOwnedProject(userId, id))!;
     return NextResponse.json(await serializeProject(project, await isAdmin()));
   } catch (error) {
     return storyErrorReply(error, 'get');

@@ -33,6 +33,10 @@ would be unsafe (e.g. would drop legacy tables that still hold data).
 - `20261027_story_projects.sql` — `ai_story_projects`, `ai_story_characters`,
   `ai_story_shots` for โหมดหนัง / โหมด MV (`/movie`). The Prisma models existed
   since f2c1419 but were never created. Additive; apply before the code.
+- `20261027b_story_lipsync.sql` — `ai_story_projects.vocals_*` (an MV's lead
+  vocal, separated or uploaded) and `ai_story_shots.lipsync_*` (each shot's
+  LatentSync dub). Additive; apply before the code — Prisma reads every
+  column of these tables, so the code before the columns breaks `/movie`.
 - `20260925c_gpu_ledger.sql` — `ai_gpu_jobs.free_share`, `pro`, `owner_user_id`
   and `review_reason`: stamped when a community (GPUxMINE) machine claims a job,
   read when its `gpu_job_earnings` row is written after delivery. Apply before

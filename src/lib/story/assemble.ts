@@ -1,12 +1,8 @@
-import { spawn } from 'node:child_process';
-import { createWriteStream, existsSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { Readable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
 import prisma from '@/lib/db';
-import { keyFromPublicUrl, uploadBuffer } from '@/lib/storage/r2';
+import { uploadBuffer } from '@/lib/storage/r2';
 import {
   MAX_FILM_SECONDS,
   buildAss,
@@ -20,17 +16,16 @@ import {
   type EditSettings,
 } from './edit';
 import type { StoryMode } from './cinematic';
+import { StoryJobError, download, enqueueJob, hasAudio, runFfmpeg } from './media';
+import { usableDub } from './sing';
 
 /**
- * Joins a project's finished shots into one film on this server's ffmpeg
- * (`ffmpegPath`).
+ * Joins a project's finished shots into one film on this server's ffmpeg,
+ * queued with the other CPU jobs (media.ts). ffmpeg runs niced and with a few
+ * threads so the web server keeps answering. A film claimed for assembly that
+ * never finished (the process restarted) can be claimed again after STALE_MS.
  *
- * One film at a time, in process like rate-limit.ts — correct because PM2
- * runs a single instance. ffmpeg runs niced and with a few threads so the web
- * server keeps answering. A film claimed for assembly that never finished
- * (the process restarted) can be claimed again after STALE_MS.
- *
- * Only our own bucket's files are fetched (keyFromPublicUrl): a shot's media
+ * Only our own bucket's files are fetched (media.ts download): a shot's media
  * and the song are URLs we stored, never a stranger's.
  */
 
@@ -42,65 +37,9 @@ const MAX_OUTPUT_BYTES = 900 * 1024 * 1024;
 const FONT_FILE = 'Sarabun-Bold.ttf';
 const FONT_NAME = 'Sarabun';
 
-/**
- * FFMPEG_PATH, else the host's own static build in ~/bin (prod: ffmpeg 7.0.2
- * from johnvansickle.com, which has libass — not on the service's PATH), else
- * whatever `ffmpeg` the PATH finds.
- */
-export function ffmpegPath(): string {
-  if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
-  const home = path.join(homedir(), 'bin', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
-  return existsSync(home) ? home : 'ffmpeg';
-}
-
-class AssembleError extends Error {}
-
-function runFfmpeg(args: string[], cwd: string, timeoutMs: number): Promise<string> {
-  const bin = ffmpegPath();
-  const [cmd, argv] = process.platform === 'linux' ? ['nice', ['-n', '10', bin, ...args]] : [bin, args];
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, argv, { cwd, stdio: ['ignore', 'ignore', 'pipe'] });
-    let stderr = '';
-    child.stderr.on('data', (d: Buffer) => {
-      stderr = (stderr + d.toString()).slice(-8000);
-    });
-    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
-    child.on('error', (e) => {
-      clearTimeout(timer);
-      reject(e);
-    });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      if (code === 0) resolve(stderr);
-      else reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-1500)}`));
-    });
-  });
-}
-
-async function download(url: string, dest: string): Promise<void> {
-  if (!keyFromPublicUrl(url)) throw new AssembleError('ไฟล์บางช็อตไม่ได้อยู่ในคลังของเรา สร้างช็อตนั้นใหม่');
-  const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
-  if (!res.ok || !res.body) throw new AssembleError('ดาวน์โหลดคลิปบางช็อตไม่ได้ ลองใหม่อีกครั้ง');
-  if (Number(res.headers.get('content-length') ?? 0) > MAX_INPUT_BYTES) throw new AssembleError('คลิปบางช็อตใหญ่เกินไป');
-  let total = 0;
-  const limited = Readable.fromWeb(res.body as import('node:stream/web').ReadableStream).on('data', (chunk: Buffer) => {
-    total += chunk.length;
-    if (total > MAX_INPUT_BYTES) limited.destroy(new AssembleError('คลิปบางช็อตใหญ่เกินไป'));
-  });
-  await pipeline(limited, createWriteStream(dest));
-}
-
-async function hasAudio(file: string, cwd: string): Promise<boolean> {
-  // `ffmpeg -i` with no output exits 1 but prints the streams.
-  const out = await runFfmpeg(['-hide_banner', '-i', file, '-f', 'null', '-t', '0', '-'], cwd, 30_000).catch((e: Error) => e.message);
-  return /Stream #\d+:\d+.*Audio:/.test(out);
-}
-
 // ---------------------------------------------------------------------------
 // Queue
 // ---------------------------------------------------------------------------
-
-let chain: Promise<void> = Promise.resolve();
 
 /**
  * Claim the project for assembly, charge for it, and queue it — one
@@ -157,10 +96,10 @@ export async function startAssembly(userId: number, projectId: number, credits: 
   });
   if (!started) return false;
 
-  chain = chain.then(() =>
+  enqueueJob(() =>
     assemble(projectId).catch(async (error) => {
-      const message = error instanceof AssembleError ? error.message : 'ตัดต่อไม่สำเร็จ ลองใหม่อีกครั้ง';
-      if (!(error instanceof AssembleError)) console.error(`[story] assemble ${projectId}:`, error);
+      const message = error instanceof StoryJobError ? error.message : 'ตัดต่อไม่สำเร็จ ลองใหม่อีกครั้ง';
+      if (!(error instanceof StoryJobError)) console.error(`[story] assemble ${projectId}:`, error);
       await prisma
         .$transaction(async (tx) => {
           const row = await tx.aiStoryProject.findFirst({ where: { id: projectId, status: 'assembling' }, select: { creditsCharged: true } });
@@ -215,7 +154,10 @@ async function assemble(projectId: number): Promise<void> {
   const edit = parseEdit(script.edit, mode);
 
   const ready = project.shots.filter((s) => s.status === 'done' && s.mediaUrl);
-  if (ready.length === 0) throw new AssembleError('ยังไม่มีช็อตที่สร้างเสร็จ');
+  // A singing shot is cut from its lip-sync dub when the switch is on and the
+  // dub was made from the clip the shot has now.
+  const sources = ready.map((s) => (mode === 'mv' && edit.lipsync && usableDub(s) ? s.lipsyncUrl! : s.mediaUrl!));
+  if (ready.length === 0) throw new StoryJobError('ยังไม่มีช็อตที่สร้างเสร็จ');
 
   const modelKeys = new Map(
     (await prisma.aiModel.findMany({ where: { id: { in: ready.map((s) => s.modelId ?? 0) } }, select: { id: true, modelId: true } })).map((m) => [m.id, m.modelId])
@@ -228,30 +170,30 @@ async function assemble(projectId: number): Promise<void> {
     burnsSubs: modelKeys.get(s.modelId ?? 0) !== 'minimax-h3',
   }));
   const total = shots.reduce((n, s) => n + s.seconds, 0);
-  if (total > MAX_FILM_SECONDS) throw new AssembleError(`หนังยาวเกิน ${MAX_FILM_SECONDS / 60} นาที ลดช็อตลงก่อน`);
+  if (total > MAX_FILM_SECONDS) throw new StoryJobError(`หนังยาวเกิน ${MAX_FILM_SECONDS / 60} นาที ลดช็อตลงก่อน`);
 
   let musicUrl: string | null = null;
   if (edit.music === 'song') {
     musicUrl = project.songUrl;
-    if (!musicUrl) throw new AssembleError('โปรเจกต์นี้ไม่มีเพลง ปิดดนตรีประกอบหรือเลือกเพลงใหม่');
+    if (!musicUrl) throw new StoryJobError('โปรเจกต์นี้ไม่มีเพลง ปิดดนตรีประกอบหรือเลือกเพลงใหม่');
   } else if (edit.music === 'generate') {
     const state = parseMusicState(script.music);
     const gen = state
       ? await prisma.aiGeneration.findFirst({ where: { id: state.generationId, userId: project.userId }, select: { status: true, resultUrl: true } })
       : null;
-    if (!gen) throw new AssembleError('ยังไม่ได้สร้างเพลงประกอบ — สร้างก่อน หรือปิดดนตรีประกอบ');
-    if (gen.status !== 'completed' || !gen.resultUrl) throw new AssembleError('เพลงประกอบยังสร้างไม่เสร็จ รอสักครู่แล้วลองใหม่');
+    if (!gen) throw new StoryJobError('ยังไม่ได้สร้างเพลงประกอบ — สร้างก่อน หรือปิดดนตรีประกอบ');
+    if (gen.status !== 'completed' || !gen.resultUrl) throw new StoryJobError('เพลงประกอบยังสร้างไม่เสร็จ รอสักครู่แล้วลองใหม่');
     musicUrl = gen.resultUrl;
   }
 
   const dir = await mkdtemp(path.join(tmpdir(), 'aixman-film-'));
   try {
     const files: string[] = [];
-    for (const [k, shot] of ready.entries()) {
+    for (const [k, url] of sources.entries()) {
       files.push(`in_${k}.mp4`);
-      await download(shot.mediaUrl!, path.join(dir, files[k]));
+      await download(url, path.join(dir, files[k]), MAX_INPUT_BYTES, 'คลิปบางช็อต');
     }
-    if (musicUrl) await download(musicUrl, path.join(dir, 'music.bin'));
+    if (musicUrl) await download(musicUrl, path.join(dir, 'music.bin'), MAX_INPUT_BYTES, 'เพลง');
     const out = await renderFilm({
       dir,
       files,
@@ -262,7 +204,7 @@ async function assemble(projectId: number): Promise<void> {
       title: edit.titleCard ? project.title : undefined,
     });
     const size = (await stat(out)).size;
-    if (size > MAX_OUTPUT_BYTES) throw new AssembleError('ไฟล์หนังใหญ่เกินไป ลดจำนวนช็อตลง');
+    if (size > MAX_OUTPUT_BYTES) throw new StoryJobError('ไฟล์หนังใหญ่เกินไป ลดจำนวนช็อตลง');
     const url = await uploadBuffer(await readFile(out), `story/${project.userId}/${project.id}/${Date.now()}.mp4`, 'video/mp4');
     await prisma.aiStoryProject.updateMany({
       where: { id: project.id, status: 'assembling' },
