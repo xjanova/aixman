@@ -567,18 +567,26 @@ body {
 }
 
 /* ── Admin shell backdrop ───────────────────────────────────────────── */
-/* Negative margins bleed it past <main>'s 32px padding. */
+/* Bleeds up and left (under the sidebar's glass) by <main>'s padding, but
+   stops at <main>'s right edge: anything past it widens the page, and on a
+   phone that zooms the whole admin out. The artwork inside keeps its old,
+   wider box so the crop is unchanged; the overflow here just trims it. */
 .xdr-admin-backdrop {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   height: 360px;
-  margin: -32px -32px 0;
+  margin: -32px 0 0 -32px;
   overflow: hidden;
   pointer-events: none;
   z-index: 0;
   opacity: 0.42;
+}
+
+.xdr-admin-backdrop-art {
+  position: absolute;
+  inset: 0 -32px 0 0;
 }
 
 .xdr-admin-backdrop-scrim {
@@ -588,7 +596,8 @@ body {
 }
 
 @media (max-width: 720px) {
-  .xdr-admin-backdrop { height: 240px; margin: -20px -20px 0; }
+  .xdr-admin-backdrop { height: 240px; margin: -20px 0 0 -20px; }
+  .xdr-admin-backdrop-art { right: -20px; }
 }
 
 /* ── Profile banner ─────────────────────────────────────────────────── */
