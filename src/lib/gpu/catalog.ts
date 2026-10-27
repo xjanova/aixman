@@ -881,8 +881,9 @@ const LTX_25: CatalogEntry = {
   },
   tunables: LTX25_TUNABLES,
   // Sizes from Hugging Face (paths-info), the int8 files the template names.
-  // Lightricks/LTX-2.5 is gated: the GPU_HF_TOKEN account must have accepted
-  // its licence or every boot fails at the first download.
+  // Lightricks/LTX-2.5 is gated: the account behind the HF token (Admin → GPU,
+  // else GPU_HF_TOKEN) must have accepted its licence or every boot fails at
+  // the first download.
   downloads: [
     { repo: 'Lightricks/LTX-2.5', file: 'diffusion_models/ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors', dest: 'diffusion_models', bytes: 21_504_034_224 },
     { repo: 'Lightricks/LTX-2.5', file: 'text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors', dest: 'text_encoders', bytes: 15_372_969_374 },

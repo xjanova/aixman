@@ -6,6 +6,7 @@ import { GPU_PROVIDER_SLUGS, getGpuProvider } from '@/lib/gpu';
 import { GpuWorkerManager } from '@/lib/services/gpu-worker';
 import { GpuBalance, type BalanceReading } from '@/lib/services/gpu-balance';
 import { getTelegramStatus } from '@/lib/notify/telegram';
+import { getHfTokenStatus } from '@/lib/gpu/hf-token';
 import { isStorageConfigured } from '@/lib/storage/r2';
 import { getCatalogEntry } from '@/lib/gpu/catalog';
 import { isStudioPresent } from '@/lib/services/studio-presence';
@@ -200,6 +201,7 @@ export async function GET() {
     balanceError,
     vendors,
     telegram: await getTelegramStatus(),
+    hfToken: await getHfTokenStatus(),
     // Without R2 the queue refuses to rent (a render would be lost with the
     // machine), so the admin needs to see why nothing is happening.
     storageConfigured: isStorageConfigured(),

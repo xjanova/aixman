@@ -457,8 +457,10 @@ row off. A voice + clip dub is still `latentsync-1.6` / the fal rows.
   the prompt goes straight to `398_364`, so the template's Gemma prompt
   enhancer and its second text encoder are pruned and never downloaded.
 - **Gated weights.** `Lightricks/LTX-2.5` requires accepting its licence on
-  Hugging Face; the account behind `GPU_HF_TOKEN` must have done so, or every
-  boot fails at the first download. Community licence: free under $10M ARR.
+  Hugging Face; the account behind the HF token must have done so, or every
+  boot fails at the first download (HF 401). The token is pasted on Admin →
+  GPU (`hf-token.ts`, encrypted `ai_settings.gpu_hf_token`, `GPU_HF_TOKEN` env
+  as fallback); "ทดสอบโทเค็น" lists catalogue repos it still cannot read. Community licence: free under $10M ARR.
 - **Shape** `ltxFrame`: 9:16, 3:4, 1:1, 4:3, 16:9 on a 64 px grid (the first
   pass runs at half size on LTX's 32 px latent grid). Length is whole seconds,
   so seconds × 24 + 1 is always LTX's 8k+1 frames.

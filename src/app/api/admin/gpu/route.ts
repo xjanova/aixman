@@ -12,6 +12,7 @@ import { saveTelegramConfig, sendTelegram } from '@/lib/notify/telegram';
 import { raiseAlert } from '@/lib/notify/alerts';
 import { ALERT_ICON, ALERT_LABEL, ALERT_TYPES, formatAlert } from '@/lib/notify/alert-types';
 import { sendDailyReport } from '@/lib/services/gpu-report';
+import { checkHfToken, saveHfToken } from '@/lib/gpu/hf-token';
 
 /**
  * Admin control surface for rented GPUs.
@@ -190,6 +191,15 @@ export async function POST(request: NextRequest) {
         }
         const { created, updated } = await syncCatalogModels(provider.id);
         return NextResponse.json({ success: true, created, updated });
+      }
+
+      case 'save-hf-token': {
+        return NextResponse.json({ success: true, hfToken: await saveHfToken(body.token) });
+      }
+
+      case 'test-hf-token': {
+        // Read-only: whoami plus a HEAD per catalogue repo, nothing downloaded.
+        return NextResponse.json({ success: true, ...(await checkHfToken()) });
       }
 
       case 'worker-log': {

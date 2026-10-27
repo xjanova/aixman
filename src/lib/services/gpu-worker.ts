@@ -16,6 +16,7 @@ import { cardFamily, isEligibleGpu } from '@/lib/gpu/gpu-specs';
 import { FUNDING_MARGIN, fundedOffers, offerKey, rankOffers, type RankedOffer } from '@/lib/gpu/offer-picker';
 import { buildComfyUiStartScript, LOG_PATH, READY_PATH, renderEnvExports } from '@/lib/gpu/provision';
 import { buildVllmStartScript } from '@/lib/gpu/provision-llm';
+import { getHfToken } from '@/lib/gpu/hf-token';
 import { LLM_KEY_PREFIX, getLlmEntry, isLlmModelKey } from '@/lib/gpu/llm-catalog';
 import { getPolicies, getFleetConfig, shouldRelease, DEFAULT_LLM_POLICY } from '@/lib/gpu/llm-policy';
 import {
@@ -1778,7 +1779,7 @@ export class GpuWorkerManager {
             .filter(Boolean)
             .join('\n');
 
-    const startScript = scriptFor(env, process.env.GPU_HF_TOKEN);
+    const startScript = scriptFor(env, await getHfToken());
     // The vendor keeps templates after the machine is gone; nothing secret
     // goes into one.
     const publicEnv = Object.fromEntries(

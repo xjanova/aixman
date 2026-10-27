@@ -170,6 +170,7 @@ interface Analytics {
   balanceError: string | null;
   vendors?: VendorRow[];
   telegram: TelegramStatus;
+  hfToken?: { configured: boolean; source: "settings" | "env" | null };
   storageConfigured: boolean;
   budget: {
     spentTodayUsd: number;
@@ -1178,6 +1179,8 @@ export default function GpuAdminPage() {
   // field is null until edited, and shows the saved ids until then.
   const [tgToken, setTgToken] = useState("");
   const [tgChat, setTgChat] = useState<string | null>(null);
+  // Hugging Face token for gated weights; like the bot token, never sent back.
+  const [hfToken, setHfToken] = useState("");
   // Boot/ComfyUI logs of one worker, read through its proxy on demand.
   const [logs, setLogs] = useState<{ workerId: number; text: Record<string, string> | null; error?: string } | null>(null);
   const [tab, setTab] = useState<TabKey>("overview");
@@ -1266,6 +1269,20 @@ export default function GpuAdminPage() {
       setTgToken("");
       setTgChat(null);
     }
+  };
+
+  const saveHf = async () => {
+    const saved = await post({ action: "save-hf-token", token: hfToken.trim() }, "hf-save",
+      () => "บันทึกโทเค็น Hugging Face แล้ว — กด “ทดสอบโทเค็น” เพื่อเช็คว่าโหลดโมเดลได้ครบ");
+    if (saved) setHfToken("");
+  };
+
+  const hfCheckText = (b: Record<string, unknown>) => {
+    const refused = Array.isArray(b.refused) ? (b.refused as { repo: string }[]) : [];
+    const who = `บัญชี ${String(b.account ?? "?")}`;
+    return refused.length === 0
+      ? `ใช้ได้ — ${who} โหลดได้ครบทั้ง ${Number(b.checked ?? 0)} รีโปในแคตตาล็อก`
+      : `${who} ยังโหลดไม่ได้: ${refused.map((r) => r.repo).join(", ")} — เปิดหน้าโมเดลบน Hugging Face แล้วกดยอมรับไลเซนส์ด้วยบัญชีนี้`;
   };
 
   const connectVendor = async (slug: string) => {
@@ -1364,6 +1381,7 @@ export default function GpuAdminPage() {
   const b = data?.budget;
   const bal = data?.balance;
   const tg = data?.telegram;
+  const hf = data?.hfToken;
 
   // With no key at all there is nothing to show anywhere else, so the vendor
   // tab opens first — but only over the default, never over a tab the admin picked.
@@ -1845,6 +1863,57 @@ export default function GpuAdminPage() {
           </div>
         </div>
       )}
+
+      {/* Hugging Face token — gated weights (LTX-2.5) refuse every boot without it. */}
+      <div className="glass rounded-xl p-5 mb-6">
+        <div className="flex items-center justify-between gap-3 flex-wrap mb-1">
+          <h2 className="font-bold flex items-center gap-2">
+            <KeyRound className="w-4 h-4 text-primary-light" /> โทเค็น Hugging Face
+          </h2>
+          <span className={`text-xs ${hf?.configured ? "text-success" : "text-warning"}`}>
+            {hf?.configured
+              ? `● ตั้งค่าแล้ว${hf.source === "env" ? " (จาก .env ของเซิร์ฟเวอร์)" : ""}`
+              : "● ยังไม่ได้ตั้งค่า — โมเดลที่ล็อกไว้ (เช่น LTX-2.5) จะบูตไม่ผ่าน"}
+          </span>
+        </div>
+        <p className="text-xs text-muted mb-4">
+          เครื่องที่เช่าใช้โทเค็นนี้โหลดน้ำหนักโมเดล • ขั้นตอน: 1) ล็อกอิน Hugging Face แล้วกดยอมรับไลเซนส์ที่หน้า{" "}
+          <a href="https://huggingface.co/Lightricks/LTX-2.5" target="_blank" rel="noopener noreferrer"
+             className="text-primary-light underline underline-offset-2 hover:opacity-80">
+            Lightricks/LTX-2.5
+          </a>{" "}
+          2) สร้างโทเค็นแบบ Read ที่{" "}
+          <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener noreferrer"
+             className="text-primary-light underline underline-offset-2 hover:opacity-80">
+            huggingface.co/settings/tokens
+          </a>{" "}
+          3) วางที่นี่แล้วกดบันทึก • เก็บแบบเข้ารหัส และไม่แสดงกลับอีก
+        </p>
+        <div className="flex gap-2 flex-wrap">
+          <input
+            type="password"
+            value={hfToken}
+            onChange={(e) => setHfToken(e.target.value)}
+            placeholder={hf?.source === "settings" ? "บันทึกไว้แล้ว — วางตัวใหม่เพื่อเปลี่ยน" : "hf_..."}
+            autoComplete="off"
+            className="flex-1 min-w-[220px] px-3 py-2 rounded-lg glass-light text-sm outline-none"
+          />
+          <button
+            onClick={() => void saveHf()}
+            disabled={busy !== null || !hfToken.trim()}
+            className="px-4 py-2 rounded-lg bg-primary/20 text-primary-light hover:bg-primary/30 text-sm font-medium flex items-center gap-2 disabled:opacity-40"
+          >
+            <Save className="w-4 h-4" /> {busy === "hf-save" ? "กำลังบันทึก..." : "บันทึก"}
+          </button>
+          <button
+            onClick={() => void post({ action: "test-hf-token" }, "hf-test", hfCheckText)}
+            disabled={busy !== null || !hf?.configured}
+            className="px-4 py-2 rounded-lg glass-light hover:bg-surface-light text-sm flex items-center gap-2 disabled:opacity-40"
+          >
+            <Search className="w-4 h-4" /> {busy === "hf-test" ? "กำลังทดสอบ..." : "ทดสอบโทเค็น"}
+          </button>
+        </div>
+      </div>
 
       {/* Telegram alerts — the owner's pick: no push quota to run out of. */}
       <div className="glass rounded-xl p-5 mb-6">
