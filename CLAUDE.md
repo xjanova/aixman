@@ -612,6 +612,18 @@ Code: `src/lib/story/{cinematic,service,http}.ts`, `/api/story/*`.
 - A shot is claimed with a conditional update (→ `rendering`, unlinked from
   its old order) before ordering; replanning, editing and deleting refuse
   rendering shots. A claim with no order after 10 min is released as failed.
+- **Phase 2 — one film** (`edit.ts` pure + tests, `assemble.ts`,
+  `/api/story/[id]/{assemble,music}`). Every part is the customer's switch,
+  stored in `script_json.edit` (no column): clip sound, music (MV: its song;
+  film: an ACE-Step instrumental ordered and charged like any music order,
+  `script_json.music`), ducking, Thai subs (ASS, bundled `assets/fonts/Sarabun-Bold.ttf`,
+  OFL), blur over LTX's fake-sub band (only LTX shots; done on the *source*
+  frame before the fit), fades, title card. Assembly is free, runs on the web
+  server with `ffmpeg-static` (the host has no ffmpeg), niced, one film at a
+  time in process (PM2 single instance), `status = 'assembling'` claimed
+  conditionally; a claim older than 30 min may be retaken. Shot/plan writes
+  never overwrite `assembling`. Customer text in ASS is escaped (`assEscape`:
+  braces, backslashes, control chars).
 
 ## Developer guide (`/docs`)
 Public, static (`src/app/(main)/docs/page.tsx`, interactive bits in `parts.tsx`):

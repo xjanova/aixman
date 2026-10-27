@@ -68,9 +68,23 @@ interface Model {
   name: string;
   orderable: boolean;
 }
+interface EditSettings {
+  clipAudio: boolean;
+  clipVolume: number;
+  music: "off" | "song" | "generate";
+  musicVolume: number;
+  duck: boolean;
+  subtitles: boolean;
+  coverFakeSubs: boolean;
+  transition: "cut" | "fade";
+  titleCard: boolean;
+}
 interface ProjectView {
   project: Project;
   models: Model[];
+  edit: EditSettings;
+  music: { available: boolean; credits: number | null; stale: boolean; status: "none" | "rendering" | "done" | "failed"; url: string | null };
+  film: { status: "none" | "assembling" | "done"; url: string | null; seconds: number | null; error: string | null };
 }
 interface ProjectRow {
   id: number;
@@ -532,6 +546,109 @@ function pickEditable(s: Shot) {
 
 const sameEdit = (a: Shot, b: Shot) => JSON.stringify(pickEditable(a)) === JSON.stringify(pickEditable(b));
 
+// ─── The cut (phase 2) ──────────────────────────────────────────────────
+
+function Toggle({ on, onChange, label, hint }: { on: boolean; onChange: (v: boolean) => void; label: string; hint?: string }) {
+  return (
+    <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer" }}>
+      <input type="checkbox" checked={on} onChange={(e) => onChange(e.target.checked)} style={{ marginTop: 3, accentColor: "#a855f7", width: 16, height: 16 }} />
+      <span>
+        <span style={{ fontSize: 14 }}>{label}</span>
+        {hint && <span style={{ display: "block", fontSize: 12, color: "#64748b" }}>{hint}</span>}
+      </span>
+    </label>
+  );
+}
+
+function Volume({ value, onCommit, disabled }: { value: number; onCommit: (v: number) => void; disabled?: boolean }) {
+  const [v, setV] = useState(value);
+  const commit = () => v !== value && onCommit(v);
+  return (
+    <span style={{ display: "inline-flex", gap: 8, alignItems: "center", marginLeft: 26, opacity: disabled ? 0.4 : 1 }}>
+      <span style={{ fontSize: 12, color: "#94a3b8" }}>ความดัง</span>
+      <input type="range" min={0} max={1.5} step={0.05} value={v} disabled={disabled} onChange={(e) => setV(Number(e.target.value))} onPointerUp={commit} onKeyUp={commit} onBlur={commit} />
+      <span style={{ fontSize: 12, color: "#94a3b8", width: 36 }}>{Math.round(v * 100)}%</span>
+    </span>
+  );
+}
+
+function FilmPanel({ view, busy, onEdit, onMusic, onAssemble }: {
+  view: ProjectView;
+  busy: string | null;
+  onEdit: (patch: Partial<EditSettings>) => void;
+  onMusic: () => void;
+  onAssemble: () => void;
+}) {
+  const { project, edit, music, film } = view;
+  const done = project.shots.filter((s) => s.status === "done").length;
+  const isMv = project.mode === "mv";
+  const musicOn = edit.music !== "off";
+  return (
+    <div style={{ ...card, display: "flex", flexDirection: "column", gap: 14 }}>
+      <div style={{ fontSize: 17, fontWeight: 600 }}>🎞️ ตัดต่อเป็นหนังไฟล์เดียว</div>
+      <div style={{ fontSize: 12, color: "#64748b", marginTop: -8 }}>เปิด/ปิดได้ทุกอย่าง — ระบบนำช็อตที่เสร็จแล้วมาต่อกันตามลำดับ (ตัดต่อฟรี)</div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <Toggle on={edit.clipAudio} onChange={(v) => onEdit({ clipAudio: v })} label="เสียงจากคลิป" hint="บทพูดไทยและเสียงบรรยากาศที่โมเดลสร้างมากับภาพ" />
+          <Volume key={`c${edit.clipVolume}`} value={edit.clipVolume} disabled={!edit.clipAudio} onCommit={(v) => onEdit({ clipVolume: v })} />
+          <Toggle
+            on={musicOn}
+            onChange={(v) => onEdit({ music: v ? (isMv ? "song" : "generate") : "off" })}
+            label={isMv ? "เพลงของ MV" : "ดนตรีประกอบ (สร้างจาก ACE-Step)"}
+            hint={isMv ? "ช็อตวางตามจังหวะเพลงนี้" : "ดนตรีบรรเลงตามสไตล์เรื่อง ยาวเท่าหนัง"}
+          />
+          <Volume key={`m${edit.musicVolume}`} value={edit.musicVolume} disabled={!musicOn} onCommit={(v) => onEdit({ musicVolume: v })} />
+          {musicOn && edit.clipAudio && (
+            <Toggle on={edit.duck} onChange={(v) => onEdit({ duck: v })} label="ลดเพลงลงตอนมีเสียงพูด" hint="ให้บทพูดฟังชัด" />
+          )}
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <Toggle on={edit.subtitles} onChange={(v) => onEdit({ subtitles: v })} label={isMv ? "ซับเนื้อเพลง" : "ซับไทย"} hint={isMv ? "จากเนื้อเพลงของแต่ละช็อต" : "จากบทพูดของแต่ละช็อต"} />
+          <Toggle on={edit.coverFakeSubs} onChange={(v) => onEdit({ coverFakeSubs: v })} label="เบลอตัวหนังสือมั่วที่ LTX ใส่มา" hint="เฉพาะช็อตที่สร้างด้วย LTX-2.5" />
+          <Toggle on={edit.transition === "fade"} onChange={(v) => onEdit({ transition: v ? "fade" : "cut" })} label="เฟดระหว่างช็อต" hint="ปิด = ตัดชนตรง ๆ" />
+          <Toggle on={edit.titleCard} onChange={(v) => onEdit({ titleCard: v })} label="ชื่อเรื่องตอนเปิด" hint={project.title} />
+        </div>
+      </div>
+
+      {!isMv && musicOn && (
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: 12, borderRadius: 12, background: "rgba(2,6,23,0.4)" }}>
+          {music.status === "done" && music.url && <audio src={music.url} controls preload="none" style={{ flex: 1, minWidth: 220 }} />}
+          {music.status === "rendering" && <span style={{ fontSize: 13, color: "#fbbf24" }}>กำลังสร้างดนตรีประกอบ…</span>}
+          {music.status === "failed" && <span style={{ fontSize: 13, color: "#fca5a5" }}>สร้างดนตรีไม่สำเร็จ (คืนเครดิตแล้ว)</span>}
+          {music.status === "none" && <span style={{ fontSize: 13, color: "#94a3b8" }}>ยังไม่มีดนตรีประกอบ</span>}
+          {music.stale && music.status === "done" && <span style={{ fontSize: 12, color: "#fbbf24" }}>เพลงสั้นกว่าหนังตอนนี้ (จะวนซ้ำ)</span>}
+          {music.status !== "rendering" && (
+            <button style={btn} disabled={busy !== null || !music.available || project.shots.length === 0} onClick={onMusic}>
+              {busy === "music" ? "กำลังสั่ง…" : music.status === "none" ? "สร้างดนตรีประกอบ" : "สร้างใหม่"}
+              {music.credits !== null && ` · ${music.credits} เครดิต`}
+            </button>
+          )}
+          {!music.available && <span style={{ fontSize: 12, color: "#94a3b8" }}>ตัวสร้างเพลงยังไม่เปิด</span>}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <button
+          style={{ ...primary, opacity: busy || film.status === "assembling" || done === 0 ? 0.6 : 1 }}
+          disabled={busy !== null || film.status === "assembling" || done === 0}
+          onClick={onAssemble}
+        >
+          {film.status === "assembling" ? "กำลังตัดต่อ… (ไม่กี่นาที)" : film.status === "done" ? "ตัดต่อใหม่" : "🎬 ตัดต่อเป็นหนัง"}
+        </button>
+        <span style={{ fontSize: 12, color: "#94a3b8" }}>ช็อตที่เสร็จ {done} / {project.shots.length}</span>
+      </div>
+      {film.error && film.status !== "assembling" && <div style={{ fontSize: 13, color: "#fca5a5" }}>{film.error}</div>}
+      {film.status === "done" && film.url && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <video src={film.url} controls playsInline preload="metadata" style={{ width: "100%", borderRadius: 12, background: "#000" }} />
+          <a href={film.url} download style={{ ...btn, alignSelf: "flex-start", textDecoration: "none" }}>⬇ ดาวน์โหลดหนัง{film.seconds ? ` (${fmtTime(film.seconds)})` : ""}</a>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Project editor ─────────────────────────────────────────────────────
 
 function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
@@ -563,8 +680,9 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
 
   // Poll only while something renders; stop when the page goes away.
   const rendering = view?.project.shots.some((s) => s.status === "rendering") ?? false;
+  const working = rendering || view?.film.status === "assembling" || view?.music.status === "rendering";
   useEffect(() => {
-    if (!rendering) return;
+    if (!working) return;
     let active = true;
     const timer = setInterval(async () => {
       const r = await getJson<ProjectView>(`/api/story/${id}`);
@@ -574,7 +692,7 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
       active = false;
       clearInterval(timer);
     };
-  }, [rendering, id]);
+  }, [working, id]);
 
   if (missing) {
     return (
@@ -659,6 +777,38 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
     toast("success", "บันทึกแล้ว");
   };
 
+  // A switch takes effect at once on screen and is saved; a refusal puts it back.
+  const saveEdit = async (patch: Partial<EditSettings>) => {
+    const before = view;
+    setView({ ...view, edit: { ...view.edit, ...patch } });
+    const r = await getJson<ProjectView>(`/api/story/${id}`, sendJson("PATCH", { edit: patch }));
+    if (r.ok) setView(r.data);
+    else {
+      setView(before);
+      toast("error", r.error);
+    }
+  };
+
+  const orderMusic = async () => {
+    const what = view.music.status === "none" ? "สร้างดนตรีประกอบ" : "สร้างดนตรีประกอบใหม่ (เพลงเดิมยังอยู่ในแกลเลอรี)";
+    if (!confirm(`${what}? ใช้ ${view.music.credits ?? "?"} เครดิต`)) return;
+    const data = await act<ProjectView>("music", `/api/story/${id}/music`, { method: "POST" });
+    if (data) {
+      setView(data);
+      toast("success", "สั่งสร้างดนตรีแล้ว", "เสร็จแล้วจะเล่นได้ในส่วนตัดต่อ");
+    }
+  };
+
+  const assemble = async () => {
+    const done = project.shots.filter((s) => s.status === "done").length;
+    if (done < project.shots.length && !confirm(`ยังสร้างไม่ครบ — ตัดต่อเฉพาะ ${done} จาก ${project.shots.length} ช็อตที่เสร็จแล้ว?`)) return;
+    if (view.edit.music === "generate" && view.music.status !== "done") {
+      return toast("error", "ดนตรีประกอบยังไม่พร้อม", "สร้างดนตรีก่อน หรือปิดดนตรีประกอบ");
+    }
+    const data = await act<ProjectView>("assemble", `/api/story/${id}/assemble`, { method: "POST" });
+    if (data) setView(data);
+  };
+
   const remove = async () => {
     if (!confirm(`ลบโปรเจกต์ "${project.title}"? สตอรีบอร์ดจะหายถาวร (คลิปที่สร้างแล้วยังอยู่ในแกลเลอรี)`)) return;
     const data = await act("delete", `/api/story/${id}`, { method: "DELETE" });
@@ -714,9 +864,13 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
           <button style={btn} disabled={busy !== null} onClick={() => load()}>รีเฟรช</button>
         </div>
         <div style={{ fontSize: 12, color: "#64748b" }}>
-          แต่ละช็อตคิดเครดิตตอนกดสร้าง ถ้าสร้างไม่สำเร็จจะคืนเครดิตอัตโนมัติ · การตัดต่อรวมเป็นไฟล์เดียว (ซับไทย ดนตรี) จะตามมาในเฟสถัดไป
+          แต่ละช็อตคิดเครดิตตอนกดสร้าง ถ้าสร้างไม่สำเร็จจะคืนเครดิตอัตโนมัติ · ช็อตที่เสร็จแล้วนำไปตัดต่อเป็นหนังไฟล์เดียวได้ด้านล่าง
         </div>
       </div>
+
+      {project.shots.length > 0 && (
+        <FilmPanel view={view} busy={busy} onEdit={saveEdit} onMusic={orderMusic} onAssemble={assemble} />
+      )}
 
       {project.shots.length === 0 ? (
         <div style={{ ...card, color: "#94a3b8", textAlign: "center" }}>

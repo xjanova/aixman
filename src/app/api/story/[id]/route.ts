@@ -3,12 +3,13 @@ import { getCurrentUserId, isAdmin } from '@/lib/auth';
 import prisma from '@/lib/db';
 import { LIMITS } from '@/lib/story/cinematic';
 import { StoryError, loadOwnedProject, syncShots } from '@/lib/story/service';
-import { parseCharacters, projectSettings, serializeProject, storyErrorReply, text } from '@/lib/story/http';
+import { editPatch, parseCharacters, projectSettings, serializeProject, storyErrorReply, text } from '@/lib/story/http';
 
 /**
  * GET    /api/story/[id] — the project with its shots (rendering shots are
  *                          brought up to date with their orders first).
- * PATCH  /api/story/[id] — title, story/lyrics, look, mood, frame, characters.
+ * PATCH  /api/story/[id] — title, story/lyrics, look, mood, frame, characters,
+ *                          and the edit's switches (`edit`, see edit.ts).
  * DELETE /api/story/[id] — the project and its storyboard. The rendered clips
  *                          stay in the gallery; they were ordinary orders.
  */
@@ -55,6 +56,7 @@ export async function PATCH(request: NextRequest, { params }: Ctx) {
       data.brief = brief;
     }
     const characters = body.characters !== undefined ? parseCharacters(body.characters, userId) : null;
+    if (body.edit !== undefined) data.scriptJson = editPatch(project, body.edit);
 
     await prisma.$transaction(async (tx) => {
       if (Object.keys(data).length > 0) await tx.aiStoryProject.update({ where: { id: project.id }, data });

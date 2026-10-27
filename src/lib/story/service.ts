@@ -21,6 +21,8 @@ import {
   type ShotDraft,
   type StoryMode,
 } from './cinematic';
+import { musicPrompt, musicSeconds } from './edit';
+import type { Prisma } from '@/generated/prisma/client';
 
 /**
  * Movie and MV projects: storage, planning, and ordering shots.
@@ -223,10 +225,9 @@ export async function planProject(
       })),
     });
     const isPlaceholderTitle = !project.title.trim() || project.title === 'โปรเจกต์ใหม่';
-    await tx.aiStoryProject.update({
-      where: { id: project.id },
-      data: { status: 'draft', ...(isPlaceholderTitle && planned!.title ? { title: planned!.title } : {}) },
-    });
+    if (isPlaceholderTitle && planned!.title) {
+      await tx.aiStoryProject.update({ where: { id: project.id }, data: { title: planned!.title } });
+    }
   });
   return { shots: planned.shots.length, engine, fallbackReason };
 }
@@ -290,7 +291,8 @@ export async function renderShot(
       where: { id: shot.id, status: 'rendering', visualGenerationId: null },
       data: { visualGenerationId: result.id, mediaUrl: null },
     });
-    await prisma.aiStoryProject.update({ where: { id: project.id }, data: { status: 'rendering' } });
+    // A film being assembled keeps that status; its own finish settles it.
+    await prisma.aiStoryProject.updateMany({ where: { id: project.id, status: { not: 'assembling' } }, data: { status: 'rendering' } });
     return { generationId: result.id };
   } catch (error) {
     await prisma.aiStoryShot.updateMany({
@@ -299,6 +301,55 @@ export async function renderShot(
     });
     throw error;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Film music (phase 2)
+// ---------------------------------------------------------------------------
+
+export const MUSIC_MODEL_KEY = 'ace-step-1.5';
+
+/** The model a film's score is ordered from, as this caller may order it. */
+export async function musicModel(admin: boolean): Promise<MovieModel | null> {
+  const m = await prisma.aiModel.findFirst({
+    where: { modelId: MUSIC_MODEL_KEY, isActive: true },
+    select: { id: true, modelId: true, name: true, creditsPerUnit: true, readiness: true },
+  });
+  return m ? { id: m.id, key: m.modelId, name: m.name, creditsPerUnit: m.creditsPerUnit, orderable: ModelReadiness.canOrder(m.readiness, admin) } : null;
+}
+
+export function musicCredits(model: MovieModel | null, seconds: number): number | null {
+  if (!model) return null;
+  return creditsForDuration(model.creditsPerUnit, getCatalogEntry(model.key)?.pricing.durationCurve, musicSeconds(seconds));
+}
+
+export function filmSeconds(project: StoryProjectFull): number {
+  return project.shots.reduce((n, s) => n + Number(s.durationSec), 0);
+}
+
+/**
+ * Order the film's score: an instrumental in the film's look, as long as the
+ * storyboard, charged like any music order. Recorded in script_json.music; a
+ * new order replaces the old one (whose track stays in the gallery).
+ */
+export async function orderMusic(userId: number, admin: boolean, project: StoryProjectFull): Promise<{ generationId: number }> {
+  if (project.mode !== 'film') throw new StoryError('MV ใช้เพลงของ MV อยู่แล้ว');
+  const seconds = filmSeconds(project);
+  if (seconds <= 0) throw new StoryError('วางช็อตก่อน ระบบสร้างเพลงยาวเท่าหนัง', 422);
+  const model = await musicModel(admin);
+  if (!model?.orderable) throw new StoryError('ตัวสร้างเพลงยังไม่เปิดให้ใช้ ปิดดนตรีประกอบไว้ก่อน', 409);
+  const length = musicSeconds(seconds);
+  const result = await GenerationService.generate(
+    userId,
+    { modelId: model.id, type: 'audio', prompt: musicPrompt(project.templateKey, project.mood), params: { duration: length } },
+    { isAdmin: admin }
+  );
+  const script = (project.scriptJson ?? {}) as Record<string, unknown>;
+  await prisma.aiStoryProject.update({
+    where: { id: project.id },
+    data: { scriptJson: { ...script, music: { generationId: result.id, seconds: length } } as Prisma.InputJsonValue },
+  });
+  return { generationId: result.id };
 }
 
 /** What the customer may read about a refused order — never an internal message. */

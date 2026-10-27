@@ -12,12 +12,19 @@ import {
   SHOT_SIZES,
   pickKey,
   safeCamera,
+  type StoryMode,
 } from './cinematic';
+import { musicSeconds, parseEdit, parseMusicState } from './edit';
+import { assemblyStale } from './assemble';
+import type { Prisma } from '@/generated/prisma/client';
 import {
   StoryError,
   customerMessage,
+  filmSeconds,
   idList,
   movieModels,
+  musicCredits,
+  musicModel,
   shotCredits,
   type MovieModel,
   type StoryProjectFull,
@@ -186,8 +193,18 @@ export function shotPatch(body: Record<string, unknown>, project: StoryProjectFu
 
 /** What the page gets: the project, its shots with prices, and the models it may pick. */
 export async function serializeProject(project: StoryProjectFull, admin: boolean) {
-  const models = await movieModels(admin);
+  const [models, score] = await Promise.all([movieModels(admin), project.mode === 'film' ? musicModel(admin) : null]);
   const charById = new Map(project.characters.map((c) => [c.id, c]));
+  const script = (project.scriptJson ?? {}) as Record<string, unknown>;
+  const musicState = parseMusicState(script.music);
+  const musicGen = musicState
+    ? await prisma.aiGeneration.findFirst({
+        where: { id: musicState.generationId, userId: project.userId },
+        select: { status: true, resultUrl: true, creditsRefunded: true },
+      })
+    : null;
+  const seconds = filmSeconds(project);
+  const assembling = project.status === 'assembling' && !assemblyStale(project.updatedAt);
   return {
     project: {
       id: project.id,
@@ -227,5 +244,28 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
       }),
     },
     models: models.map((m) => ({ id: m.id, key: m.key, name: m.name, orderable: m.orderable })),
+    edit: parseEdit(script.edit, project.mode as StoryMode),
+    music: {
+      available: Boolean(score?.orderable),
+      credits: musicCredits(score, seconds),
+      // The track on file is shorter than the film now: the page offers a new one.
+      stale: Boolean(musicState && musicState.seconds < musicSeconds(seconds) - 1),
+      status: musicGen ? (musicGen.status === 'completed' && musicGen.resultUrl ? 'done' : ['failed', 'cancelled'].includes(musicGen.status) ? 'failed' : 'rendering') : 'none',
+      url: musicGen?.status === 'completed' ? musicGen.resultUrl : null,
+    },
+    film: {
+      status: assembling ? 'assembling' : project.finalVideoUrl ? 'done' : 'none',
+      url: project.finalVideoUrl,
+      seconds: project.durationSec,
+      error: project.status === 'assembling' && !assembling ? 'การตัดต่อครั้งก่อนค้าง ลองกดตัดต่อใหม่' : project.errorMessage,
+    },
   };
+}
+
+/** PATCH body's `edit`: stored beside the music state in script_json. */
+export function editPatch(project: StoryProjectFull, raw: unknown): Prisma.InputJsonValue {
+  const script = (project.scriptJson ?? {}) as Record<string, unknown>;
+  const current = parseEdit(script.edit, project.mode as StoryMode);
+  const merged = parseEdit({ ...current, ...(raw && typeof raw === 'object' ? raw : {}) }, project.mode as StoryMode);
+  return { ...script, edit: { ...merged } } as Prisma.InputJsonValue;
 }
