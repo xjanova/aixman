@@ -1094,7 +1094,7 @@ function VendorsSection({
                     <input type="text" value={c.clientId ?? ""} autoComplete="off" placeholder="Client ID"
                            onChange={(e) => onCreds(v.slug, { ...c, clientId: e.target.value })}
                            className="flex-1 min-w-[140px] px-3 py-2 rounded-lg glass text-sm outline-none" />
-                    <input type="password" value={c.clientSecret ?? ""} autoComplete="off" placeholder="Client Secret"
+                    <input type="password" value={c.clientSecret ?? ""} autoComplete="new-password" placeholder="Client Secret"
                            onChange={(e) => onCreds(v.slug, { ...c, clientSecret: e.target.value })}
                            className="flex-1 min-w-[140px] px-3 py-2 rounded-lg glass text-sm outline-none" />
                   </>
@@ -1104,7 +1104,7 @@ function VendorsSection({
                             onChange={(e) => onCreds(v.slug, { ...c, apiKey: e.target.value })}
                             className="flex-1 min-w-[200px] px-3 py-2 rounded-lg glass text-xs font-mono outline-none resize-y [-webkit-text-security:disc] focus:[-webkit-text-security:none]" />
                 ) : (
-                  <input type="password" value={c.apiKey ?? ""} autoComplete="off"
+                  <input type="password" value={c.apiKey ?? ""} autoComplete="new-password"
                          placeholder={v.connected ? "API key ใหม่ (ถ้าจะเปลี่ยน)" : `${v.label} API key`}
                          onChange={(e) => onCreds(v.slug, { ...c, apiKey: e.target.value })}
                          className="flex-1 min-w-[200px] px-3 py-2 rounded-lg glass text-sm outline-none" />
@@ -1895,7 +1895,7 @@ export default function GpuAdminPage() {
             value={hfToken}
             onChange={(e) => setHfToken(e.target.value)}
             placeholder={hf?.source === "settings" ? "บันทึกไว้แล้ว — วางตัวใหม่เพื่อเปลี่ยน" : "hf_..."}
-            autoComplete="off"
+            autoComplete="new-password"
             className="flex-1 min-w-[220px] px-3 py-2 rounded-lg glass-light text-sm outline-none"
           />
           <button
@@ -1943,7 +1943,7 @@ export default function GpuAdminPage() {
               value={tgToken}
               onChange={(e) => setTgToken(e.target.value)}
               placeholder={tg?.tokenSaved ? "บันทึกไว้แล้ว — เว้นว่างเพื่อใช้ตัวเดิม" : "123456789:ABCdef..."}
-              autoComplete="off"
+              autoComplete="new-password"
               className="w-full px-3 py-2 rounded-lg glass-light text-sm outline-none"
             />
             <p className="text-[11px] text-muted mt-1">

@@ -243,11 +243,11 @@ export default function PoolsPage() {
               </div>
               <div>
                 <label className="text-xs text-muted mb-1 block">Label</label>
-                <input value={newAccount.label} onChange={(e) => setNewAccount({...newAccount, label: e.target.value})} placeholder="เช่น BytePlus Account #1" className="w-full p-2.5 rounded-lg bg-surface-light text-sm focus:outline-none focus:ring-1 focus:ring-primary/50" />
+                <input value={newAccount.label} onChange={(e) => setNewAccount({...newAccount, label: e.target.value})} placeholder="เช่น BytePlus Account #1" autoComplete="off" className="w-full p-2.5 rounded-lg bg-surface-light text-sm focus:outline-none focus:ring-1 focus:ring-primary/50" />
               </div>
               <div>
                 <label className="text-xs text-muted mb-1 block">API Key</label>
-                <input value={newAccount.apiKey} onChange={(e) => setNewAccount({...newAccount, apiKey: e.target.value})} type="password" className="w-full p-2.5 rounded-lg bg-surface-light text-sm focus:outline-none focus:ring-1 focus:ring-primary/50" />
+                <input value={newAccount.apiKey} onChange={(e) => setNewAccount({...newAccount, apiKey: e.target.value})} type="password" autoComplete="new-password" className="w-full p-2.5 rounded-lg bg-surface-light text-sm focus:outline-none focus:ring-1 focus:ring-primary/50" />
               </div>
               <div>
                 <label className="text-xs text-muted mb-1 block">Rotation Mode</label>

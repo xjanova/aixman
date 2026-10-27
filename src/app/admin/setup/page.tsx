@@ -143,7 +143,7 @@ export default function SetupWizard() {
                 </div>
                 <div>
                   <label className="text-sm text-muted mb-1 block">Encryption Key (สำหรับเข้ารหัส API keys)</label>
-                  <input value={encryptionKey} onChange={(e) => setEncryptionKey(e.target.value)} type="password" placeholder="ขั้นต่ำ 32 ตัวอักษร" className="w-full p-3 rounded-lg bg-surface-light focus:outline-none focus:ring-1 focus:ring-primary/50" />
+                  <input value={encryptionKey} onChange={(e) => setEncryptionKey(e.target.value)} type="password" autoComplete="new-password" placeholder="ขั้นต่ำ 32 ตัวอักษร" className="w-full p-3 rounded-lg bg-surface-light focus:outline-none focus:ring-1 focus:ring-primary/50" />
                   <p className="text-xs text-muted mt-1">ใช้สำหรับเข้ารหัส API keys ในฐานข้อมูล เก็บรักษาให้ดี!</p>
                 </div>
               </div>
@@ -192,7 +192,7 @@ export default function SetupWizard() {
                         </p>
                       )}
                       <input
-                        type="password"
+                        type="password" autoComplete="new-password"
                         placeholder={p.apiKeyLabel}
                         value={apiKeys[slug]?.key || ""}
                         onChange={(e) => setApiKey(slug, e.target.value, apiKeys[slug]?.secret)}
@@ -200,7 +200,7 @@ export default function SetupWizard() {
                       />
                       {p.hasSecret && (
                         <input
-                          type="password"
+                          type="password" autoComplete="new-password"
                           placeholder="Secret Key"
                           value={apiKeys[slug]?.secret || ""}
                           onChange={(e) => setApiKey(slug, apiKeys[slug]?.key || "", e.target.value)}
