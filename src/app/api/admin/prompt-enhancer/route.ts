@@ -24,14 +24,14 @@ import {
 export const dynamic = 'force-dynamic';
 export const maxDuration = 150;
 
-const PROVIDERS: EnhancerProvider[] = ['auto', 'openai', 'minimax', 'byteplus', 'pollinations', 'off'];
+const PROVIDERS: EnhancerProvider[] = ['auto', 'deepseek', 'openai', 'minimax', 'byteplus', 'pollinations', 'off'];
 
 async function keyStatus(): Promise<Record<string, boolean>> {
   const rows = await prisma.aiProvider.findMany({
-    where: { slug: { in: ['openai', 'minimax', 'byteplus', 'pollinations'] } },
+    where: { slug: { in: ['deepseek', 'openai', 'minimax', 'byteplus', 'pollinations'] } },
     select: { slug: true, isActive: true, accounts: { where: { isActive: true }, select: { id: true } } },
   });
-  const out: Record<string, boolean> = { openai: false, minimax: false, byteplus: false, pollinations: false };
+  const out: Record<string, boolean> = { deepseek: false, openai: false, minimax: false, byteplus: false, pollinations: false };
   for (const r of rows) out[r.slug] = r.isActive && r.accounts.length > 0;
   return out;
 }

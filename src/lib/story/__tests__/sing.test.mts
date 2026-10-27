@@ -11,7 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { defaultEdit, parseEdit } from '../edit.ts';
+import { defaultEdit, parseEdit } from '@/lib/story/edit';
 import {
   LIPSYNC_MAX_SECONDS,
   dubState,
@@ -20,7 +20,7 @@ import {
   usableDub,
   vocalsState,
   voiceWindow,
-} from '../sing.ts';
+} from '@/lib/story/sing';
 
 test('the voice window is the shot\'s place in the song, within LatentSync\'s length', () => {
   assert.deepEqual(voiceWindow(12.5, 6.25), { ok: true, start: 12.5, seconds: 6.25 });

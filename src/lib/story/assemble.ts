@@ -29,9 +29,10 @@ import { usableDub } from './sing';
  * and the song are URLs we stored, never a stranger's.
  */
 
-const STALE_MS = 30 * 60_000;
+// A 10-minute film is ~60 segments and a full re-encode with subtitles.
+const STALE_MS = 60 * 60_000;
 const SEGMENT_TIMEOUT_MS = 4 * 60_000;
-const FINAL_TIMEOUT_MS = 20 * 60_000;
+const FINAL_TIMEOUT_MS = 30 * 60_000;
 const MAX_INPUT_BYTES = 400 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 900 * 1024 * 1024;
 const FONT_FILE = 'Sarabun-Bold.ttf';

@@ -4,7 +4,7 @@ import prisma from '@/lib/db';
 import { LIMITS } from '@/lib/story/cinematic';
 import { StoryError, loadOwnedProject, syncShots } from '@/lib/story/service';
 import { syncDubs } from '@/lib/story/vocals';
-import { editPatch, parseCharacters, projectSettings, serializeProject, storyErrorReply, text } from '@/lib/story/http';
+import { editPatch, parseCharacters, projectSettings, serializeProject, storyErrorReply, text, withFilmLength } from '@/lib/story/http';
 
 /**
  * GET    /api/story/[id] — the project with its shots (rendering shots and
@@ -60,6 +60,7 @@ export async function PATCH(request: NextRequest, { params }: Ctx) {
     }
     const characters = body.characters !== undefined ? parseCharacters(body.characters, userId) : null;
     if (body.edit !== undefined) data.scriptJson = editPatch(project, body.edit);
+    if (body.filmLength !== undefined && project.mode === 'film') data.scriptJson = withFilmLength(data.scriptJson ?? project.scriptJson, body.filmLength);
 
     await prisma.$transaction(async (tx) => {
       if (Object.keys(data).length > 0) await tx.aiStoryProject.update({ where: { id: project.id }, data });

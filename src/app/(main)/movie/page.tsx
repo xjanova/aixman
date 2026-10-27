@@ -21,7 +21,7 @@ import Link from "next/link";
 import { PageHero } from "@/components/xdreamer/page-hero";
 import { useToast } from "@/components/ui/toast-provider";
 import { loginHref } from "@/lib/safe-callback";
-import { ASPECTS, CAMERA_MOVES, LIMITS, LOOKS, MOODS, SHOT_SIZES } from "@/lib/story/cinematic";
+import { ASPECTS, CAMERA_MOVES, FILM_LENGTHS, LIMITS, LOOKS, MOODS, SHOT_SIZES } from "@/lib/story/cinematic";
 
 interface Character {
   id?: number;
@@ -64,6 +64,8 @@ interface Project {
   title: string;
   brief: string;
   look: string;
+  /** Film: a FILM_LENGTHS key. */
+  filmLength: string | null;
   mood: string | null;
   aspect: string;
   songUrl: string | null;
@@ -105,6 +107,8 @@ interface ProjectView {
   music: { available: boolean; credits: number | null; stale: boolean; status: "none" | "rendering" | "done" | "failed"; url: string | null };
   film: { status: "none" | "assembling" | "done"; credits: number; url: string | null; seconds: number | null; error: string | null };
   vocals: Vocals | null;
+  /** A long film being planned after the response, or the last plan's outcome. */
+  planning: { state: "planning" | "failed" | "done"; error: string | null; shots: number | null; rules: boolean } | null;
 }
 interface ProjectRow {
   id: number;
@@ -251,6 +255,7 @@ function NewProject({ onCreated }: { onCreated: (id: number) => void }) {
   const [title, setTitle] = useState("");
   const [brief, setBrief] = useState("");
   const [look, setLook] = useState("film");
+  const [filmLength, setFilmLength] = useState("auto");
   const [mood, setMood] = useState("romantic");
   const [aspect, setAspect] = useState("16:9");
   const [characters, setCharacters] = useState<Character[]>([{ name: "", description: "", referenceUrl: null }]);
@@ -297,6 +302,7 @@ function NewProject({ onCreated }: { onCreated: (id: number) => void }) {
         title,
         brief,
         look,
+        filmLength: mode === "film" ? filmLength : undefined,
         mood,
         aspect,
         characters: characters.filter((c) => c.name.trim() || c.referenceUrl),
@@ -374,6 +380,22 @@ function NewProject({ onCreated }: { onCreated: (id: number) => void }) {
               <button key={key} style={chip(look === key)} onClick={() => setLook(key)}>{l.label}</button>
             ))}
           </div>
+        </div>
+      )}
+
+      {mode === "film" && (
+        <div>
+          <span style={label}>ความยาวหนัง</span>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {Object.entries(FILM_LENGTHS).map(([key, l]) => (
+              <button key={key} style={chip(filmLength === key)} onClick={() => setFilmLength(key)}>{l.label}</button>
+            ))}
+          </div>
+          {FILM_LENGTHS[filmLength]?.seconds && (
+            <p style={{ fontSize: 12, color: "#94a3b8", marginTop: 6 }}>
+              ประมาณ {Math.round(FILM_LENGTHS[filmLength].seconds! / 8)} ช็อต · AI แต่งเรื่องเพิ่มจากเรื่องย่อให้ยาวพอ · คิดเครดิตตอนสร้างแต่ละช็อต
+            </p>
+          )}
         </div>
       )}
 
@@ -872,7 +894,22 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
     view?.film.status === "assembling" ||
     view?.music.status === "rendering" ||
     view?.vocals?.state === "separating" ||
+    view?.planning?.state === "planning" ||
     (view?.project.shots.some((s) => s.lipsync?.state === "rendering") ?? false);
+  // A long film is planned after the response; say so when it lands.
+  const planState = view?.planning?.state ?? null;
+  const lastPlanState = useRef(planState);
+  useEffect(() => {
+    const was = lastPlanState.current;
+    lastPlanState.current = planState;
+    if (was !== "planning" || !view?.planning) return;
+    if (planState === "done") {
+      toast("success", `วางช็อตแล้ว ${view.planning.shots ?? view.project.shots.length} ช็อต`, view.planning.rules ? "ใช้ตัววางช็อตพื้นฐาน (ผู้ช่วย AI ไม่ว่าง) แก้ไขแต่ละช็อตได้ตามต้องการ" : undefined);
+    } else if (planState === "failed") {
+      toast("error", view.planning.error ?? "วางช็อตไม่สำเร็จ");
+    }
+  }, [planState, view, toast]);
+
   useEffect(() => {
     if (!working) return;
     let active = true;
@@ -895,6 +932,7 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
   }
   if (!view) return <div style={{ ...card, color: "#94a3b8" }}>กำลังโหลด…</div>;
   const { project, models } = view;
+  const planning = view.planning?.state === "planning";
 
   const act = async <T,>(key: string, url: string, init: RequestInit): Promise<T | null> => {
     if (busy) return null;
@@ -919,6 +957,10 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
     const data = await act<ProjectView & { planner: "ai" | "rules" }>("plan", `/api/story/${id}/plan`, { method: "POST" });
     if (!data) return;
     setView(data);
+    if (data.planning?.state === "planning") {
+      lastPlanState.current = "planning";
+      return toast("success", "AI กำลังวางช็อตหนังยาว", "ใช้เวลาราว 1–3 นาที ช็อตจะขึ้นเองเมื่อเสร็จ");
+    }
     toast("success", `วางช็อตแล้ว ${data.project.shots.length} ช็อต`, data.planner === "rules" ? "ใช้ตัววางช็อตพื้นฐาน (ผู้ช่วย AI ไม่ว่าง) แก้ไขแต่ละช็อตได้ตามต้องการ" : undefined);
   };
 
@@ -954,6 +996,11 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
 
   const addShot = async () => {
     const data = await act<ProjectView>("add", `/api/story/${id}/shots`, sendJson("POST", {}));
+    if (data) setView(data);
+  };
+
+  const setFilmLength = async (key: string) => {
+    const data = await act<ProjectView>("length", `/api/story/${id}`, sendJson("PATCH", { filmLength: key }));
     if (data) setView(data);
   };
 
@@ -1086,9 +1133,18 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
           </div>
         </details>
 
+        {project.mode === "film" && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+            <span style={{ fontSize: 13, color: "#94a3b8" }}>ความยาวที่ให้ AI วาง:</span>
+            {Object.entries(FILM_LENGTHS).map(([key, l]) => (
+              <button key={key} style={chip((project.filmLength ?? "auto") === key)} disabled={busy !== null || planning} onClick={() => setFilmLength(key)}>{l.label}</button>
+            ))}
+          </div>
+        )}
+
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button style={{ ...primary, opacity: busy || rendering ? 0.6 : 1 }} disabled={busy !== null || rendering} onClick={plan} title={rendering ? "รอช็อตที่กำลังสร้างให้เสร็จก่อน" : undefined}>
-            {busy === "plan" ? "AI กำลังวางช็อต… (อาจถึง 1 นาที)" : project.shots.length ? "✨ ให้ AI วางช็อตใหม่" : "✨ ให้ AI แตกช็อต"}
+          <button style={{ ...primary, opacity: busy || rendering || planning ? 0.6 : 1 }} disabled={busy !== null || rendering || planning} onClick={plan} title={rendering ? "รอช็อตที่กำลังสร้างให้เสร็จก่อน" : undefined}>
+            {planning ? "AI กำลังวางช็อตหนังยาว… (1–3 นาที)" : busy === "plan" ? "AI กำลังวางช็อต… (อาจถึง 1 นาที)" : project.shots.length ? "✨ ให้ AI วางช็อตใหม่" : "✨ ให้ AI แตกช็อต"}
           </button>
           {renderable.length > 0 && (
             <button style={btn} disabled={busy !== null} onClick={() => render(renderable)}>

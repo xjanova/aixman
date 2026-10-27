@@ -138,7 +138,7 @@ export interface Cue {
 
 export const TITLE_SECONDS = 3;
 export const FADE_SECONDS = 0.3;
-export const MAX_FILM_SECONDS = LIMITS.maxSongSeconds;
+export const MAX_FILM_SECONDS = LIMITS.maxFilmSeconds;
 
 /** Where each shot sits in the film, from 0, in order. */
 export function timeline(shots: CutShot[]): { start: number; end: number }[] {

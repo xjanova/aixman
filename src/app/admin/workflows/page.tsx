@@ -1417,7 +1417,7 @@ function HistoryTab({ d, onChanged }: { d: Detail; onChanged: () => void }) {
 // ─── Prompt assistant ──────────────────────────────────────────────────
 
 interface EnhancerConfig {
-  provider: "auto" | "openai" | "minimax" | "byteplus" | "pollinations" | "off";
+  provider: "auto" | "deepseek" | "openai" | "minimax" | "byteplus" | "pollinations" | "off";
   model: string;
   h3ContextIr: boolean;
   hourlyLimit: number;
@@ -1431,7 +1431,8 @@ interface EnhancerState {
 }
 
 const PROVIDER_LABEL: Record<EnhancerConfig["provider"], string> = {
-  auto: "อัตโนมัติ (OpenAI → MiniMax → BytePlus ตัวแรกที่มีคีย์)",
+  auto: "อัตโนมัติ (DeepSeek → OpenAI → MiniMax → BytePlus ตัวแรกที่มีคีย์)",
+  deepseek: "DeepSeek",
   openai: "OpenAI",
   minimax: "MiniMax",
   byteplus: "BytePlus ModelArk",
@@ -1507,7 +1508,7 @@ function AssistantPanel({ workflows }: { workflows: Summary[] }) {
               {(Object.keys(PROVIDER_LABEL) as EnhancerConfig["provider"][]).map((p) => <option key={p} value={p}>{PROVIDER_LABEL[p]}</option>)}
             </select>
             <div className="flex flex-wrap gap-1.5 mt-2">
-              {["openai", "minimax", "byteplus"].map((k) => (
+              {["deepseek", "openai", "minimax", "byteplus"].map((k) => (
                 <Pill key={k} cls={state.keys[k] ? "bg-emerald-500/15 text-emerald-300 border-emerald-400/30" : "bg-slate-500/15 text-slate-400 border-slate-400/20"}>
                   {state.keys[k] ? "✓" : "✗"} {k}
                 </Pill>

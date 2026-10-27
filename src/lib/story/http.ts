@@ -10,12 +10,16 @@ import {
   LOOKS,
   MOODS,
   SHOT_SIZES,
+  filmLengthKey,
+  filmTarget,
   pickKey,
   safeCamera,
+  withTargetSeconds,
   type StoryMode,
 } from './cinematic';
 import { assemblePrice, musicSeconds, parseEdit, parseMusicState } from './edit';
 import { assemblyStale } from './assemble';
+import { planJob } from './plan-jobs';
 import { dubState, suggestedForLipsync, voiceWindow } from './sing';
 import { demucsPython, lipsyncCredits, lipsyncModel, projectVocalsState } from './vocals';
 import type { Prisma } from '@/generated/prisma/client';
@@ -224,6 +228,7 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
       title: project.title,
       brief: project.brief,
       look: project.templateKey,
+      filmLength: project.mode === 'film' ? filmLengthKey(filmTarget(script)) : null,
       mood: project.mood,
       aspect: project.aspectRatio,
       songUrl: project.songUrl,
@@ -302,7 +307,13 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
       seconds: project.durationSec,
       error: project.status === 'assembling' && !assembling ? 'การตัดต่อครั้งก่อนค้าง ลองกดตัดต่อใหม่' : project.errorMessage,
     },
+    planning: planJob(project.id),
   };
+}
+
+/** A film's `filmLength` (a FILM_LENGTHS key) stored in script_json, keeping what is there. */
+export function withFilmLength(script: unknown, raw: unknown): Prisma.InputJsonValue {
+  return withTargetSeconds(script, raw) as Prisma.InputJsonValue;
 }
 
 /** PATCH body's `edit`: stored beside the music state in script_json. */

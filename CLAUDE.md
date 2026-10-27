@@ -604,6 +604,12 @@ Code: `src/lib/story/{cinematic,service,http}.ts`, `/api/story/*`.
   first frame. A character-led wide/full shot never pushes in (`safeCamera`) —
   that is where faces were replaced. Pictures must be the user's own uploads
   (`uploads/<userId>/image/…`, `isOwnUpload`).
+- **Film length** (`FILM_LENGTHS`: auto, 1/3/5/10 min, `script_json.targetSeconds`;
+  60 shots, cut ≤ `LIMITS.maxFilmSeconds` 600). Past one part
+  (`FILM_PART_SECONDS` 120) the plan is an outline call, then every part's
+  shots at once (`planLongFilm`); a failed part is laid out by the rules from its
+  outline line. It runs after the response (`plan-jobs.ts`, in process, 202 +
+  `planning`) — Apache in front would cut a minutes-long request.
 - **MV timing is ours, not the LLM's:** `songTimeline` lays the lyrics over the
   song's length (read server-side from the file, ≤ 6 min); the planner model
   only writes pictures. Any planner failure falls back to `planFromRules`.
@@ -659,7 +665,7 @@ aspect ratios, rate limits, error codes): change those, change the page.
 `/api/studio/enhance-prompt` → `services/prompt-enhancer.ts`. Order: MiniMax's
 own **H3-Context-IR API** for self-hosted H3 when a MiniMax key is in the pool
 (H3-Base was trained on its output format and has no substitute) → a chat model
-from the account pool (`auto`: OpenAI → MiniMax → BytePlus; Pollinations only
+from the account pool (`auto`: DeepSeek → OpenAI → MiniMax → BytePlus; Pollinations only
 when chosen — it is a third party) → model-aware rules, so it never fails. Free
 to customers, limited per hour (`prompt_enhancer_hourly_limit`); settings and a
 test button live on the same admin page. Thinking models get

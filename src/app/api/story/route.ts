@@ -3,7 +3,7 @@ import { getCurrentUserId } from '@/lib/auth';
 import prisma from '@/lib/db';
 import { ASPECTS, LIMITS, LOOKS, MOODS, pickKey } from '@/lib/story/cinematic';
 import { StoryError } from '@/lib/story/service';
-import { parseCharacters, resolveSong, storyErrorReply, text } from '@/lib/story/http';
+import { parseCharacters, resolveSong, storyErrorReply, text, withFilmLength } from '@/lib/story/http';
 
 /**
  * GET  /api/story — the caller's movie and MV projects.
@@ -84,6 +84,7 @@ export async function POST(request: NextRequest) {
         aspectRatio: pickKey(body.aspect, ASPECTS, '16:9'),
         songUrl: song?.url ?? null,
         songSeconds: song?.seconds ?? null,
+        ...(mode === 'film' && body.filmLength !== undefined ? { scriptJson: withFilmLength(null, body.filmLength) } : {}),
         characters: {
           create: characters.map((c, k) => ({
             name: c.name,

@@ -1,5 +1,6 @@
 import prisma from '@/lib/db';
 import { AccountPoolManager } from './account-pool';
+import { DEEPSEEK_PRESETS, DEEPSEEK_PROVIDER } from '@/lib/llm/presets';
 import { isAcceptedFrameSource } from '@/lib/gpu/frame-input';
 
 /**
@@ -24,7 +25,7 @@ import { isAcceptedFrameSource } from '@/lib/gpu/frame-input';
  */
 
 export type EnhanceKind = 'image' | 'video' | 'audio' | 'edit' | 'lipsync';
-export type EnhancerProvider = 'auto' | 'openai' | 'minimax' | 'byteplus' | 'pollinations' | 'off';
+export type EnhancerProvider = 'auto' | 'deepseek' | 'openai' | 'minimax' | 'byteplus' | 'pollinations' | 'off';
 type LlmProvider = Exclude<EnhancerProvider, 'auto' | 'off'>;
 
 export interface EnhanceRequest {
@@ -83,10 +84,15 @@ export const DEFAULT_ENHANCER: EnhancerConfig = {
   instructions: { image: '', video: '', audio: '' },
 };
 
-/** Tried in this order by `auto`. Pollinations only when chosen by name. */
-const AUTO_ORDER: LlmProvider[] = ['openai', 'minimax', 'byteplus'];
+/**
+ * Tried in this order by `auto`. Pollinations only when chosen by name.
+ * DeepSeek first (owner's choice, 2026-10-27): the key the LLM API resells
+ * also writes the scripts, and its output limit covers a long film's part.
+ */
+const AUTO_ORDER: LlmProvider[] = ['deepseek', 'openai', 'minimax', 'byteplus'];
 
 export const DEFAULT_MODEL: Record<LlmProvider, string> = {
+  deepseek: DEEPSEEK_PRESETS[0].cfg.upstreamModel,
   openai: 'gpt-4.1-mini',
   minimax: 'MiniMax-M2',
   byteplus: 'seed-1-6-flash-250715',
@@ -101,6 +107,8 @@ export const DEFAULT_MODEL: Record<LlmProvider, string> = {
 function chatUrl(provider: LlmProvider, endpoint?: string): string {
   const root = endpoint?.trim().replace(/\/+$/, '');
   switch (provider) {
+    case 'deepseek':
+      return `${root || DEEPSEEK_PROVIDER.baseUrl}/chat/completions`;
     case 'openai':
       return `${root || 'https://api.openai.com/v1'}/chat/completions`;
     case 'minimax':
@@ -123,7 +131,7 @@ export async function getEnhancerConfig(): Promise<EnhancerConfig> {
   const provider = map.get(ENHANCER_KEYS.provider)?.trim() as EnhancerProvider | undefined;
   const limit = Number(map.get(ENHANCER_KEYS.hourlyLimit));
   return {
-    provider: provider && ['auto', 'openai', 'minimax', 'byteplus', 'pollinations', 'off'].includes(provider) ? provider : DEFAULT_ENHANCER.provider,
+    provider: provider && ['auto', 'deepseek', 'openai', 'minimax', 'byteplus', 'pollinations', 'off'].includes(provider) ? provider : DEFAULT_ENHANCER.provider,
     model: map.get(ENHANCER_KEYS.model)?.trim() ?? '',
     h3ContextIr: (map.get(ENHANCER_KEYS.h3ContextIr) ?? 'true').trim() !== 'false',
     hourlyLimit: Number.isFinite(limit) && limit >= 0 ? Math.min(1000, Math.round(limit)) : DEFAULT_ENHANCER.hourlyLimit,
@@ -303,6 +311,8 @@ interface ChatLimits {
   maxTokens?: number;
   /** Characters of answer kept. */
   maxChars?: number;
+  /** How long one engine may take; LLM_TIMEOUT_MS when unset. A long answer needs longer. */
+  timeoutMs?: number;
 }
 
 async function callChat(provider: LlmProvider, model: string, system: string, user: string, limits: ChatLimits = {}): Promise<string> {
@@ -334,7 +344,7 @@ async function callChat(provider: LlmProvider, model: string, system: string, us
     body.reasoning_effort = 'low';
   }
 
-  const res = await withTimeout(LLM_TIMEOUT_MS, (signal) =>
+  const res = await withTimeout(limits.timeoutMs ?? LLM_TIMEOUT_MS, (signal) =>
     fetch(url, {
       method: 'POST',
       headers: {

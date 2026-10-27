@@ -8,9 +8,15 @@ import { chatViaPool } from '@/lib/services/prompt-enhancer';
 import {
   ASPECTS,
   MOVIE_MODEL_KEYS,
+  LIMITS,
   buildShotPrompt,
+  filmOutlineMessages,
+  filmPartCount,
   filmPlannerMessages,
+  filmTarget,
+  fitToTarget,
   mvPlannerMessages,
+  parseFilmOutline,
   parseFilmPlan,
   parseMvPlan,
   planFromRules,
@@ -154,6 +160,44 @@ export class StoryError extends Error {
 }
 
 /**
+ * A long film in two steps, so no chat call has to write the whole thing: an
+ * outline of FILM_PART_SECONDS parts, then every part's shots at once. A part
+ * the model fails is laid out by the rules from its outline line, so one bad
+ * answer costs that part its polish, not the film.
+ */
+async function planLongFilm(input: PlanInput): Promise<{ planned: { title: string; shots: ShotDraft[] } | null; engine: string; fallbackReason?: string }> {
+  const target = input.targetSeconds!;
+  const count = filmPartCount(target);
+  const head = filmOutlineMessages(input, count);
+  const reply = await chatViaPool(head.system, head.user, { maxTokens: 3000, maxChars: 20_000, timeoutMs: 60_000 });
+  const outline = parseFilmOutline(reply.text, count);
+  if (!outline) return { planned: null, engine: reply.engine, fallbackReason: `${reply.engine} answered with no usable outline` };
+
+  const seconds = target / count;
+  const failed: string[] = [];
+  const parts = await Promise.all(
+    outline.parts.map(async (summary, index) => {
+      const part = { index, count, summary, seconds, outline: outline.parts };
+      try {
+        const { system, user } = filmPlannerMessages(input, part);
+        const answer = await chatViaPool(system, user, { maxTokens: 6000, maxChars: 50_000, timeoutMs: 90_000 });
+        const plan = parseFilmPlan(answer.text, input);
+        if (plan) return fitToTarget(plan.shots, seconds);
+        failed.push(`part ${index + 1}: no usable shots`);
+      } catch (error) {
+        failed.push(`part ${index + 1}: ${(error as Error).message}`);
+      }
+      return planFromRules({ ...input, brief: summary, targetSeconds: seconds });
+    })
+  );
+  return {
+    planned: { title: outline.title, shots: parts.flat().slice(0, LIMITS.shotsFilm) },
+    engine: `${reply.engine} · ${count} parts`,
+    fallbackReason: failed.length ? failed.join(' | ') : undefined,
+  };
+}
+
+/**
  * Write (or rewrite) the storyboard. Refused while any shot is rendering —
  * replacing it would orphan an order in flight. Finished shots are replaced
  * too; the page asks before it calls this when there are any.
@@ -173,6 +217,7 @@ export async function planProject(
     look: project.templateKey,
     mood: project.mood ?? '',
     songSeconds: Number(project.songSeconds ?? 0),
+    targetSeconds: mode === 'film' ? filmTarget(project.scriptJson) : null,
   };
 
   let planned: { title: string; shots: ShotDraft[] } | null = null;
@@ -186,10 +231,16 @@ export async function planProject(
       const reply = await chatViaPool(system, user, { maxTokens: 8000, maxChars: 60_000 });
       planned = parseMvPlan(reply.text, input, slots);
       engine = reply.engine;
+    } else if (filmPartCount(input.targetSeconds) > 0) {
+      const long = await planLongFilm(input);
+      planned = long.planned;
+      engine = long.engine;
+      fallbackReason = long.fallbackReason;
     } else {
       const { system, user } = filmPlannerMessages(input);
       const reply = await chatViaPool(system, user, { maxTokens: 5000, maxChars: 40_000 });
       planned = parseFilmPlan(reply.text, input);
+      if (planned && input.targetSeconds) planned.shots = fitToTarget(planned.shots, input.targetSeconds);
       engine = reply.engine;
     }
     if (!planned) fallbackReason = `${engine} answered with no usable storyboard`;

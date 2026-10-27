@@ -31,7 +31,8 @@ export const LIMITS = {
   characters: 4,
   characterName: 60,
   characterDescription: 400,
-  shotsFilm: 24,
+  /** A 10-minute film is ~60 shots of ~10 s. */
+  shotsFilm: 60,
   shotsMv: 60,
   visual: 1500,
   line: 300,
@@ -41,7 +42,45 @@ export const LIMITS = {
   maxShotSeconds: 10,
   /** MV songs longer than this are refused — 60 shots of ~6 s. */
   maxSongSeconds: 360,
+  /** The longest film the cut joins (and the longest length the planner aims at). */
+  maxFilmSeconds: 600,
 } as const;
+
+/**
+ * Film lengths the customer may ask the planner for. `auto` is the short film
+ * the planner picks (4–12 shots); the others are aimed at by planning the
+ * story in parts (FILM_PART_SECONDS each) so no single chat call is long.
+ */
+export const FILM_LENGTHS: Record<string, { seconds: number | null; label: string }> = {
+  auto: { seconds: null, label: 'สั้น (AI เลือก)' },
+  '60': { seconds: 60, label: '1 นาที' },
+  '180': { seconds: 180, label: '3 นาที' },
+  '300': { seconds: 300, label: '5 นาที' },
+  '600': { seconds: 600, label: '10 นาที' },
+};
+
+/** One planner call writes at most this much film. */
+export const FILM_PART_SECONDS = 120;
+/** The length a planned shot averages; how many shots a length needs. */
+export const FILM_AVG_SHOT_SECONDS = 8;
+
+/** The target length stored in `scriptJson.targetSeconds`, or null (auto). */
+export function filmTarget(script: unknown): number | null {
+  const n = Number((script as { targetSeconds?: unknown } | null)?.targetSeconds);
+  return Object.values(FILM_LENGTHS).some((l) => l.seconds === n) ? n : null;
+}
+
+/** `script_json` with the film length (a FILM_LENGTHS key) set; anything unlisted is auto. */
+export function withTargetSeconds(script: unknown, key: unknown): Record<string, unknown> {
+  const base = (script && typeof script === 'object' ? script : {}) as Record<string, unknown>;
+  const k = typeof key === 'string' && Object.prototype.hasOwnProperty.call(FILM_LENGTHS, key) ? key : 'auto';
+  return { ...base, targetSeconds: FILM_LENGTHS[k].seconds };
+}
+
+/** The FILM_LENGTHS key for a stored target. */
+export function filmLengthKey(seconds: number | null): string {
+  return seconds === null ? 'auto' : String(seconds);
+}
 
 export const ASPECTS: Record<string, { width: number; height: number; label: string }> = {
   '16:9': { width: 1344, height: 768, label: 'แนวนอน 16:9' },
@@ -383,6 +422,8 @@ export interface PlanInput {
   look: string;
   mood: string;
   songSeconds: number;
+  /** Film: the length to aim at (FILM_LENGTHS), null for a short film of the planner's choosing. */
+  targetSeconds?: number | null;
 }
 
 export function planFromRules(input: PlanInput): ShotDraft[] {
@@ -415,7 +456,9 @@ export function planFromRules(input: PlanInput): ShotDraft[] {
     .split(/(?<=[.!?。！？])\s+|\n+/)
     .map((s) => s.trim())
     .filter(Boolean);
-  const per = Math.max(1, Math.ceil(sentences.length / 8));
+  const target = input.targetSeconds ?? null;
+  const wanted = target ? Math.min(LIMITS.shotsFilm, Math.max(1, Math.round(target / FILM_AVG_SHOT_SECONDS))) : 8;
+  const per = Math.max(1, Math.ceil(sentences.length / wanted));
   const shots: ShotDraft[] = [];
   for (let k = 0; k < sentences.length && shots.length < LIMITS.shotsFilm; k += per) {
     const text = sentences.slice(k, k + per).join(' ');
@@ -435,7 +478,19 @@ export function planFromRules(input: PlanInput): ShotDraft[] {
       sound: 'Natural ambient sound that matches the scene.',
     });
   }
-  return shots;
+  return target ? fitToTarget(shots, target) : shots;
+}
+
+/**
+ * Stretch or shrink the shots' lengths toward the asked-for length, within
+ * what a shot may render. A planner rarely adds up exactly; within 10% it is
+ * left alone. Fewer shots than the length needs stay short — no shot is made up.
+ */
+export function fitToTarget(shots: ShotDraft[], targetSeconds: number): ShotDraft[] {
+  const total = shots.reduce((n, s) => n + s.durationSec, 0);
+  if (total <= 0 || Math.abs(total - targetSeconds) <= targetSeconds * 0.1) return shots;
+  const factor = targetSeconds / total;
+  return shots.map((s) => ({ ...s, durationSec: clampSeconds(s.durationSec * factor, s.durationSec) }));
 }
 
 // ---------------------------------------------------------------------------
@@ -451,18 +506,62 @@ function castList(chars: CharacterLite[]): string {
 }
 
 /** System + user message for a film storyboard. */
-export function filmPlannerMessages(input: PlanInput): { system: string; user: string } {
+/** One part of a long film, as the outline gave it. */
+export interface FilmPart {
+  index: number;
+  count: number;
+  summary: string;
+  seconds: number;
+  /** Every part's summary, in order, so a part knows what comes before and after. */
+  outline: string[];
+}
+
+export function filmPlannerMessages(input: PlanInput, part?: FilmPart): { system: string; user: string } {
   const look = LOOKS[input.look] ?? LOOKS.film;
+  const seconds = part?.seconds ?? input.targetSeconds ?? null;
+  const count = seconds ? Math.max(1, Math.round(seconds / FILM_AVG_SHOT_SECONDS)) : 0;
+  const scope = part
+    ? `- This is part ${part.index + 1} of ${part.count} of a longer film: write ONLY this part's shots — about ${count} shots adding up to about ${Math.round(part.seconds)} seconds. ${part.index === 0 ? 'Open the film on an establishing shot.' : 'Continue straight on from the part before; do not re-introduce the story.'}${part.index === part.count - 1 ? ' End the film.' : ' Do not end the film; stop where the next part takes over.'} Vary sizes (wide → medium → close-up) and give every camera move a reason.`
+    : seconds
+      ? `- About ${count} shots adding up to about ${seconds} seconds that tell the whole story with a beginning, middle and end. Open on an establishing shot; vary sizes (wide → medium → close-up) and give every camera move a reason.`
+      : '- 4 to 12 shots that tell the whole story with a beginning, middle and end. Open on an establishing shot; vary sizes (wide → medium → close-up) and give every camera move a reason.';
   const system = `You are a film director and storyboard artist. Turn the user's story into a shot list for an AI video model that renders ONE shot at a time and knows nothing of the other shots.
 Return ONLY JSON, no markdown: {"title": string, "shots": [{"characters": [numbers], "speaker": number|null, "duration": 5|8|10, "size": string, "camera": string, "visual": string, "line": string, "sound": string}]}
 Rules:
-- 4 to 12 shots that tell the whole story with a beginning, middle and end. Open on an establishing shot; vary sizes (wide → medium → close-up) and give every camera move a reason.
+${scope}
 - "characters": numbers from the cast list of who is visible, the main face FIRST — that character's photo becomes the shot's first frame, so the shot must open on them, facing the camera or in three-quarter view.
 - "size" one of: ${SIZE_KEYS}. "camera" one of: ${MOVE_KEYS}. Never "push-in" on a wide or full shot that opens on a character.
 - "visual": English, 40–80 words, self-contained: the setting, each visible character by name with their look, the action in order, lighting and mood. Look of the film: ${look.style}.
 - "line": words spoken on screen in the story's language (Thai stays Thai, verbatim), at most about 2.5 words per second of "duration"; "" when nobody speaks. "speaker" is that character's number, null otherwise.
 - "sound": English, ambient and physical sounds only, no music, no dialogue.`;
+  const story = part
+    ? `Whole story:\n${input.brief}\n\nOutline of the film:\n${part.outline.map((p, k) => `${k + 1}. ${p}`).join('\n')}\n\nWrite part ${part.index + 1}: ${part.summary}`
+    : `Story:\n${input.brief}`;
+  return { system, user: `Cast:\n${castList(input.characters)}\n\n${story}` };
+}
+
+/** How many parts a long film is planned in, or 0 when one call writes it all. */
+export function filmPartCount(targetSeconds: number | null | undefined): number {
+  return targetSeconds && targetSeconds > FILM_PART_SECONDS ? Math.ceil(targetSeconds / FILM_PART_SECONDS) : 0;
+}
+
+/** System + user message for a long film's outline: its title and what each part tells. */
+export function filmOutlineMessages(input: PlanInput, parts: number): { system: string; user: string } {
+  const target = input.targetSeconds ?? 0;
+  const system = `You are a screenwriter. Expand the user's story into a film of about ${Math.round(target / 60)} minutes, told in ${parts} consecutive parts of about ${Math.round(target / parts)} seconds each.
+Return ONLY JSON, no markdown: {"title": string, "parts": [string]} with exactly ${parts} parts.
+Each part: 2 to 4 sentences, in the story's language, saying what happens in it — places, who is there, what they do and say. Together the parts tell the whole story with a beginning, middle and end; invent scenes the story implies when it is short, never contradict it.`;
   return { system, user: `Cast:\n${castList(input.characters)}\n\nStory:\n${input.brief}` };
+}
+
+/** The outline's title and parts, or null when it did not give `parts` of them. */
+export function parseFilmOutline(text: string, parts: number): { title: string; parts: string[] } | null {
+  const data = extractJson(text) as { title?: unknown; parts?: unknown } | null;
+  if (!data || !Array.isArray(data.parts)) return null;
+  const list = data.parts
+    .map((p) => clip(typeof p === 'string' ? p : (p as { summary?: unknown } | null)?.summary, LIMITS.brief / 4))
+    .filter(Boolean);
+  return list.length >= parts ? { title: clip(data.title, LIMITS.title), parts: list.slice(0, parts) } : null;
 }
 
 /** System + user message for an MV: the timing is fixed, the model writes the pictures. */
