@@ -20,8 +20,14 @@ import { GpuWorkerManager } from '@/lib/services/gpu-worker';
 
 export const dynamic = 'force-dynamic';
 
-/** The only URLs a worker may point us at — anything else could aim our fetches inside our own network. */
-const TUNNEL_URL = /^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/;
+/**
+ * The only URLs a worker may point us at — anything else could aim our fetches
+ * inside our own network. A quick tunnel is always hyphenated words; a bare
+ * label is Cloudflare's own `api.trycloudflare.com`, which cloudflared prints
+ * when its tunnel request fails — accepted once (worker #83, 2026-10-27), it
+ * left the machine probing Cloudflare's API until the boot watch cut it.
+ */
+const TUNNEL_URL = /^https:\/\/[a-z0-9]+(?:-[a-z0-9]+)+\.trycloudflare\.com$/;
 const CALLBACK_ID = /^[a-f0-9]{24}$/;
 const LIVE = ['provisioning', 'warming', 'ready', 'busy'];
 

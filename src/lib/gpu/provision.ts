@@ -334,7 +334,8 @@ def ws_listen():
 # already known), or else opens a Cloudflare quick tunnel to itself and reports
 # the https URL. A restarted quick tunnel has a new URL, reported again.
 TUNNEL_BIN = os.environ.get("AIXMAN_TUNNEL_BIN") or os.path.join(ROOT, "cloudflared")
-TUNNEL_URL = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+# Hyphenated words only: a failed request logs https://api.trycloudflare.com.
+TUNNEL_URL = re.compile(r"https://[a-z0-9]+(?:-[a-z0-9]+)+\.trycloudflare\.com")
 CURRENT_TUNNEL = [None]
 REPORT_FAILURE_LOGGED = [False]
 
