@@ -214,7 +214,11 @@ generating. Consequences that must never be regressed:
   A download whose measured rate cannot finish inside the limit is ended at
   once. A boot that keeps moving is never cut early. Network faults during a
   boot (pip ProtocolError, DNS…) are the host's (`isHostFault`): that host is
-  avoided, the model is not paused for 10 min.
+  avoided, the model is not paused for 10 min. A boot nobody needs any more
+  is **cancelled** (`bootStillNeeded`): nothing of its model queued and no
+  order in the last 2 min — the machines already up cleared the backlog. Kept:
+  admin test rentals, pre-warms, and the model's only machine while a
+  customer is on its studio. Not a host failure; never applies to `llm-*`.
 - The orphan sweep only terminates instances named `aixman-*`. Never name an
   unrelated SimplePod instance with that prefix.
 - Results **must** go to R2 before the worker is reaped — the tunnel URL dies

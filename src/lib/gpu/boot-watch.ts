@@ -144,6 +144,35 @@ export function judgeBoot(input: {
 }
 
 /**
+ * A boot nobody needs any more. The plan rents for the backlog it sees; by
+ * the time a machine has booted, the machines already up may have cleared it
+ * (worker #86, 2026-10-27: rented for an MV's last 2 shots, still booting 15
+ * minutes after they were done). Finishing that boot buys only idle time, so
+ * it is cancelled — unless it was meant to wait: an admin's test rental, a
+ * pre-warm, or the model's only machine while a customer is on its studio.
+ * A job queued within the grace keeps it, so an order arriving as the last
+ * one is taken does not cancel the machine it needs.
+ */
+export const UNNEEDED_BOOT_GRACE_MS = 2 * 60_000;
+
+export function bootStillNeeded(input: {
+  /** The model's jobs waiting for a machine. */
+  waitingJobs: number;
+  /** Since its newest job was queued; null when it has none. */
+  lastQueuedAgoMs: number | null;
+  /** The model's other live machines (booting, ready or busy). */
+  otherMachines: number;
+  studioPresent: boolean;
+  /** Admin test rental or pre-warm: rented with nothing queued on purpose. */
+  rentedToWait: boolean;
+}): boolean {
+  if (input.rentedToWait) return true;
+  if (input.waitingJobs > 0) return true;
+  if (input.lastQueuedAgoMs !== null && input.lastQueuedAgoMs < UNNEEDED_BOOT_GRACE_MS) return true;
+  return input.studioPresent && input.otherMachines === 0;
+}
+
+/**
  * A boot failure that is the host's own, not the model's: no usable GPU, or
  * its network dropped a download (pip, Hugging Face). Another host will do
  * fine, so that host is avoided instead of every rental of the model being

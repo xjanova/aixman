@@ -11,6 +11,8 @@ import assert from 'node:assert/strict';
 import {
   BOOT_QUIET_MS,
   BOOT_STALL_FLOOR_MS,
+  UNNEEDED_BOOT_GRACE_MS,
+  bootStillNeeded,
   bootStallDeadlineMs,
   isHostFault,
   judgeBoot,
@@ -87,4 +89,15 @@ test('a host that dropped a download is the host\'s fault, a broken requirement 
   assert.equal(isHostFault('CUDA is unavailable on this host'), true);
   assert.equal(isHostFault('ERROR: Could not find a version that satisfies the requirement foo==9'), false);
   assert.equal(isHostFault(null), false);
+});
+
+test('a boot whose backlog is gone is cancelled, unless it was meant to wait', () => {
+  const base = { waitingJobs: 0, lastQueuedAgoMs: null, otherMachines: 1, studioPresent: false, rentedToWait: false };
+  assert.equal(bootStillNeeded(base), false, 'worker #86: the MV was finished by the machines already up');
+  assert.equal(bootStillNeeded({ ...base, waitingJobs: 2 }), true);
+  assert.equal(bootStillNeeded({ ...base, lastQueuedAgoMs: UNNEEDED_BOOT_GRACE_MS - 1 }), true, 'an order just taken');
+  assert.equal(bootStillNeeded({ ...base, lastQueuedAgoMs: UNNEEDED_BOOT_GRACE_MS + 1 }), false);
+  assert.equal(bootStillNeeded({ ...base, rentedToWait: true }), true, 'test rental or pre-warm');
+  assert.equal(bootStillNeeded({ ...base, otherMachines: 0, studioPresent: true }), true, 'the model\'s only machine, customer on the studio');
+  assert.equal(bootStillNeeded({ ...base, otherMachines: 1, studioPresent: true }), false, 'another machine serves that customer');
 });

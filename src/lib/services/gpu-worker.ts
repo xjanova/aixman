@@ -30,7 +30,7 @@ import {
   type NamedTunnel,
 } from '@/lib/gpu/cf-tunnel';
 import { clearSchema } from '@/lib/gpu/comfy-validate';
-import { isHostFault, judgeBoot, noteBootProgress, readBootProgress, type BootReading } from '@/lib/gpu/boot-watch';
+import { UNNEEDED_BOOT_GRACE_MS, bootStillNeeded, isHostFault, judgeBoot, noteBootProgress, readBootProgress, type BootReading } from '@/lib/gpu/boot-watch';
 import { machineKeyOf, machineKeyOfRow, summarizeHosts, type HostRecord } from '@/lib/gpu/host-record';
 import { ingressTerms, ingressUsd, keepWarmMinutes, readIngress, rentalCostUsd } from '@/lib/gpu/rental-cost';
 import { COMMUNITY_BODY_LIMITS, readCapped } from '@/lib/gpu/worker-client';
@@ -678,6 +678,13 @@ export class GpuWorkerManager {
       // to protect — cut it loose the moment the budget is gone.
       if (overBudget) {
         await this.terminate(worker.id, 'Daily GPU budget exhausted while still warming up');
+        return;
+      }
+
+      // Its backlog was cleared by the machines already up: finishing the
+      // boot would buy only idle time (and its downloads).
+      if (!isLlmModelKey(worker.modelKey) && !(await this.bootStillNeeded(worker, now))) {
+        await this.terminate(worker.id, 'Cancelled while booting: nothing left for it to do');
         return;
       }
 
@@ -2245,6 +2252,35 @@ export class GpuWorkerManager {
    * The host is avoided like any that never became ready; the scaler sees the
    * slot free and rents a replacement on the next tick.
    */
+  /** Whether a booting render machine still has work coming (boot-watch.ts bootStillNeeded). */
+  private static async bootStillNeeded(worker: AiGpuWorker, now: Date): Promise<boolean> {
+    const pick = (worker.metadata as { pick?: { test?: unknown; prewarm?: unknown } } | null)?.pick;
+    const rentedToWait = pick?.test === true || pick?.prewarm === true;
+    if (rentedToWait) return true;
+    const [waitingJobs, newest, otherMachines] = await Promise.all([
+      prisma.aiGpuJob.count({ where: { modelKey: worker.modelKey, status: 'queued' } }),
+      prisma.aiGpuJob.findFirst({
+        where: { modelKey: worker.modelKey, queuedAt: { gte: new Date(now.getTime() - UNNEEDED_BOOT_GRACE_MS) } },
+        select: { queuedAt: true },
+      }),
+      prisma.aiGpuWorker.count({
+        where: {
+          ...RENTED_ONLY,
+          modelKey: worker.modelKey,
+          id: { not: worker.id },
+          terminatedAt: null,
+          status: { in: ['provisioning', 'warming', 'ready', 'busy'] },
+        },
+      }),
+    ]);
+    const lastQueuedAgoMs = newest ? now.getTime() - newest.queuedAt.getTime() : null;
+    // Only asked when it would decide: the studio check reads the presence store.
+    const verdict = (studioPresent: boolean) =>
+      bootStillNeeded({ waitingJobs, lastQueuedAgoMs, otherMachines, studioPresent, rentedToWait });
+    if (verdict(false)) return true;
+    return verdict(otherMachines === 0 && (await isStudioPresent(worker.modelKey, now.getTime())));
+  }
+
   private static async watchBoot(
     worker: AiGpuWorker,
     reading: BootReading,
