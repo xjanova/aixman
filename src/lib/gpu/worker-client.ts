@@ -889,7 +889,7 @@ export class WorkerClient {
     };
   }
 
-  private async pollComfy(promptId: string): Promise<PollOutcome> {
+  private async pollComfy(promptId: string, recheck = true): Promise<PollOutcome> {
     const res = await this.request(`/history/${encodeURIComponent(promptId)}`);
     if (!res.ok) return { state: 'pending' };
 
@@ -914,7 +914,11 @@ export class WorkerClient {
     if (!entry) {
       // Absent from history: either still queued, or the container restarted and
       // dropped it. The queue distinguishes these by elapsed time.
-      return (await this.isQueued(promptId)) ? { state: 'pending' } : { state: 'lost', error: 'Job not found on worker' };
+      if (await this.isQueued(promptId)) return { state: 'pending' };
+      // A prompt that finished between the two reads has left the queue for
+      // the history: read the history once more before calling it lost (a
+      // fresh machine loading its weights answers slowly, so this gap is wide).
+      return recheck ? this.pollComfy(promptId, false) : { state: 'lost', error: 'Job not found on worker' };
     }
 
     const statusStr = entry.status?.status_str;

@@ -314,3 +314,26 @@ test('readCapped reads up to the limit, says there was more, and gives up on a b
   const stalled = new ReadableStream<Uint8Array>({ pull: () => new Promise(() => {}) });
   await assert.rejects(readCapped(new Response(stalled), 1024, 50), /did not finish within/);
 });
+
+test('a prompt that finishes between the history and queue reads is collected, not lost', async () => {
+  // First /history: still running. Then /queue: already gone (it just moved to
+  // the history). The second /history read finds it done.
+  let historyReads = 0;
+  scripted({
+    'GET /history/p-1': () =>
+      ++historyReads === 1
+        ? json(200, {})
+        : json(200, { 'p-1': { status: { status_str: 'success', completed: true }, outputs: { '9': { images: [{ filename: 'a.png', subfolder: '', type: 'output' }] } } } }),
+    'GET /queue': () => json(200, { queue_running: [], queue_pending: [] }),
+  });
+  const client = new WorkerClient(endpoint(), PROFILE, 'token', 'sdxl-community');
+  const outcome = await client.poll('p-1');
+  assert.equal(outcome.state, 'completed');
+  assert.equal(historyReads, 2);
+
+  // Gone from both, twice over: lost, after one recheck only.
+  historyReads = 0;
+  scripted({ 'GET /history/p-2': () => (historyReads++, json(200, {})), 'GET /queue': () => json(200, { queue_running: [], queue_pending: [] }) });
+  assert.equal((await client.poll('p-2')).state, 'lost');
+  assert.equal(historyReads, 2);
+});
