@@ -1,5 +1,6 @@
 import type { GpuOffer } from './types';
 import { cardFamily, priorSpeed } from './gpu-specs';
+import { failureChance, machineKeyOf, type HostRecord } from './host-record';
 
 /**
  * Which marketplace offer to rent: the one whose *work* costs least, not the
@@ -81,7 +82,7 @@ export interface RenderStats {
   n: number;
 }
 
-export type RenderBasis = 'history' | 'blended' | 'prior';
+export type RenderBasis = 'machine' | 'history' | 'blended' | 'prior';
 
 export interface OfferContext {
   /** Weights this machine downloads before it can serve. */
@@ -96,6 +97,10 @@ export interface OfferContext {
   jobsExpected: number;
   /** Our machines still booting per offer (keyed by `offerKey`) — they share that host's uplink. */
   bootingOnOffer: Map<string, number>;
+  /** What each machine really did when we rented it before (host-record.ts), keyed by `machineKeyOf`. */
+  hostRecords?: Map<string, HostRecord>;
+  /** Render stats per machine at the waiting jobs' length, keyed by `machineKeyOf`. */
+  renderStatsByMachine?: Map<string, RenderStats>;
   /** Seconds a machine sits idle after its last job before it is released. */
   idleTailSeconds: number;
   /** What an hour of customers waiting is worth, to weigh cheap-but-slow against dear-but-fast. */
@@ -114,6 +119,13 @@ export interface RankedOffer {
   renderSeconds: number;
   /** Where the render figure came from. */
   renderBasis: RenderBasis;
+  /** The machine this offer rents (host-record.ts). */
+  machineKey: string;
+  /** Download speed used for the boot, and whether it was measured on this machine or listed. */
+  downloadMbps: number;
+  downloadBasis: 'measured' | 'listed';
+  /** Chance the boot fails, from this machine's record (or the prior). */
+  failureChance: number;
 }
 
 /**
@@ -124,11 +136,19 @@ export interface RankedOffer {
 export function renderEstimate(
   gpuModel: string,
   vramMb: number,
-  ctx: Pick<OfferContext, 'renderStatsByGpu' | 'referenceRenderSeconds' | 'weightsGb'>
+  ctx: Pick<OfferContext, 'renderStatsByGpu' | 'referenceRenderSeconds' | 'weightsGb' | 'renderStatsByMachine'>,
+  machineKey?: string
 ): {
   seconds: number;
   basis: RenderBasis;
 } {
+  // This very machine has rendered the model: its own speed, lightly blended
+  // with what its card family does, decides.
+  const own = machineKey ? ctx.renderStatsByMachine?.get(machineKey) : undefined;
+  if (own && own.n > 0) {
+    const family = renderEstimate(gpuModel, vramMb, { ...ctx, renderStatsByMachine: undefined });
+    return { seconds: (own.n * own.median + family.seconds) / (own.n + 1), basis: 'machine' };
+  }
   const speed = priorSpeed(gpuModel);
   const believed = speed < 1 ? speed : 1 + PRIOR_TRUST * (speed - 1);
   const vramGb = vramMb / 1024;
@@ -143,13 +163,26 @@ export function renderEstimate(
 }
 
 export function estimateOffer(offer: GpuOffer, ctx: OfferContext): RankedOffer {
+  const machineKey = machineKeyOf(offer.provider, offer);
+  // Rentals from before machine ids were kept are filed under the offer id.
+  const listingKey = offerKey(offer.provider, offer.id);
+  const record = ctx.hostRecords?.get(machineKey) ?? ctx.hostRecords?.get(listingKey);
   const sharing = 1 + (ctx.bootingOnOffer.get(offerKey(offer.provider, offer.id)) ?? 0);
-  const mbps = (offer.downloadMbps && offer.downloadMbps > 0 ? offer.downloadMbps : UNKNOWN_DOWNLOAD_MBPS) / sharing;
+  // What the host really delivered beats what it lists: on 2026-10-27 a host
+  // listing a fast uplink downloaded LTX's weights at ~200 Mbit/s.
+  const measured = record?.downloadMbps ?? null;
+  const listed = offer.downloadMbps && offer.downloadMbps > 0 ? offer.downloadMbps : UNKNOWN_DOWNLOAD_MBPS;
+  const mbps = (measured ?? listed) / sharing;
   const downloadSeconds = (ctx.weightsGb * 8 * 1000) / Math.max(1, mbps);
   // A VM that must start, or an image the host must pull, comes first.
   const bootSeconds = BASE_BOOT_SECONDS + Math.max(0, offer.extraBootSeconds ?? 0) + downloadSeconds;
 
-  const render = renderEstimate(offer.gpuModel, offer.gpuMemoryMb, ctx);
+  const render = renderEstimate(
+    offer.gpuModel,
+    offer.gpuMemoryMb,
+    ctx,
+    ctx.renderStatsByMachine?.has(machineKey) ? machineKey : listingKey
+  );
   const jobs = Math.max(1, ctx.jobsExpected);
   const overhead = bootSeconds + Math.max(0, ctx.idleTailSeconds);
   const hourly =
@@ -163,26 +196,45 @@ export function estimateOffer(offer: GpuOffer, ctx: OfferContext): RankedOffer {
   // Until this machine has cleared its share, its customers are waiting: the
   // boot, then each job in turn.
   const waitSeconds = bootSeconds + jobs * render.seconds;
+  // A boot that fails is paid for and then waited out again on another
+  // machine: its chance, from this machine's own record, prices that in.
+  const failure = failureChance(record);
+  const failedBootUsd = billed(bootSeconds) + (Math.max(0, ctx.waitValueUsdPerHour) * bootSeconds) / 3600;
   return {
     offer,
     costUsd,
     firstJobCostUsd: billed(overhead + render.seconds),
-    scoreUsd: costUsd + (Math.max(0, ctx.waitValueUsdPerHour) * waitSeconds) / 3600,
+    scoreUsd: costUsd + (Math.max(0, ctx.waitValueUsdPerHour) * waitSeconds) / 3600 + failure * failedBootUsd,
     bootSeconds: Math.round(bootSeconds),
     renderSeconds: Math.round(render.seconds),
     renderBasis: render.basis,
+    machineKey,
+    downloadMbps: Math.round(mbps),
+    downloadBasis: measured !== null ? 'measured' : 'listed',
+    failureChance: Number(failure.toFixed(3)),
   };
 }
 
 /**
- * Best value first — rental plus priced waiting. Within a cent-hundredth, the
- * more reliable host and then the faster uplink win — a failed boot costs
- * more than the difference.
+ * A machine whose own record makes a failed boot this likely is a last
+ * resort: ranked after every other, whatever its price (owner, 2026-10-27:
+ * "เครื่องไหนปัญหามีบ่อย ไว้เป็นตัวเลือกท้ายๆ"). One failed boot with nothing
+ * else known puts a machine here (0.43); one success after it brings it back.
+ */
+export const UNRELIABLE_FAILURE_CHANCE = 0.4;
+
+/**
+ * Best value first — rental plus priced waiting — with machines that keep
+ * failing last. Within a cent-hundredth, the more reliable host and then the
+ * faster uplink win — a failed boot costs more than the difference.
  */
 export function rankOffers(offers: GpuOffer[], ctx: OfferContext): RankedOffer[] {
+  const unreliable = (r: RankedOffer) => (r.failureChance >= UNRELIABLE_FAILURE_CHANCE ? 1 : 0);
   return offers
     .map((o) => estimateOffer(o, ctx))
     .sort((a, b) => {
+      const tier = unreliable(a) - unreliable(b);
+      if (tier !== 0) return tier;
       const diff = a.scoreUsd - b.scoreUsd;
       if (Math.abs(diff) > 0.0001) return diff;
       const rel = (b.offer.reliability ?? 0) - (a.offer.reliability ?? 0);

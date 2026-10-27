@@ -31,6 +31,7 @@ import {
 } from '@/lib/gpu/cf-tunnel';
 import { clearSchema } from '@/lib/gpu/comfy-validate';
 import { isHostFault, judgeBoot, noteBootProgress, readBootProgress, type BootReading } from '@/lib/gpu/boot-watch';
+import { machineKeyOf, machineKeyOfRow, summarizeHosts, type HostRecord } from '@/lib/gpu/host-record';
 import { COMMUNITY_BODY_LIMITS, readCapped } from '@/lib/gpu/worker-client';
 import {
   COMMUNITY_PROVIDER_SLUGS,
@@ -57,7 +58,7 @@ import { isStorageConfigured } from '@/lib/storage/r2';
 import { isStudioPresent } from './studio-presence';
 import { GpuEta } from './gpu-eta';
 import { GpuBalance } from './gpu-balance';
-import { pickHandover, readHandover, shouldAddMachine } from './gpu-scaler';
+import { pickHandover, planBacklog, readHandover, type BacklogPlan } from './gpu-scaler';
 import { raiseAlert } from '@/lib/notify/alerts';
 
 /**
@@ -94,6 +95,21 @@ const HOURS_PER_MONTH = 730;
 const HANDOVER_PREFIX = 'Handed its slot over to ';
 /** How long such a slot stays that model's, should its rental be slow to land. */
 const HANDOVER_HOLD_MS = 10 * 60_000;
+
+/** The latest work plan per model (gpu-scaler.ts planBacklog), for the admin page. In process, like the tick. */
+const latestPlans = new Map<string, { at: string; summary: string; options: PlanRow[] }>();
+interface PlanRow {
+  add: number;
+  finishSeconds: number | null;
+  waitSeconds: number | null;
+  extraCostUsd: number;
+}
+
+/** What a new machine is assumed to cost per hour when the model has no rental to go by. */
+const DEFAULT_HOURLY_USD = 0.5;
+
+/** How far back a machine's record reaches (host-record.ts). */
+const HOST_HISTORY_DAYS = 30;
 
 /** How long to hold off re-renting a model whose last boot failed. */
 const BOOT_FAILURE_BACKOFF_MS = 10 * 60_000;
@@ -1177,8 +1193,24 @@ export class GpuWorkerManager {
       // The waiting jobs' own length: a backlog of 15 s clips clears five
       // times slower than one of 5 s clips, and is worth a machine sooner.
       const renderSeconds = unitRenderSeconds * lengthFactor;
-      const decision = shouldAddMachine({ queued: backlog.queued, machines: serving, renderSeconds, bootSeconds });
-      if (!decision.add) return { reason: decision.reason };
+      // Play the backlog out on the machines it has and on more (gpu-scaler.ts
+      // planBacklog): rent only when finishing sooner is worth the boot.
+      const [machinesFreeIn, hourlyUsd] = await Promise.all([
+        this.machinesFreeIn(modelKey, renderSeconds, bootSeconds),
+        this.typicalHourlyUsd(modelKey),
+      ]);
+      const plan = planBacklog({
+        queued: backlog.queued,
+        machinesFreeIn,
+        renderSeconds,
+        bootSeconds,
+        hourlyUsd,
+        idleTailSeconds: cfg.idleTimeoutMinutes * 60,
+        waitValueUsdPerHour: cfg.waitValueUsdPerHour,
+        maxAdd: Math.max(1, cfg.maxConcurrentWorkers - serving),
+      });
+      this.notePlan(modelKey, plan);
+      if (plan.best.add === 0) return { reason: plan.summary };
     }
 
     if (opts.llm) {
@@ -1380,7 +1412,8 @@ export class GpuWorkerManager {
       console.log(
         `[gpu] ${modelKey}: ${opts.prewarm ? 'pre-warming' : 'renting'} ${pick.offer.gpuModel} at ${vendor.provider.label} (offer ${pick.offer.id}, ` +
           `$${pick.offer.pricePerHourUsd}/hr) ≈ $${pick.costUsd.toFixed(3)} for boot ${pick.bootSeconds}s + ` +
-          `render ${pick.renderSeconds}s (${pick.renderBasis}), best of ${eligible.length} from ${markets.length} vendor(s)`
+          `render ${pick.renderSeconds}s (${pick.renderBasis}), ${pick.downloadMbps} Mbit/s ${pick.downloadBasis}, ` +
+          `${Math.round(pick.failureChance * 100)}% boot risk, best of ${eligible.length} from ${markets.length} vendor(s)`
       );
       try {
         const rented = await this.rentWorker(pick.offer, modelKey, profile, vendor, {
@@ -1390,6 +1423,10 @@ export class GpuWorkerManager {
           bootSeconds: pick.bootSeconds,
           renderSeconds: pick.renderSeconds,
           renderBasis: pick.renderBasis,
+          machineKey: pick.machineKey,
+          downloadMbps: pick.downloadMbps,
+          downloadBasis: pick.downloadBasis,
+          failureChance: pick.failureChance,
           candidates: eligible.length,
           vendors: markets.map((m) => ({ slug: m.slug, offers: m.offers.length, note: m.note ?? null })),
           cheapestHourly: Math.min(...eligible.map((o) => o.pricePerHourUsd)),
@@ -1575,6 +1612,10 @@ export class GpuWorkerManager {
           bootSeconds: pick.bootSeconds,
           renderSeconds: pick.renderSeconds,
           renderBasis: pick.renderBasis,
+          machineKey: pick.machineKey,
+          downloadMbps: pick.downloadMbps,
+          downloadBasis: pick.downloadBasis,
+          failureChance: pick.failureChance,
           candidates: eligible.length,
         });
         console.log(`[gpu] admin test rental: worker #${worker.id} ${pick.offer.gpuModel} at ${vendor.provider.label} for ${modelKey}`);
@@ -1815,6 +1856,95 @@ export class GpuWorkerManager {
     return held;
   }
 
+  /**
+   * Seconds until each machine serving a model can start its next job — the
+   * rest of its render, or of its boot (its own estimate, else the model's).
+   * A machine handing its slot over is leaving and not counted.
+   */
+  private static async machinesFreeIn(modelKey: string, renderSeconds: number, bootSeconds: number): Promise<number[]> {
+    const workers = await prisma.aiGpuWorker.findMany({
+      where: {
+        modelKey,
+        terminatedAt: null,
+        OR: [
+          { ...RENTED_ONLY, status: { in: ['ready', 'busy', 'warming', 'provisioning'] } },
+          ...(isCommunityModel(modelKey) ? [{ ...COMMUNITY_ONLY, status: { in: ['ready', 'busy'] } }] : []),
+        ],
+      },
+      select: { id: true, status: true, rentedAt: true, metadata: true },
+    });
+    const jobs = await prisma.aiGpuJob.findMany({
+      where: { workerId: { in: workers.map((w) => w.id) }, status: { in: ['assigned', 'running'] } },
+      select: { workerId: true, startedAt: true, queuedAt: true },
+    });
+    const started = new Map(jobs.map((j) => [j.workerId, (j.startedAt ?? j.queuedAt).getTime()]));
+    const now = Date.now();
+    return workers
+      .filter((w) => !readHandover(w.metadata))
+      .map((w) => {
+        if (w.status === 'warming' || w.status === 'provisioning') {
+          const own = Number((w.metadata as { pick?: { bootSeconds?: unknown } } | null)?.pick?.bootSeconds);
+          return Math.max(60, (own > 0 ? own : bootSeconds) - (now - w.rentedAt.getTime()) / 1000);
+        }
+        const since = started.get(w.id);
+        if (since === undefined) return w.status === 'busy' ? renderSeconds / 2 : 0;
+        return Math.max(0, renderSeconds - (now - since) / 1000);
+      });
+  }
+
+  /** What a new machine for this model is likely to cost per hour: its recent rentals' median. */
+  private static async typicalHourlyUsd(modelKey: string): Promise<number> {
+    const recent = await prisma.aiGpuWorker.findMany({
+      where: { ...RENTED_ONLY, modelKey, pricePerHourUsd: { gt: 0 } },
+      orderBy: { rentedAt: 'desc' },
+      select: { pricePerHourUsd: true },
+      take: 10,
+    });
+    const prices = recent.map((w) => Number(w.pricePerHourUsd)).sort((a, b) => a - b);
+    return prices.length > 0 ? prices[Math.floor(prices.length / 2)] : DEFAULT_HOURLY_USD;
+  }
+
+  private static notePlan(modelKey: string, plan: BacklogPlan): void {
+    const finite = (v: number) => (Number.isFinite(v) ? Math.round(v) : null);
+    latestPlans.set(modelKey, {
+      at: new Date().toISOString(),
+      summary: plan.summary,
+      options: plan.options.map((o) => ({
+        add: o.add,
+        finishSeconds: finite(o.finishSeconds),
+        waitSeconds: finite(o.waitSeconds),
+        extraCostUsd: Number(o.extraCostUsd.toFixed(3)),
+      })),
+    });
+  }
+
+  /** The latest work plan per model, newest first, for the admin page. */
+  static latestPlans(): { modelKey: string; at: string; summary: string; options: PlanRow[] }[] {
+    return [...latestPlans].map(([modelKey, p]) => ({ modelKey, ...p })).sort((a, b) => b.at.localeCompare(a.at));
+  }
+
+  /**
+   * What every machine rented in the last 30 days really did (host-record.ts).
+   * Never throws: an estimate is not worth a rental failing for.
+   */
+  static async hostRecords(): Promise<Map<string, HostRecord>> {
+    try {
+      const rows = await prisma.aiGpuWorker.findMany({
+        where: { ...RENTED_ONLY, rentedAt: { gte: new Date(Date.now() - HOST_HISTORY_DAYS * 86_400_000) } },
+        select: { providerSlug: true, rentedAt: true, readyAt: true, terminatedAt: true, lastError: true, metadata: true },
+      });
+      return summarizeHosts(
+        rows.flatMap((r) => {
+          const machineKey = machineKeyOfRow(r.providerSlug, r.metadata);
+          return machineKey ? [{ ...r, machineKey }] : [];
+        })
+      );
+    } catch (error) {
+      console.error('[gpu] host records query failed:', (error as Error).message);
+      return new Map();
+    }
+  }
+
   /** Rank offers by the estimated cost of this model's work on each (offer-picker.ts). */
   private static async rankOffersFor(
     offers: GpuOffer[],
@@ -1825,13 +1955,14 @@ export class GpuWorkerManager {
     serving: number
   ): Promise<RankedOffer[]> {
     const entry = getCatalogEntry(modelKey);
-    const [renderProfile, lengthFactor, booting] = await Promise.all([
+    const [renderProfile, lengthFactor, booting, hostRecords] = await Promise.all([
       GpuEta.renderProfile(modelKey),
       GpuEta.queuedLengthFactor(modelKey),
       prisma.aiGpuWorker.findMany({
         where: { status: { in: ['provisioning', 'warming'] } },
         select: { metadata: true, providerSlug: true },
       }),
+      this.hostRecords(),
     ]);
     // History is kept at the unit length; price each card on the waiting jobs'
     // own length, or a slow card looks as cheap for 15 s clips as for 5 s.
@@ -1849,6 +1980,10 @@ export class GpuWorkerManager {
       weightsGb: entry ? downloadBytes(entry) / 1e9 : (getLlmEntry(modelKey)?.bytes ?? 40e9) / 1e9,
       diskGb: profile.diskGb,
       renderStatsByGpu,
+      renderStatsByMachine: new Map(
+        [...renderProfile.statsByMachine].map(([machine, s]) => [machine, { median: s.median * lengthFactor, n: s.n }])
+      ),
+      hostRecords,
       referenceRenderSeconds: renderProfile.referenceUnitSeconds * lengthFactor,
       // Its share of what is waiting, counting itself among the machines.
       jobsExpected: Math.max(1, Math.ceil(queued / (serving + 1))),
@@ -1971,6 +2106,8 @@ export class GpuWorkerManager {
           // shares while it downloads; `pick` records why this offer won.
           metadata: {
             offerId: offer.id,
+            // The physical machine, so its record follows it across listings.
+            machineKey: machineKeyOf(vendor.slug, offer),
             provider: vendor.slug,
             region: offer.region ?? null,
             image: `${profile.image}:${profile.tag}`,

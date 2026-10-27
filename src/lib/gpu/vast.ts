@@ -61,6 +61,7 @@ function dockerEnvFlags(vars: Record<string, string>, ports: number[]): string {
 
 interface VastOffer {
   id?: number;
+  machine_id?: number;
   gpu_name?: string;
   num_gpus?: number;
   gpu_ram?: number;
@@ -156,6 +157,7 @@ export class VastProvider implements GpuRentalProvider {
       if (models?.length && !models.some((m) => o.gpu_name!.toLowerCase().includes(m))) continue;
       offers.push({
         id: String(o.id),
+        machineId: typeof o.machine_id === 'number' ? String(o.machine_id) : undefined,
         marketRef: String(o.id),
         gpuModel: o.gpu_name,
         gpuCount: gpus,

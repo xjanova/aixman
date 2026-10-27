@@ -69,6 +69,8 @@ interface RenderSampleRow {
   gpu_seconds: number;
   duration: unknown;
   gpu_model: string | null;
+  /** host-record.ts machineKeyOf; rentals from before it was stored fall back to provider:offerId. */
+  machine_key: string | null;
 }
 
 /**
@@ -92,7 +94,11 @@ async function renderSamples(modelKey: string, take: number): Promise<RenderSamp
       : Prisma.empty;
   try {
     return await prisma.$queryRaw<RenderSampleRow[]>`
-      SELECT j.gpu_seconds, JSON_EXTRACT(j.payload, '$.duration') AS duration, w.gpu_model
+      SELECT j.gpu_seconds, JSON_EXTRACT(j.payload, '$.duration') AS duration, w.gpu_model,
+        COALESCE(
+          JSON_UNQUOTE(JSON_EXTRACT(w.metadata, '$.machineKey')),
+          CONCAT(w.provider_slug, ':', JSON_UNQUOTE(JSON_EXTRACT(w.metadata, '$.offerId')))
+        ) AS machine_key
       FROM ai_gpu_jobs j
       LEFT JOIN ai_gpu_workers w ON w.id = j.worker_id
       WHERE j.model_key = ${modelKey} AND j.status = 'completed' AND j.gpu_seconds > 0 AND j.queued_at >= ${since}
@@ -183,14 +189,16 @@ export class GpuEta {
    */
   static async renderProfile(
     modelKey: string
-  ): Promise<{ referenceUnitSeconds: number; statsByGpu: Map<string, RenderStats> }> {
+  ): Promise<{ referenceUnitSeconds: number; statsByGpu: Map<string, RenderStats>; statsByMachine: Map<string, RenderStats> }> {
     const rows = await renderSamples(modelKey, 200);
     const byGpu = new Map<string, number[]>();
+    const byMachine = new Map<string, number[]>();
     const normalised: number[] = [];
     for (const r of rows) {
       const unit = unitSeconds(modelKey, r);
       if (!(unit > 0)) continue;
       normalised.push(unit * priorSpeed(r.gpu_model));
+      if (r.machine_key) byMachine.set(r.machine_key, [...(byMachine.get(r.machine_key) ?? []), unit]);
       if (!r.gpu_model) continue;
       // By family: the instance's name for a card is not the listing's.
       const family = cardFamily(r.gpu_model);
@@ -202,11 +210,15 @@ export class GpuEta {
     for (const [gpu, samples] of byGpu) {
       statsByGpu.set(gpu, { median: median(samples) as number, n: samples.length });
     }
+    const statsByMachine = new Map<string, RenderStats>();
+    for (const [machine, samples] of byMachine) {
+      statsByMachine.set(machine, { median: median(samples) as number, n: samples.length });
+    }
     const reference =
       normalised.length >= MIN_SAMPLES
         ? (median(normalised) as number)
         : this.baselineRenderSeconds(modelKey, { duration: 5 });
-    return { referenceUnitSeconds: reference, statsByGpu };
+    return { referenceUnitSeconds: reference, statsByGpu, statsByMachine };
   }
 
   /** Render seconds for a unit-length job (a 5 s clip, one image) — history first. */

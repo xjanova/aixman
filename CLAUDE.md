@@ -141,9 +141,13 @@ generating. Consequences that must never be regressed:
   `gpu_max_worker_lifetime_minutes` (absolute kill switch).
 - Scaling (`GpuQueue.dispatchQueued` → `GpuWorkerManager.addCapacity`): models
   are served oldest-job-first; every idle booted machine of a model takes a
-  job; another machine is rented only when the backlog per machine exceeds
-  `1 + boot/render` (`gpu-scaler.ts`, boot from that model's own history —
-  H3 ≈ 3 waiting, Qwen ≈ 6). Models run side by side up to the cap; at the cap
+  job; another machine is rented only when the **work plan** says so
+  (`gpu-scaler.ts planBacklog`): the backlog is played out job by job on the
+  machines the model has (each free after its render or boot) and on 1, 2 …
+  more, and the option with the least extra boot + idle cost plus customers'
+  wait (`gpu_wait_value_usd_per_hour`) wins, fewer machines on a tie. The
+  latest plan per model shows on Admin → GPU (`/api/admin/gpu/machines`,
+  in process). Models run side by side up to the cap; at the cap
   a model with no machine, or whose backlog has outgrown its machines, may
   take an *idle* other-model machine's slot (one with nothing queued for it),
   but not one just used or open in a customer's studio for the first 90 s
@@ -175,6 +179,17 @@ generating. Consequences that must never be regressed:
   priced from a paper-speed prior (half of any speed-up believed, VRAM short of
   the weights assumed to swap) and blended with real history by card family.
   A rental that cannot afford boot + one job within today's budget is not made.
+- **Each machine's own record** (`host-record.ts`, from `ai_gpu_workers`, 30
+  days, no table): keyed by the vendor's physical id (`GpuOffer.machineId`,
+  Vast `machine_id` → `vast:m<id>`, stored as `metadata.machineKey`), else the
+  offer id (rows from before fall back to `provider:offerId`). It keeps the
+  download rate measured during its boots (`bootProgress.bytesAt`), its render
+  speed per model (`GpuEta.renderProfile.statsByMachine`), and how often it
+  failed to boot on its own account (`isHostFailure`). The picker uses the
+  measured rate over the listed one, the machine's render speed over its
+  family's, and prices the chance of a failed boot (prior 0.15). A machine at
+  ≥ 40 % (`UNRELIABLE_FAILURE_CHANCE`) is ranked after every other — a last
+  resort, not banned; one good boot brings it back.
 - Memory (`ai_settings`): `gpu_offer_penalties` — hosts that refused an order
   (30 min), had no usable CUDA or never became ready (3 h); a refused order
   tries the next offer in the same tick. `gpu_card_penalties` — a card family

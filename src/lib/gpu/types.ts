@@ -45,6 +45,11 @@ export interface GpuOffer {
   /** Vendor-native offer id, for logging/debugging. */
   id: string;
   /**
+   * The physical machine behind the offer, where the vendor names it apart
+   * from the listing (Vast `machine_id`). Keys its record (host-record.ts).
+   */
+  machineId?: string;
+  /**
    * The vendor it came from. Adapters may leave it unset; the worker manager
    * stamps it when it merges every vendor's market into one ranking.
    */

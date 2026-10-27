@@ -1364,7 +1364,7 @@ export default function GpuAdminPage() {
         <button
           onClick={() => {
             setLoading(true);
-            void load();
+            load();
           }}
           className="px-4 py-2 rounded-lg bg-primary/20 text-primary-light hover:bg-primary/30 text-sm font-medium"
         >
@@ -2194,6 +2194,9 @@ export default function GpuAdminPage() {
         )}
       </div>
 
+      {/* Each machine's own record and the latest work plan per model. */}
+      <MachineRecordsCard />
+
       {/* Rental history — every machine, open and closed, in the window. */}
       <div className="glass rounded-xl p-5 mb-6">
         <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
@@ -2463,6 +2466,174 @@ const KIND_LABEL: Record<string, string> = {
  * What aixman's side of the pool needs to work, checked in one call. Every
  * item here used to fail silently: nodes registered and never got a job.
  */
+interface MachineRecordRow {
+  machineKey: string;
+  provider: string;
+  gpuModel: string | null;
+  priceUsdPerHour: number | null;
+  rentals: number;
+  failures: number;
+  failureChance: number;
+  downloadMbps: number | null;
+  jobsCompleted: number;
+  models: string[];
+  lastFailure: string | null;
+  lastRentedAt: string | null;
+}
+
+interface WorkPlanRow {
+  modelKey: string;
+  at: string;
+  summary: string;
+  options: { add: number; finishSeconds: number | null; waitSeconds: number | null; extraCostUsd: number }[];
+}
+
+type MachineRecordsResult =
+  | { ok: true; machines: MachineRecordRow[]; plans: WorkPlanRow[] }
+  | { ok: false; error: string };
+
+async function fetchMachineRecords(): Promise<MachineRecordsResult> {
+  const res = await fetch("/api/admin/gpu/machines", { cache: "no-store" }).catch(() => null);
+  if (!res) return { ok: false, error: "ติดต่อเซิร์ฟเวอร์ไม่ได้" };
+  const body = await res.json().catch(() => null);
+  if (!res.ok || !body) return { ok: false, error: body?.error ?? `โหลดไม่สำเร็จ (HTTP ${res.status})` };
+  return { ok: true, machines: body.machines as MachineRecordRow[], plans: body.plans as WorkPlanRow[] };
+}
+
+/**
+ * What each rented machine really did (host-record.ts) — the picker prices a
+ * machine by these, not by its listing — and the latest work plan per model
+ * (gpu-scaler.ts planBacklog): how many machines the backlog was worth.
+ */
+function MachineRecordsCard() {
+  const [machines, setMachines] = useState<MachineRecordRow[] | null>(null);
+  const [plans, setPlans] = useState<WorkPlanRow[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [showAll, setShowAll] = useState(false);
+
+  const apply = useCallback((result: MachineRecordsResult) => {
+    if (result.ok) {
+      setMachines(result.machines);
+      setPlans(result.plans);
+      setError(null);
+    } else {
+      setError(result.error);
+    }
+    setLoading(false);
+  }, []);
+  const load = useCallback(() => void fetchMachineRecords().then(apply), [apply]);
+
+  useEffect(() => {
+    let live = true;
+    void fetchMachineRecords().then((result) => {
+      if (live) apply(result);
+    });
+    return () => {
+      live = false;
+    };
+  }, [apply]);
+
+  const minutes = (s: number | null) => (s === null ? "—" : `${Math.max(1, Math.round(s / 60))} นาที`);
+  const shown = showAll ? machines ?? [] : (machines ?? []).slice(0, 12);
+
+  return (
+    <div className="glass rounded-xl p-5 mb-6">
+      <div className="flex items-center justify-between gap-3 flex-wrap mb-1">
+        <h2 className="font-bold flex items-center gap-2">
+          <Server className="w-4 h-4 text-primary-light" /> ประวัติรายเครื่อง และแผนงาน
+          <span className="text-xs text-muted font-normal">(30 วันล่าสุด)</span>
+        </h2>
+        <button
+          onClick={() => {
+            setLoading(true);
+            void load();
+          }}
+          disabled={loading}
+          className="text-xs flex items-center gap-1 text-muted hover:text-white disabled:opacity-50"
+        >
+          <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} /> โหลดใหม่
+        </button>
+      </div>
+      <p className="text-xs text-muted mb-3">
+        ระบบจำแต่ละเครื่องตามเลขเครื่องจริงของผู้ให้เช่า — ความเร็วโหลดที่วัดได้จริง ความเร็วเรนเดอร์ และจำนวนครั้งที่บูตไม่ขึ้น
+        แล้วใช้ตัวเลขเหล่านี้แทนตัวเลขที่ประกาศตอนเลือกเครื่อง เครื่องที่เคยพังจะถูกบวกค่าความเสี่ยงเข้าไปในราคา
+      </p>
+
+      {plans.length > 0 && (
+        <div className="mb-4 space-y-2">
+          <h3 className="text-sm font-semibold">แผนงานล่าสุด</h3>
+          {plans.map((p) => (
+            <div key={p.modelKey} className="glass-light rounded-lg p-3 text-xs">
+              <div className="flex justify-between gap-2 flex-wrap">
+                <span className="font-mono text-foreground">{p.modelKey}</span>
+                <span className="text-muted">{new Date(p.at).toLocaleTimeString("th-TH")}</span>
+              </div>
+              <p className="text-muted mt-1">{p.summary}</p>
+              <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1">
+                {p.options.map((o) => (
+                  <span key={o.add}>
+                    {o.add === 0 ? "เครื่องที่มี" : `+${o.add} เครื่อง`}: เสร็จใน {minutes(o.finishSeconds)}
+                    {o.add > 0 && <span className="text-warning"> (+${o.extraCostUsd.toFixed(2)})</span>}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {error && <p className="text-sm text-error">{error}</p>}
+      {!machines && !error && <p className="text-sm text-muted">กำลังโหลด...</p>}
+      {machines && machines.length === 0 && <p className="text-sm text-muted">ยังไม่มีเครื่องที่เคยเช่า</p>}
+      {machines && machines.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="text-muted text-left">
+              <tr>
+                <th className="py-1 pr-3">เครื่อง</th>
+                <th className="py-1 pr-3">การ์ด</th>
+                <th className="py-1 pr-3 text-right">$/ชม.</th>
+                <th className="py-1 pr-3 text-right">บูตขึ้น/ทั้งหมด</th>
+                <th className="py-1 pr-3 text-right">โอกาสพัง</th>
+                <th className="py-1 pr-3 text-right">โหลดจริง</th>
+                <th className="py-1 pr-3 text-right">งานเสร็จ</th>
+                <th className="py-1 pr-3">โมเดล</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((m) => (
+                <tr key={m.machineKey} className="border-t border-white/5 align-top">
+                  <td className="py-1 pr-3 font-mono">{m.machineKey}</td>
+                  <td className="py-1 pr-3">{m.gpuModel ?? "—"}</td>
+                  <td className="py-1 pr-3 text-right">{m.priceUsdPerHour === null ? "—" : m.priceUsdPerHour.toFixed(2)}</td>
+                  <td className="py-1 pr-3 text-right">
+                    {m.rentals - m.failures}/{m.rentals}
+                  </td>
+                  <td
+                    className={`py-1 pr-3 text-right ${m.failureChance >= 0.4 ? "text-error" : m.failureChance >= 0.2 ? "text-warning" : "text-success"}`}
+                    title={m.lastFailure ?? undefined}
+                  >
+                    {Math.round(m.failureChance * 100)}%
+                  </td>
+                  <td className="py-1 pr-3 text-right">{m.downloadMbps === null ? "—" : `${m.downloadMbps} Mbit/s`}</td>
+                  <td className="py-1 pr-3 text-right">{m.jobsCompleted}</td>
+                  <td className="py-1 pr-3 text-muted">{m.models.join(", ")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {machines.length > 12 && (
+            <button onClick={() => setShowAll((v) => !v)} className="mt-2 text-xs text-primary-light hover:underline">
+              {showAll ? "ย่อ" : `ดูทั้งหมด ${machines.length} เครื่อง`}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CommunityHealthCard() {
   const [health, setHealth] = useState<CommunityHealth | null>(null);
   const [error, setError] = useState<string | null>(null);
