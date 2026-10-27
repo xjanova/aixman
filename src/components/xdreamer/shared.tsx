@@ -263,6 +263,7 @@ export function XdrNav({ creditsLabel }: { creditsLabel?: string }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const links = [
     { id: "studio", label: "สตูดิโอ", href: "/generate" },
+    { id: "movie", label: "หนัง & MV", href: "/movie" },
     { id: "gallery", label: "Gallery", href: "/gallery" },
     { id: "pricing", label: "Pricing", href: "/pricing" },
     { id: "profile", label: "Dashboard", href: "/profile" },

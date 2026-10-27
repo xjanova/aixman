@@ -286,7 +286,7 @@ async function accountFor(slug: string): Promise<{ apiKey: string; apiEndpoint?:
 }
 
 /** What a chat model sometimes wraps its answer in. */
-function cleanOutput(text: string): string {
+function cleanOutput(text: string, maxChars = MAX_OUTPUT_CHARS): string {
   return text
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
     .replace(/^```[a-z]*\s*/i, '')
@@ -295,10 +295,17 @@ function cleanOutput(text: string): string {
     .trim()
     .replace(/^"([\s\S]*)"$/, '$1')
     .trim()
-    .slice(0, MAX_OUTPUT_CHARS);
+    .slice(0, maxChars);
 }
 
-async function callChat(provider: LlmProvider, model: string, system: string, user: string): Promise<string> {
+interface ChatLimits {
+  /** Output tokens to allow; the prompt box's default when unset. */
+  maxTokens?: number;
+  /** Characters of answer kept. */
+  maxChars?: number;
+}
+
+async function callChat(provider: LlmProvider, model: string, system: string, user: string, limits: ChatLimits = {}): Promise<string> {
   const account: { apiKey: string; apiEndpoint?: string } | null =
     provider === 'pollinations' ? { apiKey: '' } : await accountFor(provider);
   if (!account) throw new Error(`no active ${provider} key in the account pool`);
@@ -313,8 +320,9 @@ async function callChat(provider: LlmProvider, model: string, system: string, us
   };
   // Reasoning models spend tokens before answering; OpenAI's newer ones take
   // only `max_completion_tokens` and reject a temperature.
-  if (provider === 'openai') body.max_completion_tokens = 2500;
-  else body.max_tokens = provider === 'minimax' ? 4000 : 2500;
+  const tokens = limits.maxTokens ?? 2500;
+  if (provider === 'openai') body.max_completion_tokens = tokens;
+  else body.max_tokens = provider === 'minimax' ? Math.max(4000, tokens) : tokens;
   if (provider !== 'openai') body.temperature = 0.7;
   // A rewrite needs little thinking, and a thinking model given a long brief
   // spends its whole budget on it: Pollinations' free gpt-oss is capped at 1,500
@@ -355,7 +363,7 @@ async function callChat(provider: LlmProvider, model: string, system: string, us
     throw new Error(`${provider}: ${data.base_resp.status_msg ?? data.base_resp.status_code}`);
   }
   const content = data && typeof data === 'object' ? (data.choices?.[0]?.message?.content ?? '') : text;
-  const out = cleanOutput(content);
+  const out = cleanOutput(content, limits.maxChars);
   if (!out) {
     throw new Error(
       data?.choices?.[0]?.finish_reason === 'length'
@@ -458,6 +466,32 @@ function rulesEnhance(req: EnhanceRequest): string {
 }
 
 // ---------------------------------------------------------------------------
+
+/**
+ * One chat answer from the engines the prompt box uses, in the admin's order,
+ * for other writers in the studio (the movie storyboard). Throws with every
+ * engine's reason when none answered; the caller has its own rules to fall
+ * back on.
+ */
+export async function chatViaPool(
+  system: string,
+  user: string,
+  limits: ChatLimits = {}
+): Promise<{ text: string; engine: string }> {
+  const cfg = await getEnhancerConfig();
+  if (cfg.provider === 'off') throw new Error('ปิดผู้ช่วย AI ไว้');
+  const reasons: string[] = [];
+  const order: LlmProvider[] = cfg.provider === 'auto' ? AUTO_ORDER : [cfg.provider];
+  for (const provider of order) {
+    const model = cfg.model && cfg.provider !== 'auto' ? cfg.model : DEFAULT_MODEL[provider];
+    try {
+      return { text: await callChat(provider, model, system, user, limits), engine: `${provider} · ${model}` };
+    } catch (error) {
+      reasons.push(`${provider}: ${(error as Error).message}`);
+    }
+  }
+  throw new Error(reasons.join(' | ') || 'no chat engine');
+}
 
 /** Enhance one prompt. Never throws: the rules are the last resort. */
 export async function enhancePrompt(req: EnhanceRequest, cfgIn?: EnhancerConfig): Promise<EnhanceResult> {

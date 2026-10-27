@@ -462,11 +462,21 @@ model AiStoryProject {
   id            Int      @id @default(autoincrement())
   userId        Int      @map("user_id")
   title         String   @db.VarChar(255)
-  // Genre template key from src/lib/story/templates.ts
-  templateKey   String   @map("template_key") @db.VarChar(50)
+  // The film look (src/lib/story/cinematic.ts LOOKS): colour, lens, music.
+  templateKey   String   @default("film") @map("template_key") @db.VarChar(50)
   // What the customer typed: outline, characters, whatever they want.
   brief         String   @db.Text
   language      String   @default("th") @db.VarChar(10)
+  // 16:9 | 9:16 | 1:1 — every shot of a film shares one frame.
+  aspectRatio   String   @default("16:9") @map("aspect_ratio") @db.VarChar(10)
+  // film = a story told in shots; mv = shots laid on a song's timeline, where
+  // `brief` holds the lyrics.
+  mode          String   @default("film") @db.VarChar(10)
+  // MV only: the song (one of our upload/generation URLs), its length, and
+  // the mood picked for the video (MOODS in cinematic.ts).
+  songUrl       String?  @map("song_url") @db.MediumText
+  songSeconds   Decimal? @map("song_seconds") @db.Decimal(8, 2)
+  mood          String?  @db.VarChar(30)
   // draft | quoted | scripting | rendering | assembling | ready | failed | cancelled
   status        String   @default("draft") @db.VarChar(30)
   // The quote the customer accepted, kept verbatim so a later price change
@@ -521,12 +531,25 @@ model AiStoryShot {
   id             Int      @id @default(autoincrement())
   projectId      Int      @map("project_id")
   shotNumber     Int      @map("shot_number")
-  // Prompt for the visual, already carrying the template's style direction.
+  // What the shot shows, in English, standing on its own: the video model
+  // sees one shot at a time. The look, framing and camera are added at render.
   visualPrompt   String   @map("visual_prompt") @db.Text
-  // What is spoken over this shot.
+  // What is spoken on screen, verbatim in the film's language.
   narration      String?  @db.Text
-  /// Character ids appearing here, so their references get attached.
+  /// Character ids appearing here, so their references get attached. The
+  /// first one's picture is the shot's first frame.
   characterIds   Json?    @map("character_ids")
+  /// Who says `narration` (an AiStoryCharacter id), or null for a voice off.
+  speakerId      Int?     @map("speaker_id")
+  // Framing and camera move — keys of SHOT_SIZES / CAMERA_MOVES.
+  shotSize       String   @default("medium") @map("shot_size") @db.VarChar(30)
+  camera         String   @default("static") @db.VarChar(30)
+  // Ambient and physical sound, in English. No music.
+  sound          String?  @db.Text
+  /// The video model chosen for this shot (ai_models.id).
+  modelId        Int?     @map("model_id")
+  /// MV only: where the shot sits in the song, in seconds.
+  startSec       Decimal? @map("start_sec") @db.Decimal(8, 2)
   durationSec    Decimal  @default(0) @map("duration_sec") @db.Decimal(6, 2)
   // pending | rendering | done | failed
   status         String   @default("pending") @db.VarChar(20)
@@ -541,7 +564,7 @@ model AiStoryShot {
 
   project AiStoryProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
-  @@unique([projectId, shotNumber])
+  @@index([projectId, shotNumber])
   @@index([projectId, status])
   @@map("ai_story_shots")
 }

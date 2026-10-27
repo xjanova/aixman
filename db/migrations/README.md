@@ -30,6 +30,9 @@ would be unsafe (e.g. would drop legacy tables that still hold data).
 - `20261026b_api_key_limits.sql` — `ai_api_keys.daily_limit_credits` /
   `monthly_limit_credits` (customer caps, NULL = none) and
   `ai_api_usage.cached_tokens`. Additive; apply before the code.
+- `20261027_story_projects.sql` — `ai_story_projects`, `ai_story_characters`,
+  `ai_story_shots` for โหมดหนัง / โหมด MV (`/movie`). The Prisma models existed
+  since f2c1419 but were never created. Additive; apply before the code.
 - `20260925c_gpu_ledger.sql` — `ai_gpu_jobs.free_share`, `pro`, `owner_user_id`
   and `review_reason`: stamped when a community (GPUxMINE) machine claims a job,
   read when its `gpu_job_earnings` row is written after delivery. Apply before

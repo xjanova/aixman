@@ -593,6 +593,26 @@ admin section on `/admin/llm` (`/api/admin/llm/gpu`).
 - Untested on a real GPU as of 2026-10-26: VRAM fit at 131k context, boot
   time, throughput, and the `uv` resolve of vLLM 0.31.0 on the cu130 image.
 
+## Movie & MV mode (`/movie`, phase 1)
+
+A project (`ai_story_projects`) is a story or a song cut into shots
+(`ai_story_shots`), each rendered as an ordinary studio order through
+`GenerationService.generate` (content gate, readiness, price, refunds) on the
+model the customer picks per shot — `MOVIE_MODEL_KEYS` (`ltx-2.5`, `minimax-h3`).
+Code: `src/lib/story/{cinematic,service,http}.ts`, `/api/story/*`.
+- **Same face every shot:** the shot's first character's uploaded picture is the
+  first frame. A character-led wide/full shot never pushes in (`safeCamera`) —
+  that is where faces were replaced. Pictures must be the user's own uploads
+  (`uploads/<userId>/image/…`, `isOwnUpload`).
+- **MV timing is ours, not the LLM's:** `songTimeline` lays the lyrics over the
+  song's length (read server-side from the file, ≤ 6 min); the planner model
+  only writes pictures. Any planner failure falls back to `planFromRules`.
+- Every LTX prompt forbids subtitles, yet LTX still burns fake ones in; the
+  phase-2 assembly (one file, blurred band + real Thai subs, music) must cover them.
+- A shot is claimed with a conditional update (→ `rendering`, unlinked from
+  its old order) before ordering; replanning, editing and deleting refuse
+  rendering shots. A claim with no order after 10 min is released as failed.
+
 ## Developer guide (`/docs`)
 Public, static (`src/app/(main)/docs/page.tsx`, interactive bits in `parts.tsx`):
 keys, `/api/v1` (OpenAI + Anthropic formats), MCP tools, client setup (Claude

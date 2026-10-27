@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId, isAdmin } from '@/lib/auth';
-import { GenerationService, TYPE_MISMATCH_MESSAGE } from '@/lib/services/generation';
+import { GenerationService } from '@/lib/services/generation';
+import { generationErrorResponse } from '@/lib/services/generation-errors';
 import { keyFromPublicUrl } from '@/lib/storage/r2';
-import { RENDERING_PAUSED_MESSAGE } from '@/lib/services/gpu-balance';
-import { isOrderRefused } from '@/lib/services/order-refusal';
 import type { GenerationRequest } from '@/types';
 
 const MAX_PROMPT_LENGTH = 10000;
@@ -94,44 +93,8 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(result);
   } catch (error) {
-    const message = (error as Error).message;
-
-    // Refused before any credit moved, in Thai the customer can act on:
-    // forbidden content (terms §6), or an order a community-only model
-    // cannot take (content-tier.ts, community-dispatch.ts).
-    if (isOrderRefused(error)) {
-      return NextResponse.json({ error: error.message, code: error.code }, { status: error.httpStatus });
-    }
-
-    // Only expose known user-facing error messages
-    if (message.includes('Insufficient credits')) {
-      return NextResponse.json({ error: message }, { status: 402 });
-    }
-    if (message.includes('not found') || message.includes('inactive')) {
-      return NextResponse.json({ error: 'Model not available' }, { status: 404 });
-    }
-    if (message.includes('unavailable') || message.includes('No available API accounts')) {
-      return NextResponse.json({ error: 'Service temporarily unavailable. Please try again later.' }, { status: 503 });
-    }
-    // Already user-facing Thai copy from ModelReadiness — pass it through rather
-    // than flattening it into a generic failure.
-    if (message.includes('กำลังปรับแต่ง') || message.includes('ยังตั้งค่าไม่เสร็จ')) {
-      return NextResponse.json({ error: message }, { status: 409 });
-    }
-    // A 3D order sent to a picture model, or the other way round.
-    if (message === TYPE_MISMATCH_MESSAGE) {
-      return NextResponse.json({ error: message }, { status: 400 });
-    }
-    // A frame still the rented worker could not read (frame-input.ts) — the
-    // customer can fix it by uploading again, so say so instead of "failed".
-    if (message.includes('ไฟล์ภาพที่แนบไม่ถูกต้อง')) {
-      return NextResponse.json({ error: message }, { status: 400 });
-    }
-    // Rendering paused until the vendor balance is topped up (gpu-balance.ts).
-    // Refused before any credit moved; a retry later will work.
-    if (message === RENDERING_PAUSED_MESSAGE) {
-      return NextResponse.json({ error: message }, { status: 503 });
-    }
+    const known = generationErrorResponse(error);
+    if (known) return NextResponse.json(known.body, { status: known.status });
 
     console.error('Generation error:', error);
     return NextResponse.json({ error: 'Generation failed. Please try again.' }, { status: 500 });
