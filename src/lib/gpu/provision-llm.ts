@@ -9,7 +9,8 @@ import { READY_PATH, proxySource, renderEnvExports, shellQuote, tunnelFetch } fr
  * health and reaping code treats both alike: the proxy is the only public
  * entrance, `READY_PATH` answers 503 while the weights download and the model
  * loads, 500 once the boot failed, 200 when vLLM's `/health` does; tunnel-mode
- * vendors get the same cloudflared quick tunnel.
+ * vendors get the same cloudflared tunnel (named when `AIXMAN_TUNNEL_TOKEN` is
+ * in env, else quick).
  *
  *   proxy up ─┬─ weights (snapshot_download, background) ───────────┐
  *             └─ uv venv ─ vLLM (cu129 wheels + its torch) ───────────┴─ vllm serve ─ ready

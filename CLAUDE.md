@@ -218,6 +218,17 @@ downloads cloudflared, the proxy opens a quick tunnel and POSTs its URL to
 `*.trycloudflare.com`; needs an https `NEXTAUTH_URL`). Reconcile never writes
 back an endpoint the vendor did not report — the callback could land mid-tick.
 A tunnel-mode worker with no URL after 15 min is terminated.
+**Named tunnels** (`src/lib/gpu/cf-tunnel.ts`, `CF_TUNNEL_*` in `.env`) replace
+that when configured: the tunnel + proxied CNAME `aixman-gpu-<hex>.<domain>` are
+made *before* the rent, the hostname is the endpoint from the start, and the
+worker runs `cloudflared tunnel run` with `AIXMAN_TUNNEL_TOKEN` (passed to
+cloudflared as `TUNNEL_TOKEN` env, never argv; kept out of vendor templates by
+`SECRET_ENV`). Nothing is reported back. "Never came up" = our proxy never once
+answered through it in 15 min (`metadata.tunnelUpAt`); a 403 there is our own
+zone's WAF, so the host is not penalised. Removed in `markTerminated` (after the
+machine, never before) and on a failed rent; `sweepOrphanTunnels` removes
+`aixman-gpu-*` tunnels/records no live row claims after 15 min. A Cloudflare API
+failure at rent time falls back to a quick tunnel (alert `named-tunnel`).
 Nothing else is required because:
 
 - **No custom Docker image.** A stock `pytorch/pytorch` **CUDA 13.0** image is

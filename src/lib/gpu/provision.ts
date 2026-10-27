@@ -93,8 +93,10 @@ export interface ProvisionOptions {
   customNodes?: { repo: string; ref?: string; requirements?: boolean }[];
   /**
    * The vendor gives only a bare IP and port (GpuExposure 'tunnel'): fetch
-   * cloudflared, keep the proxy on loopback, and let it open an HTTPS tunnel
-   * and report the URL to `AIXMAN_CALLBACK_URL` (passed in `env`).
+   * cloudflared and keep the proxy on loopback. With `AIXMAN_TUNNEL_TOKEN` in
+   * `env` the proxy runs that named tunnel (cf-tunnel.ts), whose hostname the
+   * platform already knows; otherwise it opens a quick tunnel and reports the
+   * URL to `AIXMAN_CALLBACK_URL`.
    */
   tunnel?: boolean;
 }
@@ -159,6 +161,9 @@ PORT = int(os.environ.get("AIXMAN_PROXY_PORT", "8189"))
 BIND = os.environ.get("AIXMAN_PROXY_BIND", "0.0.0.0")
 ROOT = os.environ.get("AIXMAN_ROOT", "/workspace/aixman")
 CALLBACK_URL = os.environ.get("AIXMAN_CALLBACK_URL", "")
+# A named tunnel's connector token (cf-tunnel.ts): the hostname is already the
+# platform's endpoint for this worker, so nothing is reported back.
+TUNNEL_TOKEN = os.environ.get("AIXMAN_TUNNEL_TOKEN", "")
 READY_PATH = "${READY_PATH}"
 LOG_PATH = "${LOG_PATH}"
 PROGRESS_PATH = "${PROGRESS_PATH}"
@@ -325,8 +330,9 @@ def ws_listen():
 
 # --- Own HTTPS tunnel, for vendors that give only a bare IP and port ---
 # The platform must not send this worker's token or anyone's prompt over plain
-# HTTP, so the proxy opens a Cloudflare quick tunnel to itself and reports the
-# https URL. A restarted tunnel has a new URL, which is reported again.
+# HTTP, so the proxy runs the named tunnel it was booted with (its hostname is
+# already known), or else opens a Cloudflare quick tunnel to itself and reports
+# the https URL. A restarted quick tunnel has a new URL, reported again.
 TUNNEL_BIN = os.environ.get("AIXMAN_TUNNEL_BIN") or os.path.join(ROOT, "cloudflared")
 TUNNEL_URL = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 CURRENT_TUNNEL = [None]
@@ -369,14 +375,22 @@ def tunnel_loop():
         time.sleep(3)
     while True:
         try:
-            proc = subprocess.Popen(
-                [TUNNEL_BIN, "tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:%d" % PORT],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            if TUNNEL_TOKEN:
+                # The token goes through cloudflared's own env variable, not
+                # argv, so it never shows in a process listing.
+                proc = subprocess.Popen(
+                    [TUNNEL_BIN, "tunnel", "--no-autoupdate", "run"],
+                    env=dict(os.environ, TUNNEL_TOKEN=TUNNEL_TOKEN),
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            else:
+                proc = subprocess.Popen(
+                    [TUNNEL_BIN, "tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:%d" % PORT],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
             with open(os.path.join(ROOT, "tunnel.log"), "a") as log:
                 for line in proc.stdout:
                     log.write(line)
                     log.flush()
-                    found = TUNNEL_URL.search(line)
+                    found = None if TUNNEL_TOKEN else TUNNEL_URL.search(line)
                     if found and CURRENT_TUNNEL[0] != found.group(0):
                         CURRENT_TUNNEL[0] = found.group(0)
                         threading.Thread(target=report_tunnel, args=(found.group(0),), daemon=True).start()
@@ -551,7 +565,10 @@ class Server(socketserver.ThreadingTCPServer):
 
 if not LLM_MODE:
     threading.Thread(target=ws_listen, daemon=True).start()
-if CALLBACK_URL:
+if TUNNEL_TOKEN:
+    sys.stderr.write("[proxy] tunnel mode: running the named tunnel this worker was booted with\n")
+    threading.Thread(target=tunnel_loop, daemon=True).start()
+elif CALLBACK_URL:
     sys.stderr.write("[proxy] tunnel mode: will report to %s\n" % CALLBACK_URL)
     threading.Thread(target=tunnel_loop, daemon=True).start()
 else:

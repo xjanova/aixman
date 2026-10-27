@@ -18,6 +18,16 @@ import { buildComfyUiStartScript, LOG_PATH, READY_PATH, renderEnvExports } from 
 import { buildVllmStartScript } from '@/lib/gpu/provision-llm';
 import { LLM_KEY_PREFIX, getLlmEntry, isLlmModelKey } from '@/lib/gpu/llm-catalog';
 import { getPolicies, getFleetConfig, shouldRelease, DEFAULT_LLM_POLICY } from '@/lib/gpu/llm-policy';
+import {
+  TUNNEL_PREFIX,
+  createWorkerTunnel,
+  deleteWorkerTunnel,
+  namedTunnelConfig,
+  readNamedTunnel,
+  sweepOrphanTunnels,
+  type CreatedTunnel,
+  type NamedTunnel,
+} from '@/lib/gpu/cf-tunnel';
 import { clearSchema } from '@/lib/gpu/comfy-validate';
 import { COMMUNITY_BODY_LIMITS, readCapped } from '@/lib/gpu/worker-client';
 import {
@@ -61,6 +71,13 @@ const NAME_PREFIX = 'aixman-';
  * that a concurrent rent() is still registering.
  */
 const ORPHAN_GRACE_MS = 5 * 60_000;
+/**
+ * A named tunnel is created before its machine is rented and recorded only
+ * once the rent returns (a GCE rent alone may wait 20 s on its operation), so
+ * the tunnel sweep waits longer than the instance sweep before calling one
+ * unclaimed.
+ */
+const TUNNEL_ORPHAN_GRACE_MS = 15 * 60_000;
 
 const HEALTH_TIMEOUT_MS = 8_000;
 
@@ -127,6 +144,9 @@ const MARKET_TIMEOUT_MS = 25_000;
 /** A tunnel-mode worker that has not reported its URL by now can never be reached. */
 const TUNNEL_REPORT_TIMEOUT_MS = 15 * 60_000;
 
+/** Env a worker boots with that must never reach a vendor-kept template. */
+const SECRET_ENV = new Set(['AIXMAN_WORKER_TOKEN', 'AIXMAN_CALLBACK_URL', 'AIXMAN_TUNNEL_TOKEN']);
+
 function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`${what} timed out after ${Math.round(ms / 1000)} s`)), ms);
@@ -147,6 +167,11 @@ export interface WorkerProbe {
   state: 'ready' | 'warming' | 'failed';
   /** Progress or failure text from the worker, for the admin panel. */
   detail?: string;
+  /**
+   * Our proxy answered (a JSON body). In front of a named tunnel, Cloudflare
+   * answers by itself (HTML 502/530) while the connector is not up yet.
+   */
+  reached?: boolean;
 }
 
 export type WorkerStatus =
@@ -371,21 +396,22 @@ export class GpuWorkerManager {
       const body = (await res.json().catch(() => null)) as
         | { ready?: boolean; failed?: string; stage?: string; bytes?: number; auth?: boolean }
         | null;
+      const reached = body !== null && typeof body === 'object';
 
       if (res.ok) {
         if (body?.auth === false) {
           // The proxy fails open when it has no token. Still usable, but the
           // GPU is reachable by anyone holding the tunnel URL — say so loudly.
           console.error('[gpu] SECURITY: worker at ready endpoint is not enforcing its bearer token');
-          return { state: 'ready', detail: 'Worker is not enforcing its bearer token' };
+          return { state: 'ready', detail: 'Worker is not enforcing its bearer token', reached };
         }
-        return { state: 'ready' };
+        return { state: 'ready', reached };
       }
-      if (body?.failed) return { state: 'failed', detail: body.failed };
+      if (body?.failed) return { state: 'failed', detail: body.failed, reached };
       if (body?.stage === 'downloading' && typeof body.bytes === 'number') {
-        return { state: 'warming', detail: `downloading weights, ${(body.bytes / 1024 ** 3).toFixed(1)} GB so far` };
+        return { state: 'warming', detail: `downloading weights, ${(body.bytes / 1024 ** 3).toFixed(1)} GB so far`, reached };
       }
-      return { state: 'warming', detail: body?.stage ? `${body.stage}` : `HTTP ${res.status}` };
+      return { state: 'warming', detail: body?.stage ? `${body.stage}` : `HTTP ${res.status}`, reached };
     } catch {
       return { state: 'warming', detail: 'not reachable yet' };
     } finally {
@@ -638,17 +664,28 @@ export class GpuWorkerManager {
 
       // A worker that must open its own tunnel and has not said where it is
       // can never be reached; waiting out the whole warmup would only bill.
-      if (provider.exposure === 'tunnel' && !endpoint && ageMs > TUNNEL_REPORT_TIMEOUT_MS) {
+      // A named tunnel's hostname is known from the start, so for it the sign
+      // is that our proxy has never once answered through it.
+      const namedTunnel = readNamedTunnel(worker.metadata);
+      const tunnelUp = !!(worker.metadata as { tunnelUpAt?: unknown } | null)?.tunnelUpAt;
+      const tunnelNeverUp = namedTunnel ? !tunnelUp : !endpoint;
+      if (provider.exposure === 'tunnel' && tunnelNeverUp && ageMs > TUNNEL_REPORT_TIMEOUT_MS) {
+        // A 403 through a named tunnel is our own zone refusing us (WAF, bot
+        // fight mode), not the host: every machine would die the same way, so
+        // the host is not blamed and the alert says where to look.
+        const zoneRefused = !!namedTunnel && /HTTP 403\b/.test(worker.lastError ?? '');
         await this.terminate(worker.id, `Never reported its HTTPS tunnel within ${TUNNEL_REPORT_TIMEOUT_MS / 60_000} min`);
-        await this.penalizeWorkerOffer(worker, HOST_FAILURE_PENALTY_MS, 'tunnel never came up');
+        if (!zoneRefused) await this.penalizeWorkerOffer(worker, HOST_FAILURE_PENALTY_MS, 'tunnel never came up');
         raiseAlert({
           type: 'boot-failed',
           key: String(worker.id),
-          level: 'warning',
+          level: zoneRefused ? 'critical' : 'warning',
           title: 'เครื่องเปิด tunnel ไม่สำเร็จ — ติดต่อเครื่องไม่ได้ ปิดทิ้งแล้ว',
           lines: [
             `เครื่อง #${worker.id} ${worker.gpuModel ?? ''} ที่ ${worker.providerSlug} (${worker.modelKey})`,
-            'ระบบหลบเครื่องนี้แล้วเช่าใหม่ให้เอง',
+            zoneRefused
+              ? `Cloudflare ของโดเมนเราตอบ 403 ที่ ${namedTunnel!.hostname} — ตั้ง WAF skip rule ให้ hostname ที่ขึ้นต้นด้วย ${TUNNEL_PREFIX}`
+              : 'ระบบหลบเครื่องนี้แล้วเช่าใหม่ให้เอง',
           ],
         });
         return;
@@ -662,6 +699,7 @@ export class GpuWorkerManager {
       }
 
       const probe = await this.probe(endpoint, profile, this.readAuthToken(worker));
+      if (namedTunnel && probe.reached && !tunnelUp) await this.markTunnelUp(worker.id, now);
       if (probe.state === 'failed') {
         // The disk goes with the machine; keep the evidence first. Found on
         // the first real rental: the one-line failure said "No module named
@@ -1705,11 +1743,15 @@ export class GpuWorkerManager {
     // tunnel and reports it to this URL, which carries a random id rather than
     // the row id (the row does not exist yet, and ids are guessable).
     const tunnel = provider.exposure === 'tunnel';
-    const callbackId = tunnel ? randomBytes(12).toString('hex') : null;
+    // Preferred: a named tunnel made now, so the endpoint is known before the
+    // machine exists and nothing has to be reported back (cf-tunnel.ts).
+    const named = tunnel ? await this.createNamedTunnel(profile.apiPort) : null;
+    const callbackId = tunnel && !named ? randomBytes(12).toString('hex') : null;
     const env: Record<string, string> = {
       ...(profile.env || {}),
       AIXMAN_MODEL_KEY: modelKey,
       AIXMAN_WORKER_TOKEN: authToken,
+      ...(named ? { AIXMAN_TUNNEL_TOKEN: named.token } : {}),
       ...(callbackId ? { AIXMAN_CALLBACK_URL: `${this.requireTunnelCallbackBase()}/api/gpu/tunnel/${callbackId}` } : {}),
     };
 
@@ -1740,28 +1782,36 @@ export class GpuWorkerManager {
     // The vendor keeps templates after the machine is gone; nothing secret
     // goes into one.
     const publicEnv = Object.fromEntries(
-      Object.entries(env).filter(([key]) => key !== 'AIXMAN_WORKER_TOKEN' && key !== 'AIXMAN_CALLBACK_URL')
+      Object.entries(env).filter(([key]) => !SECRET_ENV.has(key))
     );
     const templateStartScript = scriptFor(publicEnv, undefined);
 
-    const instance = await provider.rent(
-      {
-        offer,
-        gpuCount: profile.gpuCount,
-        image: profile.image,
-        imageTag: profile.tag,
-        diskGb: profile.diskGb,
-        // Behind a tunnel nothing is published: the proxy listens on loopback.
-        exposePorts: tunnel ? [] : [profile.apiPort],
-        startScript,
-        templateStartScript,
-        env,
-        registry: getRegistryCredentials(),
-        nameTag,
-        minCudaVersion: profile.minCudaVersion,
-      },
-      apiKey
-    );
+    let instance: Awaited<ReturnType<typeof provider.rent>>;
+    try {
+      instance = await provider.rent(
+        {
+          offer,
+          gpuCount: profile.gpuCount,
+          image: profile.image,
+          imageTag: profile.tag,
+          diskGb: profile.diskGb,
+          // Behind a tunnel nothing is published: the proxy listens on loopback.
+          exposePorts: tunnel ? [] : [profile.apiPort],
+          startScript,
+          templateStartScript,
+          env,
+          registry: getRegistryCredentials(),
+          nameTag,
+          minCudaVersion: profile.minCudaVersion,
+        },
+        apiKey
+      );
+    } catch (error) {
+      // No machine to serve it — or an unconfirmed one the pending-rental
+      // sweep adopts and kills, which could then only lean on a dead tunnel.
+      if (named) await this.removeNamedTunnel(named, 'rent failed');
+      throw error;
+    }
 
     try {
       return await prisma.aiGpuWorker.create({
@@ -1771,7 +1821,7 @@ export class GpuWorkerManager {
           supportId: instance.supportId,
           status: 'provisioning',
           modelKey,
-          endpoint: tunnel ? null : instance.endpoints[profile.apiPort] || null,
+          endpoint: named ? `https://${named.hostname}` : tunnel ? null : instance.endpoints[profile.apiPort] || null,
           authToken: encrypt(authToken),
           gpuModel: instance.gpuModel || offer.gpuModel,
           gpuCount: profile.gpuCount,
@@ -1792,6 +1842,10 @@ export class GpuWorkerManager {
             image: `${profile.image}:${profile.tag}`,
             // Where the worker's tunnel report is matched to this row.
             ...(callbackId ? { callbackId } : {}),
+            // What terminate() and the tunnel sweep need to remove it again.
+            ...(named
+              ? { namedTunnel: { tunnelId: named.tunnelId, dnsRecordId: named.dnsRecordId, hostname: named.hostname } }
+              : {}),
             ...(pick ? { pick: pick as Prisma.InputJsonValue } : {}),
           },
         },
@@ -1806,6 +1860,7 @@ export class GpuWorkerManager {
           termError
         );
       });
+      if (named) await this.removeNamedTunnel(named, 'row not recorded');
       throw error;
     }
   }
@@ -1861,6 +1916,50 @@ export class GpuWorkerManager {
     await this.markTerminated(workerId, reason, new Date());
   }
 
+  /**
+   * A named tunnel for a new worker, or null to fall back to a quick tunnel:
+   * when none is configured, or when Cloudflare's API fails — an outage there
+   * must not stop rentals the old path still serves.
+   */
+  private static async createNamedTunnel(port: number): Promise<CreatedTunnel | null> {
+    const cfg = namedTunnelConfig();
+    if (!cfg) return null;
+    try {
+      return await createWorkerTunnel(cfg, `${TUNNEL_PREFIX}${randomBytes(6).toString('hex')}`, port);
+    } catch (error) {
+      const message = (error as Error).message;
+      console.error('[gpu] named tunnel unavailable, falling back to a quick tunnel:', message);
+      raiseAlert({
+        type: 'named-tunnel',
+        key: 'create',
+        level: 'warning',
+        title: 'สร้าง Cloudflare Tunnel ไม่สำเร็จ — เครื่องใหม่ใช้ quick tunnel แทน',
+        lines: [message.slice(0, 300), 'ตรวจ CF_TUNNEL_* ใน .env และสิทธิ์ของ API token'],
+      });
+      return null;
+    }
+  }
+
+  private static async removeNamedTunnel(tunnel: NamedTunnel, why: string): Promise<void> {
+    const cfg = namedTunnelConfig();
+    if (!cfg) return; // config removed since: nothing here can reach it
+    try {
+      await deleteWorkerTunnel(cfg, tunnel);
+    } catch (error) {
+      console.error(`[gpu] could not remove tunnel ${tunnel.hostname} (${why}); the sweep retries:`, (error as Error).message);
+    }
+  }
+
+  /** Our proxy answered through the named tunnel once: the host is not dead. */
+  private static async markTunnelUp(workerId: number, at: Date): Promise<void> {
+    const fresh = await prisma.aiGpuWorker.findUnique({ where: { id: workerId }, select: { metadata: true } });
+    const metadata = (fresh?.metadata && typeof fresh.metadata === 'object' ? fresh.metadata : {}) as Record<string, unknown>;
+    await prisma.aiGpuWorker.update({
+      where: { id: workerId },
+      data: { metadata: { ...metadata, tunnelUpAt: at.toISOString() } as Prisma.InputJsonValue },
+    });
+  }
+
   private static async markTerminated(workerId: number, reason: string, at: Date): Promise<void> {
     const worker = await prisma.aiGpuWorker.findUnique({ where: { id: workerId } });
     if (!worker || worker.terminatedAt) return;
@@ -1874,6 +1973,10 @@ export class GpuWorkerManager {
         lastError: reason.slice(0, 1000),
       },
     });
+    // Only once the machine is gone: removing the tunnel first would just cut
+    // off a worker that is still billing. A failure is left to the sweep.
+    const named = readNamedTunnel(worker.metadata);
+    if (named) await this.removeNamedTunnel(named, `worker #${workerId} terminated`);
   }
 
   /** Mark a worker for shutdown on the next tick, without waiting on the vendor. */
@@ -1905,6 +2008,7 @@ export class GpuWorkerManager {
         console.error(`[gpu] orphan sweep failed for ${vendor.provider.label}:`, (error as Error).message);
       }
     }
+    await this.sweepTunnels();
     if (terminated.length > 0) {
       raiseAlert({
         type: 'orphans',
@@ -1918,6 +2022,27 @@ export class GpuWorkerManager {
       });
     }
     return { terminated };
+  }
+
+  /**
+   * Named tunnels and DNS records no live worker claims — a terminate whose
+   * cleanup failed, or a rental that died between creating its tunnel and
+   * recording its row. They bill nothing, but each holds a hostname.
+   */
+  private static async sweepTunnels(): Promise<void> {
+    const cfg = namedTunnelConfig();
+    if (!cfg) return;
+    try {
+      const live = await prisma.aiGpuWorker.findMany({
+        where: { status: { in: LIVE_STATUSES } },
+        select: { metadata: true },
+      });
+      const liveIds = new Set(live.map((w) => readNamedTunnel(w.metadata)?.tunnelId).filter((id): id is string => !!id));
+      const removed = await sweepOrphanTunnels(cfg, liveIds, TUNNEL_ORPHAN_GRACE_MS);
+      if (removed.length > 0) console.warn(`[gpu] removed orphaned tunnel pieces: ${removed.join(', ')}`);
+    } catch (error) {
+      console.error('[gpu] tunnel sweep failed:', (error as Error).message);
+    }
   }
 
   private static async sweepVendor({ slug, provider, apiKey }: VendorClient): Promise<string[]> {
