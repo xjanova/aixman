@@ -169,7 +169,7 @@ async function planLongFilm(input: PlanInput): Promise<{ planned: { title: strin
   const target = input.targetSeconds!;
   const count = filmPartCount(target);
   const head = filmOutlineMessages(input, count);
-  const reply = await chatViaPool(head.system, head.user, { maxTokens: 3000, maxChars: 20_000, timeoutMs: 60_000 });
+  const reply = await chatViaPool(head.system, head.user, { maxTokens: 8000, maxChars: 30_000, timeoutMs: 90_000 });
   const outline = parseFilmOutline(reply.text, count);
   if (!outline) return { planned: null, engine: reply.engine, fallbackReason: `${reply.engine} answered with no usable outline` };
 
@@ -178,14 +178,18 @@ async function planLongFilm(input: PlanInput): Promise<{ planned: { title: strin
   const parts = await Promise.all(
     outline.parts.map(async (summary, index) => {
       const part = { index, count, summary, seconds, outline: outline.parts };
-      try {
-        const { system, user } = filmPlannerMessages(input, part);
-        const answer = await chatViaPool(system, user, { maxTokens: 6000, maxChars: 50_000, timeoutMs: 90_000 });
-        const plan = parseFilmPlan(answer.text, input);
-        if (plan) return fitToTarget(plan.shots, seconds);
-        failed.push(`part ${index + 1}: no usable shots`);
-      } catch (error) {
-        failed.push(`part ${index + 1}: ${(error as Error).message}`);
+      const { system, user } = filmPlannerMessages(input, part);
+      // A thinking model may spend its whole budget reasoning; one retry
+      // before this part falls back to the rules.
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const answer = await chatViaPool(system, user, { maxTokens: 16_000, maxChars: 60_000, timeoutMs: 120_000 });
+          const plan = parseFilmPlan(answer.text, input);
+          if (plan) return fitToTarget(plan.shots, seconds);
+          failed.push(`part ${index + 1} try ${attempt}: no usable shots`);
+        } catch (error) {
+          failed.push(`part ${index + 1} try ${attempt}: ${(error as Error).message.slice(0, 200)}`);
+        }
       }
       return planFromRules({ ...input, brief: summary, targetSeconds: seconds });
     })

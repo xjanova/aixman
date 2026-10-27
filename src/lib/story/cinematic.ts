@@ -59,8 +59,12 @@ export const FILM_LENGTHS: Record<string, { seconds: number | null; label: strin
   '600': { seconds: 600, label: '10 นาที' },
 };
 
-/** One planner call writes at most this much film. */
-export const FILM_PART_SECONDS = 120;
+/**
+ * One planner call writes at most this much film (~8 shots). Kept small: a
+ * thinking model (DeepSeek Flash) spends output tokens reasoning first, and at
+ * 120 s per part two of five parts ran out before any answer (2026-10-27).
+ */
+export const FILM_PART_SECONDS = 60;
 /** The length a planned shot averages; how many shots a length needs. */
 export const FILM_AVG_SHOT_SECONDS = 8;
 
@@ -593,6 +597,46 @@ export function extractJson(text: string): unknown {
   }
 }
 
+/**
+ * The complete objects of the array under `key` in an answer that may have
+ * been cut off mid-way (the model hit its output limit): every object that
+ * closed before the cut, in order. Strings are skipped over, so a brace inside
+ * a description does not count.
+ */
+export function salvageArray(text: string, key: string): unknown[] {
+  const at = text.search(new RegExp(`"${key}"\\s*:\\s*\\[`));
+  if (at < 0) return [];
+  const out: unknown[] = [];
+  let i = text.indexOf('[', at) + 1;
+  let depth = 0;
+  let from = -1;
+  let inString = false;
+  for (; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (c === '\\') i++;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') inString = true;
+    else if (c === '{') {
+      if (depth === 0) from = i;
+      depth++;
+    } else if (c === '}') {
+      depth--;
+      if (depth === 0 && from >= 0) {
+        try {
+          out.push(JSON.parse(text.slice(from, i + 1)));
+        } catch {
+          // a malformed object is skipped, the rest may still be good
+        }
+        from = -1;
+      }
+    } else if (c === ']' && depth === 0) break;
+  }
+  return out;
+}
+
 type RawShot = Record<string, unknown>;
 
 function castIds(raw: unknown, chars: CharacterLite[]): number[] {
@@ -607,8 +651,10 @@ function castIds(raw: unknown, chars: CharacterLite[]): number[] {
 
 /** A film storyboard from the model's answer, every field checked; null when unusable. */
 export function parseFilmPlan(text: string, input: PlanInput): { title: string; shots: ShotDraft[] } | null {
-  const data = extractJson(text) as { title?: unknown; shots?: unknown } | null;
-  if (!data || !Array.isArray(data.shots) || data.shots.length === 0) return null;
+  let data = extractJson(text) as { title?: unknown; shots?: unknown } | null;
+  // Cut off before the end: keep the shots that were written in full.
+  if (!data || !Array.isArray(data.shots)) data = { title: data?.title, shots: salvageArray(text, 'shots') };
+  if (!Array.isArray(data.shots) || data.shots.length === 0) return null;
   const shots: ShotDraft[] = (data.shots as RawShot[]).slice(0, LIMITS.shotsFilm).flatMap((s) => {
     const visual = clip(s.visual, LIMITS.visual);
     if (!visual) return [];

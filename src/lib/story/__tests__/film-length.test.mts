@@ -20,7 +20,9 @@ import {
   filmTarget,
   fitToTarget,
   parseFilmOutline,
+  parseFilmPlan,
   planFromRules,
+  salvageArray,
   type PlanInput,
   withTargetSeconds,
   type ShotDraft,
@@ -69,10 +71,10 @@ test('a long film is planned in parts of at most one part\'s length', () => {
   assert.equal(filmPartCount(null), 0);
   assert.equal(filmPartCount(60), 0);
   assert.equal(filmPartCount(FILM_PART_SECONDS), 0);
-  assert.equal(filmPartCount(180), 2);
-  assert.equal(filmPartCount(600), 5);
-  const head = filmOutlineMessages(input, 5);
-  assert.match(head.system, /exactly 5 parts/);
+  assert.equal(filmPartCount(180), 3);
+  assert.equal(filmPartCount(600), 10);
+  const head = filmOutlineMessages(input, 10);
+  assert.match(head.system, /exactly 10 parts/);
   assert.match(head.user, /มายา/);
 });
 
@@ -88,6 +90,16 @@ test('a part asks for its own shots and knows where it sits', () => {
   assert.match(last.user, /Write part 3: c/);
   // A short film keeps its own brief.
   assert.match(filmPlannerMessages({ ...input, targetSeconds: null }).system, /4 to 12 shots/);
+});
+
+test('an answer cut off mid-way keeps the shots written in full', () => {
+  const cut = '{"title":"ว่าว","shots":[{"visual":"A {brace} in text \\"quoted\\"","duration":5},{"visual":"Second shot","line":"สวัสดี","duration":8},{"visual":"Third sh';
+  assert.deepEqual(salvageArray(cut, 'shots').map((s) => (s as { visual: string }).visual), ['A {brace} in text "quoted"', 'Second shot']);
+  const plan = parseFilmPlan(cut, input);
+  assert.equal(plan?.shots.length, 2);
+  assert.equal(plan?.shots[1].line, 'สวัสดี');
+  assert.deepEqual(salvageArray('no array here', 'shots'), []);
+  assert.equal(parseFilmPlan('{"title":"x","shots":[{"visual":"cut', input), null);
 });
 
 test('the outline is read when it has every part, strings or objects', () => {
