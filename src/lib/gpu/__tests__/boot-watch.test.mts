@@ -77,6 +77,14 @@ test('a download that cannot finish inside the limit is replaced now', () => {
   assert.equal(judgeBoot({ ageMs: 7 * MIN, now: 7 * MIN, expectedBootSeconds: 700, warmupTimeoutMs: HOUR, progress: p }).stalled, false);
 });
 
+test("a boot past its downloads is not judged on a byte count the folders missed", () => {
+  // Worker #90: LatentSync stopped counting at 0.5 of 5.6 GB, then said 'starting'.
+  let p = noteBootProgress(null, { mark: 'downloading', bytes: 0.5 * GB }, 1 * MIN);
+  p = noteBootProgress(p, { mark: 'starting' }, 2 * MIN);
+  const verdict = judgeBoot({ ageMs: 5 * MIN, now: 5 * MIN, expectedBootSeconds: 240, warmupTimeoutMs: HOUR, progress: p, totalBytes: 5.6 * GB });
+  assert.equal(verdict.stalled, false);
+});
+
 test('the record survives a round trip through metadata and rejects junk', () => {
   const p = noteBootProgress(null, { mark: 'downloading', bytes: 3 }, 1000);
   assert.deepEqual(readBootProgress(JSON.parse(JSON.stringify({ bootProgress: p }))), p);

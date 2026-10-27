@@ -118,10 +118,14 @@ export function judgeBoot(input: {
   }
 
   // A download that is moving, but too slowly to finish inside the limit,
-  // ends the same way an hour later — replace it now.
+  // ends the same way an hour later — replace it now. Only while it says it
+  // is downloading: once it reports 'starting' every file is on disk, and the
+  // last byte count can be short of the catalogue's (LatentSync keeps weights
+  // outside the folders the proxy counts) — worker #90 was cut that way.
   const total = input.totalBytes ?? 0;
   if (
     total > 0 &&
+    progress?.mark === 'downloading' &&
     progress?.bytes !== undefined &&
     progress.firstBytes !== undefined &&
     progress.firstAt !== undefined &&
