@@ -21,6 +21,7 @@ import {
   fitToTarget,
   parseFilmOutline,
   parseFilmPlan,
+  partShotBudget,
   planFromRules,
   salvageArray,
   type PlanInput,
@@ -78,14 +79,25 @@ test('a long film is planned in parts of at most one part\'s length', () => {
   assert.match(head.user, /มายา/);
 });
 
+test('the parts share the shot cap, so the ending is never cut off', () => {
+  for (const target of [180, 300, 600]) {
+    const parts = filmPartCount(target);
+    assert.ok(partShotBudget(parts) * parts <= LIMITS.shotsFilm);
+    // Enough shots, at the longest a shot may be, to fill the length.
+    assert.ok(partShotBudget(parts) * parts * LIMITS.maxShotSeconds >= target, `target ${target}`);
+  }
+});
+
 test('a part asks for its own shots and knows where it sits', () => {
   const outline = ['a', 'b', 'c'];
-  const first = filmPlannerMessages(input, { index: 0, count: 3, summary: 'a', seconds: 120, outline });
+  const first = filmPlannerMessages(input, { index: 0, count: 3, summary: 'a', seconds: 120, outline, maxShots: 20 });
   assert.match(first.system, /part 1 of 3/);
-  assert.match(first.system, /about 15 shots/);
+  assert.match(first.system, /15 shots \(never more\)/);
+  // The part's share of the film caps what it may ask for.
+  assert.match(filmPlannerMessages(input, { index: 0, count: 10, summary: 'a', seconds: 60, outline, maxShots: 6 }).system, /6 shots \(never more\)/);
   assert.match(first.system, /establishing shot/);
   assert.match(first.system, /Do not end the film/);
-  const last = filmPlannerMessages(input, { index: 2, count: 3, summary: 'c', seconds: 120, outline });
+  const last = filmPlannerMessages(input, { index: 2, count: 3, summary: 'c', seconds: 120, outline, maxShots: 20 });
   assert.match(last.system, /End the film\./);
   assert.match(last.user, /Write part 3: c/);
   // A short film keeps its own brief.

@@ -15,6 +15,7 @@ import {
   filmPlannerMessages,
   filmTarget,
   fitToTarget,
+  partShotBudget,
   mvPlannerMessages,
   parseFilmOutline,
   parseFilmPlan,
@@ -174,10 +175,11 @@ async function planLongFilm(input: PlanInput): Promise<{ planned: { title: strin
   if (!outline) return { planned: null, engine: reply.engine, fallbackReason: `${reply.engine} answered with no usable outline` };
 
   const seconds = target / count;
+  const budget = partShotBudget(count);
   const failed: string[] = [];
   const parts = await Promise.all(
     outline.parts.map(async (summary, index) => {
-      const part = { index, count, summary, seconds, outline: outline.parts };
+      const part = { index, count, summary, seconds, outline: outline.parts, maxShots: budget };
       const { system, user } = filmPlannerMessages(input, part);
       // A thinking model may spend its whole budget reasoning; one retry
       // before this part falls back to the rules.
@@ -185,13 +187,13 @@ async function planLongFilm(input: PlanInput): Promise<{ planned: { title: strin
         try {
           const answer = await chatViaPool(system, user, { maxTokens: 16_000, maxChars: 60_000, timeoutMs: 120_000 });
           const plan = parseFilmPlan(answer.text, input);
-          if (plan) return fitToTarget(plan.shots, seconds);
+          if (plan) return fitToTarget(plan.shots.slice(0, budget), seconds);
           failed.push(`part ${index + 1} try ${attempt}: no usable shots`);
         } catch (error) {
           failed.push(`part ${index + 1} try ${attempt}: ${(error as Error).message.slice(0, 200)}`);
         }
       }
-      return planFromRules({ ...input, brief: summary, targetSeconds: seconds });
+      return fitToTarget(planFromRules({ ...input, brief: summary, targetSeconds: seconds }).slice(0, budget), seconds);
     })
   );
   return {

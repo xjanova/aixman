@@ -518,14 +518,24 @@ export interface FilmPart {
   seconds: number;
   /** Every part's summary, in order, so a part knows what comes before and after. */
   outline: string[];
+  /** This part's share of LIMITS.shotsFilm, so the parts together never pass it. */
+  maxShots: number;
+}
+
+/**
+ * Each part's share of the film's shots. Cutting the joined list instead
+ * dropped the last parts — the ending (first 10-minute plan on prod).
+ */
+export function partShotBudget(parts: number): number {
+  return Math.max(1, Math.floor(LIMITS.shotsFilm / Math.max(1, parts)));
 }
 
 export function filmPlannerMessages(input: PlanInput, part?: FilmPart): { system: string; user: string } {
   const look = LOOKS[input.look] ?? LOOKS.film;
   const seconds = part?.seconds ?? input.targetSeconds ?? null;
-  const count = seconds ? Math.max(1, Math.round(seconds / FILM_AVG_SHOT_SECONDS)) : 0;
+  const count = seconds ? Math.min(part?.maxShots ?? LIMITS.shotsFilm, Math.max(1, Math.round(seconds / FILM_AVG_SHOT_SECONDS))) : 0;
   const scope = part
-    ? `- This is part ${part.index + 1} of ${part.count} of a longer film: write ONLY this part's shots — about ${count} shots adding up to about ${Math.round(part.seconds)} seconds. ${part.index === 0 ? 'Open the film on an establishing shot.' : 'Continue straight on from the part before; do not re-introduce the story.'}${part.index === part.count - 1 ? ' End the film.' : ' Do not end the film; stop where the next part takes over.'} Vary sizes (wide → medium → close-up) and give every camera move a reason.`
+    ? `- This is part ${part.index + 1} of ${part.count} of a longer film: write ONLY this part's shots — ${count} shots (never more) adding up to about ${Math.round(part.seconds)} seconds, so prefer 8–10 second shots. ${part.index === 0 ? 'Open the film on an establishing shot.' : 'Continue straight on from the part before; do not re-introduce the story.'}${part.index === part.count - 1 ? ' End the film.' : ' Do not end the film; stop where the next part takes over.'} Vary sizes (wide → medium → close-up) and give every camera move a reason.`
     : seconds
       ? `- About ${count} shots adding up to about ${seconds} seconds that tell the whole story with a beginning, middle and end. Open on an establishing shot; vary sizes (wide → medium → close-up) and give every camera move a reason.`
       : '- 4 to 12 shots that tell the whole story with a beginning, middle and end. Open on an establishing shot; vary sizes (wide → medium → close-up) and give every camera move a reason.';
