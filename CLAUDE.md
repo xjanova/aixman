@@ -147,7 +147,13 @@ generating. Consequences that must never be regressed:
   a model with no machine, or whose backlog has outgrown its machines, may
   take an *idle* other-model machine's slot (one with nothing queued for it),
   but not one just used or open in a customer's studio for the first 90 s
-  (anti ping-pong). Extra machines close on the plain idle timeout; only the
+  (anti ping-pong). A model with *no* machine that has waited 10 min at the
+  cap with no idle machine anywhere gets a **hand-over** (`pickHandover`,
+  `metadata.handOverTo`): one machine of a model that has ≥ 2 takes no new
+  job (`handoverHolds`) and is released when its current one ends — a long
+  backlog never goes idle, so idle-release alone starved a song behind a
+  60-shot film. One promise at a time; withdrawn when nothing waits for it.
+  Extra machines close on the plain idle timeout; only the
   warmest idle machine per model gets the studio-presence grace.
 - Pre-warm (`GpuQueue.prewarm`, `gpu_prewarm_cooldown_minutes`, default 30,
   0 = off): a customer whose credits cover the model's smallest order *arriving*

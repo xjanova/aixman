@@ -583,7 +583,9 @@ export class GpuQueue {
       orderBy: { lastJobAt: { sort: 'desc', nulls: 'last' } },
     });
 
-    const rented = ready.filter((w) => !GpuWorkerManager.isCommunity(w.providerSlug));
+    // A machine promised to a model with no machine of its own takes no new job.
+    const held = await GpuWorkerManager.handoverHolds(ready);
+    const rented = ready.filter((w) => !GpuWorkerManager.isCommunity(w.providerSlug) && !held.has(w.id));
     const communityRows = ready.filter((w) => GpuWorkerManager.isCommunity(w.providerSlug));
     // The ledger's 30-day sums, read at most once a minute (never throws): what
     // an owner has given and earned places their machines in the queue, and

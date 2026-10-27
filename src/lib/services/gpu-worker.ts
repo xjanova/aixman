@@ -57,7 +57,7 @@ import { isStorageConfigured } from '@/lib/storage/r2';
 import { isStudioPresent } from './studio-presence';
 import { GpuEta } from './gpu-eta';
 import { GpuBalance } from './gpu-balance';
-import { shouldAddMachine } from './gpu-scaler';
+import { pickHandover, readHandover, shouldAddMachine } from './gpu-scaler';
 import { raiseAlert } from '@/lib/notify/alerts';
 
 /**
@@ -1198,6 +1198,12 @@ export class GpuWorkerManager {
       const waitedMs = backlog.oldestQueuedAt ? Date.now() - backlog.oldestQueuedAt.getTime() : 0;
       const freed = await this.releaseIdleWorkerForOtherModel(modelKey, waitedMs);
       if (freed) return { reason: 'Released an idle machine of another model to make room' };
+      // No idle machine anywhere, and this model has none at all: one machine
+      // of a model that has several hands its slot over after its current job
+      // (gpu-scaler.ts pickHandover), rather than this model waiting out the
+      // other's whole backlog.
+      const handover = serving === 0 ? await this.reserveHandover(modelKey, waitedMs) : null;
+      if (handover) return { reason: handover };
       return {
         reason:
           serving > 0
@@ -1666,11 +1672,21 @@ export class GpuWorkerManager {
     });
     const now = Date.now();
 
+    // A machine already handing its slot over to this model goes first.
+    candidates.sort((a, b) => Number(readHandover(b.metadata) === wantedModelKey) - Number(readHandover(a.metadata) === wantedModelKey));
+
     for (const worker of candidates) {
       const active = await prisma.aiGpuJob.count({
         where: { workerId: worker.id, status: { in: ['assigned', 'running'] } },
       });
       if (active > 0) continue;
+
+      // Promised to this model (reserveHandover): its own queue and the
+      // ping-pong grace were weighed when it was chosen.
+      if (readHandover(worker.metadata) === wantedModelKey) {
+        await this.terminate(worker.id, `Handed its slot over to ${wantedModelKey}`);
+        return true;
+      }
 
       // Anything still queued for *this* worker's model would have to re-warm
       // later; only release when nothing is waiting on it.
@@ -1692,6 +1708,70 @@ export class GpuWorkerManager {
     }
 
     return false;
+  }
+
+  /**
+   * Promise a busy machine's slot to a model that has none (gpu-scaler.ts
+   * pickHandover): it takes no new job (handoverHolds) and is released by
+   * releaseIdleWorkerForOtherModel once its current one ends. One promise at
+   * a time. Returns the tick reason, or null when none was made.
+   */
+  private static async reserveHandover(wantedModelKey: string, waitedMs: number): Promise<string | null> {
+    const live = await prisma.aiGpuWorker.findMany({
+      where: { ...RENTED_ONLY, ...NOT_LLM, terminatedAt: null, status: { in: ['ready', 'busy'] } },
+      select: { id: true, modelKey: true, metadata: true },
+    });
+    const pending = live.find((w) => readHandover(w.metadata));
+    if (pending) {
+      return `At worker capacity; machine #${pending.id} (${pending.modelKey}) hands its slot to ${readHandover(pending.metadata)} after its current job`;
+    }
+    const jobs = await prisma.aiGpuJob.findMany({
+      where: { workerId: { in: live.map((w) => w.id) }, status: { in: ['assigned', 'running'] } },
+      select: { workerId: true, startedAt: true, queuedAt: true },
+    });
+    const since = new Map(jobs.map((j) => [j.workerId, j.startedAt ?? j.queuedAt]));
+    const id = pickHandover(
+      wantedModelKey,
+      waitedMs,
+      live.map((w) => ({ id: w.id, modelKey: w.modelKey, busySince: since.get(w.id) ?? null }))
+    );
+    const chosen = live.find((w) => w.id === id);
+    if (!chosen) return null;
+
+    const fresh = await prisma.aiGpuWorker.findUnique({ where: { id: chosen.id }, select: { metadata: true } });
+    const metadata = (fresh?.metadata && typeof fresh.metadata === 'object' ? fresh.metadata : {}) as Record<string, unknown>;
+    await prisma.aiGpuWorker.update({
+      where: { id: chosen.id },
+      data: {
+        metadata: { ...metadata, handOverTo: { modelKey: wantedModelKey, at: new Date().toISOString() } } as Prisma.InputJsonValue,
+      },
+    });
+    const reason = `At worker capacity; ${wantedModelKey} waited ${Math.round(waitedMs / 60_000)} min with no machine — #${chosen.id} (${chosen.modelKey}) hands its slot over after its current job`;
+    console.log(`[gpu] ${reason}`);
+    return reason;
+  }
+
+  /**
+   * Machines promised to another model that still has work waiting: they take
+   * no new job. A promise whose model no longer waits is withdrawn and the
+   * machine works on.
+   */
+  static async handoverHolds(workers: Pick<AiGpuWorker, 'id' | 'metadata'>[]): Promise<Set<number>> {
+    const held = new Set<number>();
+    for (const worker of workers) {
+      const to = readHandover(worker.metadata);
+      if (!to) continue;
+      const waiting = await prisma.aiGpuJob.count({ where: { modelKey: to, status: 'queued' } });
+      if (waiting > 0) {
+        held.add(worker.id);
+        continue;
+      }
+      const fresh = await prisma.aiGpuWorker.findUnique({ where: { id: worker.id }, select: { metadata: true } });
+      const metadata = { ...((fresh?.metadata && typeof fresh.metadata === 'object' ? fresh.metadata : {}) as Record<string, unknown>) };
+      delete metadata.handOverTo;
+      await prisma.aiGpuWorker.update({ where: { id: worker.id }, data: { metadata: metadata as Prisma.InputJsonValue } });
+    }
+    return held;
   }
 
   /** Rank offers by the estimated cost of this model's work on each (offer-picker.ts). */
