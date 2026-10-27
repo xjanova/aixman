@@ -33,11 +33,23 @@ interface PoolAccount {
   lastError?: string;
 }
 
+interface ProviderOption {
+  id: number;
+  name: string;
+  slug: string;
+  isActive: boolean;
+}
+
+const EMPTY_ACCOUNT = { providerId: "", label: "", apiKey: "", apiSecret: "", dailyQuota: "1000", priority: "50", rotationMode: "round_robin" };
+
 export default function PoolsPage() {
   const [accounts, setAccounts] = useState<PoolAccount[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
-  const [newAccount, setNewAccount] = useState({ providerId: "", label: "", apiKey: "", apiSecret: "", dailyQuota: "1000", priority: "50", rotationMode: "round_robin" });
+  const [newAccount, setNewAccount] = useState(EMPTY_ACCOUNT);
+  const [providers, setProviders] = useState<ProviderOption[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [addError, setAddError] = useState("");
 
   const fetchPools = () => {
     setLoading(true);
@@ -64,14 +76,37 @@ export default function PoolsPage() {
     fetchPools();
   };
 
+  const openAdd = () => {
+    setAddError("");
+    setShowAddModal(true);
+    if (providers.length > 0) return;
+    fetch("/api/admin/providers")
+      .then((r) => r.json())
+      .then((data: { providers?: ProviderOption[] }) => setProviders(data.providers ?? []))
+      .catch(() => setAddError("โหลดรายชื่อผู้ให้บริการไม่ได้ ลองปิดแล้วเปิดใหม่"));
+  };
+
+  // The form stays open with what was typed until the server accepts it.
   const handleAdd = async () => {
-    await fetch("/api/admin/pools", {
+    if (saving) return;
+    if (!newAccount.providerId) return setAddError("เลือกผู้ให้บริการก่อน");
+    if (!newAccount.label.trim()) return setAddError("ตั้งชื่อ (Label) ก่อน");
+    if (!newAccount.apiKey.trim()) return setAddError("ใส่ API Key ก่อน");
+    setSaving(true);
+    setAddError("");
+    const r = await fetch("/api/admin/pools", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(newAccount),
-    });
+      body: JSON.stringify({ ...newAccount, label: newAccount.label.trim(), apiKey: newAccount.apiKey.trim() }),
+    }).catch(() => null);
+    setSaving(false);
+    if (!r) return setAddError("ติดต่อเซิร์ฟเวอร์ไม่ได้ ลองใหม่อีกครั้ง");
+    if (!r.ok) {
+      const data = (await r.json().catch(() => ({}))) as { error?: string };
+      return setAddError(data.error || `บันทึกไม่สำเร็จ (HTTP ${r.status})`);
+    }
     setShowAddModal(false);
-    setNewAccount({ providerId: "", label: "", apiKey: "", apiSecret: "", dailyQuota: "1000", priority: "50", rotationMode: "round_robin" });
+    setNewAccount(EMPTY_ACCOUNT);
     fetchPools();
   };
 
@@ -109,7 +144,7 @@ export default function PoolsPage() {
           <button onClick={fetchPools} className="p-2 rounded-lg glass-light hover:bg-surface-light transition-all">
             <RefreshCw className="w-4 h-4" />
           </button>
-          <button onClick={() => setShowAddModal(true)} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-primary to-secondary text-white text-sm font-medium">
+          <button onClick={openAdd} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-primary to-secondary text-white text-sm font-medium">
             <Plus className="w-4 h-4" /> เพิ่ม Account
           </button>
         </div>
@@ -198,6 +233,15 @@ export default function PoolsPage() {
             <h3 className="text-lg font-bold mb-4">เพิ่ม Account Pool</h3>
             <div className="space-y-3">
               <div>
+                <label className="text-xs text-muted mb-1 block">ผู้ให้บริการ</label>
+                <select value={newAccount.providerId} onChange={(e) => setNewAccount({...newAccount, providerId: e.target.value})} className="w-full p-2.5 rounded-lg bg-surface-light text-sm focus:outline-none focus:ring-1 focus:ring-primary/50">
+                  <option value="">{providers.length ? "— เลือก —" : "กำลังโหลด…"}</option>
+                  {providers.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}{p.isActive ? "" : " (ปิดอยู่)"}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
                 <label className="text-xs text-muted mb-1 block">Label</label>
                 <input value={newAccount.label} onChange={(e) => setNewAccount({...newAccount, label: e.target.value})} placeholder="เช่น BytePlus Account #1" className="w-full p-2.5 rounded-lg bg-surface-light text-sm focus:outline-none focus:ring-1 focus:ring-primary/50" />
               </div>
@@ -215,7 +259,7 @@ export default function PoolsPage() {
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="text-xs text-muted mb-1 block">Daily Quota</label>
+                  <label className="text-xs text-muted mb-1 block">Daily Quota (0 = ไม่จำกัด)</label>
                   <input value={newAccount.dailyQuota} onChange={(e) => setNewAccount({...newAccount, dailyQuota: e.target.value})} type="number" className="w-full p-2.5 rounded-lg bg-surface-light text-sm focus:outline-none focus:ring-1 focus:ring-primary/50" />
                 </div>
                 <div>
@@ -224,9 +268,10 @@ export default function PoolsPage() {
                 </div>
               </div>
             </div>
+            {addError && <p className="mt-4 text-sm text-error">{addError}</p>}
             <div className="flex justify-end gap-3 mt-6">
               <button onClick={() => setShowAddModal(false)} className="px-4 py-2 rounded-lg text-sm text-muted hover:text-foreground">ยกเลิก</button>
-              <button onClick={handleAdd} className="px-4 py-2 rounded-lg bg-gradient-to-r from-primary to-secondary text-white text-sm font-medium">บันทึก</button>
+              <button onClick={handleAdd} disabled={saving} className="px-4 py-2 rounded-lg bg-gradient-to-r from-primary to-secondary text-white text-sm font-medium disabled:opacity-60">{saving ? "กำลังบันทึก…" : "บันทึก"}</button>
             </div>
           </motion.div>
         </div>
