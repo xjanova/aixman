@@ -618,7 +618,11 @@ Code: `src/lib/story/{cinematic,service,http}.ts`, `/api/story/*`.
   film: an ACE-Step instrumental ordered and charged like any music order,
   `script_json.music`), ducking, Thai subs (ASS, bundled `assets/fonts/Sarabun-Bold.ttf`,
   OFL), blur over LTX's fake-sub band (only LTX shots; done on the *source*
-  frame before the fit), fades, title card. Assembly is free, runs on the web
+  frame before the fit), fades, title card. The customer picks separate shot
+  files (free) or the joined film, charged per started minute (`assemblePrice`,
+  ai_settings `story_assemble_credits_per_minute` 4 / `story_assemble_min_credits` 3);
+  the charge rides the claim transaction, the refund the one that ends a
+  failed cut. Assembly runs on the web
   server with the host's own ffmpeg (`~/bin/ffmpeg`, 7.0.2 static, not on PATH; `FFMPEG_PATH` overrides), niced, one film at a
   time in process (PM2 single instance), `status = 'assembling'` claimed
   conditionally; a claim older than 30 min may be retaken. Shot/plan writes
