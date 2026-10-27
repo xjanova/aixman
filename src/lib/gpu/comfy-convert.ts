@@ -127,6 +127,19 @@ function inputType(def: unknown): string | undefined {
   return typeof first === 'string' ? first : undefined;
 }
 
+/**
+ * Whether an input of this type takes a `widgets_values` slot. A V3 input that
+ * accepts several types declares them comma-joined ("FLOAT,INT") and names the
+ * widget it shows in `widgetType`; skipping it shifts every later value one
+ * slot — LTXVEmptyLatentAudio's frame rate (25) landed in batch_size and every
+ * LTX-2.5 render died in pack_latents.
+ */
+function isWidgetType(type: string | undefined, opts: Record<string, unknown> = {}): boolean {
+  if (typeof opts.widgetType === 'string') return WIDGET_TYPES.has(opts.widgetType.toUpperCase());
+  if (!type) return false;
+  return type.split(',').some((t) => WIDGET_TYPES.has(t.trim().toUpperCase()));
+}
+
 function inputOptions(def: unknown): Record<string, unknown> {
   const opts = Array.isArray(def) && def.length > 1 ? def[1] : undefined;
   return opts && typeof opts === 'object' ? (opts as Record<string, unknown>) : {};
@@ -165,7 +178,7 @@ function assignWidgets(
         continue;
       }
 
-      if (!type || !WIDGET_TYPES.has(type)) continue;
+      if (!isWidgetType(type, opts)) continue;
       const value = widgets[vi++];
       if (!(full in inputs)) inputs[full] = value;
       // A seed widget is followed by its control mode ("randomize" etc.), which
@@ -353,7 +366,7 @@ class Flattener {
     let vi = 0;
 
     (sub.inputs ?? []).forEach((boundaryInput, slot) => {
-      const isWidget = WIDGET_TYPES.has((boundaryInput.type || '').toUpperCase());
+      const isWidget = isWidgetType(boundaryInput.type);
       if (!isWidget) return;
 
       const value = values[vi++];

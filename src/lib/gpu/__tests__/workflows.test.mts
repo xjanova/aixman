@@ -307,6 +307,17 @@ test('LTX-2.5 with a first frame conditions both passes on it', () => {
   assert.equal(g['398_357'].inputs.strength, 0.7);
 });
 
+// "FLOAT,INT" frame_rate took no widget slot, so its 25 landed in batch_size and
+// the sampler could not pack 1 video latent with 25 audio ones (2026-10-27).
+test('LTX-2.5 makes one audio latent, at the frame rate, in every template', () => {
+  for (const job of [{ imageFilename: FIRST }, { imageFilename: undefined }, { imageFilename: FIRST, lastImageFilename: LAST }]) {
+    const g = build('ltx-2.5', job).graph;
+    const audio = Object.values(g).filter((n) => n.class_type === 'LTXVEmptyLatentAudio');
+    assert.equal(audio.length, 1);
+    assert.equal(audio[0].inputs.batch_size, 1, 'one audio latent per video');
+  }
+});
+
 test("LTX-2.5 gets the customer's prompt directly, never the template's enhancer", () => {
   const g = build('ltx-2.5', { prompt: '  นักร้องหญิงร้องเพลงบนเวที  ', seed: 41 }).graph;
   const classes = Object.values(g).map((n) => n.class_type);
