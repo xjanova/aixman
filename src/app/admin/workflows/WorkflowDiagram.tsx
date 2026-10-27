@@ -158,7 +158,9 @@ export default function WorkflowDiagram({
   }, [graph, marks]);
 
   return (
-    <div className="h-[640px] rounded-lg overflow-hidden border border-border bg-black/30">
+    // Shorter on phones: the pane takes every one-finger swipe (touch-action: none),
+    // so the page needs room around it to scroll past.
+    <div className="h-[420px] sm:h-[640px] rounded-lg overflow-hidden border border-border bg-black/30">
       <ReactFlow
         ariaLabelConfig={{
           "node.a11yDescription.default": "แผนภาพดูอย่างเดียว — คลิกโหนดเพื่อไปที่ช่องแก้ค่า",
@@ -171,7 +173,8 @@ export default function WorkflowDiagram({
         colorMode="dark"
         fitView
         fitViewOptions={{ padding: 0.08 }}
-        minZoom={0.1}
+        // Low enough for fitView to show LTX's whole graph in a phone-wide pane.
+        minZoom={0.04}
         maxZoom={2}
         nodesDraggable={false}
         nodesConnectable={false}
@@ -187,7 +190,8 @@ export default function WorkflowDiagram({
         <Background gap={24} size={1} color="#334155" />
         <Controls showInteractive={false} position="bottom-left" />
         {graph.nodes.length > 12 && (
-          <MiniMap pannable zoomable position="bottom-right" bgColor="rgba(2,6,23,0.85)" maskColor="rgba(15,23,42,0.6)"
+          // Hidden on phones: at 200×150 it would cover half of a phone-wide pane.
+          <MiniMap className="max-sm:hidden" pannable zoomable position="bottom-right" bgColor="rgba(2,6,23,0.85)" maskColor="rgba(15,23,42,0.6)"
             nodeColor={(n) => (n.type === "wf" ? SOURCE_COLOR[(n.data as WfNodeData).strongest].minimap : "transparent")} />
         )}
       </ReactFlow>

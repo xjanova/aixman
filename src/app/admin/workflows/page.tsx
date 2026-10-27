@@ -52,7 +52,7 @@ import type { GraphView } from "@/lib/gpu/workflow-graph";
 // React Flow only draws in a browser, and only once the tab is opened.
 const WorkflowDiagram = dynamic(() => import("./WorkflowDiagram"), {
   ssr: false,
-  loading: () => <div className="h-[640px] rounded-lg border border-border grid place-items-center text-sm text-muted">กำลังวาดกราฟ…</div>,
+  loading: () => <div className="h-[420px] sm:h-[640px] rounded-lg border border-border grid place-items-center text-sm text-muted">กำลังวาดกราฟ…</div>,
 });
 
 // ─── Types (mirroring /api/admin/workflows) ────────────────────────────
@@ -455,7 +455,9 @@ export default function AdminWorkflowsPage() {
   };
 
   return (
-    <div>
+    // inline-size containment: the admin <main> is a flex item, so without it the
+    // widest table here sets the page's width and a phone cuts the right side off.
+    <div className="[contain:inline-size]">
       <div className="flex items-start justify-between gap-4 mb-6 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
@@ -466,14 +468,14 @@ export default function AdminWorkflowsPage() {
             ทุกการบันทึกเป็นเวอร์ชันที่ย้อนกลับได้ ไม่ต้อง deploy
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="flex rounded-lg overflow-hidden border border-border">
+        <div className="flex min-w-0 max-w-full items-center gap-2">
+          <div className="flex min-w-0 rounded-lg overflow-x-auto border border-border">
             {([
               { key: "workflows" as const, label: "Workflow", icon: <Layers className="w-4 h-4" /> },
               { key: "assistant" as const, label: "ผู้ช่วยพรอมต์ AI", icon: <Sparkles className="w-4 h-4" /> },
             ]).map((t) => (
               <button key={t.key} onClick={() => setPageTab(t.key)}
-                className={`flex items-center gap-1.5 px-3 py-2 text-sm ${pageTab === t.key ? "bg-primary/20 text-white" : "text-muted hover:bg-surface-light"}`}>
+                className={`flex shrink-0 items-center gap-1.5 px-3 py-2 text-sm whitespace-nowrap ${pageTab === t.key ? "bg-primary/20 text-white" : "text-muted hover:bg-surface-light"}`}>
                 {t.icon}{t.label}
               </button>
             ))}
@@ -492,7 +494,7 @@ export default function AdminWorkflowsPage() {
           {!list && !listError && <div className="glass rounded-xl p-8 text-center text-muted">กำลังโหลด…</div>}
 
           {list && (
-            <div className="grid gap-3 mb-6" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(290px, 1fr))" }}>
+            <div className="grid gap-3 mb-6" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(min(290px, 100%), 1fr))" }}>
               {list.map((w) => (
                 <WorkflowCard key={w.key} w={w} active={selected === w.key} onOpen={() => open(w.key)} />
               ))}
@@ -515,7 +517,7 @@ export default function AdminWorkflowsPage() {
                     {dirty && <Pill cls="bg-amber-500/15 text-amber-300 border-amber-400/30">มีการแก้ไขที่ยังไม่บันทึก</Pill>}
                   </div>
                 </div>
-                <div className="flex rounded-lg overflow-hidden border border-border">
+                <div className="flex max-w-full rounded-lg overflow-x-auto border border-border">
                   {([
                     { key: "overview" as const, label: "ภาพรวม", icon: <Eye className="w-4 h-4" /> },
                     { key: "nodes" as const, label: "โหนดและการเชื่อม", icon: <Boxes className="w-4 h-4" /> },
@@ -524,7 +526,7 @@ export default function AdminWorkflowsPage() {
                     { key: "history" as const, label: "ประวัติ", icon: <History className="w-4 h-4" /> },
                   ]).map((t) => (
                     <button key={t.key} onClick={() => setTab(t.key)}
-                      className={`flex items-center gap-1.5 px-3 py-2 text-sm ${tab === t.key ? "bg-primary/20 text-white" : "text-muted hover:bg-surface-light"}`}>
+                      className={`flex shrink-0 items-center gap-1.5 px-3 py-2 text-sm whitespace-nowrap ${tab === t.key ? "bg-primary/20 text-white" : "text-muted hover:bg-surface-light"}`}>
                       {t.icon}{t.label}
                     </button>
                   ))}
@@ -600,7 +602,7 @@ function WorkflowCard({ w, active, onOpen }: { w: Summary; active: boolean; onOp
 function OverviewTab({ d }: { d: Detail }) {
   const s = d.summary;
   return (
-    <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))" }}>
+    <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(360px, 100%), 1fr))" }}>
       <Section title="เกี่ยวกับ workflow นี้" icon={<Workflow className="w-4 h-4 text-primary-light" />}>
         <p className="text-sm text-muted leading-relaxed">{s.description}</p>
         <div className="mt-3 text-sm space-y-1.5">
@@ -622,18 +624,20 @@ function OverviewTab({ d }: { d: Detail }) {
           <div><div className="text-muted text-xs">ดิสก์</div>{s.diskGb} GB</div>
           <div><div className="text-muted text-xs">สถาปัตยกรรม</div>{s.minArch ?? "ampere"}+</div>
         </div>
-        <table className="w-full text-xs">
-          <thead><tr className="text-muted border-b border-border"><th className="text-left py-1.5">ไฟล์</th><th className="text-left py-1.5">ปลายทาง</th><th className="text-right py-1.5">ขนาด</th></tr></thead>
-          <tbody>
-            {d.downloads.map((f) => (
-              <tr key={`${f.repo}/${f.file}`} className="border-b border-border/40">
-                <td className="py-1.5 pr-2"><div className="font-mono break-all">{f.as ?? f.file.split("/").pop()}</div><div className="text-muted">{f.repo}</div></td>
-                <td className="py-1.5 font-mono">{f.dest}</td>
-                <td className="py-1.5 text-right whitespace-nowrap">{gb(f.bytes)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead><tr className="text-muted border-b border-border"><th className="text-left py-1.5">ไฟล์</th><th className="text-left py-1.5">ปลายทาง</th><th className="text-right py-1.5">ขนาด</th></tr></thead>
+            <tbody>
+              {d.downloads.map((f) => (
+                <tr key={`${f.repo}/${f.file}`} className="border-b border-border/40">
+                  <td className="py-1.5 pr-2"><div className="font-mono break-all">{f.as ?? f.file.split("/").pop()}</div><div className="text-muted">{f.repo}</div></td>
+                  <td className="py-1.5 font-mono">{f.dest}</td>
+                  <td className="py-1.5 text-right whitespace-nowrap">{gb(f.bytes)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
         {s.customNodes.length > 0 && (
           <div className="mt-2 text-xs text-muted">custom nodes: {s.customNodes.map((c) => c.repo).join(", ")}</div>
         )}
@@ -1141,7 +1145,7 @@ function EditTabs({
           )}
           {groups.map(([g, items]) => (
             <Section key={g} title={GROUP_LABEL[g] ?? g} icon={<Wand2 className="w-4 h-4 text-primary-light" />}>
-              <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))" }}>
+              <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(min(300px, 100%), 1fr))" }}>
                 {items.map((t) => (
                   <div key={t.id} id={`wf-tunable-${t.id}`} className="rounded-lg">
                     <TunableField t={t} value={draft.tuning[t.id]} onChange={(v) => set("tuning", { ...draft.tuning, [t.id]: v })} />
@@ -1180,7 +1184,7 @@ function EditTabs({
           )}
 
           <Section title="เติมข้อความให้พรอมต์ทุกงาน" icon={<Wand2 className="w-4 h-4 text-primary-light" />}>
-            <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" }}>
+            <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(280px, 100%), 1fr))" }}>
               <div>
                 <label className="text-xs text-muted mb-1 block">นำหน้า</label>
                 <textarea value={draft.promptPrefix} onChange={(e) => set("promptPrefix", e.target.value)} rows={2} className={`${input} resize-y`} placeholder="เช่น Photograph:" />
@@ -1235,7 +1239,7 @@ function EditTabs({
             {draft.nodeInputs.length === 0 ? (
               <div className="text-xs text-muted">ยังไม่มี — ใช้เขียนค่าใดก็ได้ลง input ของโหนดในกราฟ (เขียนทับค่าของแคตตาล็อก) เช่น <span className="font-mono">76_3 · denoise · 0.95</span> · ค่าที่เป็น JSON (ตัวเลข true/false [&quot;โหนด&quot;,0]) จะถูกแปลงชนิดให้</div>
             ) : (
-              <div className="space-y-2">
+              <div className="space-y-2 overflow-x-auto">
                 {draft.nodeInputs.map((row, i) => {
                   const node = nodeOptions.find((n) => n.id === row.nodeId);
                   const update = (patch: Partial<Draft["nodeInputs"][number]>) =>
@@ -1496,7 +1500,7 @@ function AssistantPanel({ workflows }: { workflows: Summary[] }) {
           สำหรับ MiniMax H3 ที่เช่าเครื่องรันเอง ระบบใช้ H3-Context-IR ของ MiniMax (ขั้นตอนที่ MiniMax บอกว่าสำคัญต่อคุณภาพที่สุดแต่ไม่ได้เปิดซอร์ส) เมื่อมีคีย์ MiniMax
           ถ้าไม่มีคีย์ใดเลยจะใช้กฎพื้นฐานที่รู้จักรูปแบบพรอมต์ของแต่ละโมเดล
         </p>
-        <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}>
+        <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(260px, 100%), 1fr))" }}>
           <div>
             <label className="text-xs text-muted mb-1 block">ผู้ให้บริการ</label>
             <select value={cfg.provider} onChange={(e) => setCfg({ ...cfg, provider: e.target.value as EnhancerConfig["provider"] })} className={input}>
@@ -1527,7 +1531,7 @@ function AssistantPanel({ workflows }: { workflows: Summary[] }) {
 
         <details className="mt-4">
           <summary className="text-xs text-muted cursor-pointer">คำสั่งที่ส่งให้ AI (เว้นว่าง = ใช้คำสั่งในตัวที่เขียนตามคู่มือของแต่ละโมเดล)</summary>
-          <div className="grid gap-3 mt-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))" }}>
+          <div className="grid gap-3 mt-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(300px, 100%), 1fr))" }}>
             {(["image", "video", "audio"] as const).map((k) => (
               <div key={k}>
                 <label className="text-xs text-muted mb-1 block">{k === "image" ? "ภาพ" : k === "video" ? "วิดีโอ (ใช้แทนคู่มือ H3 ด้วย ถ้าใส่)" : "เพลง"}</label>
