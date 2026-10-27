@@ -30,6 +30,7 @@ import {
   type NamedTunnel,
 } from '@/lib/gpu/cf-tunnel';
 import { clearSchema } from '@/lib/gpu/comfy-validate';
+import { isHostFault, judgeBoot, noteBootProgress, readBootProgress, type BootReading } from '@/lib/gpu/boot-watch';
 import { COMMUNITY_BODY_LIMITS, readCapped } from '@/lib/gpu/worker-client';
 import {
   COMMUNITY_PROVIDER_SLUGS,
@@ -93,12 +94,6 @@ const HOURS_PER_MONTH = 730;
 const BOOT_FAILURE_BACKOFF_MS = 10 * 60_000;
 /** Termination reason for a boot the worker itself reported as failed. */
 const BOOT_FAILURE_PREFIX = 'Worker failed to provision';
-/**
- * A boot failure that is the host's fault, not the model's: the driver is
- * older than the image or no GPU was attached. Another host will do fine, so
- * this host is avoided instead of the whole model being paused.
- */
-const HOST_FAULT = /CUDA is unavailable/i;
 
 /** Offers we stop trusting for a while, keyed by offer id, in ai_settings. */
 const OFFER_PENALTY_KEY = 'gpu_offer_penalties';
@@ -173,6 +168,10 @@ export interface WorkerProbe {
    * answers by itself (HTML 502/530) while the connector is not up yet.
    */
   reached?: boolean;
+  /** The proxy's boot stage ('downloading', 'starting') while not ready. */
+  stage?: string;
+  /** Weight bytes on disk so far, while downloading. */
+  bytes?: number;
 }
 
 export type WorkerStatus =
@@ -409,10 +408,11 @@ export class GpuWorkerManager {
         return { state: 'ready', reached };
       }
       if (body?.failed) return { state: 'failed', detail: body.failed, reached };
-      if (body?.stage === 'downloading' && typeof body.bytes === 'number') {
-        return { state: 'warming', detail: `downloading weights, ${(body.bytes / 1024 ** 3).toFixed(1)} GB so far`, reached };
+      const stage = typeof body?.stage === 'string' ? body.stage.slice(0, 40) : undefined;
+      if (stage === 'downloading' && typeof body?.bytes === 'number') {
+        return { state: 'warming', detail: `downloading weights, ${(body.bytes / 1024 ** 3).toFixed(1)} GB so far`, reached, stage, bytes: body.bytes };
       }
-      return { state: 'warming', detail: body?.stage ? `${body.stage}` : `HTTP ${res.status}`, reached };
+      return { state: 'warming', detail: stage ?? `HTTP ${res.status}`, reached, stage };
     } catch {
       return { state: 'warming', detail: 'not reachable yet' };
     } finally {
@@ -693,6 +693,9 @@ export class GpuWorkerManager {
       }
 
       if (instance.status !== 'running' || !endpoint) {
+        if (await this.watchBoot(worker, { mark: `${instance.status}: ${instance.statusMessage ?? ''}`.slice(0, 120) }, ageMs, cfg, now)) {
+          return;
+        }
         if (worker.status !== 'warming' && instance.status === 'running') {
           await prisma.aiGpuWorker.update({ where: { id: worker.id }, data: { status: 'warming' } });
         }
@@ -701,15 +704,21 @@ export class GpuWorkerManager {
 
       const probe = await this.probe(endpoint, profile, this.readAuthToken(worker));
       if (namedTunnel && probe.reached && !tunnelUp) await this.markTunnelUp(worker.id, now);
+      if (
+        probe.state === 'warming' &&
+        (await this.watchBoot(worker, { mark: probe.stage ?? probe.detail ?? 'warming', bytes: probe.bytes }, ageMs, cfg, now))
+      ) {
+        return;
+      }
       if (probe.state === 'failed') {
         // The disk goes with the machine; keep the evidence first. Found on
         // the first real rental: the one-line failure said "No module named
         // sqlalchemy", and the pip error that explained it died with the box.
         await this.preserveBootLog(worker);
         await this.terminate(worker.id, `${BOOT_FAILURE_PREFIX}: ${probe.detail ?? 'unknown'}`);
-        const hostFault = HOST_FAULT.test(probe.detail ?? '');
+        const hostFault = isHostFault(probe.detail);
         if (hostFault) {
-          await this.penalizeWorkerOffer(worker, HOST_FAILURE_PENALTY_MS, 'no usable CUDA');
+          await this.penalizeWorkerOffer(worker, HOST_FAILURE_PENALTY_MS, 'host fault (no usable CUDA or its network dropped a download)');
         }
         raiseAlert({
           type: 'boot-failed',
@@ -1241,15 +1250,18 @@ export class GpuWorkerManager {
     // weight file gone from the repo, a broken ComfyUI requirement). Pause
     // before paying for the next attempt, and say why.
     // A failure that was the host's own is handled by avoiding that host.
-    const recentBootFailure = await prisma.aiGpuWorker.findFirst({
-      where: {
-        modelKey,
-        terminatedAt: { gte: new Date(Date.now() - BOOT_FAILURE_BACKOFF_MS) },
-        lastError: { startsWith: BOOT_FAILURE_PREFIX },
-        NOT: { lastError: { contains: 'CUDA is unavailable' } },
-      },
-      orderBy: { terminatedAt: 'desc' },
-    });
+    const recentBootFailure = (
+      await prisma.aiGpuWorker.findMany({
+        where: {
+          modelKey,
+          terminatedAt: { gte: new Date(Date.now() - BOOT_FAILURE_BACKOFF_MS) },
+          lastError: { startsWith: BOOT_FAILURE_PREFIX },
+        },
+        orderBy: { terminatedAt: 'desc' },
+        select: { lastError: true },
+        take: 10,
+      })
+    ).find((w) => !isHostFault(w.lastError));
     if (recentBootFailure) {
       return {
         reason: `Waiting before re-renting after a failed boot — ${recentBootFailure.lastError}`.slice(0, 500),
@@ -1952,6 +1964,61 @@ export class GpuWorkerManager {
   }
 
   /** Our proxy answered through the named tunnel once: the host is not dead. */
+  /**
+   * Record this tick's boot reading and end a boot that has stalled or cannot
+   * finish inside the warmup limit (boot-watch.ts). True when it was ended.
+   * The host is avoided like any that never became ready; the scaler sees the
+   * slot free and rents a replacement on the next tick.
+   */
+  private static async watchBoot(
+    worker: AiGpuWorker,
+    reading: BootReading,
+    ageMs: number,
+    cfg: GpuBudgetConfig,
+    now: Date
+  ): Promise<boolean> {
+    const prev = readBootProgress(worker.metadata);
+    const progress = noteBootProgress(prev, reading, now.getTime());
+    if (progress !== prev) {
+      const fresh = await prisma.aiGpuWorker.findUnique({ where: { id: worker.id }, select: { metadata: true } });
+      const metadata = (fresh?.metadata && typeof fresh.metadata === 'object' ? fresh.metadata : {}) as Record<string, unknown>;
+      await prisma.aiGpuWorker.update({
+        where: { id: worker.id },
+        data: { metadata: { ...metadata, bootProgress: { ...progress } } as Prisma.InputJsonValue },
+      });
+    }
+
+    const picked = Number((worker.metadata as { pick?: { bootSeconds?: unknown } } | null)?.pick?.bootSeconds);
+    const expectedBootSeconds = picked > 0 ? picked : await GpuEta.typicalBootSeconds(worker.modelKey);
+    const entry = getCatalogEntry(worker.modelKey);
+    const verdict = judgeBoot({
+      ageMs,
+      now: now.getTime(),
+      expectedBootSeconds,
+      warmupTimeoutMs: cfg.warmupTimeoutMinutes * 60_000,
+      progress,
+      totalBytes: entry ? downloadBytes(entry) : getLlmEntry(worker.modelKey)?.bytes,
+    });
+    if (!verdict.stalled) return false;
+
+    if (worker.endpoint) await this.preserveBootLog(worker);
+    await this.terminate(worker.id, verdict.reason);
+    await this.penalizeWorkerOffer(worker, HOST_FAILURE_PENALTY_MS, 'boot stalled');
+    raiseAlert({
+      type: 'boot-failed',
+      key: String(worker.id),
+      level: 'warning',
+      title: 'เครื่องบูตค้างหรือโหลดช้าเกินไป — ปิดทิ้งแล้ว เช่าเครื่องใหม่แทน',
+      lines: [
+        `เครื่อง #${worker.id} ${worker.gpuModel ?? ''} ที่ ${worker.providerSlug} (${worker.modelKey}) อายุ ${Math.round(ageMs / 60_000)} นาที`,
+        `สาเหตุ: ${verdict.reason}`,
+        'ระบบหลบเครื่องนี้ 3 ชั่วโมง งานที่รออยู่จะไปเครื่องใหม่',
+      ],
+    });
+    console.log(`[gpu] worker #${worker.id} (${worker.modelKey}) ended: ${verdict.reason}`);
+    return true;
+  }
+
   private static async markTunnelUp(workerId: number, at: Date): Promise<void> {
     const fresh = await prisma.aiGpuWorker.findUnique({ where: { id: workerId }, select: { metadata: true } });
     const metadata = (fresh?.metadata && typeof fresh.metadata === 'object' ? fresh.metadata : {}) as Record<string, unknown>;

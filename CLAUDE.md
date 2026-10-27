@@ -175,6 +175,15 @@ generating. Consequences that must never be regressed:
   that failed a model with OOM/no-kernel before ever completing it is kept off
   that model for 24 h, and the failure does not count against the model. A
   family that has completed the model's work is never banned.
+- Boot watch (`boot-watch.ts`, `metadata.bootProgress`): a booting machine is
+  judged against its own estimate (`metadata.pick.bootSeconds`, else the
+  model's median) and its progress, not only the flat warmup limit. Past
+  max(15 min, 3 × estimate) with nothing moving for 8 min (15 in the
+  `starting` stage) → ended, host avoided 3 h, the scaler rents a replacement.
+  A download whose measured rate cannot finish inside the limit is ended at
+  once. A boot that keeps moving is never cut early. Network faults during a
+  boot (pip ProtocolError, DNS…) are the host's (`isHostFault`): that host is
+  avoided, the model is not paused for 10 min.
 - The orphan sweep only terminates instances named `aixman-*`. Never name an
   unrelated SimplePod instance with that prefix.
 - Results **must** go to R2 before the worker is reaped — the tunnel URL dies
