@@ -32,6 +32,7 @@ import {
 import { clearSchema } from '@/lib/gpu/comfy-validate';
 import { isHostFault, judgeBoot, noteBootProgress, readBootProgress, type BootReading } from '@/lib/gpu/boot-watch';
 import { machineKeyOf, machineKeyOfRow, summarizeHosts, type HostRecord } from '@/lib/gpu/host-record';
+import { ingressTerms, ingressUsd, keepWarmMinutes, readIngress, rentalCostUsd } from '@/lib/gpu/rental-cost';
 import { COMMUNITY_BODY_LIMITS, readCapped } from '@/lib/gpu/worker-client';
 import {
   COMMUNITY_PROVIDER_SLUGS,
@@ -349,20 +350,17 @@ export class GpuWorkerManager {
   // ----------------------------------------------------------------
 
   /**
-   * Uptime cost accrued between `rentedAt` and `until` (or termination).
-   *
-   * This is an estimate covering GPU-hours only — the vendor also bills for
-   * disk and storage, so treat it as a floor. The vendor's own balance is
-   * checked before every rental as the authoritative backstop.
+   * Cost accrued between `rentedAt` and `until` (or termination): uptime at
+   * the hourly price (GPU + disk) plus the host's download fees
+   * (rental-cost.ts). Still a floor — pip packages and the image pull are not
+   * measured — so the vendor's own balance, checked before every rental,
+   * stays the backstop.
    */
   static accruedCostUsd(
-    worker: Pick<AiGpuWorker, 'rentedAt' | 'terminatedAt' | 'pricePerHourUsd'>,
+    worker: Pick<AiGpuWorker, 'rentedAt' | 'terminatedAt' | 'pricePerHourUsd' | 'readyAt' | 'metadata'>,
     until: Date = new Date()
   ): number {
-    const end = worker.terminatedAt && worker.terminatedAt < until ? worker.terminatedAt : until;
-    const ms = end.getTime() - worker.rentedAt.getTime();
-    if (ms <= 0) return 0;
-    return (ms / 3_600_000) * Number(worker.pricePerHourUsd);
+    return rentalCostUsd(worker, until);
   }
 
   /**
@@ -379,16 +377,17 @@ export class GpuWorkerManager {
         OR: [{ terminatedAt: null }, { terminatedAt: { gte: startOfDay } }],
         ...(scope === 'media' ? NOT_LLM : scope === 'llm' ? LLM_ONLY : {}),
       },
-      select: { rentedAt: true, terminatedAt: true, pricePerHourUsd: true },
+      select: { rentedAt: true, terminatedAt: true, readyAt: true, pricePerHourUsd: true, metadata: true },
     });
 
     return workers.reduce((sum, w) => {
-      // Only the slice of this worker's life that falls inside today counts.
+      // Only the slice of this worker's life that falls inside today counts;
+      // its downloads count on the day it was rented.
       const from = w.rentedAt > startOfDay ? w.rentedAt : startOfDay;
       const to = w.terminatedAt && w.terminatedAt < now ? w.terminatedAt : now;
-      const ms = to.getTime() - from.getTime();
-      if (ms <= 0) return sum;
-      return sum + (ms / 3_600_000) * Number(w.pricePerHourUsd);
+      const ms = Math.max(0, to.getTime() - from.getTime());
+      const downloads = w.rentedAt >= startOfDay ? ingressUsd(w) : 0;
+      return sum + (ms / 3_600_000) * Number(w.pricePerHourUsd) + downloads;
     }, 0);
   }
 
@@ -786,14 +785,23 @@ export class GpuWorkerManager {
 
       const since = worker.lastJobAt ?? worker.readyAt ?? worker.rentedAt;
       const idleMs = now.getTime() - since.getTime();
-      if (idleMs > cfg.idleTimeoutMinutes * 60_000) {
+      // A machine that was dear to boot waits until another boot would have
+      // cost more than its idle time (rental-cost.ts keepWarmMinutes): an LTX
+      // film ordered in waves rented 17 machines, each pulling 40 GB again.
+      const idleLimitMinutes = keepWarmMinutes({
+        idleTimeoutMinutes: cfg.idleTimeoutMinutes,
+        pricePerHourUsd: Number(worker.pricePerHourUsd),
+        bootSeconds: worker.readyAt ? (worker.readyAt.getTime() - worker.rentedAt.getTime()) / 1000 : 0,
+        ingress: readIngress(worker.metadata),
+      });
+      if (idleMs > idleLimitMinutes * 60_000) {
         // A customer still on the studio with this model selected is likely
         // about to order again — a few minutes' grace beats making them wait
         // for a fresh boot. Bounded, so an open tab cannot keep a machine up.
         // Only the machine that customer would be served by next — the most
         // recently used one of its model — waits; extra machines rented for a
         // burst close on the plain idle timeout once the burst is over.
-        const graceMs = (cfg.idleTimeoutMinutes + cfg.presenceExtensionMinutes) * 60_000;
+        const graceMs = (idleLimitMinutes + cfg.presenceExtensionMinutes) * 60_000;
         if (
           cfg.presenceExtensionMinutes > 0 &&
           idleMs <= graceMs &&
@@ -1205,7 +1213,9 @@ export class GpuWorkerManager {
         renderSeconds,
         bootSeconds,
         hourlyUsd,
-        idleTailSeconds: cfg.idleTimeoutMinutes * 60,
+        // An extra machine waits out its keep-warm time before it closes.
+        idleTailSeconds:
+          keepWarmMinutes({ idleTimeoutMinutes: cfg.idleTimeoutMinutes, pricePerHourUsd: hourlyUsd, bootSeconds, ingress: null }) * 60,
         waitValueUsdPerHour: cfg.waitValueUsdPerHour,
         maxAdd: Math.max(1, cfg.maxConcurrentWorkers - serving),
       });
@@ -1988,8 +1998,8 @@ export class GpuWorkerManager {
       // Its share of what is waiting, counting itself among the machines.
       jobsExpected: Math.max(1, Math.ceil(queued / (serving + 1))),
       bootingOnOffer,
-      // Every machine idles this long after its last job before the reaper
-      // releases it (a customer on the studio can extend it, not shorten it).
+      // Every machine idles at least this long after its last job before the
+      // reaper releases it (longer when its boot was dear, rental-cost.ts).
       idleTailSeconds: cfg.idleTimeoutMinutes * 60,
       waitValueUsdPerHour: cfg.waitValueUsdPerHour,
     });
@@ -2028,6 +2038,11 @@ export class GpuWorkerManager {
     // everything — no custom Docker build is needed. A 'simple' profile points
     // at an image that serves itself, so it only gets the env exports.
     const llmEntry = getLlmEntry(modelKey);
+    const catalogEntry = getCatalogEntry(modelKey);
+    const ingress = ingressTerms(
+      offer.ingressUsdPerGb,
+      (llmEntry?.bytes ?? (catalogEntry ? downloadBytes(catalogEntry) : 0)) / 1e9
+    );
     const scriptFor = (scriptEnv: Record<string, string>, hfToken: string | undefined) =>
       profile.apiKind === 'vllm' && llmEntry
         ? buildVllmStartScript({ publicPort: profile.apiPort, entry: llmEntry, hfToken, env: scriptEnv, tunnel })
@@ -2118,6 +2133,8 @@ export class GpuWorkerManager {
               ? { namedTunnel: { tunnelId: named.tunnelId, dnsRecordId: named.dnsRecordId, hostname: named.hostname } }
               : {}),
             ...(pick ? { pick: pick as Prisma.InputJsonValue } : {}),
+            // What the host bills per GB downloaded, and how much a full boot pulls.
+            ...(ingress ? { ingress: { usdPerGb: ingress.usdPerGb, gb: ingress.gb } } : {}),
           },
         },
       });

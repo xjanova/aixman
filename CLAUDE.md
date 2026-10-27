@@ -136,6 +136,12 @@ generating. Consequences that must never be regressed:
   (`GpuQueue.fastTick`) that only collects finished renders and feeds idle
   machines — it never rents, reaps or sweeps. Keep both on the one loop: a
   second timer could hold the lock when the reaping tick is due.
+- **Cost = uptime × hourly price + download fees** (`rental-cost.ts
+  rentalCostUsd`, behind `accruedCostUsd`, `todaySpendUsd`, the daily report).
+  A Vast host bills each GB downloaded (`inet_down_cost`); the rate and a full
+  boot's GB are stored at rent (`metadata.ingress`), charged in full once the
+  machine is ready, else for the bytes on its disk. Still a floor (pip and the
+  image pull are not measured) — the vendor balance is the backstop.
 - Budget caps live in `ai_settings` group `gpu` and are read fresh every tick:
   `gpu_daily_budget_usd`, `gpu_max_concurrent_workers`, `gpu_idle_timeout_minutes`,
   `gpu_max_worker_lifetime_minutes` (absolute kill switch).
@@ -157,8 +163,12 @@ generating. Consequences that must never be regressed:
   job (`handoverHolds`) and is released when its current one ends — a long
   backlog never goes idle, so idle-release alone starved a song behind a
   60-shot film. One promise at a time; withdrawn when nothing waits for it.
-  Extra machines close on the plain idle timeout; only the
-  warmest idle machine per model gets the studio-presence grace.
+  An idle machine closes at its **keep-warm** time (`rental-cost.ts
+  keepWarmMinutes`): the idle timeout, or longer when its own boot was dear —
+  until the idle minutes would cost more than booting again (its boot minutes +
+  the host's download fees; ski-rental break-even), at most 20 min. An LTX
+  film ordered in waves had rented 17 machines, each pulling 40 GB again. Only
+  the warmest idle machine per model gets the studio-presence grace on top.
 - Pre-warm (`GpuQueue.prewarm`, `gpu_prewarm_cooldown_minutes`, default 30,
   0 = off): a customer whose credits cover the model's smallest order *arriving*
   on the studio (from 25 s on the model — the studio auto-selects and pings on

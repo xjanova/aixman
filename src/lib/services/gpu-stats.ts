@@ -1,4 +1,5 @@
 import prisma from '@/lib/db';
+import { ingressUsd } from '@/lib/gpu/rental-cost';
 
 /**
  * Day-by-day money and output of the rented GPUs — shared by the admin
@@ -44,6 +45,8 @@ interface WorkerSpan {
   pricePerHourUsd: unknown;
   rentedAt: Date;
   terminatedAt: Date | null;
+  readyAt: Date | null;
+  metadata: unknown;
 }
 
 interface JobOutcome {
@@ -81,6 +84,9 @@ export function buildDailyBuckets(
   }
 
   for (const w of workers) {
+    // Download fees land on the day the machine was rented.
+    const rentDay = buckets.get(dayKey(w.rentedAt));
+    if (rentDay) rentDay.spendUsd += ingressUsd(w);
     const rate = Number(w.pricePerHourUsd);
     if (rate <= 0) continue;
     const end = w.terminatedAt && w.terminatedAt < now ? w.terminatedAt : now;
@@ -125,7 +131,7 @@ export async function loadRecentDaily(
     }),
     prisma.aiGpuWorker.findMany({
       where: { OR: [{ terminatedAt: null }, { terminatedAt: { gte: since } }] },
-      select: { pricePerHourUsd: true, rentedAt: true, terminatedAt: true },
+      select: { pricePerHourUsd: true, rentedAt: true, terminatedAt: true, readyAt: true, metadata: true },
     }),
     prisma.aiGpuJob.findMany({
       where: { queuedAt: { gte: since } },
