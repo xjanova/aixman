@@ -651,16 +651,54 @@ A project (`ai_story_projects`) is a story or a song cut into shots
 `GenerationService.generate` (content gate, readiness, price, refunds) on the
 model the customer picks per shot — `MOVIE_MODEL_KEYS` (`ltx-2.5`, `minimax-h3`).
 Code: `src/lib/story/{cinematic,service,http}.ts`, `/api/story/*`.
-- **Same face every shot:** the shot's first character's uploaded picture is the
-  first frame. A character-led wide/full shot never pushes in (`safeCamera`) —
+- **Same face every shot:** the shot's opening picture (below) when it has one
+  and the customer keeps it (`keyframe_use`), else its first character's
+  uploaded picture, is the first frame. A character-led wide/full shot never pushes in (`safeCamera`) —
   that is where faces were replaced. Pictures must be the user's own uploads
   (`uploads/<userId>/image/…`, `isOwnUpload`).
+- **Reference library** (`library.ts` pure + tests, migration
+  `20261028_story_structure.sql`): `ai_story_characters` rows with `kind`
+  character (≤ 8) | prop (≤ 12, weapons, vehicles) | location (≤ 12), each with
+  up to 4 pictures (`reference_url` = main, `images` = other angles) — the
+  customer's own uploads, or an AI picture ordered from its description
+  (`/api/story/[id]/assets` `picture`, a studio order, 60/h per customer).
+  Shots name `characterIds`, `propIds`, `locationId` (null = its scene's).
+- **Acts → scenes → shots** (`ai_story_acts`, `ai_story_scenes`, shot
+  `scene_id`). A film's plan is a structure call first (acts, scenes, places,
+  times, and new places/props it needs — created in the save transaction,
+  origin `planned`; negative ids until then), then scene groups of about
+  `FILM_PART_SECONDS` (60) planned at once (`structure.ts`). Structure fails →
+  the old outline/parts planner (`planLongFilm`) → one call → the rules. An
+  MV's scenes are its song's sections. Every plan runs after the response
+  (`plan-jobs.ts`, in process, 202 + `planning`) — Apache in front would cut a
+  minutes-long request. `{sceneIds}` on `/plan` re-plans only those scenes
+  (an act = its scenes): their shots are replaced in place (`spliceScene`),
+  the rest of the film is untouched. Acts and scenes are edited by hand on
+  `/structure`; `+ ช็อตในฉาก` inserts after the scene's last shot.
+- **Opening picture (keyframe)** (`keyframes.ts`, `/api/story/[id]/keyframes`):
+  an image model that takes several references composes the shot's
+  characters, props and place (`pickReferences`: every item's main picture,
+  characters first, then extra angles up to the model's cap) into the clip's
+  first frame; `keyframePrompt` says which image is which. A studio order with
+  `referenceImages` (`deferApi`: runs after the response, ApiOrderSweep
+  settles). The project picks the model (`script_json.pictures`); every image
+  model is listed with what it takes. Without a model that takes references
+  the clip starts from the lead's photo as before. A shot whose picture is
+  rendering cannot be rendered, re-planned or deleted (`isBusyShot`;
+  `keyframe_status` is nullable — a Prisma `not` alone skips NULL rows).
+- **How many references a model takes** (`src/lib/reference-caps.ts`,
+  `/api/models` `references`, shown on every picker): what *our adapter*
+  forwards, not what the vendor advertises — Seedream 4+ 10 (≤ 14 by
+  `defaultParams.maxReferenceImages`), gpt-image 16, SeedEdit/DALL·E 2/Kontext/
+  img2img 1, everything else 0; a video model says first / first+last frame.
+  `GenerationService.checkReferences` refuses more than the cap and any URL
+  that is not ours (`keyFromPublicUrl`).
+- **Retention never deletes a story's pictures** (`retention.ts`): keys under
+  `story/` and every key a library picture or keyframe points to are skipped,
+  even when an old generation's params name them. Shot clips (`generations/…`)
+  still expire with their generation.
 - **Film length** (`FILM_LENGTHS`: auto, 1/3/5/10 min, `script_json.targetSeconds`;
-  60 shots, cut ≤ `LIMITS.maxFilmSeconds` 600). Past one part
-  (`FILM_PART_SECONDS` 120) the plan is an outline call, then every part's
-  shots at once (`planLongFilm`); a failed part is laid out by the rules from its
-  outline line. It runs after the response (`plan-jobs.ts`, in process, 202 +
-  `planning`) — Apache in front would cut a minutes-long request.
+  60 shots, cut ≤ `LIMITS.maxFilmSeconds` 600).
 - **MV timing is ours, not the LLM's:** `songTimeline` lays the lyrics over the
   song's length (read server-side from the file, ≤ 6 min); the planner model
   only writes pictures. Any planner failure falls back to `planFromRules`.
@@ -668,7 +706,7 @@ Code: `src/lib/story/{cinematic,service,http}.ts`, `/api/story/*`.
   phase-2 assembly (one file, blurred band + real Thai subs, music) must cover them.
 - A shot is claimed with a conditional update (→ `rendering`, unlinked from
   its old order) before ordering; replanning, editing and deleting refuse
-  rendering shots. A claim with no order after 10 min is released as failed.
+  rendering shots (and shots whose opening picture is rendering). A claim with no order after 10 min is released as failed.
 - **Phase 2 — one film** (`edit.ts` pure + tests, `assemble.ts`,
   `/api/story/[id]/{assemble,music}`). Every part is the customer's switch,
   stored in `script_json.edit` (no column): clip sound, music (MV: its song;

@@ -37,6 +37,11 @@ would be unsafe (e.g. would drop legacy tables that still hold data).
   vocal, separated or uploaded) and `ai_story_shots.lipsync_*` (each shot's
   LatentSync dub). Additive; apply before the code — Prisma reads every
   column of these tables, so the code before the columns breaks `/movie`.
+- `20261028_story_structure.sql` — the project's reference library
+  (`ai_story_characters.kind` character/prop/location, extra `images`, an AI
+  picture's `image_*`), `ai_story_acts`, `ai_story_scenes`, and on
+  `ai_story_shots` the scene, props, location and opening picture
+  (`keyframe_*`). Additive; apply before the code — Prisma reads every column.
 - `20260925c_gpu_ledger.sql` — `ai_gpu_jobs.free_share`, `pro`, `owner_user_id`
   and `review_reason`: stamped when a community (GPUxMINE) machine claims a job,
   read when its `gpu_job_earnings` row is written after delivery. Apply before

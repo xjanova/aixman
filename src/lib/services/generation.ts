@@ -5,7 +5,8 @@ import { getProvider } from '@/lib/providers';
 import { getGpuProvider } from '@/lib/gpu';
 import { AccountPoolManager } from './account-pool';
 import { ModelReadiness, TUNING_MESSAGE } from './model-readiness';
-import { persistAssetSafe, isStorageConfigured } from '@/lib/storage/r2';
+import { persistAssetSafe, isStorageConfigured, keyFromPublicUrl } from '@/lib/storage/r2';
+import { referenceCaps } from '@/lib/reference-caps';
 import type { GenerationRequest, GenerationResult, ProviderSlug } from '@/types';
 import { fitFrame } from '@/lib/gpu/frame';
 import { getCatalogEntry, isAdminOnlyPreset, isCommunityOnlyModel, isRetiredCatalogKey, orderNeedsProviderAccount } from '@/lib/gpu/catalog';
@@ -64,6 +65,12 @@ export class GenerationService {
        * does not apply to it. It still never goes to a community machine.
        */
       inputIsOwnRender?: boolean;
+      /**
+       * Run an API order after the response, as video lip-sync does, and
+       * answer `processing` at once: the movie studio orders a whole scene's
+       * opening pictures in one request and polls them.
+       */
+      deferApi?: boolean;
     } = {}
   ): Promise<GenerationResult> {
     // 1. Get the model and provider info
@@ -101,9 +108,12 @@ export class GenerationService {
     // whether a GPUxMINE home PC may ever see it. A style's suffix and song
     // lyrics are words the model reads too.
     const styleSuffix = request.styleId ? await this.getStyleSuffix(request.styleId) : '';
-    const hasInputMedia = [request.inputImage, request.inputImageEnd, request.inputAudio, request.inputVideo].some(
-      (v) => typeof v === 'string' && v.trim() !== ''
-    );
+    const references = this.checkReferences(model, request.referenceImages);
+    const hasInputMedia =
+      references.length > 0 ||
+      [request.inputImage, request.inputImageEnd, request.inputAudio, request.inputVideo].some(
+        (v) => typeof v === 'string' && v.trim() !== ''
+      );
     const content = classifyContent({
       prompt: request.prompt,
       negativePrompt: request.negativePrompt,
@@ -295,6 +305,7 @@ export class GenerationService {
       ...(request.inputAudio ? { inputAudio: request.inputAudio } : {}),
       ...(request.inputVideo ? { inputVideo: request.inputVideo } : {}),
       ...(request.inputImageEnd ? { inputImageEnd: request.inputImageEnd } : {}),
+      ...(references.length ? { referenceImages: references } : {}),
     };
 
     // 2. Select an account from the pool — unless the model is community-only
@@ -431,7 +442,8 @@ export class GenerationService {
       userId,
       generationId: generation.id,
       model,
-      request,
+      // The references as checked above, not as sent.
+      request: { ...request, referenceImages: references },
       styleSuffix,
       account,
       requiredCredits,
@@ -444,7 +456,7 @@ export class GenerationService {
     // order again. Those run after the response and the studio polls the
     // order, as it does a rented-GPU one; ApiOrderSweep settles any that a
     // restart cut off.
-    if (apiLipsync) {
+    if (apiLipsync || options.deferApi) {
       await prisma.aiGeneration.update({
         where: { id: generation.id },
         data: { status: 'processing', startedAt: new Date() },
@@ -477,6 +489,7 @@ export class GenerationService {
   private static async runApiOrder(run: ApiOrderRun): Promise<GenerationResult> {
     const { userId, model, request, styleSuffix, account, requiredCredits } = run;
     const generation = { id: run.generationId };
+    const references = request.referenceImages ?? [];
 
     // 6. Execute generation via provider
     try {
@@ -504,7 +517,8 @@ export class GenerationService {
         fps: request.params?.fps,
         aspectRatio: request.params?.aspectRatio,
         numOutputs: request.params?.numOutputs || 1,
-        inputImage: request.inputImage,
+        inputImage: request.inputImage ?? references[0],
+        referenceImages: references.length ? references : undefined,
         inputAudio: request.inputAudio,
         inputVideo: request.inputVideo,
         apiKey: account.apiKey,
@@ -664,6 +678,36 @@ export class GenerationService {
    * about it (once an hour per account) with the category, never the words:
    * the alert goes to a Telegram chat, and the customer's prompt stays here.
    */
+  /**
+   * The order's reference pictures, checked before any credit moves: only as
+   * many as the model takes (reference-caps.ts), and only files in our own
+   * storage — an adapter fetches them server-side (OpenAI's) or hands them to
+   * the vendor, so a stranger's URL must never get that far.
+   */
+  private static checkReferences(
+    model: { modelId: string; category: string; defaultParams: unknown; provider: { slug: string } },
+    raw: unknown
+  ): string[] {
+    if (raw === undefined || raw === null) return [];
+    if (!Array.isArray(raw)) throw new OrderRefusedError('ภาพอ้างอิงไม่ถูกต้อง', 'bad-references', 422);
+    const refs = [...new Set(raw.filter((u): u is string => typeof u === 'string' && u.trim() !== ''))];
+    if (refs.length === 0) return [];
+    const cap = referenceCaps({
+      providerSlug: model.provider.slug,
+      modelId: model.modelId,
+      category: model.category,
+      defaultParams: model.defaultParams,
+    }).images;
+    if (cap === 0) throw new OrderRefusedError('โมเดลนี้ไม่รับภาพอ้างอิง เลือกโมเดลอื่น', 'no-references', 422);
+    if (refs.length > cap) {
+      throw new OrderRefusedError(`โมเดลนี้รับภาพอ้างอิงได้สูงสุด ${cap} ภาพ`, 'too-many-references', 422);
+    }
+    if (refs.some((u) => keyFromPublicUrl(u) === null)) {
+      throw new OrderRefusedError('ภาพอ้างอิงต้องเป็นไฟล์ที่อัปโหลดไว้บนเว็บ อัปโหลดใหม่อีกครั้ง', 'foreign-reference', 422);
+    }
+    return refs;
+  }
+
   private static refuseBlocked(userId: number, modelName: string, content: ContentAssessment): never {
     const category = content.blocked ?? 'minor-sexual';
     console.warn(`[safety] refused an order: user #${userId}, ${modelName}, ${category} (${content.reasons.join(', ')})`);

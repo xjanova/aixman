@@ -5,7 +5,10 @@ import { LIMITS } from '@/lib/story/cinematic';
 import { StoryError, loadOwnedProject, movieModels } from '@/lib/story/service';
 import { serializeProject, shotPatch, storyErrorReply } from '@/lib/story/http';
 
-/** POST /api/story/[id]/shots — add a shot by hand after the last one. */
+/**
+ * POST /api/story/[id]/shots — add a shot by hand: after the last one, or
+ * with {sceneId} after that scene's last shot (later shots move down one).
+ */
 
 export const dynamic = 'force-dynamic';
 
@@ -23,27 +26,41 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const body = ((await request.json().catch(() => null)) ?? {}) as Record<string, unknown>;
     const models = await movieModels(admin);
     const last = project.shots.at(-1);
+    const sceneId = body.sceneId === undefined || body.sceneId === null ? null : Number(body.sceneId);
+    const scene = sceneId === null ? undefined : project.scenes.find((sc) => sc.id === sceneId);
+    if (sceneId !== null && !scene) throw new StoryError('ไม่พบฉากนี้', 404);
+    // After the scene's last shot; an empty scene's first one follows the scenes before it.
+    const sceneNumberOf = (sh: (typeof project.shots)[number]) => project.scenes.find((x) => x.id === sh.sceneId)?.sceneNumber ?? 0;
+    const before = scene ? project.shots.filter((sh) => sh.sceneId === scene.id || (sh.sceneId !== null && sceneNumberOf(sh) < scene.sceneNumber)) : project.shots;
+    const at = (before.at(-1)?.shotNumber ?? 0) + 1;
     const data = shotPatch(
       { visual: 'Describe what this shot shows.', durationSec: 5, ...body },
       project,
       models,
       { shotSize: 'medium', camera: 'static', characterIds: [] }
     );
-    await prisma.aiStoryShot.create({
-      data: {
-        projectId: project.id,
-        shotNumber: (last?.shotNumber ?? 0) + 1,
-        visualPrompt: data.visualPrompt as string,
-        durationSec: data.durationSec as number,
-        characterIds: (data.characterIds as number[] | undefined) ?? [],
-        modelId: (data.modelId as number | undefined) ?? last?.modelId ?? models.find((m) => m.orderable)?.id ?? null,
-        ...(data.narration !== undefined ? { narration: data.narration as string | null } : {}),
-        ...(data.sound !== undefined ? { sound: data.sound as string | null } : {}),
-        ...(data.speakerId !== undefined ? { speakerId: data.speakerId as number | null } : {}),
-        ...(data.shotSize !== undefined ? { shotSize: data.shotSize as string } : {}),
-        ...(data.camera !== undefined ? { camera: data.camera as string } : {}),
-        ...(data.startSec !== undefined ? { startSec: data.startSec as number | null } : {}),
-      },
+    await prisma.$transaction(async (tx) => {
+      for (const sh of [...project.shots].reverse()) {
+        if (sh.shotNumber >= at) await tx.aiStoryShot.update({ where: { id: sh.id }, data: { shotNumber: sh.shotNumber + 1 } });
+      }
+      await tx.aiStoryShot.create({
+        data: {
+          projectId: project.id,
+          sceneId: scene?.id ?? null,
+          shotNumber: at,
+          visualPrompt: data.visualPrompt as string,
+          durationSec: data.durationSec as number,
+          characterIds: (data.characterIds as number[] | undefined) ?? [],
+          ...(data.propIds !== undefined ? { propIds: data.propIds as number[] } : {}),
+          modelId: (data.modelId as number | undefined) ?? last?.modelId ?? models.find((m) => m.orderable)?.id ?? null,
+          ...(data.narration !== undefined ? { narration: data.narration as string | null } : {}),
+          ...(data.sound !== undefined ? { sound: data.sound as string | null } : {}),
+          ...(data.speakerId !== undefined ? { speakerId: data.speakerId as number | null } : {}),
+          ...(data.shotSize !== undefined ? { shotSize: data.shotSize as string } : {}),
+          ...(data.camera !== undefined ? { camera: data.camera as string } : {}),
+          ...(data.startSec !== undefined ? { startSec: data.startSec as number | null } : {}),
+        },
+      });
     });
     const fresh = (await loadOwnedProject(userId, id))!;
     return NextResponse.json(await serializeProject(fresh, admin), { status: 201 });

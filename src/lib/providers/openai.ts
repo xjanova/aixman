@@ -16,7 +16,7 @@ export class OpenAIProvider extends BaseProvider {
         model: params.modelId || 'gpt-image-1',
         prompt: params.prompt,
         n: params.numOutputs || 1,
-        size: this.mapSize(params.width, params.height),
+        size: this.mapSize(params.width, params.height, params.modelId),
       };
 
       if (params.extraParams?.quality) body.quality = params.extraParams.quality;
@@ -127,13 +127,17 @@ export class OpenAIProvider extends BaseProvider {
         return { success: false, error: 'No input image provided for edit' };
       }
 
-      const imageBlob = await this.toBlob(params.inputImage);
+      // gpt-image models compose up to 16 pictures, sent as `image[]`.
+      const sources = params.referenceImages && params.referenceImages.length > 1 ? params.referenceImages : [params.inputImage];
+      const model = params.modelId || 'gpt-image-1';
       const form = new FormData();
-      form.append('model', params.modelId || 'gpt-image-1');
+      form.append('model', model);
       form.append('prompt', params.prompt);
       form.append('n', String(params.numOutputs || 1));
-      form.append('size', this.mapSize(params.width, params.height));
-      form.append('image', imageBlob, 'image.png');
+      form.append('size', this.mapSize(params.width, params.height, model));
+      for (const [k, src] of sources.entries()) {
+        form.append(sources.length > 1 ? 'image[]' : 'image', await this.toBlob(src), `image-${k + 1}.png`);
+      }
 
       const response = await this.request(`${baseUrl}/images/edits`, {
         method: 'POST',
@@ -161,12 +165,13 @@ export class OpenAIProvider extends BaseProvider {
     }
   }
 
-  private mapSize(width?: number, height?: number): string {
+  private mapSize(width?: number, height?: number, model?: string): string {
     if (!width || !height) return '1024x1024';
-    // Map to supported sizes
+    // Map to supported sizes — gpt-image models have their own wide/tall pair.
     const ratio = width / height;
-    if (ratio > 1.3) return '1792x1024';
-    if (ratio < 0.7) return '1024x1792';
+    const gptImage = /^gpt-image/.test(model ?? '');
+    if (ratio > 1.3) return gptImage ? '1536x1024' : '1792x1024';
+    if (ratio < 0.7) return gptImage ? '1024x1536' : '1024x1792';
     return '1024x1024';
   }
 }

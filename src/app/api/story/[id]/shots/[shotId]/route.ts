@@ -54,8 +54,11 @@ export async function DELETE(_request: NextRequest, { params }: Ctx) {
     const shot = project?.shots.find((s) => s.id === shotId);
     if (!project || !shot) return NextResponse.json({ error: 'ไม่พบช็อตนี้' }, { status: 404 });
     await prisma.$transaction(async (tx) => {
-      const r = await tx.aiStoryShot.deleteMany({ where: { id: shot.id, status: { not: 'rendering' } } });
-      if (r.count === 0) throw new StoryError('ช็อตนี้กำลังสร้างอยู่ ลบได้เมื่อเสร็จแล้ว', 409);
+      // keyframeStatus is nullable: `not` alone would skip the NULL rows.
+      const r = await tx.aiStoryShot.deleteMany({
+        where: { id: shot.id, status: { not: 'rendering' }, OR: [{ keyframeStatus: null }, { keyframeStatus: { not: 'rendering' } }] },
+      });
+      if (r.count === 0) throw new StoryError('ช็อตนี้หรือภาพเปิดของช็อตกำลังสร้างอยู่ ลบได้เมื่อเสร็จแล้ว', 409);
       await tx.aiStoryShot.updateMany({
         where: { projectId: project.id, shotNumber: { gt: shot.shotNumber } },
         data: { shotNumber: { decrement: 1 } },

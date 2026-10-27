@@ -1,7 +1,8 @@
 /**
- * Long-film planning runs after the response: an outline and several part
+ * Every plan runs after the response: a structure call and several scene
  * calls take longer than the proxy in front of us waits for one request. The
- * page polls `planning` until the storyboard lands.
+ * page polls `planning` until the storyboard lands. A plan of some scenes
+ * holds the same per-project slot as a whole one.
  *
  * In process like rate-limit.ts — correct because PM2 runs a single instance.
  * Planning is free and replaces shots in one transaction at its end, so a

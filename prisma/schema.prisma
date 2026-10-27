@@ -506,6 +506,8 @@ model AiStoryProject {
 
   user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   characters AiStoryCharacter[]
+  acts       AiStoryAct[]
+  scenes     AiStoryScene[]
   shots      AiStoryShot[]
 
   @@index([userId, status])
@@ -517,17 +519,28 @@ model AiStoryProject {
 // referenceUrl is the anchor: uploaded by the customer or generated once, then
 // passed as a reference to every later shot. Without it each shot invents a new
 // face and the video falls apart.
+// The table is the project's whole reference library: `kind` says whether a
+// row is a character, a prop (a sword, a car) or a location.
 model AiStoryCharacter {
   id           Int      @id @default(autoincrement())
   projectId    Int      @map("project_id")
+  // character | prop | location (src/lib/story/library.ts)
+  kind         String   @default("character") @db.VarChar(20)
   name         String   @db.VarChar(100)
   description  String   @db.Text
   // 'upload' when the customer supplied the face, 'generated' when we made it.
   origin       String   @default("generated") @db.VarChar(20)
   referenceUrl String?  @map("reference_url") @db.MediumText
+  /// More pictures of the same thing (other angles), after referenceUrl.
+  images       Json?
+  // An AI picture ordered for it: rendering | done | failed.
+  imageStatus       String?  @map("image_status") @db.VarChar(20)
+  imageGenerationId Int?     @map("image_generation_id")
+  imageError        String?  @map("image_error") @db.Text
   voiceId      String?  @map("voice_id") @db.VarChar(100)
   sortOrder    Int      @default(0) @map("sort_order")
   createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
   project AiStoryProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
@@ -535,10 +548,52 @@ model AiStoryCharacter {
   @@map("ai_story_characters")
 }
 
+// An act of a film: a run of scenes.
+model AiStoryAct {
+  id        Int      @id @default(autoincrement())
+  projectId Int      @map("project_id")
+  actNumber Int      @map("act_number")
+  title     String   @db.VarChar(200)
+  summary   String?  @db.Text
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  project AiStoryProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  scenes  AiStoryScene[]
+
+  @@index([projectId])
+  @@map("ai_story_acts")
+}
+
+// A scene: one place and time, a run of shots. In an act or in none.
+model AiStoryScene {
+  id          Int      @id @default(autoincrement())
+  projectId   Int      @map("project_id")
+  actId       Int?     @map("act_id")
+  sceneNumber Int      @map("scene_number")
+  title       String   @db.VarChar(200)
+  summary     String?  @db.Text
+  /// Where it happens: a library row of kind 'location'.
+  locationId  Int?     @map("location_id")
+  // TIMES_OF_DAY keys in src/lib/story/library.ts
+  timeOfDay   String?  @map("time_of_day") @db.VarChar(20)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  project AiStoryProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  act     AiStoryAct?    @relation(fields: [actId], references: [id], onDelete: SetNull)
+  shots   AiStoryShot[]
+
+  @@index([projectId])
+  @@index([actId])
+  @@map("ai_story_scenes")
+}
+
 // One shot: a visual, its narration, and the generation that produced each.
 model AiStoryShot {
   id             Int      @id @default(autoincrement())
   projectId      Int      @map("project_id")
+  sceneId        Int?     @map("scene_id")
   shotNumber     Int      @map("shot_number")
   // What the shot shows, in English, standing on its own: the video model
   // sees one shot at a time. The look, framing and camera are added at render.
@@ -548,6 +603,10 @@ model AiStoryShot {
   /// Character ids appearing here, so their references get attached. The
   /// first one's picture is the shot's first frame.
   characterIds   Json?    @map("character_ids")
+  /// Library props visible in the shot.
+  propIds        Json?    @map("prop_ids")
+  /// The shot's place when it is not its scene's (a library location).
+  locationId     Int?     @map("location_id")
   /// Who says `narration` (an AiStoryCharacter id), or null for a voice off.
   speakerId      Int?     @map("speaker_id")
   // Framing and camera move — keys of SHOT_SIZES / CAMERA_MOVES.
@@ -577,13 +636,22 @@ model AiStoryShot {
   lipsyncSourceUrl    String?  @map("lipsync_source_url") @db.MediumText
   lipsyncError        String?  @map("lipsync_error") @db.Text
   lipsyncUse          Boolean  @default(true) @map("lipsync_use")
+  // The shot's opening picture, composed from its references by an image
+  // model: rendering | done | failed. The clip opens on it when keyframeUse.
+  keyframeStatus       String?  @map("keyframe_status") @db.VarChar(20)
+  keyframeGenerationId Int?     @map("keyframe_generation_id")
+  keyframeUrl          String?  @map("keyframe_url") @db.MediumText
+  keyframeError        String?  @map("keyframe_error") @db.Text
+  keyframeUse          Boolean  @default(true) @map("keyframe_use")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
   project AiStoryProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  scene   AiStoryScene?  @relation(fields: [sceneId], references: [id], onDelete: SetNull)
 
   @@index([projectId, shotNumber])
   @@index([projectId, status])
+  @@index([sceneId])
   @@map("ai_story_shots")
 }
 

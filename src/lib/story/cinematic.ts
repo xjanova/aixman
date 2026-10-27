@@ -28,7 +28,7 @@ export const LIMITS = {
   brief: 6000,
   lyrics: 6000,
   title: 120,
-  characters: 4,
+  characters: 8,
   characterName: 60,
   characterDescription: 400,
   /** A 10-minute film is ~60 shots of ~10 s. */
@@ -238,6 +238,12 @@ export interface ShotDraft {
   line: string;
   /** English ambient sound. */
   sound: string;
+  /** Library props visible in the shot. */
+  propIds?: number[];
+  /** The shot's own place (a library location); else its scene's. */
+  locationId?: number | null;
+  /** Planner only: the scene number (1-based, film order) the shot belongs to. */
+  scene?: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -428,6 +434,9 @@ export interface PlanInput {
   songSeconds: number;
   /** Film: the length to aim at (FILM_LENGTHS), null for a short film of the planner's choosing. */
   targetSeconds?: number | null;
+  /** The library's props and places, numbered for the planner like the cast. */
+  props?: CharacterLite[];
+  locations?: CharacterLite[];
 }
 
 export function planFromRules(input: PlanInput): ShotDraft[] {
@@ -520,6 +529,36 @@ export interface FilmPart {
   outline: string[];
   /** This part's share of LIMITS.shotsFilm, so the parts together never pass it. */
   maxShots: number;
+  /** The scenes this part tells, when the film was first cut into acts and scenes (library.ts). */
+  scenes?: PartScene[];
+}
+
+export interface PartScene {
+  /** Scene number in the film, 1-based. */
+  number: number;
+  title: string;
+  summary: string;
+  place: string;
+  time: string;
+  seconds: number;
+  /** Cast-list numbers of who appears. */
+  cast: number[];
+  /** Prop-list numbers of what appears. */
+  props: number[];
+}
+
+function propList(props: CharacterLite[] | undefined): string {
+  if (!props?.length) return 'None.';
+  return props.map((c, k) => `${k + 1}. ${c.name} — ${c.description || '(no description)'}`).join('\n');
+}
+
+function sceneList(scenes: PartScene[]): string {
+  return scenes
+    .map(
+      (sc) =>
+        `Scene ${sc.number} "${sc.title}" (~${Math.round(sc.seconds)} s) — place: ${sc.place || 'any'}; time: ${sc.time || 'any'}; cast: ${sc.cast.join(', ') || 'none'}; props: ${sc.props.join(', ') || 'none'}.\n   ${sc.summary}`
+    )
+    .join('\n');
 }
 
 /**
@@ -534,24 +573,30 @@ export function filmPlannerMessages(input: PlanInput, part?: FilmPart): { system
   const look = LOOKS[input.look] ?? LOOKS.film;
   const seconds = part?.seconds ?? input.targetSeconds ?? null;
   const count = seconds ? Math.min(part?.maxShots ?? LIMITS.shotsFilm, Math.max(1, Math.round(seconds / FILM_AVG_SHOT_SECONDS))) : 0;
-  const scope = part
+  const scenes = part?.scenes?.length ? part.scenes : null;
+  const scope = scenes
+    ? `- Write the shots of ${scenes.length === 1 ? 'scene' : 'scenes'} ${scenes.map((sc) => sc.number).join(', ')} only — ${count} shots (never more) adding up to about ${Math.round(part!.seconds)} seconds, in scene order, each tagged with its "scene" number. ${part!.index === 0 ? 'Open the film on an establishing shot.' : 'Continue straight on from what comes before; do not re-introduce the story.'}${part!.index === part!.count - 1 ? ' End the film.' : ' Do not end the film.'} Open each scene on a shot that shows its place. Vary sizes and give every camera move a reason.`
+    : part
     ? `- This is part ${part.index + 1} of ${part.count} of a longer film: write ONLY this part's shots — ${count} shots (never more) adding up to about ${Math.round(part.seconds)} seconds, so prefer 8–10 second shots. ${part.index === 0 ? 'Open the film on an establishing shot.' : 'Continue straight on from the part before; do not re-introduce the story.'}${part.index === part.count - 1 ? ' End the film.' : ' Do not end the film; stop where the next part takes over.'} Vary sizes (wide → medium → close-up) and give every camera move a reason.`
     : seconds
       ? `- About ${count} shots adding up to about ${seconds} seconds that tell the whole story with a beginning, middle and end. Open on an establishing shot; vary sizes (wide → medium → close-up) and give every camera move a reason.`
       : '- 4 to 12 shots that tell the whole story with a beginning, middle and end. Open on an establishing shot; vary sizes (wide → medium → close-up) and give every camera move a reason.';
   const system = `You are a film director and storyboard artist. Turn the user's story into a shot list for an AI video model that renders ONE shot at a time and knows nothing of the other shots.
-Return ONLY JSON, no markdown: {"title": string, "shots": [{"characters": [numbers], "speaker": number|null, "duration": 5|8|10, "size": string, "camera": string, "visual": string, "line": string, "sound": string}]}
+Return ONLY JSON, no markdown: {"title": string, "shots": [{${scenes ? '"scene": number, ' : ''}"characters": [numbers], ${input.props?.length ? '"props": [numbers], ' : ''}"speaker": number|null, "duration": 5|8|10, "size": string, "camera": string, "visual": string, "line": string, "sound": string}]}
 Rules:
 ${scope}
 - "characters": numbers from the cast list of who is visible, the main face FIRST — that character's photo becomes the shot's first frame, so the shot must open on them, facing the camera or in three-quarter view.
 - "size" one of: ${SIZE_KEYS}. "camera" one of: ${MOVE_KEYS}. Never "push-in" on a wide or full shot that opens on a character.
 - "visual": English, 40–80 words, self-contained: the setting, each visible character by name with their look, the action in order, lighting and mood. Look of the film: ${look.style}.
 - "line": words spoken on screen in the story's language (Thai stays Thai, verbatim), at most about 2.5 words per second of "duration"; "" when nobody speaks. "speaker" is that character's number, null otherwise.
-- "sound": English, ambient and physical sounds only, no music, no dialogue.`;
-  const story = part
+- "sound": English, ambient and physical sounds only, no music, no dialogue.${input.props?.length ? '\n- "props": numbers from the prop list of the objects visible in the shot; describe each one in "visual" the same way every time.' : ''}`;
+  const story = scenes
+    ? `Whole story:\n${input.brief}\n\nOutline of the film:\n${part!.outline.map((p, k) => `${k + 1}. ${p}`).join('\n')}\n\nWrite these scenes:\n${sceneList(scenes)}`
+    : part
     ? `Whole story:\n${input.brief}\n\nOutline of the film:\n${part.outline.map((p, k) => `${k + 1}. ${p}`).join('\n')}\n\nWrite part ${part.index + 1}: ${part.summary}`
     : `Story:\n${input.brief}`;
-  return { system, user: `Cast:\n${castList(input.characters)}\n\n${story}` };
+  const props = input.props?.length ? `\n\nProps:\n${propList(input.props)}` : '';
+  return { system, user: `Cast:\n${castList(input.characters)}${props}\n\n${story}` };
 }
 
 /** How many parts a long film is planned in, or 0 when one call writes it all. */
@@ -581,18 +626,20 @@ export function parseFilmOutline(text: string, parts: number): { title: string; 
 /** System + user message for an MV: the timing is fixed, the model writes the pictures. */
 export function mvPlannerMessages(input: PlanInput, slots: TimelineSlot[]): { system: string; user: string } {
   const mood = MOODS[input.mood] ?? MOODS.romantic;
+  const library = Boolean(input.props?.length || input.locations?.length);
   const system = `You are a music video director. The song is already cut into ${slots.length} timed slots; write ONE shot for each, in order, for an AI video model that renders one shot at a time and knows nothing of the others.
-Return ONLY JSON, no markdown: {"title": string, "shots": [{"characters": [numbers], "size": string, "camera": string, "visual": string}]} with exactly ${slots.length} shots.
+Return ONLY JSON, no markdown: {"title": string, "shots": [{"characters": [numbers], ${library ? '"location": number|null, "props": [numbers], ' : ''}"size": string, "camera": string, "visual": string}]} with exactly ${slots.length} shots.
 Rules:
 - Mood: ${mood.label} — ${mood.style}. Settings that fit: ${mood.setting}. Build a small visual story that follows the lyrics; repeat a chorus's look when the chorus returns.
 - "characters": numbers from the cast of who is visible, the singer FIRST — their photo becomes the shot's first frame, so the shot opens on them facing the camera. Instrumental slots may show no one (scenery, details, the band).
 - Sung slots: the singer performs the line (singing with emotion, mouth moving), in a tight size (medium, medium-close, close) with a calm camera.
 - "size" one of: ${SIZE_KEYS}. "camera" one of: ${MOVE_KEYS}. Never "push-in" on a wide or full shot that opens on a character.
-- "visual": English, 30–70 words, self-contained: setting, each visible character by name with their look, action, lighting. No text on screen.`;
+- "visual": English, 30–70 words, self-contained: setting, each visible character by name with their look, action, lighting. No text on screen.${library ? '\n- "location": a number from the location list where the shot happens (null for none); keep one place per song section. "props": numbers from the prop list visible in the shot.' : ''}`;
   const list = slots
     .map((s, k) => `${k + 1}. ${s.start.toFixed(1)}s +${s.duration.toFixed(1)}s [${s.section}] ${s.instrumental ? '(instrumental)' : s.line}`)
     .join('\n');
-  return { system, user: `Cast:\n${castList(input.characters)}\n\nSlots:\n${list}` };
+  const places = library ? `\n\nLocations:\n${propList(input.locations)}\n\nProps:\n${propList(input.props)}` : '';
+  return { system, user: `Cast:\n${castList(input.characters)}${places}\n\nSlots:\n${list}` };
 }
 
 /** The first JSON object in a chat answer, or null. */
@@ -672,7 +719,10 @@ export function parseFilmPlan(text: string, input: PlanInput): { title: string; 
     const shotSize = pickKey(s.size, SHOT_SIZES, 'medium');
     const line = clip(s.line, LIMITS.line);
     const speaker = input.characters[Number(s.speaker) - 1];
+    const scene = Number(s.scene);
     return [{
+      ...(Number.isInteger(scene) && scene > 0 ? { scene } : {}),
+      propIds: castIds(s.props, input.props ?? []),
       characterIds,
       speakerId: line && speaker ? speaker.id : null,
       shotSize,
@@ -699,7 +749,10 @@ export function parseMvPlan(text: string, input: PlanInput, slots: TimelineSlot[
     if (!visual) return null;
     const characterIds = castIds(s.characters, input.characters);
     const shotSize = pickKey(s.size, SHOT_SIZES, 'medium');
+    const place = (input.locations ?? [])[Number(s.location) - 1];
     shots.push({
+      propIds: castIds(s.props, input.props ?? []),
+      locationId: place ? place.id : null,
       characterIds,
       speakerId: null,
       shotSize,
@@ -725,6 +778,11 @@ export interface PromptContext {
   characters: CharacterLite[];
   /** The shot opens on its first character's picture. */
   hasFirstFrame: boolean;
+  /** The first frame is a composed opening picture (library.ts), not a character's photo. */
+  keyframe?: boolean;
+  /** The library's props and places, so the shot can name what it shows. */
+  props?: CharacterLite[];
+  locations?: CharacterLite[];
 }
 
 const NO_TEXT = 'No subtitles, no captions, no on-screen text, no watermark.';
@@ -735,8 +793,16 @@ export function buildShotPrompt(modelKey: string, shot: ShotDraft, ctx: PromptCo
   const size = SHOT_SIZES[shot.shotSize] ?? SHOT_SIZES.medium;
   const move = CAMERA_MOVES[safeCamera(shot.shotSize, shot.camera, ctx.hasFirstFrame)] ?? CAMERA_MOVES.static;
   const speaker = shot.speakerId !== null ? ctx.characters.find((c) => c.id === shot.speakerId) : undefined;
-  const who = cast.length ? `${characterLine(cast)}. ` : '';
-  const opening = ctx.hasFirstFrame && cast[0] ? `The shot opens on ${cast[0].name} exactly as in the first frame, keeping the same face, hair and clothes. ` : '';
+  const things = [
+    ...(shot.locationId ? (ctx.locations ?? []).filter((c) => c.id === shot.locationId) : []),
+    ...(shot.propIds ?? []).map((id) => ctx.props?.find((c) => c.id === id)).filter((c): c is CharacterLite => Boolean(c)),
+  ].filter((c) => c.description.trim());
+  const who = cast.length || things.length ? `${characterLine([...cast, ...things])}. ` : '';
+  const opening = ctx.keyframe
+    ? 'The shot opens exactly on the first frame, keeping every face, costume, object and place as they are. '
+    : ctx.hasFirstFrame && cast[0]
+      ? `The shot opens on ${cast[0].name} exactly as in the first frame, keeping the same face, hair and clothes. `
+      : '';
   const line = shot.line.trim();
 
   if (modelKey === 'minimax-h3') {

@@ -30,6 +30,37 @@ const SETTING_KEY = 'media_retention_days';
  * anything added to `/api/uploads` must be added here too or it leaks.
  */
 const INPUT_URL_PARAMS = ['inputAudio', 'inputVideo', 'inputImageEnd'] as const;
+/** The same, for params that hold a list of URLs. */
+const INPUT_URL_LIST_PARAMS = ['referenceImages'] as const;
+
+/**
+ * Objects a movie project still shows, which no order's expiry may take: its
+ * library pictures (often an upload that an order sent as its first frame)
+ * and its shots' opening pictures (an order's own result). Anything under
+ * `story/` is the project's own file. A project's pictures live as long as
+ * the project — they are what keeps its faces the same.
+ */
+async function storyKeepKeys(): Promise<Set<string>> {
+  const [assets, shots] = await Promise.all([
+    prisma.aiStoryCharacter.findMany({ select: { referenceUrl: true, images: true } }),
+    prisma.aiStoryShot.findMany({ where: { keyframeUrl: { not: null } }, select: { keyframeUrl: true } }),
+  ]);
+  const keep = new Set<string>();
+  const add = (url: unknown) => {
+    const key = typeof url === 'string' ? keyFromPublicUrl(url) : null;
+    if (key) keep.add(key);
+  };
+  for (const a of assets) {
+    add(a.referenceUrl);
+    if (Array.isArray(a.images)) a.images.forEach(add);
+  }
+  for (const s of shots) add(s.keyframeUrl);
+  return keep;
+}
+
+export function isStoryKey(key: string): boolean {
+  return /(^|\/)story\//.test(key);
+}
 
 export interface SweepResult {
   scanned: number;
@@ -123,6 +154,10 @@ export class RetentionService {
         const value = (gen.params as Record<string, unknown> | null)?.[field];
         if (typeof value === 'string') urls.push(value);
       }
+      for (const field of INPUT_URL_LIST_PARAMS) {
+        const value = (gen.params as Record<string, unknown> | null)?.[field];
+        if (Array.isArray(value)) for (const u of value) if (typeof u === 'string') urls.push(u);
+      }
       for (const url of urls) {
         const key = keyFromPublicUrl(url);
         // Anything not in our bucket (a provider URL kept from before R2 was
@@ -131,8 +166,10 @@ export class RetentionService {
       }
     }
 
-    if (isStorageConfigured() && keys.length > 0) {
-      const { deleted, failed } = await deleteObjects([...new Set(keys)]);
+    const keep = keys.length > 0 ? await storyKeepKeys() : new Set<string>();
+    const doomed = [...new Set(keys)].filter((k) => !keep.has(k) && !isStoryKey(k));
+    if (isStorageConfigured() && doomed.length > 0) {
+      const { deleted, failed } = await deleteObjects(doomed);
       result.objectsDeleted = deleted;
       result.objectsFailed = failed;
     }
@@ -160,10 +197,10 @@ export class RetentionService {
     // what they asked for after the media itself is gone.
     for (const gen of due) {
       const params = gen.params as Record<string, unknown> | null;
-      if (!params || !INPUT_URL_PARAMS.some((f) => typeof params[f] === 'string')) continue;
+      if (!params || ![...INPUT_URL_PARAMS, ...INPUT_URL_LIST_PARAMS].some((f) => params[f] !== undefined)) continue;
 
       const stripped = { ...params };
-      for (const field of INPUT_URL_PARAMS) delete stripped[field];
+      for (const field of [...INPUT_URL_PARAMS, ...INPUT_URL_LIST_PARAMS]) delete stripped[field];
 
       await prisma.aiGeneration.update({
         where: { id: gen.id },

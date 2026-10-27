@@ -40,6 +40,12 @@ export interface GenerationRequest {
    * `/api/uploads?kind=image`. `inputImage` stays the first frame.
    */
   inputImageEnd?: string;
+  /**
+   * Pictures an image model composes from — characters, props, places — as
+   * URLs in our own storage, at most `referenceCaps(model).images` of them
+   * (src/lib/reference-caps.ts). The movie studio's opening pictures use it.
+   */
+  referenceImages?: string[];
   styleId?: number;
 }
 
@@ -142,6 +148,8 @@ export interface ProviderGenerateParams {
   aspectRatio?: string;
   numOutputs?: number;
   inputImage?: string;
+  /** Several pictures to compose from; `inputImage` is the first of them. */
+  referenceImages?: string[];
   /** Voice track for lip-sync models. Always a fetchable URL, never base64. */
   inputAudio?: string;
   /** Source clip for models that re-dub existing footage. */

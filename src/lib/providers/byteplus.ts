@@ -50,7 +50,8 @@ export class BytePlusProvider extends BaseProvider {
 
   /**
    * Image edit / image-to-image. Seedream accepts a source image alongside the
-   * prompt via the same /images/generations endpoint.
+   * prompt via the same /images/generations endpoint — or, from Seedream 4,
+   * an array of reference pictures it composes into one (reference-caps.ts).
    */
   async editImage(params: ProviderGenerateParams): Promise<ProviderResponse> {
     const startTime = Date.now();
@@ -70,10 +71,10 @@ export class BytePlusProvider extends BaseProvider {
         body: JSON.stringify({
           model: params.modelId,
           prompt: params.prompt,
-          image: params.inputImage,
+          ...(params.extraParams || {}),
+          image: params.referenceImages && params.referenceImages.length > 1 ? params.referenceImages : params.inputImage,
           size: `${params.width || 1024}x${params.height || 1024}`,
           n: params.numOutputs || 1,
-          ...(params.extraParams || {}),
         }),
       });
 

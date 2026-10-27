@@ -24,10 +24,12 @@ import {
   renderSeconds,
   songTimeline,
   type CharacterLite,
-  type PlanInput,
   type ShotDraft,
   type StoryMode,
+  type TimelineSlot,
 } from './cinematic';
+import { asLite, assetPictures, isAssetKind, spliceScene, type AssetKind, type LibraryAsset, type StructureInput, type StructurePlan } from './library';
+import { planMvSlots, planSceneShots, planStructuredFilm, type SceneBrief } from './structure';
 import { ASSEMBLE_PRICE_DEFAULTS, musicPrompt, musicSeconds } from './edit';
 import type { Prisma } from '@/generated/prisma/client';
 
@@ -42,6 +44,8 @@ import type { Prisma } from '@/generated/prisma/client';
 
 const projectInclude = {
   characters: { orderBy: { sortOrder: 'asc' as const } },
+  acts: { orderBy: { actNumber: 'asc' as const } },
+  scenes: { orderBy: { sceneNumber: 'asc' as const } },
   shots: { orderBy: { shotNumber: 'asc' as const } },
 };
 
@@ -81,8 +85,38 @@ export function shotCredits(model: MovieModel | undefined, durationSec: number):
   return creditsForDuration(model.creditsPerUnit, getCatalogEntry(model.key)?.pricing.durationCurve, renderSeconds(durationSec));
 }
 
+/** The project's reference library: characters, props and places with their pictures. */
+export function libraryOf(project: StoryProjectFull): LibraryAsset[] {
+  return project.characters.map((c) => ({
+    id: c.id,
+    kind: isAssetKind(c.kind) ? c.kind : 'character',
+    name: c.name,
+    description: c.description,
+    pictures: assetPictures(c),
+  }));
+}
+
+export function libraryLites(project: StoryProjectFull, kind: AssetKind): CharacterLite[] {
+  return libraryOf(project).filter((a) => a.kind === kind).map(asLite);
+}
+
 export function characterLites(project: StoryProjectFull): CharacterLite[] {
-  return project.characters.map((c) => ({ id: c.id, name: c.name, description: c.description, hasReference: Boolean(c.referenceUrl) }));
+  return libraryLites(project, 'character');
+}
+
+function planInputOf(project: StoryProjectFull): StructureInput {
+  const mode = project.mode as StoryMode;
+  return {
+    mode,
+    brief: project.brief,
+    characters: characterLites(project),
+    props: libraryLites(project, 'prop'),
+    locations: libraryLites(project, 'location'),
+    look: project.templateKey,
+    mood: project.mood ?? '',
+    songSeconds: Number(project.songSeconds ?? 0),
+    targetSeconds: mode === 'film' ? filmTarget(project.scriptJson) : null,
+  };
 }
 
 export function idList(value: unknown): number[] {
@@ -100,6 +134,8 @@ export function shotDraftOf(shot: StoryProjectFull['shots'][number]): ShotDraft 
     visual: shot.visualPrompt,
     line: shot.narration ?? '',
     sound: shot.sound ?? '',
+    propIds: idList(shot.propIds),
+    locationId: shot.locationId,
   };
 }
 
@@ -166,7 +202,7 @@ export class StoryError extends Error {
  * the model fails is laid out by the rules from its outline line, so one bad
  * answer costs that part its polish, not the film.
  */
-async function planLongFilm(input: PlanInput): Promise<{ planned: { title: string; shots: ShotDraft[] } | null; engine: string; fallbackReason?: string }> {
+async function planLongFilm(input: StructureInput): Promise<{ planned: { title: string; shots: ShotDraft[] } | null; engine: string; fallbackReason?: string }> {
   const target = input.targetSeconds!;
   const count = filmPartCount(target);
   const head = filmOutlineMessages(input, count);
@@ -203,53 +239,109 @@ async function planLongFilm(input: PlanInput): Promise<{ planned: { title: strin
   };
 }
 
+/** An MV song section's name as the page shows it. */
+export function sectionTitle(section: string): string {
+  const t = section.trim().toLowerCase();
+  const n = /\d+/.exec(t)?.[0];
+  const name = /pre-?chorus/.test(t)
+    ? 'ก่อนฮุก'
+    : /chorus|hook/.test(t)
+      ? 'ท่อนฮุก'
+      : /verse/.test(t)
+        ? 'ท่อนร้อง'
+        : /bridge/.test(t)
+          ? 'บริดจ์'
+          : /intro/.test(t)
+            ? 'อินโทร'
+            : /outro|end/.test(t)
+              ? 'เอาท์โทร'
+              : /inst|solo|break|interlude|drop/.test(t)
+                ? 'ดนตรี'
+                : section.trim() || 'ท่อน';
+  return n ? `${name} ${n}` : name;
+}
+
+function shotData(s: ShotDraft, projectId: number, shotNumber: number, modelId: number | null, sceneId: number | null, propIds: number[]) {
+  return {
+    projectId,
+    sceneId,
+    shotNumber,
+    visualPrompt: s.visual,
+    narration: s.line || null,
+    characterIds: s.characterIds,
+    propIds,
+    locationId: s.locationId ?? null,
+    speakerId: s.speakerId,
+    shotSize: s.shotSize,
+    camera: s.camera,
+    sound: s.sound || null,
+    modelId,
+    startSec: s.startSec,
+    durationSec: Math.round(s.durationSec * 100) / 100,
+  };
+}
+
+const BUSY_MESSAGE = 'มีช็อตหรือภาพเปิดช็อตกำลังสร้างอยู่ รอให้เสร็จก่อนแล้วค่อยให้ AI วางช็อตใหม่';
+/** A shot whose clip or opening picture is being made: an order in flight owns it. */
+export const isBusyShot = (s: { status: string; keyframeStatus: string | null }) => s.status === 'rendering' || s.keyframeStatus === 'rendering';
+const BUSY_WHERE = [{ status: 'rendering' }, { keyframeStatus: 'rendering' }];
+
 /**
- * Write (or rewrite) the storyboard. Refused while any shot is rendering —
- * replacing it would orphan an order in flight. Finished shots are replaced
- * too; the page asks before it calls this when there are any.
+ * Write (or rewrite) the storyboard. A film is cut into acts and scenes first
+ * (structure.ts), naming the places and props it needs — new ones join the
+ * library without pictures — then each run of scenes gets its shots. When the
+ * structure step fails, the older outline/parts planner runs, then the rules.
+ * An MV's scenes are its song's sections.
+ *
+ * Refused while any shot or its opening picture is rendering — replacing it
+ * would orphan an order in flight. Finished shots, acts and scenes are replaced too; the page asks
+ * before it calls this when there are any.
  */
 export async function planProject(
   project: StoryProjectFull,
   defaultModelId: number | null
 ): Promise<{ shots: number; engine: string; fallbackReason?: string }> {
-  if (project.shots.some((s) => s.status === 'rendering')) {
-    throw new StoryError('มีช็อตกำลังสร้างอยู่ รอให้เสร็จก่อนแล้วค่อยให้ AI วางช็อตใหม่', 409);
-  }
+  if (project.shots.some(isBusyShot)) throw new StoryError(BUSY_MESSAGE, 409);
   const mode = project.mode as StoryMode;
-  const input: PlanInput = {
-    mode,
-    brief: project.brief,
-    characters: characterLites(project),
-    look: project.templateKey,
-    mood: project.mood ?? '',
-    songSeconds: Number(project.songSeconds ?? 0),
-    targetSeconds: mode === 'film' ? filmTarget(project.scriptJson) : null,
-  };
+  const input = planInputOf(project);
 
   let planned: { title: string; shots: ShotDraft[] } | null = null;
+  let structure: StructurePlan | null = null;
+  let slots: TimelineSlot[] = [];
   let engine = 'rules';
   let fallbackReason: string | undefined;
   try {
     if (mode === 'mv') {
-      const slots = songTimeline(input.brief, input.songSeconds);
+      slots = songTimeline(input.brief, input.songSeconds);
       if (slots.length === 0) throw new StoryError('เพลงสั้นเกินไปหรือไม่มีความยาว — เลือกเพลงใหม่', 422);
       const { system, user } = mvPlannerMessages(input, slots);
       const reply = await chatViaPool(system, user, { maxTokens: 8000, maxChars: 60_000 });
       planned = parseMvPlan(reply.text, input, slots);
       engine = reply.engine;
-    } else if (filmPartCount(input.targetSeconds) > 0) {
-      const long = await planLongFilm(input);
-      planned = long.planned;
-      engine = long.engine;
-      fallbackReason = long.fallbackReason;
     } else {
-      const { system, user } = filmPlannerMessages(input);
-      const reply = await chatViaPool(system, user, { maxTokens: 5000, maxChars: 40_000 });
-      planned = parseFilmPlan(reply.text, input);
-      if (planned && input.targetSeconds) planned.shots = fitToTarget(planned.shots, input.targetSeconds);
-      engine = reply.engine;
+      const structured = await planStructuredFilm(input).catch((error: Error) => {
+        fallbackReason = `structure: ${error.message.slice(0, 200)}`;
+        return null;
+      });
+      if (structured) {
+        structure = structured.structure;
+        planned = { title: structure.title, shots: structured.shots };
+        engine = structured.engine;
+        fallbackReason = structured.fallbackReason;
+      } else if (filmPartCount(input.targetSeconds) > 0) {
+        const long = await planLongFilm(input);
+        planned = long.planned;
+        engine = long.engine;
+        fallbackReason = [fallbackReason, long.fallbackReason].filter(Boolean).join(' | ') || undefined;
+      } else {
+        const { system, user } = filmPlannerMessages(input);
+        const reply = await chatViaPool(system, user, { maxTokens: 5000, maxChars: 40_000 });
+        planned = parseFilmPlan(reply.text, input);
+        if (planned && input.targetSeconds) planned.shots = fitToTarget(planned.shots, input.targetSeconds);
+        engine = reply.engine;
+      }
     }
-    if (!planned) fallbackReason = `${engine} answered with no usable storyboard`;
+    if (!planned) fallbackReason ??= `${engine} answered with no usable storyboard`;
   } catch (error) {
     if (error instanceof StoryError) throw error;
     fallbackReason = (error as Error).message;
@@ -259,26 +351,79 @@ export async function planProject(
     engine = 'rules';
   }
   if (planned.shots.length === 0) throw new StoryError('เขียนเรื่องหรือเนื้อเพลงให้ยาวกว่านี้ แล้วลองใหม่', 422);
+  const shots = planned.shots;
+  // An MV's shots are its slots, in order, from the planner or the rules alike.
+  const sections = mode === 'mv' && slots.length === shots.length ? slots.map((sl) => sl.section) : null;
 
   await prisma.$transaction(async (tx) => {
     // Conditional: a render started between our check and here keeps its shot.
-    const busy = await tx.aiStoryShot.count({ where: { projectId: project.id, status: 'rendering' } });
-    if (busy > 0) throw new StoryError('มีช็อตกำลังสร้างอยู่ รอให้เสร็จก่อนแล้วค่อยให้ AI วางช็อตใหม่', 409);
+    const busy = await tx.aiStoryShot.count({ where: { projectId: project.id, OR: BUSY_WHERE } });
+    if (busy > 0) throw new StoryError(BUSY_MESSAGE, 409);
     await tx.aiStoryShot.deleteMany({ where: { projectId: project.id } });
+    await tx.aiStoryScene.deleteMany({ where: { projectId: project.id } });
+    await tx.aiStoryAct.deleteMany({ where: { projectId: project.id } });
+
+    // Places and props the structure named that the library did not have.
+    const created: Record<'location' | 'prop', number[]> = { location: [], prop: [] };
+    if (structure) {
+      let order = project.characters.length;
+      for (const [kind, list] of [['location', structure.newLocations], ['prop', structure.newProps]] as const) {
+        for (const a of list) {
+          const row = await tx.aiStoryCharacter.create({
+            data: { projectId: project.id, kind, name: a.name, description: a.description, origin: 'planned', sortOrder: order++ },
+          });
+          created[kind].push(row.id);
+        }
+      }
+    }
+    const real = (kind: 'location' | 'prop', id: number | null | undefined): number | null =>
+      id === null || id === undefined ? null : id >= 0 ? id : created[kind][-1 - id] ?? null;
+    const props = (ids: number[] | undefined) => [...new Set((ids ?? []).map((id) => real('prop', id)).filter((id): id is number => id !== null))];
+
+    const sceneOf: (number | null)[] = shots.map(() => null);
+    if (structure) {
+      const sceneIds: number[] = [];
+      for (const [k, act] of structure.acts.entries()) {
+        const actRow = await tx.aiStoryAct.create({
+          data: { projectId: project.id, actNumber: k + 1, title: act.title, summary: act.summary || null },
+        });
+        for (const sc of act.scenes) {
+          const row = await tx.aiStoryScene.create({
+            data: {
+              projectId: project.id,
+              actId: actRow.id,
+              sceneNumber: sceneIds.length + 1,
+              title: sc.title,
+              summary: sc.summary || null,
+              locationId: real('location', sc.locationRef),
+              timeOfDay: sc.timeOfDay,
+            },
+          });
+          sceneIds.push(row.id);
+        }
+      }
+      shots.forEach((sh, k) => (sceneOf[k] = sceneIds[(sh.scene ?? 1) - 1] ?? null));
+    } else if (sections) {
+      // One scene per run of the same section, placed where most of its shots are.
+      let from = 0;
+      let number = 0;
+      while (from < shots.length) {
+        let to = from;
+        while (to + 1 < shots.length && sections[to + 1] === sections[from]) to++;
+        const places = shots.slice(from, to + 1).map((sh) => sh.locationId).filter((id): id is number => typeof id === 'number');
+        const place = places.sort((a, b) => places.filter((x) => x === b).length - places.filter((x) => x === a).length)[0] ?? null;
+        const row = await tx.aiStoryScene.create({
+          data: { projectId: project.id, sceneNumber: ++number, title: sectionTitle(sections[from]), locationId: place },
+        });
+        for (let k = from; k <= to; k++) sceneOf[k] = row.id;
+        from = to + 1;
+      }
+    }
+
     await tx.aiStoryShot.createMany({
-      data: planned!.shots.map((s, k) => ({
-        projectId: project.id,
-        shotNumber: k + 1,
-        visualPrompt: s.visual,
-        narration: s.line || null,
-        characterIds: s.characterIds,
-        speakerId: s.speakerId,
-        shotSize: s.shotSize,
-        camera: s.camera,
-        sound: s.sound || null,
-        modelId: defaultModelId,
-        startSec: s.startSec,
-        durationSec: Math.round(s.durationSec * 100) / 100,
+      data: shots.map((sh, k) => ({
+        ...shotData(sh, project.id, k + 1, defaultModelId, sceneOf[k], props(sh.propIds)),
+        locationId: mode === 'mv' ? real('location', sh.locationId) : null,
       })),
     });
     const isPlaceholderTitle = !project.title.trim() || project.title === 'โปรเจกต์ใหม่';
@@ -286,7 +431,94 @@ export async function planProject(
       await tx.aiStoryProject.update({ where: { id: project.id }, data: { title: planned!.title } });
     }
   });
-  return { shots: planned.shots.length, engine, fallbackReason };
+  return { shots: shots.length, engine, fallbackReason };
+}
+
+/**
+ * Re-plan the shots of some scenes only (a scene, or every scene of an act),
+ * leaving the rest of the film as it is. The new shots take the old ones'
+ * place; a film's scenes are planned with the whole outline in view, an MV's
+ * on the song slots its shots held. Refused while a shot of theirs renders.
+ */
+export async function planScenes(
+  project: StoryProjectFull,
+  sceneIds: number[],
+  defaultModelId: number | null
+): Promise<{ shots: number; engine: string; fallbackReason?: string }> {
+  const targets = project.scenes.filter((sc) => sceneIds.includes(sc.id));
+  if (targets.length === 0) throw new StoryError('ไม่พบฉากที่จะวางใหม่', 404);
+  const inTargets = (shot: { sceneId: number | null }) => targets.some((t) => t.id === shot.sceneId);
+  if (project.shots.some((sh) => inTargets(sh) && isBusyShot(sh))) throw new StoryError(BUSY_MESSAGE, 409);
+  const input = planInputOf(project);
+  const mode = project.mode as StoryMode;
+  const others = project.shots.filter((sh) => !inTargets(sh)).length;
+  const room = Math.max(targets.length, (mode === 'mv' ? LIMITS.shotsMv : LIMITS.shotsFilm) - others);
+
+  const all: SceneBrief[] = project.scenes.map((sc) => {
+    const own = project.shots.filter((sh) => sh.sceneId === sc.id);
+    const union = (pick: (sh: (typeof own)[number]) => unknown) => [...new Set(own.flatMap((sh) => idList(pick(sh))))];
+    return {
+      title: sc.title,
+      summary: sc.summary ?? '',
+      locationRef: sc.locationId,
+      timeOfDay: sc.timeOfDay,
+      cast: union((sh) => sh.characterIds),
+      props: union((sh) => sh.propIds),
+      seconds: own.reduce((n, sh) => n + Number(sh.durationSec), 0) || 30,
+    };
+  });
+  const failed: string[] = [];
+  const fresh = new Map<number, ShotDraft[]>();
+  await Promise.all(
+    targets.map(async (scene) => {
+      const index = project.scenes.findIndex((sc) => sc.id === scene.id);
+      const share = Math.max(1, Math.floor(room / targets.length));
+      if (mode === 'mv') {
+        const own = project.shots.filter((sh) => sh.sceneId === scene.id);
+        const slots: TimelineSlot[] = own.map((sh) => ({
+          start: Number(sh.startSec ?? 0),
+          duration: Number(sh.durationSec),
+          line: sh.narration ?? '',
+          section: scene.title,
+          instrumental: !(sh.narration ?? '').trim(),
+        }));
+        if (slots.length === 0) throw new StoryError(`ฉาก "${scene.title}" ไม่มีช่วงเพลง — วางทั้งเพลงใหม่แทน`, 422);
+        const shots = await planMvSlots(input, slots).catch(() => null);
+        if (!shots) throw new StoryError('ผู้ช่วย AI ไม่ว่างตอนนี้ ลองใหม่อีกครั้ง', 503);
+        fresh.set(scene.id, shots);
+      } else {
+        const maxShots = Math.min(share, Math.max(1, Math.round(all[index].seconds / 6) + 2));
+        const shots = await planSceneShots(input, all, [index + 1], { index, count: all.length, maxShots, props: input.props, locations: input.locations }, failed);
+        fresh.set(scene.id, shots);
+      }
+    })
+  );
+
+  let total = 0;
+  await prisma.$transaction(async (tx) => {
+    const busy = await tx.aiStoryShot.count({ where: { projectId: project.id, sceneId: { in: targets.map((t) => t.id) }, OR: BUSY_WHERE } });
+    if (busy > 0) throw new StoryError(BUSY_MESSAGE, 409);
+    const current = await tx.aiStoryShot.findMany({ where: { projectId: project.id }, orderBy: { shotNumber: 'asc' }, select: { id: true, sceneId: true } });
+    const orderOf = new Map(project.scenes.map((sc) => [sc.id, sc.sceneNumber]));
+    let order: { key: number; sceneId: number | null }[] = current.map((c) => ({ key: c.id, sceneId: c.sceneId }));
+    await tx.aiStoryShot.deleteMany({ where: { projectId: project.id, sceneId: { in: targets.map((t) => t.id) } } });
+    for (const scene of targets) {
+      const ids: number[] = [];
+      for (const sh of fresh.get(scene.id) ?? []) {
+        const row = await tx.aiStoryShot.create({ data: shotData(sh, project.id, 0, defaultModelId, scene.id, idList(sh.propIds)) });
+        ids.push(row.id);
+      }
+      total += ids.length;
+      const keys = spliceScene(
+        order.map((o) => ({ key: o.key, sceneOrder: o.sceneId === null ? null : orderOf.get(o.sceneId) ?? null, inScene: o.sceneId === scene.id })),
+        ids,
+        scene.sceneNumber
+      );
+      order = keys.map((key) => ({ key, sceneId: ids.includes(key) ? scene.id : order.find((o) => o.key === key)!.sceneId }));
+    }
+    for (const [k, o] of order.entries()) await tx.aiStoryShot.update({ where: { id: o.key }, data: { shotNumber: k + 1 } });
+  });
+  return { shots: total, engine: mode === 'mv' ? 'mv' : 'scenes', fallbackReason: failed.length ? failed.join(' | ') : undefined };
 }
 
 // ---------------------------------------------------------------------------
@@ -311,6 +543,8 @@ export async function renderShot(
   if (!model) throw new StoryError(`ช็อต ${shot.shotNumber}: เลือกโมเดลวิดีโอก่อน`, 422);
   if (!model.orderable) throw new StoryError(`ช็อต ${shot.shotNumber}: ${model.name} ยังเปิดให้ใช้ไม่ได้ เลือกโมเดลอื่น`, 409);
   if (!shot.visualPrompt.trim()) throw new StoryError(`ช็อต ${shot.shotNumber}: ยังไม่มีคำบรรยายภาพ`, 422);
+  // Its opening picture is on the way: the clip would start from the old one.
+  if (shot.keyframeStatus === 'rendering') throw new StoryError(`ช็อต ${shot.shotNumber}: รอภาพเปิดช็อตเสร็จก่อน`, 409);
 
   const claimed = await prisma.aiStoryShot.updateMany({
     where: { id: shot.id, projectId: project.id, status: { in: ['pending', 'failed', 'done'] } },
@@ -321,8 +555,11 @@ export async function renderShot(
   if (claimed.count === 0) throw new StoryError(`ช็อต ${shot.shotNumber} กำลังสร้างอยู่แล้ว`, 409);
 
   const draft = shotDraftOf(shot);
-  const lead = project.characters.find((c) => c.id === draft.characterIds[0]);
-  const firstFrame = lead?.referenceUrl ?? undefined;
+  // The composed opening picture when the customer keeps it, else the lead's photo.
+  const keyframe = shot.keyframeUse && shot.keyframeStatus === 'done' && shot.keyframeUrl ? shot.keyframeUrl : null;
+  const lead = project.characters.find((c) => c.id === draft.characterIds[0] && c.kind === 'character');
+  const firstFrame = keyframe ?? lead?.referenceUrl ?? undefined;
+  if (!draft.locationId) draft.locationId = project.scenes.find((sc) => sc.id === shot.sceneId)?.locationId ?? null;
   const frame = ASPECTS[project.aspectRatio] ?? ASPECTS['16:9'];
   const prompt = buildShotPrompt(model.key, draft, {
     mode: project.mode as StoryMode,
@@ -330,6 +567,9 @@ export async function renderShot(
     mood: project.mood ?? '',
     characters: characterLites(project),
     hasFirstFrame: Boolean(firstFrame),
+    keyframe: Boolean(keyframe),
+    props: libraryLites(project, 'prop'),
+    locations: libraryLites(project, 'location'),
   });
 
   try {

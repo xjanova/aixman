@@ -1,18 +1,20 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { getCurrentUserId, isAdmin } from '@/lib/auth';
 import { rateLimit } from '@/lib/rate-limit';
-import { filmPartCount, filmTarget } from '@/lib/story/cinematic';
 import { claimPlan, finishPlan } from '@/lib/story/plan-jobs';
-import { StoryError, loadOwnedProject, movieModels, planProject } from '@/lib/story/service';
+import { StoryError, idList, isBusyShot, loadOwnedProject, movieModels, planProject, planScenes } from '@/lib/story/service';
 import { serializeProject, storyErrorReply } from '@/lib/story/http';
 
 /**
  * POST /api/story/[id]/plan — "✨ ให้ AI แตกช็อต": write (or rewrite) the
- * storyboard from the story or the lyrics. Free, so limited per hour; a model
- * that cannot be reached falls back to the rule-based planner, never fails.
+ * storyboard from the story or the lyrics — a film as acts, scenes and shots.
+ * With {sceneIds} only those scenes' shots are re-planned (a scene, or every
+ * scene of an act). Free, so limited per hour; a model that cannot be
+ * reached falls back to the rule-based planner.
  *
- * A long film (a length past one part, cinematic.ts FILM_PART_SECONDS) is
- * planned after the response — 202 with `planning` — and the page polls.
+ * Planned after the response — 202 with `planning` — and the page polls: a
+ * film takes a structure call and then its scenes' calls, longer than the
+ * proxy in front of us waits for one request.
  */
 
 export const dynamic = 'force-dynamic';
@@ -39,30 +41,24 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
     }
     const models = await movieModels(admin);
     const fallback = models.find((m) => m.orderable) ?? models[0];
-    if (project.mode === 'film' && filmPartCount(filmTarget(project.scriptJson)) > 0) {
-      if (project.shots.some((s) => s.status === 'rendering')) {
-        throw new StoryError('มีช็อตกำลังสร้างอยู่ รอให้เสร็จก่อนแล้วค่อยให้ AI วางช็อตใหม่', 409);
+    const body = ((await _request.json().catch(() => null)) ?? {}) as Record<string, unknown>;
+    const sceneIds = idList(body.sceneIds).filter((sid) => project.scenes.some((sc) => sc.id === sid));
+    if (body.sceneIds !== undefined && sceneIds.length === 0) throw new StoryError('ไม่พบฉากที่จะวางใหม่', 404);
+    const scoped = sceneIds.length > 0;
+    const busy = project.shots.some((s) => isBusyShot(s) && (!scoped || (s.sceneId !== null && sceneIds.includes(s.sceneId))));
+    if (busy) throw new StoryError('มีช็อตหรือภาพเปิดช็อตกำลังสร้างอยู่ รอให้เสร็จก่อนแล้วค่อยให้ AI วางช็อตใหม่', 409);
+    if (!claimPlan(project.id)) throw new StoryError('AI กำลังวางช็อตของโปรเจกต์นี้อยู่ รอสักครู่', 409);
+    after(async () => {
+      try {
+        const result = scoped ? await planScenes(project, sceneIds, fallback?.id ?? null) : await planProject(project, fallback?.id ?? null);
+        if (result.fallbackReason) console.warn(`[story] plan ${project.id} fell back in part: ${result.fallbackReason}`);
+        finishPlan(project.id, { shots: result.shots, rules: result.engine === 'rules' });
+      } catch (error) {
+        if (!(error instanceof StoryError)) console.error(`[story] plan ${project.id}:`, error);
+        finishPlan(project.id, { error: error instanceof StoryError ? error.message : 'วางช็อตไม่สำเร็จ ลองใหม่อีกครั้ง' });
       }
-      if (!claimPlan(project.id)) throw new StoryError('AI กำลังวางช็อตของโปรเจกต์นี้อยู่ รอสักครู่', 409);
-      after(async () => {
-        try {
-          const result = await planProject(project, fallback?.id ?? null);
-          if (result.fallbackReason) console.warn(`[story] plan ${project.id} fell back in part: ${result.fallbackReason}`);
-          finishPlan(project.id, { shots: result.shots, rules: result.engine === 'rules' });
-        } catch (error) {
-          if (!(error instanceof StoryError)) console.error(`[story] plan ${project.id}:`, error);
-          finishPlan(project.id, { error: error instanceof StoryError ? error.message : 'วางช็อตไม่สำเร็จ ลองใหม่อีกครั้ง' });
-        }
-      });
-      return NextResponse.json({ ...(await serializeProject(project, admin)), planner: 'ai' }, { status: 202 });
-    }
-    const result = await planProject(project, fallback?.id ?? null);
-    if (result.fallbackReason) console.warn(`[story] plan ${project.id} fell back to rules: ${result.fallbackReason}`);
-    const fresh = (await loadOwnedProject(userId, id))!;
-    return NextResponse.json({
-      ...(await serializeProject(fresh, admin)),
-      planner: result.engine === 'rules' ? 'rules' : 'ai',
     });
+    return NextResponse.json({ ...(await serializeProject(project, admin)), planner: 'ai' }, { status: 202 });
   } catch (error) {
     return storyErrorReply(error, 'plan');
   }

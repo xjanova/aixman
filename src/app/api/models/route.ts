@@ -13,6 +13,7 @@ import { communityListing, NO_MACHINE_LISTING_TEXT } from '@/lib/gpu/community-d
 import { communityMachineAvailable } from '@/lib/gpu/community-availability';
 import { getAllStoredWorkflows, visibleQualityModes } from '@/lib/gpu/workflow-overrides';
 import { apiVideoLipsyncRule, type ClipRule, type LipsyncBilling, type VoiceRule } from '@/lib/lipsync-rules';
+import { referenceCaps } from '@/lib/reference-caps';
 
 /**
  * Public model list for the studio and the mobile app.
@@ -254,6 +255,9 @@ export async function GET() {
         // A model that re-dubs a clip: its rules, so the studio can say before
         // the order whether the clip fits and what it costs. Null otherwise.
         videoLipsync: videoLipsyncOptions(m.modelId, inHouse),
+        // How many reference pictures an order may carry, and whether a clip
+        // opens / ends on a given frame (reference-caps.ts). 0 = none.
+        references: referenceCaps({ providerSlug: m.provider.slug, modelId: m.modelId, category: m.category, defaultParams: m.defaultParams }),
         // Quality modes the studio may offer (Qwen-Image เร็ว / คุณภาพสูง), each
         // with the multiplier GenerationService prices it at. Null when the
         // model has none; admin-only modes reach admins only.

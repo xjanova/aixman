@@ -12,6 +12,12 @@
  * Every shot is an ordinary studio order (/api/story/[id]/render), so it is
  * charged, refunded and shown in the gallery like one. Joining the shots into
  * one film is phase 2.
+ *
+ * A project keeps a reference library (characters, props, places — each with
+ * pictures), is told in acts → scenes → shots, and each shot may open on a
+ * picture composed from its references by an image model that takes several
+ * (src/lib/story/library.ts). Every act, scene and shot re-plans and
+ * re-renders on its own.
  */
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
@@ -29,9 +35,65 @@ interface Character {
   description: string;
   referenceUrl: string | null;
 }
+type AssetKind = "character" | "prop" | "location";
+interface Asset {
+  id: number;
+  kind: AssetKind;
+  name: string;
+  description: string;
+  pictures: string[];
+  origin: string;
+  image: { state: "rendering" | "done" | "failed" | null; error: string | null };
+}
+interface Act {
+  id: number;
+  number: number;
+  title: string;
+  summary: string;
+}
+interface Scene {
+  id: number;
+  actId: number | null;
+  number: number;
+  title: string;
+  summary: string;
+  locationId: number | null;
+  timeOfDay: string | null;
+}
+interface PictureModel {
+  id: number;
+  key: string;
+  name: string;
+  refs: number;
+  label: string;
+  orderable: boolean;
+  reason: string | null;
+  credits: number;
+}
+interface Pictures {
+  keyframeModelId: number | null;
+  pictureModelId: number | null;
+  models: PictureModel[];
+  times: Record<string, string>;
+  kinds: Record<AssetKind, { label: string; max: number }>;
+  maxPictures: number;
+}
 interface Shot {
   id: number;
   number: number;
+  sceneId: number | null;
+  propIds: number[];
+  /** The shot's own place; null = its scene's. */
+  locationId: number | null;
+  /** The opening picture composed from the shot's references. */
+  keyframe: {
+    state: "rendering" | "done" | "failed" | null;
+    url: string | null;
+    error: string | null;
+    use: boolean;
+    wanted: number;
+    sent: number;
+  };
   visual: string;
   line: string;
   sound: string;
@@ -72,6 +134,9 @@ interface Project {
   songSeconds: number | null;
   status: string;
   characters: (Character & { id: number })[];
+  library: Asset[];
+  acts: Act[];
+  scenes: Scene[];
   shots: Shot[];
 }
 interface Model {
@@ -79,6 +144,8 @@ interface Model {
   key: string;
   name: string;
   orderable: boolean;
+  /** What pictures it takes, in Thai (reference-caps.ts). */
+  references: string;
 }
 interface EditSettings {
   clipAudio: boolean;
@@ -107,7 +174,8 @@ interface ProjectView {
   music: { available: boolean; credits: number | null; stale: boolean; status: "none" | "rendering" | "done" | "failed"; url: string | null };
   film: { status: "none" | "assembling" | "done"; credits: number; url: string | null; seconds: number | null; error: string | null };
   vocals: Vocals | null;
-  /** A long film being planned after the response, or the last plan's outcome. */
+  pictures: Pictures;
+  /** A plan running after the response, or the last plan's outcome. */
   planning: { state: "planning" | "failed" | "done"; error: string | null; shots: number | null; rules: boolean } | null;
 }
 interface ProjectRow {
@@ -432,6 +500,9 @@ function ShotCard({
   vocals,
   onLipsync,
   onDubUse,
+  pictures,
+  onKeyframe,
+  onKeyframeUse,
 }: {
   shot: Shot;
   project: Project;
@@ -442,6 +513,9 @@ function ShotCard({
   vocals: Vocals | null;
   onLipsync: () => void;
   onDubUse: (use: boolean) => void;
+  pictures: Pictures;
+  onKeyframe: () => void;
+  onKeyframeUse: (use: boolean) => void;
 }) {
   const [draft, setDraft] = useState(shot);
   const [saving, setSaving] = useState(false);
@@ -475,6 +549,13 @@ function ShotCard({
   const st = STATUS_LABEL[shot.status];
   const toggleCast = (id: number) =>
     set({ characterIds: draft.characterIds.includes(id) ? draft.characterIds.filter((x) => x !== id) : [...draft.characterIds, id] });
+  const toggleProp = (id: number) => set({ propIds: draft.propIds.includes(id) ? draft.propIds.filter((x) => x !== id) : [...draft.propIds, id] });
+  const props = project.library.filter((a) => a.kind === "prop");
+  const places = project.library.filter((a) => a.kind === "location");
+  const scenePlace = places.find((a) => a.id === project.scenes.find((sc) => sc.id === shot.sceneId)?.locationId);
+  const kf = shot.keyframe;
+  const kfBusy = kf.state === "rendering";
+  const keyModel = pictures.models.find((m) => m.id === pictures.keyframeModelId);
 
   return (
     <div style={{ ...card, padding: 16, display: "grid", gridTemplateColumns: "minmax(0,1fr)", gap: 12 }}>
@@ -491,6 +572,39 @@ function ShotCard({
       {shot.mediaUrl && (
         <video src={shot.mediaUrl} controls playsInline preload="metadata" style={{ width: "100%", maxHeight: 360, borderRadius: 12, background: "#000" }} />
       )}
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap", padding: 10, borderRadius: 12, background: "rgba(2,6,23,0.35)" }}>
+        <div style={{ width: 160, aspectRatio: project.aspect.replace(":", " / "), maxHeight: 200, borderRadius: 10, overflow: "hidden", background: "rgba(2,6,23,0.6)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#64748b", textAlign: "center", flexShrink: 0 }}>
+          {kf.url ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <a href={kf.url} target="_blank" rel="noreferrer"><img src={kf.url} alt="ภาพเปิดช็อต" style={{ width: "100%", height: "100%", objectFit: "cover" }} /></a>
+          ) : kf.state === "rendering" ? "กำลังสร้างภาพเปิด…" : "ยังไม่มีภาพเปิด"}
+        </div>
+        <div style={{ flex: 1, minWidth: 200, display: "flex", flexDirection: "column", gap: 6, fontSize: 12, color: "#94a3b8" }}>
+          <div style={{ fontSize: 13, color: "#e2e8f0", fontWeight: 600 }}>ภาพเปิดช็อต</div>
+          <div>
+            รวมตัวละคร ของ และสถานที่ของช็อตเป็นภาพเดียว แล้วคลิปเริ่มจากภาพนี้
+            {kf.wanted > 0 && keyModel ? ` · ส่งภาพอ้างอิง ${kf.sent}/${kf.wanted} ภาพ (${keyModel.name} ${keyModel.label.replace("รับภาพอ้างอิงได้ ", "รับได้ ")})` : kf.wanted === 0 ? " · ช็อตนี้ยังไม่มีภาพอ้างอิง (ใส่ภาพในคลังก่อน)" : ""}
+          </div>
+          {kf.state === "failed" && kf.error && <div style={{ color: "#fca5a5" }}>{kf.error}</div>}
+          {kf.url && (
+            <label style={{ display: "flex", gap: 6, alignItems: "center", cursor: "pointer" }}>
+              <input type="checkbox" checked={kf.use} disabled={locked} onChange={(e) => onKeyframeUse(e.target.checked)} />
+              ใช้ภาพนี้เป็นเฟรมแรกของคลิป (ปิด = ใช้ภาพตัวละครนำ)
+            </label>
+          )}
+          <div>
+            <button
+              style={{ ...btn, padding: "6px 12px", opacity: !keyModel || kf.state === "rendering" || dirty ? 0.5 : 1 }}
+              disabled={!keyModel || kf.state === "rendering" || dirty}
+              title={!keyModel ? "ยังไม่มีโมเดลภาพที่รับภาพอ้างอิงเปิดให้ใช้" : dirty ? "บันทึกการแก้ไขก่อน" : undefined}
+              onClick={onKeyframe}
+            >
+              {kf.state === "rendering" ? "กำลังสร้าง…" : kf.url ? "🖼 สร้างภาพเปิดใหม่" : "🖼 สร้างภาพเปิด"}
+              {keyModel && ` · ${keyModel.credits} เครดิต`}
+            </button>
+          </div>
+        </div>
+      </div>
       {shot.status === "failed" && shot.error && <div style={{ fontSize: 13, color: "#fca5a5" }}>{shot.error}</div>}
       {shot.lipsync && shot.status === "done" && <DubRow shot={shot} vocals={vocals} onLipsync={onLipsync} onDubUse={onDubUse} />}
 
@@ -532,7 +646,7 @@ function ShotCard({
               <option value="">— เลือก —</option>
               {models.map((m) => (
                 <option key={m.id} value={m.id} disabled={!m.orderable}>
-                  {m.name}{m.orderable ? "" : " (ยังไม่เปิด)"}
+                  {m.name} — {m.references}{m.orderable ? "" : " (ยังไม่เปิด)"}
                 </option>
               ))}
             </select>
@@ -556,6 +670,25 @@ function ShotCard({
             </div>
           </div>
         )}
+        {props.length > 0 && (
+          <div>
+            <span style={label}>ของ / อาวุธในช็อต</span>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {props.map((a) => (
+                <button key={a.id} type="button" style={chip(draft.propIds.includes(a.id))} onClick={() => toggleProp(a.id)}>{a.name}</button>
+              ))}
+            </div>
+          </div>
+        )}
+        {places.length > 0 && (
+          <div>
+            <span style={label}>สถานที่</span>
+            <select style={field} value={draft.locationId ?? ""} onChange={(e) => set({ locationId: Number(e.target.value) || null })}>
+              <option value="">{scenePlace ? `ตามฉาก (${scenePlace.name})` : "ไม่ระบุ"}</option>
+              {places.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          </div>
+        )}
       </fieldset>
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -563,9 +696,9 @@ function ShotCard({
           <button style={btn} disabled={saving} onClick={save}>{saving ? "กำลังบันทึก…" : "บันทึกการแก้ไข"}</button>
         )}
         <button
-          style={{ ...primary, opacity: locked || dirty || !model?.orderable ? 0.5 : 1 }}
-          disabled={locked || dirty || !model?.orderable}
-          title={dirty ? "บันทึกการแก้ไขก่อน" : undefined}
+          style={{ ...primary, opacity: locked || dirty || kfBusy || !model?.orderable ? 0.5 : 1 }}
+          disabled={locked || dirty || kfBusy || !model?.orderable}
+          title={dirty ? "บันทึกการแก้ไขก่อน" : kfBusy ? "รอภาพเปิดช็อตเสร็จก่อน คลิปจะได้เริ่มจากภาพนั้น" : undefined}
           onClick={onRender}
         >
           {shot.status === "done" ? "สร้างใหม่" : shot.status === "failed" ? "ลองอีกครั้ง" : "สร้างช็อตนี้"}
@@ -573,7 +706,7 @@ function ShotCard({
         </button>
         {shot.generationId && <Link href="/gallery" style={{ fontSize: 12, color: "#94a3b8" }}>ดูในแกลเลอรี</Link>}
         <span style={{ flex: 1 }} />
-        <button style={{ ...btn, padding: "6px 10px", color: "#fca5a5" }} disabled={locked} onClick={onDelete}>ลบช็อต</button>
+        <button style={{ ...btn, padding: "6px 10px", color: "#fca5a5" }} disabled={locked || kfBusy} onClick={onDelete}>ลบช็อต</button>
       </div>
     </div>
   );
@@ -623,10 +756,312 @@ function pickEditable(s: Shot) {
     characterIds: s.characterIds,
     speakerId: s.speakerId,
     modelId: s.modelId,
+    propIds: s.propIds,
+    locationId: s.locationId,
   };
 }
 
 const sameEdit = (a: Shot, b: Shot) => JSON.stringify(pickEditable(a)) === JSON.stringify(pickEditable(b));
+
+// ─── Reference library ──────────────────────────────────────────────────
+
+const KIND_ICON: Record<AssetKind, string> = { character: "🧑", prop: "🗡️", location: "🏞️" };
+const KIND_HINT: Record<AssetKind, string> = {
+  character: "หน้าตา การแต่งกาย (อังกฤษได้ผลดีที่สุด) เช่น young Thai woman, long black hair, red silk dress",
+  prop: "รูปร่าง วัสดุ สี เช่น curved steel sword, gold hilt with a red tassel",
+  location: "บรรยากาศ สถาปัตยกรรม เช่น ruined stone temple in a misty jungle, moss on the steps",
+};
+
+/** One library item: its pictures, its words, and an AI picture on demand. */
+function AssetCard({ asset, pictures, busy, onAction }: { asset: Asset; pictures: Pictures; busy: string | null; onAction: (body: Record<string, unknown>, key: string) => Promise<boolean> }) {
+  const { toast } = useToast();
+  const [name, setName] = useState(asset.name);
+  const [desc, setDesc] = useState(asset.description);
+  const [uploading, setUploading] = useState(false);
+  const dirty = name !== asset.name || desc !== asset.description;
+  const model = pictures.models.find((m) => m.id === pictures.pictureModelId);
+  const drawing = asset.image.state === "rendering";
+  const full = asset.pictures.length >= pictures.maxPictures;
+
+  const setPictures = (list: string[]) => onAction({ action: "update", assetId: asset.id, pictures: list }, `asset-${asset.id}`);
+  const upload = async (file: File | undefined) => {
+    if (!file) return;
+    setUploading(true);
+    const r = await uploadFile(file, "image");
+    setUploading(false);
+    if (!r.ok) return toast("error", r.error);
+    await setPictures([...asset.pictures, r.data.url]);
+  };
+  const draw = async () => {
+    if (!model) return toast("error", "ยังไม่มีโมเดลภาพเปิดให้ใช้ตอนนี้");
+    if (!desc.trim()) return toast("error", "เขียนคำอธิบายรูปลักษณ์ก่อน AI จึงวาดได้");
+    const angle = asset.pictures.length > 0 ? " (มุมใหม่ ภาพเดิมยังอยู่)" : "";
+    if (!confirm(`ให้ AI วาดภาพ ${asset.name}${angle}? ใช้ ${model.credits} เครดิตด้วย ${model.name} (ถ้าไม่สำเร็จคืนเครดิตอัตโนมัติ)`)) return;
+    if (await onAction({ action: "picture", assetId: asset.id }, `asset-${asset.id}`)) toast("success", "สั่งวาดแล้ว", "ภาพจะขึ้นเองเมื่อเสร็จ");
+  };
+  const remove = async () => {
+    if (!confirm(`ลบ "${asset.name}" ออกจากคลัง? ช็อตและฉากที่ใช้อยู่จะไม่อ้างอิงรายการนี้อีก`)) return;
+    await onAction({ action: "delete", assetId: asset.id }, `asset-${asset.id}`);
+  };
+
+  return (
+    <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap", padding: 12, borderRadius: 14, background: "rgba(2,6,23,0.35)" }}>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", maxWidth: 360 }}>
+        {asset.pictures.map((url, k) => (
+          <div key={url} style={{ position: "relative", width: 76, height: 76, borderRadius: 10, overflow: "hidden", border: k === 0 ? "2px solid #c084fc" : "1px solid rgba(255,255,255,0.1)" }}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={url} alt={asset.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            <button type="button" title="ลบภาพนี้" disabled={busy !== null} onClick={() => confirm("ลบภาพนี้?") && setPictures(asset.pictures.filter((u) => u !== url))} style={{ position: "absolute", top: 2, right: 2, width: 20, height: 20, borderRadius: 10, border: "none", background: "rgba(0,0,0,0.65)", color: "#fff", fontSize: 11, cursor: "pointer" }}>✕</button>
+            {k > 0 && (
+              <button type="button" title="ใช้เป็นภาพหลัก" disabled={busy !== null} onClick={() => setPictures([url, ...asset.pictures.filter((u) => u !== url)])} style={{ position: "absolute", bottom: 2, left: 2, padding: "1px 5px", borderRadius: 6, border: "none", background: "rgba(0,0,0,0.65)", color: "#fff", fontSize: 10, cursor: "pointer" }}>★ หลัก</button>
+            )}
+          </div>
+        ))}
+        {!full && (
+          <label style={{ width: 76, height: 76, borderRadius: 10, cursor: "pointer", border: "1px dashed rgba(255,255,255,0.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#94a3b8", textAlign: "center" }}>
+            {uploading ? "กำลังอัปโหลด…" : drawing ? "AI กำลังวาด…" : "+ ภาพ"}
+            <input type="file" accept="image/png,image/jpeg,image/webp" style={{ display: "none" }} disabled={uploading || busy !== null} onChange={(e) => upload(e.target.files?.[0])} />
+          </label>
+        )}
+      </div>
+      <div style={{ flex: 1, minWidth: 220, display: "flex", flexDirection: "column", gap: 8 }}>
+        <input style={field} maxLength={LIMITS.characterName} placeholder="ชื่อ" value={name} onChange={(e) => setName(e.target.value)} />
+        <textarea style={{ ...field, minHeight: 56, resize: "vertical" }} maxLength={LIMITS.characterDescription} placeholder={KIND_HINT[asset.kind]} value={desc} onChange={(e) => setDesc(e.target.value)} />
+        {asset.image.state === "failed" && asset.image.error && <div style={{ fontSize: 12, color: "#fca5a5" }}>{asset.image.error}</div>}
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {dirty && <button style={{ ...btn, padding: "6px 12px" }} disabled={busy !== null} onClick={() => onAction({ action: "update", assetId: asset.id, name, description: desc }, `asset-${asset.id}`)}>บันทึก</button>}
+          <button style={{ ...btn, padding: "6px 12px", opacity: dirty || drawing || full || !model ? 0.5 : 1 }} disabled={dirty || drawing || full || !model || busy !== null} title={dirty ? "บันทึกก่อน" : full ? `มีภาพครบ ${pictures.maxPictures} ภาพแล้ว` : undefined} onClick={draw}>
+            {drawing ? "AI กำลังวาด…" : asset.pictures.length ? "✨ ให้ AI วาดมุมใหม่" : "✨ ให้ AI วาดภาพ"}{model && ` · ${model.credits} เครดิต`}
+          </button>
+          <span style={{ flex: 1 }} />
+          <button style={{ ...btn, padding: "6px 10px", color: "#fca5a5" }} disabled={busy !== null || drawing} onClick={remove}>ลบ</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** The project's library, and which image models compose and draw pictures. */
+function LibraryPanel({ view, busy, onAction, onPictures }: {
+  view: ProjectView;
+  busy: string | null;
+  onAction: (body: Record<string, unknown>, key: string) => Promise<boolean>;
+  onPictures: (patch: Partial<Pick<Pictures, "keyframeModelId" | "pictureModelId">>) => void;
+}) {
+  const [tab, setTab] = useState<AssetKind>("character");
+  const pics = view.pictures;
+  const items = view.project.library.filter((a) => a.kind === tab);
+  const kind = pics.kinds[tab];
+  const hasKeyModel = pics.models.some((m) => m.id === pics.keyframeModelId);
+  return (
+    <details style={card} open={view.project.library.length === 0 || undefined}>
+      <summary style={{ cursor: "pointer", fontSize: 16, fontWeight: 600 }}>
+        📚 คลังอ้างอิง <span style={{ fontSize: 13, color: "#94a3b8", fontWeight: 400 }}>· ตัวละคร {view.project.library.filter((a) => a.kind === "character").length} · ของ {view.project.library.filter((a) => a.kind === "prop").length} · สถานที่ {view.project.library.filter((a) => a.kind === "location").length}</span>
+      </summary>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 12 }}>
+        <div style={{ fontSize: 12, color: "#94a3b8" }}>
+          ตัวละคร ของ/อาวุธ และสถานที่ที่ใช้ซ้ำทั้งเรื่อง ใส่ภาพไว้ (อัปโหลดเองหรือให้ AI วาด) แล้วระบบจะส่งภาพเหล่านี้ให้โมเดลรวมเป็น “ภาพเปิดช็อต” — หน้าตา ของ และฉากจึงเหมือนเดิมทุกช็อต รายการละไม่เกิน {pics.maxPictures} ภาพ (ภาพแรก = ภาพหลัก)
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10 }}>
+          <div>
+            <span style={label}>โมเดลรวมภาพเปิดช็อต (ต้องรับภาพอ้างอิงได้)</span>
+            <select style={field} value={pics.keyframeModelId ?? ""} disabled={busy !== null} onChange={(e) => onPictures({ keyframeModelId: Number(e.target.value) || null })}>
+              {!hasKeyModel && <option value="">— ยังไม่มีโมเดลที่ใช้ได้ —</option>}
+              {pics.models.map((m) => (
+                <option key={m.id} value={m.id} disabled={!m.orderable || m.refs === 0}>
+                  {m.name} — {m.label} · {m.credits} เครดิต{m.orderable ? "" : ` (${m.reason})`}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <span style={label}>โมเดลวาดภาพในคลัง</span>
+            <select style={field} value={pics.pictureModelId ?? ""} disabled={busy !== null} onChange={(e) => onPictures({ pictureModelId: Number(e.target.value) || null })}>
+              {pics.pictureModelId === null && <option value="">— ยังไม่มีโมเดลที่ใช้ได้ —</option>}
+              {pics.models.map((m) => (
+                <option key={m.id} value={m.id} disabled={!m.orderable}>
+                  {m.name} — {m.label} · {m.credits} เครดิต{m.orderable ? "" : ` (${m.reason})`}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        {!hasKeyModel && (
+          <div style={{ fontSize: 12, color: "#fcd34d" }}>
+            ตอนนี้ยังไม่มีโมเดลภาพที่รับภาพอ้างอิงเปิดให้ใช้ — คลิปจะเริ่มจากภาพตัวละครนำเหมือนเดิม (ของและสถานที่ใช้คำบรรยายแทน)
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {(Object.keys(pics.kinds) as AssetKind[]).map((k) => (
+            <button key={k} type="button" style={chip(tab === k)} onClick={() => setTab(k)}>
+              {KIND_ICON[k]} {pics.kinds[k].label} ({view.project.library.filter((a) => a.kind === k).length})
+            </button>
+          ))}
+        </div>
+        {items.length === 0 && <div style={{ fontSize: 13, color: "#64748b" }}>ยังไม่มี{kind.label} — เพิ่มเอง หรือกด “✨ ให้ AI แตกช็อต” ให้ AI เสนอสถานที่และของสำคัญของเรื่องให้</div>}
+        {items.map((a) => (
+          <AssetCard key={`${a.id}:${a.name}:${a.description}`} asset={a} pictures={pics} busy={busy} onAction={onAction} />
+        ))}
+        {items.length < kind.max && (
+          <button style={{ ...btn, alignSelf: "flex-start" }} disabled={busy !== null} onClick={() => onAction({ action: "add", kind: tab, name: "", description: "" }, "asset-add")}>
+            + เพิ่ม{kind.label}
+          </button>
+        )}
+      </div>
+    </details>
+  );
+}
+
+// ─── Acts and scenes ────────────────────────────────────────────────────
+
+interface ScopeActions {
+  busy: string | null;
+  planning: boolean;
+  onPlan: (sceneIds: number[], what: string) => void;
+  onKeyframes: (shots: Shot[]) => void;
+  onRender: (shots: Shot[]) => void;
+}
+
+// A shot whose opening picture is still being made waits for it.
+const renderableOf = (shots: Shot[]) => shots.filter((s) => (s.status === "pending" || s.status === "failed") && s.keyframe.state !== "rendering");
+
+/** The buttons that act on every shot of a scene or an act. */
+function ScopeButtons({ shots, sceneIds, what, actions, hasKeyModel }: { shots: Shot[]; sceneIds: number[]; what: string; actions: ScopeActions; hasKeyModel: boolean }) {
+  const rendering = shots.some((s) => s.status === "rendering");
+  const todo = renderableOf(shots);
+  const small = { ...btn, padding: "5px 10px", fontSize: 12 };
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+      {sceneIds.length > 0 && (
+        <button style={small} disabled={actions.busy !== null || actions.planning || rendering} title={rendering ? "รอช็อตที่กำลังสร้างให้เสร็จก่อน" : undefined} onClick={() => actions.onPlan(sceneIds, what)}>
+          ✨ วางช็อต{what}ใหม่
+        </button>
+      )}
+      {shots.length > 0 && hasKeyModel && (
+        <button style={small} disabled={actions.busy !== null} onClick={() => actions.onKeyframes(shots)}>🖼 ภาพเปิดทั้ง{what}</button>
+      )}
+      {todo.length > 0 && (
+        <button style={small} disabled={actions.busy !== null} onClick={() => actions.onRender(todo)}>🎬 สร้างคลิปที่เหลือ {todo.length} ช็อต</button>
+      )}
+    </div>
+  );
+}
+
+function SceneHeader({ scene, acts, places, times, shots, actions, hasKeyModel, onStructure, onAddShot }: {
+  scene: Scene;
+  acts: Act[];
+  places: Asset[];
+  times: Record<string, string>;
+  shots: Shot[];
+  actions: ScopeActions;
+  hasKeyModel: boolean;
+  onStructure: (body: Record<string, unknown>) => Promise<boolean>;
+  onAddShot: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState({ title: scene.title, summary: scene.summary, locationId: scene.locationId, timeOfDay: scene.timeOfDay, actId: scene.actId });
+  const place = places.find((a) => a.id === scene.locationId);
+  const seconds = shots.reduce((n, s) => n + s.durationSec, 0);
+  const save = async () => {
+    if (await onStructure({ action: "update-scene", sceneId: scene.id, ...draft })) setEditing(false);
+  };
+  const remove = async () => {
+    const rendering = shots.some((s) => s.status === "rendering");
+    if (rendering) return alert("มีช็อตในฉากนี้กำลังสร้างอยู่ รอให้เสร็จก่อน");
+    if (!confirm(shots.length ? `ลบฉาก ${scene.number} พร้อมช็อตในฉาก ${shots.length} ช็อต? (คลิปที่สร้างแล้วยังอยู่ในแกลเลอรี)` : `ลบฉาก ${scene.number}?`)) return;
+    await onStructure({ action: "delete-scene", sceneId: scene.id, withShots: true });
+  };
+  return (
+    <div style={{ padding: "12px 14px", borderRadius: 14, background: "rgba(168,85,247,0.08)", border: "1px solid rgba(168,85,247,0.2)", display: "flex", flexDirection: "column", gap: 8 }}>
+      {editing ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <input style={field} maxLength={200} value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} placeholder="ชื่อฉาก" />
+          <textarea style={{ ...field, minHeight: 60 }} maxLength={1200} value={draft.summary} onChange={(e) => setDraft({ ...draft, summary: e.target.value })} placeholder="เกิดอะไรขึ้นในฉากนี้ (ใช้ตอนให้ AI วางช็อตใหม่)" />
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8 }}>
+            <select style={field} value={draft.locationId ?? ""} onChange={(e) => setDraft({ ...draft, locationId: Number(e.target.value) || null })}>
+              <option value="">สถานที่: ไม่ระบุ</option>
+              {places.map((a) => <option key={a.id} value={a.id}>สถานที่: {a.name}</option>)}
+            </select>
+            <select style={field} value={draft.timeOfDay ?? ""} onChange={(e) => setDraft({ ...draft, timeOfDay: e.target.value || null })}>
+              <option value="">เวลา: ไม่ระบุ</option>
+              {Object.entries(times).map(([k, t]) => <option key={k} value={k}>เวลา: {t}</option>)}
+            </select>
+            {acts.length > 0 && (
+              <select style={field} value={draft.actId ?? ""} onChange={(e) => setDraft({ ...draft, actId: Number(e.target.value) || null })}>
+                <option value="">องก์: ไม่ระบุ</option>
+                {acts.map((a) => <option key={a.id} value={a.id}>องก์ {a.number}: {a.title}</option>)}
+              </select>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button style={primary} disabled={actions.busy !== null} onClick={save}>บันทึกฉาก</button>
+            <button style={btn} onClick={() => setEditing(false)}>ยกเลิก</button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+            <div style={{ fontWeight: 600 }}>ฉาก {scene.number} · {scene.title}</div>
+            <div style={{ fontSize: 12, color: "#94a3b8" }}>
+              {place ? `📍 ${place.name}` : "📍 ไม่ระบุสถานที่"}{scene.timeOfDay ? ` · ${times[scene.timeOfDay] ?? ""}` : ""} · {shots.length} ช็อต {fmtTime(seconds)}
+            </div>
+            <span style={{ flex: 1 }} />
+            <button style={{ ...btn, padding: "4px 10px", fontSize: 12 }} onClick={() => setEditing(true)}>✎ แก้ฉาก</button>
+            <button style={{ ...btn, padding: "4px 10px", fontSize: 12, color: "#fca5a5" }} disabled={actions.busy !== null} onClick={remove}>ลบฉาก</button>
+          </div>
+          {scene.summary && <div style={{ fontSize: 13, color: "#cbd5e1" }}>{scene.summary}</div>}
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+            <ScopeButtons shots={shots} sceneIds={[scene.id]} what="ฉากนี้" actions={actions} hasKeyModel={hasKeyModel} />
+            <button style={{ ...btn, padding: "5px 10px", fontSize: 12 }} disabled={actions.busy !== null} onClick={onAddShot}>+ ช็อตในฉากนี้</button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ActHeader({ act, shots, sceneIds, actions, hasKeyModel, onStructure }: {
+  act: Act;
+  shots: Shot[];
+  sceneIds: number[];
+  actions: ScopeActions;
+  hasKeyModel: boolean;
+  onStructure: (body: Record<string, unknown>) => Promise<boolean>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(act.title);
+  const [summary, setSummary] = useState(act.summary);
+  const save = async () => {
+    if (await onStructure({ action: "update-act", actId: act.id, title, summary })) setEditing(false);
+  };
+  return (
+    <div style={{ ...card, padding: 16, display: "flex", flexDirection: "column", gap: 8, borderColor: "rgba(56,189,248,0.25)" }}>
+      {editing ? (
+        <>
+          <input style={field} maxLength={200} value={title} onChange={(e) => setTitle(e.target.value)} />
+          <textarea style={{ ...field, minHeight: 56 }} maxLength={1200} value={summary} onChange={(e) => setSummary(e.target.value)} placeholder="สรุปองก์" />
+          <div style={{ display: "flex", gap: 8 }}>
+            <button style={primary} disabled={actions.busy !== null} onClick={save}>บันทึกองก์</button>
+            <button style={btn} onClick={() => setEditing(false)}>ยกเลิก</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+            <div style={{ fontSize: 17, fontWeight: 700, color: "#7dd3fc" }}>องก์ {act.number} · {act.title}</div>
+            <div style={{ fontSize: 12, color: "#94a3b8" }}>{sceneIds.length} ฉาก · {shots.length} ช็อต · {fmtTime(shots.reduce((n, s) => n + s.durationSec, 0))}</div>
+            <span style={{ flex: 1 }} />
+            <button style={{ ...btn, padding: "4px 10px", fontSize: 12 }} onClick={() => setEditing(true)}>✎ แก้องก์</button>
+            <button style={{ ...btn, padding: "4px 10px", fontSize: 12 }} disabled={actions.busy !== null} onClick={() => onStructure({ action: "add-scene", actId: act.id })}>+ ฉาก</button>
+            <button style={{ ...btn, padding: "4px 10px", fontSize: 12, color: "#fca5a5" }} disabled={actions.busy !== null} onClick={() => confirm(`ลบองก์ ${act.number}? ฉากและช็อตในองก์ยังอยู่ (ย้ายไปไม่ระบุองก์)`) && onStructure({ action: "delete-act", actId: act.id })}>ลบองก์</button>
+          </div>
+          {act.summary && <div style={{ fontSize: 13, color: "#cbd5e1" }}>{act.summary}</div>}
+          <ScopeButtons shots={shots} sceneIds={sceneIds} what="ทั้งองก์" actions={actions} hasKeyModel={hasKeyModel} />
+        </>
+      )}
+    </div>
+  );
+}
 
 // ─── The cut (phase 2) ──────────────────────────────────────────────────
 
@@ -865,7 +1300,6 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
   const [view, setView] = useState<ProjectView | null>(null);
   const [missing, setMissing] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
-  const [cast, setCast] = useState<Character[] | null>(null);
   const [brief, setBrief] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -895,7 +1329,8 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
     view?.music.status === "rendering" ||
     view?.vocals?.state === "separating" ||
     view?.planning?.state === "planning" ||
-    (view?.project.shots.some((s) => s.lipsync?.state === "rendering") ?? false);
+    (view?.project.shots.some((s) => s.lipsync?.state === "rendering" || s.keyframe.state === "rendering") ?? false) ||
+    (view?.project.library.some((a) => a.image.state === "rendering") ?? false);
   // A long film is planned after the response; say so when it lands.
   const planState = view?.planning?.state ?? null;
   const lastPlanState = useRef(planState);
@@ -949,9 +1384,10 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
   const plan = async () => {
     const done = project.shots.filter((s) => s.status === "done").length;
     if (project.shots.length > 0) {
+      const structure = project.scenes.length ? ` องก์และฉากเดิมจะถูกวางใหม่ด้วย (คลังอ้างอิงยังอยู่ครบ)` : "";
       const warn = done > 0
-        ? `ให้ AI วางช็อตใหม่ทั้งหมด? ช็อตเดิม ${project.shots.length} ช็อตจะถูกแทนที่ (คลิปที่สร้างแล้ว ${done} คลิปยังอยู่ในแกลเลอรี)`
-        : `ให้ AI วางช็อตใหม่ทั้งหมด? ช็อตเดิม ${project.shots.length} ช็อตและที่แก้ไว้จะถูกแทนที่`;
+        ? `ให้ AI วางเรื่องใหม่ทั้งหมด? ช็อตเดิม ${project.shots.length} ช็อตจะถูกแทนที่ (คลิปที่สร้างแล้ว ${done} คลิปยังอยู่ในแกลเลอรี)${structure}`
+        : `ให้ AI วางเรื่องใหม่ทั้งหมด? ช็อตเดิม ${project.shots.length} ช็อตและที่แก้ไว้จะถูกแทนที่${structure}`;
       if (!confirm(warn)) return;
     }
     const data = await act<ProjectView & { planner: "ai" | "rules" }>("plan", `/api/story/${id}/plan`, { method: "POST" });
@@ -959,7 +1395,7 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
     setView(data);
     if (data.planning?.state === "planning") {
       lastPlanState.current = "planning";
-      return toast("success", "AI กำลังวางช็อตหนังยาว", "ใช้เวลาราว 1–3 นาที ช็อตจะขึ้นเองเมื่อเสร็จ");
+      return toast("success", project.mode === "mv" ? "AI กำลังวางช็อตตามเพลง" : "AI กำลังแบ่งองก์ ฉาก และวางช็อต", "ใช้เวลาราว 1–3 นาที จะขึ้นเองเมื่อเสร็จ");
     }
     toast("success", `วางช็อตแล้ว ${data.project.shots.length} ช็อต`, data.planner === "rules" ? "ใช้ตัววางช็อตพื้นฐาน (ผู้ช่วย AI ไม่ว่าง) แก้ไขแต่ละช็อตได้ตามต้องการ" : undefined);
   };
@@ -980,6 +1416,59 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
     setView(data);
     if (data.stoppedBy) toast("error", `สั่งได้ ${data.ordered} ช็อต แล้วหยุด`, data.stoppedBy);
     else toast("success", `สั่งสร้าง ${data.ordered} ช็อตแล้ว`, "เครื่องแรกอาจใช้เวลาเปิดเครื่องสักครู่ ปิดหน้านี้ได้ ผลงานจะอยู่ในแกลเลอรี");
+  };
+
+  // Re-plan some scenes only — a scene, or every scene of an act.
+  const planScope = async (sceneIds: number[], what: string) => {
+    const shots = project.shots.filter((s) => s.sceneId !== null && sceneIds.includes(s.sceneId));
+    const done = shots.filter((s) => s.status === "done").length;
+    if (!confirm(`ให้ AI วางช็อต${what}ใหม่? ช็อตเดิม ${shots.length} ช็อตจะถูกแทนที่${done ? ` (คลิปที่สร้างแล้ว ${done} คลิปยังอยู่ในแกลเลอรี)` : ""} ส่วนอื่นของเรื่องไม่เปลี่ยน`)) return;
+    const data = await act<ProjectView>("plan", `/api/story/${id}/plan`, sendJson("POST", { sceneIds }));
+    if (!data) return;
+    setView(data);
+    lastPlanState.current = "planning";
+    toast("success", `AI กำลังวางช็อต${what}ใหม่`, "ใช้เวลาราว 1 นาที");
+  };
+
+  const keyframes = async (shots: Shot[]) => {
+    const model = view.pictures.models.find((m) => m.id === view.pictures.keyframeModelId);
+    if (!model) return toast("error", "ยังไม่มีโมเดลภาพที่รับภาพอ้างอิงเปิดให้ใช้");
+    const todo = shots.filter((s) => s.keyframe.state !== "rendering");
+    if (todo.length === 0) return;
+    const again = todo.filter((s) => s.keyframe.url).length;
+    if (!confirm(`สร้างภาพเปิด ${todo.length} ช็อตด้วย ${model.name}? ใช้รวม ${(model.credits * todo.length).toLocaleString()} เครดิต${again ? ` (${again} ช็อตมีภาพเดิมอยู่ จะถูกแทนที่)` : ""}`)) return;
+    const data = await act<ProjectView & { ordered: number; stoppedBy: string | null }>("keyframes", `/api/story/${id}/keyframes`, sendJson("POST", { shotIds: todo.map((s) => s.id) }));
+    if (!data) return;
+    setView(data);
+    if (data.stoppedBy) toast("error", `สั่งได้ ${data.ordered} ภาพ แล้วหยุด`, data.stoppedBy);
+    else toast("success", `สั่งสร้างภาพเปิด ${data.ordered} ภาพแล้ว`, "ภาพจะขึ้นเองเมื่อเสร็จ ตรวจภาพก่อนสร้างคลิป");
+  };
+
+  const keyframeUse = async (shot: Shot, use: boolean) => {
+    const data = await act<ProjectView>(`kfuse-${shot.id}`, `/api/story/${id}/shots/${shot.id}`, sendJson("PATCH", { keyframeUse: use }));
+    if (data) setView(data);
+  };
+
+  const assetAction = async (body: Record<string, unknown>, key: string) => {
+    const data = await act<ProjectView>(key, `/api/story/${id}/assets`, sendJson("POST", body));
+    if (data) setView(data);
+    return Boolean(data);
+  };
+
+  const structureAction = async (body: Record<string, unknown>) => {
+    const data = await act<ProjectView>("structure", `/api/story/${id}/structure`, sendJson("POST", body));
+    if (data) setView(data);
+    return Boolean(data);
+  };
+
+  const setPictures = async (patch: Partial<Pick<Pictures, "keyframeModelId" | "pictureModelId">>) => {
+    const data = await act<ProjectView>("pictures", `/api/story/${id}`, sendJson("PATCH", { pictures: patch }));
+    if (data) setView(data);
+  };
+
+  const addShotTo = async (sceneId: number) => {
+    const data = await act<ProjectView>("add", `/api/story/${id}/shots`, sendJson("POST", { sceneId }));
+    if (data) setView(data);
   };
 
   const saveShot = async (shot: Shot, patch: Partial<Shot>) => {
@@ -1006,12 +1495,10 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
 
   const saveSettings = async () => {
     const body: Record<string, unknown> = {};
-    if (cast) body.characters = cast.filter((c) => c.name.trim() || c.referenceUrl);
     if (brief !== null) body.brief = brief;
     const data = await act<ProjectView>("settings", `/api/story/${id}`, sendJson("PATCH", body));
     if (!data) return;
     setView(data);
-    setCast(null);
     setBrief(null);
     toast("success", "บันทึกแล้ว");
   };
@@ -1097,7 +1584,72 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
     if (data) onBack();
   };
 
-  const renderable = project.shots.filter((s) => s.status === "pending" || s.status === "failed");
+  const hasKeyModel = view.pictures.models.some((m) => m.id === view.pictures.keyframeModelId);
+  const scopeActions: ScopeActions = { busy, planning, onPlan: planScope, onKeyframes: keyframes, onRender: render };
+  const shotCard = (s: Shot) => (
+    <ShotCard
+      key={s.id}
+      shot={s}
+      project={project}
+      models={models}
+      onSave={(patch) => saveShot(s, patch)}
+      onRender={() => render([s])}
+      onDelete={() => deleteShot(s)}
+      vocals={view.vocals}
+      onLipsync={() => lipsync([s])}
+      onDubUse={(use) => dubUse(s, use)}
+      pictures={view.pictures}
+      onKeyframe={() => keyframes([s])}
+      onKeyframeUse={(use) => keyframeUse(s, use)}
+    />
+  );
+  const places = project.library.filter((a) => a.kind === "location");
+  const sceneBlock = (sc: Scene) => {
+    const shots = project.shots.filter((s) => s.sceneId === sc.id);
+    return (
+      <div key={`scene-${sc.id}`} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <SceneHeader
+          key={`${sc.id}:${sc.title}:${sc.summary}:${sc.locationId}:${sc.timeOfDay}:${sc.actId}`}
+          scene={sc}
+          acts={project.acts}
+          places={places}
+          times={view.pictures.times}
+          shots={shots}
+          actions={scopeActions}
+          hasKeyModel={hasKeyModel}
+          onStructure={structureAction}
+          onAddShot={() => addShotTo(sc.id)}
+        />
+        {shots.map(shotCard)}
+      </div>
+    );
+  };
+  // Acts → their scenes → shots; then scenes in no act, then shots in no scene.
+  const storyboard = () => {
+    const loose = project.scenes.filter((sc) => sc.actId === null || !project.acts.some((a) => a.id === sc.actId));
+    const stray = project.shots.filter((s) => s.sceneId === null || !project.scenes.some((sc) => sc.id === s.sceneId));
+    if (project.scenes.length === 0) return <>{project.shots.map(shotCard)}</>;
+    return (
+      <>
+        {project.acts.map((a) => {
+          const scenes = project.scenes.filter((sc) => sc.actId === a.id);
+          const shots = project.shots.filter((s) => scenes.some((sc) => sc.id === s.sceneId));
+          return (
+            <div key={`act-${a.id}`} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <ActHeader key={`${a.id}:${a.title}:${a.summary}`} act={a} shots={shots} sceneIds={scenes.map((sc) => sc.id)} actions={scopeActions} hasKeyModel={hasKeyModel} onStructure={structureAction} />
+              {scenes.map(sceneBlock)}
+            </div>
+          );
+        })}
+        {loose.length > 0 && project.acts.length > 0 && <div style={{ fontSize: 13, color: "#94a3b8" }}>ฉากที่ไม่อยู่ในองก์ใด</div>}
+        {loose.map(sceneBlock)}
+        {stray.length > 0 && <div style={{ fontSize: 13, color: "#94a3b8" }}>ช็อตที่ยังไม่อยู่ในฉากใด</div>}
+        {stray.map(shotCard)}
+      </>
+    );
+  };
+
+  const renderable = renderableOf(project.shots);
   const allCredits = renderable.reduce((n, s) => n + (s.credits ?? 0), 0);
   const doneCount = project.shots.filter((s) => s.status === "done").length;
   const totalSeconds = project.shots.reduce((n, s) => n + s.durationSec, 0);
@@ -1120,14 +1672,14 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
         {project.songUrl && <audio src={project.songUrl} controls preload="none" style={{ width: "100%" }} />}
 
         <details>
-          <summary style={{ cursor: "pointer", fontSize: 13, color: "#d8b4fe" }}>แก้{project.mode === "mv" ? "เนื้อเพลง" : "เรื่องย่อ"}และตัวละคร</summary>
+          <summary style={{ cursor: "pointer", fontSize: 13, color: "#d8b4fe" }}>แก้{project.mode === "mv" ? "เนื้อเพลง" : "เรื่องย่อ"}</summary>
           <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 12 }}>
             <textarea style={{ ...field, minHeight: 140, resize: "vertical" }} maxLength={LIMITS.brief} value={brief ?? project.brief} onChange={(e) => setBrief(e.target.value)} />
-            <CharacterEditor value={cast ?? project.characters} onChange={setCast} />
-            {(cast !== null || brief !== null) && (
+            <div style={{ fontSize: 12, color: "#94a3b8" }}>ตัวละคร ของ และสถานที่ แก้ได้ใน “คลังอ้างอิง” ด้านล่าง</div>
+            {brief !== null && (
               <div style={{ display: "flex", gap: 8 }}>
                 <button style={primary} disabled={busy !== null} onClick={saveSettings}>บันทึก</button>
-                <button style={btn} onClick={() => { setCast(null); setBrief(null); }}>ยกเลิก</button>
+                <button style={btn} onClick={() => setBrief(null)}>ยกเลิก</button>
               </div>
             )}
           </div>
@@ -1144,7 +1696,7 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button style={{ ...primary, opacity: busy || rendering || planning ? 0.6 : 1 }} disabled={busy !== null || rendering || planning} onClick={plan} title={rendering ? "รอช็อตที่กำลังสร้างให้เสร็จก่อน" : undefined}>
-            {planning ? "AI กำลังวางช็อตหนังยาว… (1–3 นาที)" : busy === "plan" ? "AI กำลังวางช็อต… (อาจถึง 1 นาที)" : project.shots.length ? "✨ ให้ AI วางช็อตใหม่" : "✨ ให้ AI แตกช็อต"}
+            {planning ? "AI กำลังวาง… (1–3 นาที)" : busy === "plan" ? "กำลังส่งให้ AI…" : project.shots.length ? "✨ ให้ AI วางเรื่องใหม่ทั้งหมด" : project.mode === "mv" ? "✨ ให้ AI แตกช็อต" : "✨ ให้ AI แบ่งองก์ ฉาก และช็อต"}
           </button>
           {renderable.length > 0 && (
             <button style={btn} disabled={busy !== null} onClick={() => render(renderable)}>
@@ -1152,12 +1704,19 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
             </button>
           )}
           <button style={btn} disabled={busy !== null} onClick={addShot}>+ เพิ่มช็อตเอง</button>
+          {project.mode === "film" && (
+            <button style={btn} disabled={busy !== null} onClick={() => structureAction(project.acts.length ? { action: "add-act" } : { action: "add-scene" })}>
+              {project.acts.length ? "+ เพิ่มองก์" : "+ เพิ่มฉาก"}
+            </button>
+          )}
           <button style={btn} disabled={busy !== null} onClick={() => load()}>รีเฟรช</button>
         </div>
         <div style={{ fontSize: 12, color: "#64748b" }}>
           แต่ละช็อตคิดเครดิตตอนกดสร้าง ถ้าสร้างไม่สำเร็จจะคืนเครดิตอัตโนมัติ · ช็อตที่เสร็จแล้วนำไปตัดต่อเป็นหนังไฟล์เดียวได้ด้านล่าง
         </div>
       </div>
+
+      <LibraryPanel view={view} busy={busy} onAction={assetAction} onPictures={setPictures} />
 
       {project.shots.length > 0 && view.vocals && (
         <SingPanel view={view} busy={busy} onSeparate={separate} onStem={uploadStem} onDubAll={lipsync} onEdit={saveEdit} />
@@ -1167,25 +1726,12 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
         <FilmPanel view={view} busy={busy} onEdit={saveEdit} onMusic={orderMusic} onAssemble={assemble} />
       )}
 
-      {project.shots.length === 0 ? (
+      {project.shots.length === 0 && project.scenes.length === 0 ? (
         <div style={{ ...card, color: "#94a3b8", textAlign: "center" }}>
-          ยังไม่มีช็อต — กด “✨ ให้ AI แตกช็อต” ให้ระบบวางให้จาก{project.mode === "mv" ? "เพลงและเนื้อเพลง" : "เรื่องย่อ"} แล้วค่อยแก้ทีละช็อต
+          ยังไม่มีช็อต — กด “✨ ให้ AI {project.mode === "mv" ? "แตกช็อต" : "แบ่งองก์ ฉาก และช็อต"}” ให้ระบบวางให้จาก{project.mode === "mv" ? "เพลงและเนื้อเพลง" : "เรื่องย่อ"} แล้วค่อยแก้ทีละองก์ ทีละฉาก ทีละช็อต
         </div>
       ) : (
-        project.shots.map((s) => (
-          <ShotCard
-            key={s.id}
-            shot={s}
-            project={project}
-            models={models}
-            onSave={(patch) => saveShot(s, patch)}
-            onRender={() => render([s])}
-            onDelete={() => deleteShot(s)}
-            vocals={view.vocals}
-            onLipsync={() => lipsync([s])}
-            onDubUse={(use) => dubUse(s, use)}
-          />
-        ))
+        storyboard()
       )}
     </div>
   );
@@ -1247,7 +1793,7 @@ function MovieStudio() {
         emphasis="หนังทั้งเรื่อง"
         hue={300}
         size="slim"
-        sub="เขียนเรื่องหรือใส่เพลง → AI แตกเป็นช็อตพร้อมมุมกล้องและบทพูดไทย → แก้ได้ทุกช็อต → สร้างทีละช็อตด้วยตัวละครหน้าเดิม"
+        sub="เขียนเรื่องหรือใส่เพลง → AI แบ่งเป็นองก์ ฉาก และช็อตพร้อมมุมกล้องและบทพูดไทย → ตัวละคร ของ และสถานที่จากคลังอ้างอิงเหมือนเดิมทุกช็อต → แก้และสร้างใหม่ได้ทีละองก์ ทีละฉาก ทีละช็อต"
       />
       <div style={{ padding: "0 16px 80px", maxWidth: 1000, margin: "0 auto", color: "#f1f5f9", display: "flex", flexDirection: "column", gap: 20 }}>
         {openId ? (
