@@ -90,6 +90,11 @@ const PENDING_RENTAL_KEY = 'gpu_pending_rentals';
 /** SimplePod lists disk per GB per month (see GpuOffer.diskPricePerGbMonthUsd). */
 const HOURS_PER_MONTH = 730;
 
+/** Termination reason of a machine that gave its slot to a starved model (reserveHandover). */
+const HANDOVER_PREFIX = 'Handed its slot over to ';
+/** How long such a slot stays that model's, should its rental be slow to land. */
+const HANDOVER_HOLD_MS = 10 * 60_000;
+
 /** How long to hold off re-renting a model whose last boot failed. */
 const BOOT_FAILURE_BACKOFF_MS = 10 * 60_000;
 /** Termination reason for a boot the worker itself reported as failed. */
@@ -1184,6 +1189,14 @@ export class GpuWorkerManager {
     const liveCount = opts.llm
       ? 0
       : await prisma.aiGpuWorker.count({ where: { ...RENTED_ONLY, ...NOT_LLM, status: { in: LIVE_STATUSES } } });
+    // A slot handed over to a model with no machine is that model's. Without
+    // this the model served first in the tick — the one with the older backlog,
+    // which had just given the slot up — rented straight back into it (two LTX
+    // machines torn down and re-rented on 2026-10-27 while the song still waited).
+    const heldFor = opts.llm ? [] : await this.slotsHeldForOthers(modelKey);
+    if (heldFor.length > 0 && liveCount + heldFor.length >= cfg.maxConcurrentWorkers) {
+      return { reason: `At worker capacity: a free slot is held for ${heldFor.join(', ')}, which was handed it` };
+    }
     if (liveCount >= cfg.maxConcurrentWorkers && opts.prewarm) {
       return { reason: `Pre-warm skipped: at worker capacity (${liveCount}/${cfg.maxConcurrentWorkers})` };
     }
@@ -1684,7 +1697,7 @@ export class GpuWorkerManager {
       // Promised to this model (reserveHandover): its own queue and the
       // ping-pong grace were weighed when it was chosen.
       if (readHandover(worker.metadata) === wantedModelKey) {
-        await this.terminate(worker.id, `Handed its slot over to ${wantedModelKey}`);
+        await this.terminate(worker.id, `${HANDOVER_PREFIX}${wantedModelKey}`);
         return true;
       }
 
@@ -1749,6 +1762,34 @@ export class GpuWorkerManager {
     const reason = `At worker capacity; ${wantedModelKey} waited ${Math.round(waitedMs / 60_000)} min with no machine — #${chosen.id} (${chosen.modelKey}) hands its slot over after its current job`;
     console.log(`[gpu] ${reason}`);
     return reason;
+  }
+
+  /**
+   * Models a recently handed-over slot still belongs to: one released for
+   * them within HANDOVER_HOLD_MS, and they still have work waiting and no
+   * machine. Never the asking model itself.
+   */
+  private static async slotsHeldForOthers(modelKey: string): Promise<string[]> {
+    const handed = await prisma.aiGpuWorker.findMany({
+      where: {
+        ...RENTED_ONLY,
+        terminatedAt: { gte: new Date(Date.now() - HANDOVER_HOLD_MS) },
+        lastError: { startsWith: HANDOVER_PREFIX },
+      },
+      select: { lastError: true },
+    });
+    const models = [...new Set(handed.map((w) => (w.lastError ?? '').slice(HANDOVER_PREFIX.length).trim()))].filter(
+      (m) => m !== '' && m !== modelKey
+    );
+    const held: string[] = [];
+    for (const m of models) {
+      const [machines, waiting] = await Promise.all([
+        prisma.aiGpuWorker.count({ where: { ...RENTED_ONLY, modelKey: m, terminatedAt: null, status: { in: LIVE_STATUSES } } }),
+        prisma.aiGpuJob.count({ where: { modelKey: m, status: 'queued' } }),
+      ]);
+      if (machines === 0 && waiting > 0) held.push(m);
+    }
+    return held;
   }
 
   /**

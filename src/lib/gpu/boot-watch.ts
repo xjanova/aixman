@@ -36,6 +36,8 @@ export interface BootProgress {
   at: number;
   /** Weight bytes on disk at the latest reading. */
   bytes?: number;
+  /** When `bytes` last grew — with `firstBytes`/`firstAt`, the host's real download rate (host-record.ts). */
+  bytesAt?: number;
   /** The first reading with bytes on disk, to measure the download rate from. */
   firstBytes?: number;
   firstAt?: number;
@@ -52,7 +54,14 @@ export function readBootProgress(metadata: unknown): BootProgress | null {
   const raw = (metadata as { bootProgress?: unknown } | null)?.bootProgress as Partial<BootProgress> | undefined;
   if (!raw || typeof raw !== 'object' || typeof raw.mark !== 'string' || !Number.isFinite(raw.at)) return null;
   const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
-  return { mark: raw.mark, at: raw.at as number, bytes: num(raw.bytes), firstBytes: num(raw.firstBytes), firstAt: num(raw.firstAt) };
+  return {
+    mark: raw.mark,
+    at: raw.at as number,
+    bytes: num(raw.bytes),
+    bytesAt: num(raw.bytesAt),
+    firstBytes: num(raw.firstBytes),
+    firstAt: num(raw.firstAt),
+  };
 }
 
 /**
@@ -63,13 +72,13 @@ export function readBootProgress(metadata: unknown): BootProgress | null {
 export function noteBootProgress(prev: BootProgress | null, reading: BootReading, now: number): BootProgress {
   const bytes = typeof reading.bytes === 'number' && reading.bytes >= 0 ? reading.bytes : undefined;
   if (!prev) {
-    return { mark: reading.mark, at: now, ...(bytes !== undefined ? { bytes, firstBytes: bytes, firstAt: now } : {}) };
+    return { mark: reading.mark, at: now, ...(bytes !== undefined ? { bytes, bytesAt: now, firstBytes: bytes, firstAt: now } : {}) };
   }
   const grew = bytes !== undefined && bytes > (prev.bytes ?? -1);
   const newMark = reading.mark !== prev.mark;
   if (!grew && !newMark) return prev;
   const first = prev.firstAt !== undefined ? {} : bytes !== undefined ? { firstBytes: bytes, firstAt: now } : {};
-  return { ...prev, ...first, mark: reading.mark, at: now, ...(bytes !== undefined ? { bytes } : {}) };
+  return { ...prev, ...first, mark: reading.mark, at: now, ...(grew ? { bytes, bytesAt: now } : {}) };
 }
 
 /** How old a boot may get before going quiet counts against it. */
