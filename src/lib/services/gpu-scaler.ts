@@ -61,7 +61,9 @@ export function readHandover(metadata: unknown): string | null {
  * goes to whichever machine is free first, a new machine only once booted —
  * giving when the backlog finishes and how long customers wait in total.
  * Rendering costs the same whichever machine does it, so an extra machine's
- * cost is its boot and its idle tail; the wait is priced at
+ * cost is its boot, download fee and idle tail (addedMachineUsd) — four
+ * machines that finish sooner for about what one costs are worth renting,
+ * four that each pay a 40 GB download are not. The wait is priced at
  * `gpu_wait_value_usd_per_hour`, the same exchange rate the offer picker uses.
  * The cheapest option wins, fewer machines on a tie.
  */
@@ -75,6 +77,11 @@ export interface BacklogPlanInput {
   bootSeconds: number;
   /** What a new machine costs per hour. */
   hourlyUsd: number;
+  /** What a new machine pays the vendor to download its weights (Vast's per-GB fee). */
+  ingressUsd?: number;
+  /** Chance a new machine never comes up — its boot and download are paid for nothing. */
+  bootFailureChance?: number;
+  /** How long an extra machine idles after the backlog before it closes. */
   idleTailSeconds: number;
   waitValueUsdPerHour: number;
   /** Most machines that could be added (free slots). */
@@ -118,12 +125,27 @@ export function playQueue(freeIn: number[], queued: number, renderSeconds: numbe
   return { finish, wait };
 }
 
+/**
+ * What one added machine costs beyond the rendering it does: its boot and its
+ * download fee — paid again for every boot that fails, so divided by the
+ * chance of success — and its idle tail once the backlog is done. Without
+ * the fee and the failures the plan thought an LTX machine cost ~$0.10 more
+ * when a Vast host pulling 40 GB charged that again in download alone.
+ */
+export function addedMachineUsd(input: Pick<BacklogPlanInput, 'hourlyUsd' | 'bootSeconds' | 'idleTailSeconds' | 'ingressUsd' | 'bootFailureChance'>): number {
+  const hourly = Math.max(0, input.hourlyUsd);
+  const boot = (hourly * Math.max(0, input.bootSeconds)) / 3600 + Math.max(0, input.ingressUsd ?? 0);
+  const success = 1 - Math.min(0.9, Math.max(0, input.bootFailureChance ?? 0));
+  return boot / success + (hourly * Math.max(0, input.idleTailSeconds)) / 3600;
+}
+
 export function planBacklog(input: BacklogPlanInput): BacklogPlan {
   const options: BacklogPlanOption[] = [];
+  const perMachineUsd = addedMachineUsd(input);
   for (let add = 0; add <= Math.max(0, input.maxAdd); add++) {
     const free = [...input.machinesFreeIn, ...Array<number>(add).fill(Math.max(0, input.bootSeconds))];
     const { finish, wait } = playQueue(free, input.queued, input.renderSeconds);
-    const extraCostUsd = (add * Math.max(0, input.hourlyUsd) * (Math.max(0, input.bootSeconds) + Math.max(0, input.idleTailSeconds))) / 3600;
+    const extraCostUsd = add * perMachineUsd;
     const scoreUsd = extraCostUsd + (Math.max(0, input.waitValueUsdPerHour) * wait) / 3600;
     options.push({ add, finishSeconds: finish, waitSeconds: wait, extraCostUsd, scoreUsd });
   }

@@ -150,8 +150,12 @@ generating. Consequences that must never be regressed:
   job; another machine is rented only when the **work plan** says so
   (`gpu-scaler.ts planBacklog`): the backlog is played out job by job on the
   machines the model has (each free after its render or boot) and on 1, 2 …
-  more, and the option with the least extra boot + idle cost plus customers'
-  wait (`gpu_wait_value_usd_per_hour`) wins, fewer machines on a tie. The
+  more, and the option with the least extra cost plus customers' wait
+  (`gpu_wait_value_usd_per_hour`) wins, fewer machines on a tie. An added
+  machine's cost (`addedMachineUsd`) is its boot + the model's mean download
+  fee, divided by the chance it boots (prior 0.15 fails), + the plain idle
+  timeout: four cheap-boot machines that finish sooner for cents are rented,
+  extras that each pay a 40 GB Vast download are not. The
   latest plan per model shows on Admin → GPU (`/api/admin/gpu/machines`,
   in process). Models run side by side up to the cap; at the cap
   a model with no machine, or whose backlog has outgrown its machines, may
@@ -163,12 +167,15 @@ generating. Consequences that must never be regressed:
   job (`handoverHolds`) and is released when its current one ends — a long
   backlog never goes idle, so idle-release alone starved a song behind a
   60-shot film. One promise at a time; withdrawn when nothing waits for it.
-  An idle machine closes at its **keep-warm** time (`rental-cost.ts
-  keepWarmMinutes`): the idle timeout, or longer when its own boot was dear —
-  until the idle minutes would cost more than booting again (its boot minutes +
-  the host's download fees; ski-rental break-even), at most 20 min. An LTX
-  film ordered in waves had rented 17 machines, each pulling 40 GB again. Only
-  the warmest idle machine per model gets the studio-presence grace on top.
+  An idle machine closes after the idle timeout, except the model's **warmest**
+  (`isWarmestIdle`: none of its machines busy or used more recently; ties to
+  the lower id), which waits its **keep-warm** time (`rental-cost.ts
+  keepWarmMinutes`): longer when its own boot was dear — until the idle minutes
+  would cost more than booting again (its boot minutes + the host's download
+  fees; ski-rental break-even), at most 20 min. An LTX film ordered in waves
+  had rented 17 machines, each pulling 40 GB again; an MV's lip-sync extras all
+  idling out their keep-warm was the opposite waste. Only the warmest gets the
+  studio-presence grace on top.
 - Pre-warm (`GpuQueue.prewarm`, `gpu_prewarm_cooldown_minutes`, default 30,
   0 = off): a customer whose credits cover the model's smallest order *arriving*
   on the studio (from 25 s on the model — the studio auto-selects and pings on

@@ -31,7 +31,7 @@ import {
 } from '@/lib/gpu/cf-tunnel';
 import { clearSchema } from '@/lib/gpu/comfy-validate';
 import { UNNEEDED_BOOT_GRACE_MS, bootStillNeeded, isHostFault, judgeBoot, noteBootProgress, readBootProgress, type BootReading } from '@/lib/gpu/boot-watch';
-import { machineKeyOf, machineKeyOfRow, summarizeHosts, type HostRecord } from '@/lib/gpu/host-record';
+import { PRIOR_FAILURE_CHANCE, machineKeyOf, machineKeyOfRow, summarizeHosts, type HostRecord } from '@/lib/gpu/host-record';
 import { ingressTerms, ingressUsd, keepWarmMinutes, readIngress, rentalCostUsd } from '@/lib/gpu/rental-cost';
 import { COMMUNITY_BODY_LIMITS, readCapped } from '@/lib/gpu/worker-client';
 import {
@@ -792,15 +792,23 @@ export class GpuWorkerManager {
 
       const since = worker.lastJobAt ?? worker.readyAt ?? worker.rentedAt;
       const idleMs = now.getTime() - since.getTime();
+      if (idleMs <= cfg.idleTimeoutMinutes * 60_000) return;
       // A machine that was dear to boot waits until another boot would have
       // cost more than its idle time (rental-cost.ts keepWarmMinutes): an LTX
       // film ordered in waves rented 17 machines, each pulling 40 GB again.
-      const idleLimitMinutes = keepWarmMinutes({
-        idleTimeoutMinutes: cfg.idleTimeoutMinutes,
-        pricePerHourUsd: Number(worker.pricePerHourUsd),
-        bootSeconds: worker.readyAt ? (worker.readyAt.getTime() - worker.rentedAt.getTime()) / 1000 : 0,
-        ingress: readIngress(worker.metadata),
-      });
+      // Only the model's warmest machine waits — the next wave starts on it,
+      // and the plan rents extras again only if the wave is worth them. Every
+      // machine of an MV's lip-sync idling out its keep-warm was money for
+      // nothing (2026-10-27).
+      const warmest = await this.isWarmestIdle(worker);
+      const idleLimitMinutes = warmest
+        ? keepWarmMinutes({
+            idleTimeoutMinutes: cfg.idleTimeoutMinutes,
+            pricePerHourUsd: Number(worker.pricePerHourUsd),
+            bootSeconds: worker.readyAt ? (worker.readyAt.getTime() - worker.rentedAt.getTime()) / 1000 : 0,
+            ingress: readIngress(worker.metadata),
+          })
+        : cfg.idleTimeoutMinutes;
       if (idleMs > idleLimitMinutes * 60_000) {
         // A customer still on the studio with this model selected is likely
         // about to order again — a few minutes' grace beats making them wait
@@ -812,8 +820,8 @@ export class GpuWorkerManager {
         if (
           cfg.presenceExtensionMinutes > 0 &&
           idleMs <= graceMs &&
-          (await isStudioPresent(worker.modelKey, now.getTime())) &&
-          (await this.isWarmestIdle(worker))
+          warmest &&
+          (await isStudioPresent(worker.modelKey, now.getTime()))
         ) {
           return;
         }
@@ -1210,9 +1218,9 @@ export class GpuWorkerManager {
       const renderSeconds = unitRenderSeconds * lengthFactor;
       // Play the backlog out on the machines it has and on more (gpu-scaler.ts
       // planBacklog): rent only when finishing sooner is worth the boot.
-      const [machinesFreeIn, hourlyUsd] = await Promise.all([
+      const [machinesFreeIn, { hourlyUsd, ingressUsd }] = await Promise.all([
         this.machinesFreeIn(modelKey, renderSeconds, bootSeconds),
-        this.typicalHourlyUsd(modelKey),
+        this.typicalRentalTerms(modelKey),
       ]);
       const plan = planBacklog({
         queued: backlog.queued,
@@ -1220,9 +1228,11 @@ export class GpuWorkerManager {
         renderSeconds,
         bootSeconds,
         hourlyUsd,
-        // An extra machine waits out its keep-warm time before it closes.
-        idleTailSeconds:
-          keepWarmMinutes({ idleTimeoutMinutes: cfg.idleTimeoutMinutes, pricePerHourUsd: hourlyUsd, bootSeconds, ingress: null }) * 60,
+        ingressUsd,
+        bootFailureChance: PRIOR_FAILURE_CHANCE,
+        // The model already has a machine, which is the one kept warm; an
+        // extra closes on the plain idle timeout once the backlog is done.
+        idleTailSeconds: cfg.idleTimeoutMinutes * 60,
         waitValueUsdPerHour: cfg.waitValueUsdPerHour,
         maxAdd: Math.max(1, cfg.maxConcurrentWorkers - serving),
       });
@@ -1720,15 +1730,24 @@ export class GpuWorkerManager {
    *
    * Returns true when something was released.
    */
-  /** No other ready machine of the same model was used more recently. */
+  /**
+   * No other machine of the same model is warmer: none still working, none
+   * idle but used more recently. Ties go to the lower id, so of two machines
+   * that finished together only one waits.
+   */
   private static async isWarmestIdle(worker: AiGpuWorker): Promise<boolean> {
+    const last = worker.lastJobAt ?? new Date(0);
     const warmer = await prisma.aiGpuWorker.count({
       where: {
         ...RENTED_ONLY,
         modelKey: worker.modelKey,
-        status: 'ready',
+        terminatedAt: null,
         id: { not: worker.id },
-        lastJobAt: { gt: worker.lastJobAt ?? new Date(0) },
+        OR: [
+          { status: 'busy' },
+          { status: 'ready', lastJobAt: { gt: last } },
+          { status: 'ready', lastJobAt: worker.lastJobAt, id: { lt: worker.id } },
+        ],
       },
     });
     return warmer === 0;
@@ -1909,16 +1928,27 @@ export class GpuWorkerManager {
       });
   }
 
-  /** What a new machine for this model is likely to cost per hour: its recent rentals' median. */
-  private static async typicalHourlyUsd(modelKey: string): Promise<number> {
+  /**
+   * What a new machine for this model is likely to cost: its recent rentals'
+   * median hourly price, and their mean download fee (most hosts charge none,
+   * so the mean is the expected fee).
+   */
+  private static async typicalRentalTerms(modelKey: string): Promise<{ hourlyUsd: number; ingressUsd: number }> {
     const recent = await prisma.aiGpuWorker.findMany({
       where: { ...RENTED_ONLY, modelKey, pricePerHourUsd: { gt: 0 } },
       orderBy: { rentedAt: 'desc' },
-      select: { pricePerHourUsd: true },
+      select: { pricePerHourUsd: true, metadata: true },
       take: 10,
     });
     const prices = recent.map((w) => Number(w.pricePerHourUsd)).sort((a, b) => a - b);
-    return prices.length > 0 ? prices[Math.floor(prices.length / 2)] : DEFAULT_HOURLY_USD;
+    const fees = recent.map((w) => {
+      const terms = readIngress(w.metadata);
+      return terms ? terms.usdPerGb * terms.gb : 0;
+    });
+    return {
+      hourlyUsd: prices.length > 0 ? prices[Math.floor(prices.length / 2)] : DEFAULT_HOURLY_USD,
+      ingressUsd: fees.length > 0 ? fees.reduce((a, b) => a + b, 0) / fees.length : 0,
+    };
   }
 
   private static notePlan(modelKey: string, plan: BacklogPlan): void {

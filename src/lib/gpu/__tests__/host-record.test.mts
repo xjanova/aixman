@@ -20,7 +20,7 @@ import {
 import { cardFamily } from '@/lib/gpu/gpu-specs';
 import { UNRELIABLE_FAILURE_CHANCE, rankOffers, type OfferContext } from '@/lib/gpu/offer-picker';
 import type { GpuOffer } from '@/lib/gpu/types';
-import { planBacklog, playQueue } from '@/lib/services/gpu-scaler';
+import { addedMachineUsd, planBacklog, playQueue } from '@/lib/services/gpu-scaler';
 
 const MIN = 60_000;
 const t0 = Date.UTC(2026, 9, 27, 14, 0);
@@ -193,6 +193,26 @@ test('a model with no machine always plans one', () => {
   const plan = planBacklog({ ...base, queued: 1, machinesFreeIn: [] });
   assert.equal(plan.best.add, 1);
   assert.equal(plan.options[0].finishSeconds, Infinity);
+});
+
+test('four machines that cost about what one does are rented; ones that each pay a big download are not', () => {
+  // Lip-sync: 3-min boots, no download fee, 8 jobs of ~3 min on one machine.
+  const cheap = { renderSeconds: 180, bootSeconds: 180, hourlyUsd: 0.75, idleTailSeconds: 120, waitValueUsdPerHour: 2, bootFailureChance: 0.15, maxAdd: 3 };
+  const lipsync = planBacklog({ ...cheap, queued: 8, machinesFreeIn: [0] });
+  assert.equal(lipsync.best.add, 3, 'each extra costs ~5 cents and cuts the wait by a third or more');
+  assert.ok(lipsync.best.extraCostUsd < 0.25);
+
+  // LTX on Vast: 40 GB at $0.02/GB is $0.80 a boot before the machine renders anything.
+  const ltx = { renderSeconds: 170, bootSeconds: 600, hourlyUsd: 0.62, idleTailSeconds: 120, waitValueUsdPerHour: 2, maxAdd: 2 };
+  const free = planBacklog({ ...ltx, queued: 6, machinesFreeIn: [0] });
+  const feed = planBacklog({ ...ltx, queued: 6, machinesFreeIn: [0], ingressUsd: 0.8, bootFailureChance: 0.15 });
+  assert.equal(free.best.add, 1);
+  assert.equal(feed.best.add, 0, 'the download fee is what made those extra boots a loss');
+});
+
+test("an added machine's cost: boot and fee over the chance it boots, plus its idle tail", () => {
+  assert.equal(addedMachineUsd({ hourlyUsd: 3.6, bootSeconds: 600, idleTailSeconds: 0 }), 0.6);
+  assert.ok(Math.abs(addedMachineUsd({ hourlyUsd: 3.6, bootSeconds: 600, idleTailSeconds: 100, ingressUsd: 0.4, bootFailureChance: 0.5 }) - 2.1) < 1e-9);
 });
 
 test('a machine almost booted is waited for rather than renting another', () => {
