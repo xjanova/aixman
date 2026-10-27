@@ -619,7 +619,7 @@ Code: `src/lib/story/{cinematic,service,http}.ts`, `/api/story/*`.
   `script_json.music`), ducking, Thai subs (ASS, bundled `assets/fonts/Sarabun-Bold.ttf`,
   OFL), blur over LTX's fake-sub band (only LTX shots; done on the *source*
   frame before the fit), fades, title card. Assembly is free, runs on the web
-  server with `ffmpeg-static` (the host has no ffmpeg), niced, one film at a
+  server with the host's own ffmpeg (`~/bin/ffmpeg`, 7.0.2 static, not on PATH; `FFMPEG_PATH` overrides), niced, one film at a
   time in process (PM2 single instance), `status = 'assembling'` claimed
   conditionally; a claim older than 30 min may be retaken. Shot/plan writes
   never overwrite `assembling`. Customer text in ASS is escaped (`assEscape`:

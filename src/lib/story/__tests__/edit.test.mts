@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 
 import {
   FAKE_SUB_BAND,
+  assemblePrice,
   assEscape,
   bandExpr,
   buildAss,
@@ -112,4 +113,11 @@ test('the mix: ducked music under the clips, or either alone, or none', () => {
   assert.equal(mixFilter({ clips: false, music: false, clipVolume: 1, musicVolume: 1, duck: true, seconds: 20 }), null);
   assert.equal(musicSeconds(2), 5);
   assert.equal(musicSeconds(500), 240);
+});
+
+test('the cut is priced per started minute with a floor; nothing to cut costs nothing', () => {
+  assert.equal(assemblePrice(0), 0);
+  assert.equal(assemblePrice(16.5), 4, 'one started minute');
+  assert.equal(assemblePrice(61), 8, 'two started minutes');
+  assert.equal(assemblePrice(30, { perMinute: 1, minimum: 3 }), 3, 'never below the floor');
 });

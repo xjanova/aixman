@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, existsSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -22,8 +22,8 @@ import {
 import type { StoryMode } from './cinematic';
 
 /**
- * Joins a project's finished shots into one film on this server (ffmpeg from
- * the ffmpeg-static package; the host has no ffmpeg of its own).
+ * Joins a project's finished shots into one film on this server's ffmpeg
+ * (`ffmpegPath`).
  *
  * One film at a time, in process like rate-limit.ts — correct because PM2
  * runs a single instance. ffmpeg runs niced and with a few threads so the web
@@ -42,10 +42,15 @@ const MAX_OUTPUT_BYTES = 900 * 1024 * 1024;
 const FONT_FILE = 'Sarabun-Bold.ttf';
 const FONT_NAME = 'Sarabun';
 
+/**
+ * FFMPEG_PATH, else the host's own static build in ~/bin (prod: ffmpeg 7.0.2
+ * from johnvansickle.com, which has libass — not on the service's PATH), else
+ * whatever `ffmpeg` the PATH finds.
+ */
 export function ffmpegPath(): string {
   if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
-  const bin = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
-  return path.join(/*turbopackIgnore: true*/ process.cwd(), 'node_modules', 'ffmpeg-static', bin);
+  const home = path.join(homedir(), 'bin', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+  return existsSync(home) ? home : 'ffmpeg';
 }
 
 class AssembleError extends Error {}
@@ -98,29 +103,98 @@ async function hasAudio(file: string, cwd: string): Promise<boolean> {
 let chain: Promise<void> = Promise.resolve();
 
 /**
- * Claim the project for assembly (conditional, so a double click or two tabs
- * start it once) and queue it. Returns false when it is already being made.
+ * Claim the project for assembly, charge for it, and queue it — one
+ * transaction, so a double click or two tabs start (and charge) it once, and
+ * a balance too low leaves nothing claimed. Returns false when it is already
+ * being made. `credits` is 0 for admins.
+ *
+ * The charge sits on ai_story_projects.credits_charged while the film is
+ * being made. Its refund rides on the same conditional status change that
+ * ends the attempt (assembling → draft), so it can happen once only; a dead
+ * claim taken over after STALE_MS is refunded as it is taken over.
  */
-export async function startAssembly(userId: number, projectId: number): Promise<boolean> {
-  const claimed = await prisma.aiStoryProject.updateMany({
-    where: {
-      id: projectId,
-      userId,
-      OR: [{ status: { not: 'assembling' } }, { updatedAt: { lt: new Date(Date.now() - STALE_MS) } }],
-    },
-    data: { status: 'assembling', errorMessage: null },
+export async function startAssembly(userId: number, projectId: number, credits: number, title: string): Promise<boolean> {
+  const started = await prisma.$transaction(async (tx) => {
+    const stale = await tx.aiStoryProject.findFirst({
+      where: { id: projectId, userId, status: 'assembling', updatedAt: { lt: new Date(Date.now() - STALE_MS) } },
+      select: { creditsCharged: true },
+    });
+    const claimed = await tx.aiStoryProject.updateMany({
+      where: {
+        id: projectId,
+        userId,
+        OR: [{ status: { not: 'assembling' } }, { updatedAt: { lt: new Date(Date.now() - STALE_MS) } }],
+      },
+      data: { status: 'assembling', errorMessage: null, creditsCharged: credits },
+    });
+    if (claimed.count === 0) return false;
+    if (stale && stale.creditsCharged > 0) {
+      await refundWithin(tx, userId, stale.creditsCharged, projectId, 'คืนเครดิต: การตัดต่อครั้งก่อนค้าง');
+    }
+    if (credits > 0) {
+      const paid = await tx.$executeRawUnsafe(
+        'UPDATE ai_user_credits SET balance = balance - ?, total_used = total_used + ? WHERE user_id = ? AND balance >= ?',
+        credits, credits, userId, credits
+      );
+      if (paid === 0) {
+        const credit = await tx.aiUserCredit.findUnique({ where: { userId } });
+        // Rolls the claim back with it.
+        throw new Error(`Insufficient credits. Need ${credits}, have ${credit?.balance ?? 0}`);
+      }
+      const credit = await tx.aiUserCredit.findUnique({ where: { userId } });
+      await tx.aiCreditTransaction.create({
+        data: {
+          userId,
+          type: 'usage',
+          amount: -credits,
+          balanceAfter: credit?.balance ?? 0,
+          description: `ตัดต่อหนัง: ${title}`.slice(0, 500),
+          metadata: { storyProjectId: projectId, kind: 'story-assemble' },
+        },
+      });
+    }
+    return true;
   });
-  if (claimed.count === 0) return false;
+  if (!started) return false;
+
   chain = chain.then(() =>
     assemble(projectId).catch(async (error) => {
       const message = error instanceof AssembleError ? error.message : 'ตัดต่อไม่สำเร็จ ลองใหม่อีกครั้ง';
       if (!(error instanceof AssembleError)) console.error(`[story] assemble ${projectId}:`, error);
-      await prisma.aiStoryProject
-        .updateMany({ where: { id: projectId, status: 'assembling' }, data: { status: 'draft', errorMessage: message } })
-        .catch(() => {});
+      await prisma
+        .$transaction(async (tx) => {
+          const row = await tx.aiStoryProject.findFirst({ where: { id: projectId, status: 'assembling' }, select: { creditsCharged: true } });
+          const ended = await tx.aiStoryProject.updateMany({
+            where: { id: projectId, status: 'assembling' },
+            data: { status: 'draft', errorMessage: row && row.creditsCharged > 0 ? `${message} (คืนเครดิตแล้ว)` : message, creditsCharged: 0 },
+          });
+          if (ended.count > 0 && row && row.creditsCharged > 0) {
+            await refundWithin(tx, userId, row.creditsCharged, projectId, 'คืนเครดิต: ตัดต่อหนังไม่สำเร็จ');
+          }
+        })
+        .catch((e) => console.error(`[story] assemble ${projectId} refund failed:`, e));
     })
   );
   return true;
+}
+
+type Tx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
+
+async function refundWithin(tx: Tx, userId: number, amount: number, projectId: number, description: string) {
+  const credit = await tx.aiUserCredit.update({
+    where: { userId },
+    data: { balance: { increment: amount }, totalUsed: { decrement: amount } },
+  });
+  await tx.aiCreditTransaction.create({
+    data: {
+      userId,
+      type: 'refund',
+      amount,
+      balanceAfter: credit.balance,
+      description,
+      metadata: { storyProjectId: projectId, kind: 'story-assemble' },
+    },
+  });
 }
 
 /** True when an assembly claim is old enough to count as dead. */

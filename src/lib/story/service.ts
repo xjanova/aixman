@@ -21,7 +21,7 @@ import {
   type ShotDraft,
   type StoryMode,
 } from './cinematic';
-import { musicPrompt, musicSeconds } from './edit';
+import { ASSEMBLE_PRICE_DEFAULTS, musicPrompt, musicSeconds } from './edit';
 import type { Prisma } from '@/generated/prisma/client';
 
 /**
@@ -325,6 +325,38 @@ export function musicCredits(model: MovieModel | null, seconds: number): number 
 
 export function filmSeconds(project: StoryProjectFull): number {
   return project.shots.reduce((n, s) => n + Number(s.durationSec), 0);
+}
+
+/** Length of the film the finished shots make — what the cut is priced on. */
+export function readyFilmSeconds(project: StoryProjectFull): number {
+  return project.shots.filter((s) => s.status === 'done' && s.mediaUrl).reduce((n, s) => n + Number(s.durationSec), 0);
+}
+
+export async function assemblePriceSettings(): Promise<{ perMinute: number; minimum: number }> {
+  const rows = await prisma.aiSetting.findMany({
+    where: { key: { in: ['story_assemble_credits_per_minute', 'story_assemble_min_credits'] } },
+    select: { key: true, value: true },
+  });
+  if (rows.length < 2) {
+    // Rows the admin Settings page can show and edit (it lists existing rows only).
+    await prisma.aiSetting
+      .createMany({
+        data: [
+          { key: 'story_assemble_credits_per_minute', value: String(ASSEMBLE_PRICE_DEFAULTS.perMinute), type: 'number', group: 'credits' },
+          { key: 'story_assemble_min_credits', value: String(ASSEMBLE_PRICE_DEFAULTS.minimum), type: 'number', group: 'credits' },
+        ],
+        skipDuplicates: true,
+      })
+      .catch(() => {});
+  }
+  const read = (key: string, fallback: number) => {
+    const n = Number(rows.find((r) => r.key === key)?.value);
+    return Number.isFinite(n) && n >= 0 && rows.some((r) => r.key === key && r.value !== null && r.value !== '') ? Math.floor(n) : fallback;
+  };
+  return {
+    perMinute: read('story_assemble_credits_per_minute', ASSEMBLE_PRICE_DEFAULTS.perMinute),
+    minimum: read('story_assemble_min_credits', ASSEMBLE_PRICE_DEFAULTS.minimum),
+  };
 }
 
 /**

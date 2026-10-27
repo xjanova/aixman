@@ -14,17 +14,19 @@ import {
   safeCamera,
   type StoryMode,
 } from './cinematic';
-import { musicSeconds, parseEdit, parseMusicState } from './edit';
+import { assemblePrice, musicSeconds, parseEdit, parseMusicState } from './edit';
 import { assemblyStale } from './assemble';
 import type { Prisma } from '@/generated/prisma/client';
 import {
   StoryError,
+  assemblePriceSettings,
   customerMessage,
   filmSeconds,
   idList,
   movieModels,
   musicCredits,
   musicModel,
+  readyFilmSeconds,
   shotCredits,
   type MovieModel,
   type StoryProjectFull,
@@ -193,7 +195,11 @@ export function shotPatch(body: Record<string, unknown>, project: StoryProjectFu
 
 /** What the page gets: the project, its shots with prices, and the models it may pick. */
 export async function serializeProject(project: StoryProjectFull, admin: boolean) {
-  const [models, score] = await Promise.all([movieModels(admin), project.mode === 'film' ? musicModel(admin) : null]);
+  const [models, score, price] = await Promise.all([
+    movieModels(admin),
+    project.mode === 'film' ? musicModel(admin) : null,
+    assemblePriceSettings(),
+  ]);
   const charById = new Map(project.characters.map((c) => [c.id, c]));
   const script = (project.scriptJson ?? {}) as Record<string, unknown>;
   const musicState = parseMusicState(script.music);
@@ -255,6 +261,8 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
     },
     film: {
       status: assembling ? 'assembling' : project.finalVideoUrl ? 'done' : 'none',
+      // What the cut of the finished shots costs now (admins are not charged).
+      credits: admin ? 0 : assemblePrice(readyFilmSeconds(project), price),
       url: project.finalVideoUrl,
       seconds: project.durationSec,
       error: project.status === 'assembling' && !assembling ? 'การตัดต่อครั้งก่อนค้าง ลองกดตัดต่อใหม่' : project.errorMessage,

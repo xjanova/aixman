@@ -210,6 +210,10 @@ export const SETTINGS_CATALOG: Record<string, SettingMeta> = {
     input: 'text',
   },
 
+  // ── โหมดหนัง / MV ───────────────────────────────────────────────────
+  story_assemble_credits_per_minute: { label: 'หนัง/MV · ค่าตัดต่อต่อนาที (เครดิต)', tip: 'คิดต่อทุกนาทีที่เริ่ม เมื่อลูกค้าเลือก "ตัดต่อเป็นหนังไฟล์เดียว" (ไฟล์แยกฟรี) · ค่าเริ่มต้น 4', category: 'credits', input: 'number' },
+  story_assemble_min_credits: { label: 'หนัง/MV · ค่าตัดต่อขั้นต่ำ (เครดิต)', tip: 'หนังสั้นแค่ไหนก็คิดไม่น้อยกว่านี้ · ค่าเริ่มต้น 3', category: 'credits', input: 'number' },
+
   // ── Workflow และผู้ช่วยพรอมต์ ─────────────────────────────────────────
   prompt_enhancer_provider: { label: 'ผู้ช่วยพรอมต์ · ผู้ให้บริการ', tip: 'auto = ใช้เจ้าแรกที่มีคีย์ (OpenAI → MiniMax → BytePlus) · off = ใช้กฎพื้นฐานอย่างเดียว', category: 'workflows', input: 'text', managedAt: WORKFLOW_PAGE },
   prompt_enhancer_model: { label: 'ผู้ช่วยพรอมต์ · ชื่อโมเดล', tip: 'เว้นว่าง = ใช้ค่าเริ่มต้นของผู้ให้บริการ', category: 'workflows', input: 'text', managedAt: WORKFLOW_PAGE },

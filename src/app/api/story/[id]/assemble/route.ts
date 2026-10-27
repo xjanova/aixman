@@ -2,14 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId, isAdmin } from '@/lib/auth';
 import { rateLimit } from '@/lib/rate-limit';
 import { startAssembly } from '@/lib/story/assemble';
-import { StoryError, loadOwnedProject } from '@/lib/story/service';
+import { assemblePrice } from '@/lib/story/edit';
+import { StoryError, assemblePriceSettings, loadOwnedProject, readyFilmSeconds } from '@/lib/story/service';
 import { serializeProject, storyErrorReply } from '@/lib/story/http';
 
 /**
  * POST /api/story/[id]/assemble — join the finished shots into one film with
  * the project's edit switches (sound, music, subtitles, cover, fades, title).
  * Runs on our server after the response, one film at a time; the page polls
- * the project for `film.status`. Free, so limited per hour.
+ * the project for `film.status`. Charged per started minute (edit.ts
+ * assemblePrice; separate shot files are free), refunded if it fails, and
+ * still limited per hour.
  */
 
 export const dynamic = 'force-dynamic';
@@ -34,7 +37,8 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
         );
       }
     }
-    if (!(await startAssembly(userId, project.id))) throw new StoryError('กำลังตัดต่ออยู่แล้ว', 409);
+    const credits = admin ? 0 : assemblePrice(readyFilmSeconds(project), await assemblePriceSettings());
+    if (!(await startAssembly(userId, project.id, credits, project.title))) throw new StoryError('กำลังตัดต่ออยู่แล้ว', 409);
     const fresh = (await loadOwnedProject(userId, id))!;
     return NextResponse.json(await serializeProject(fresh, admin));
   } catch (error) {

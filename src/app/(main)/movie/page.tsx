@@ -84,7 +84,7 @@ interface ProjectView {
   models: Model[];
   edit: EditSettings;
   music: { available: boolean; credits: number | null; stale: boolean; status: "none" | "rendering" | "done" | "failed"; url: string | null };
-  film: { status: "none" | "assembling" | "done"; url: string | null; seconds: number | null; error: string | null };
+  film: { status: "none" | "assembling" | "done"; credits: number; url: string | null; seconds: number | null; error: string | null };
 }
 interface ProjectRow {
   id: number;
@@ -580,13 +580,52 @@ function FilmPanel({ view, busy, onEdit, onMusic, onAssemble }: {
   onAssemble: () => void;
 }) {
   const { project, edit, music, film } = view;
-  const done = project.shots.filter((s) => s.status === "done").length;
+  const finished = project.shots.filter((s) => s.status === "done" && s.mediaUrl);
+  const done = finished.length;
   const isMv = project.mode === "mv";
   const musicOn = edit.music !== "off";
+  const [delivery, setDelivery] = useState<"separate" | "film">(film.url ? "film" : "separate");
+  const option = (on: boolean): React.CSSProperties => ({
+    ...chip(on),
+    flex: 1,
+    minWidth: 200,
+    padding: "12px 14px",
+    textAlign: "left",
+    borderRadius: 14,
+  });
   return (
     <div style={{ ...card, display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ fontSize: 17, fontWeight: 600 }}>🎞️ ตัดต่อเป็นหนังไฟล์เดียว</div>
-      <div style={{ fontSize: 12, color: "#64748b", marginTop: -8 }}>เปิด/ปิดได้ทุกอย่าง — ระบบนำช็อตที่เสร็จแล้วมาต่อกันตามลำดับ (ตัดต่อฟรี)</div>
+      <div style={{ fontSize: 17, fontWeight: 600 }}>รับงานแบบไหน</div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <button style={option(delivery === "separate")} onClick={() => setDelivery("separate")}>
+          <div style={{ fontWeight: 600 }}>📁 ไฟล์แยกทีละช็อต</div>
+          <div style={{ fontSize: 12, color: "#94a3b8" }}>ฟรี · นำไปตัดต่อเองในโปรแกรมที่ถนัด</div>
+        </button>
+        <button style={option(delivery === "film")} onClick={() => setDelivery("film")}>
+          <div style={{ fontWeight: 600 }}>🎞️ ตัดต่อเป็นหนังไฟล์เดียว</div>
+          <div style={{ fontSize: 12, color: "#94a3b8" }}>
+            {film.credits > 0 ? `${film.credits} เครดิต` : done ? "ฟรี" : "คิดตามความยาว"} · ระบบต่อช็อต ใส่เสียง เพลง ซับให้
+          </div>
+        </button>
+      </div>
+
+      {delivery === "separate" ? (
+        done === 0 ? (
+          <div style={{ fontSize: 13, color: "#94a3b8" }}>ยังไม่มีช็อตที่สร้างเสร็จ</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {finished.map((s) => (
+              <div key={s.id} style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13, flexWrap: "wrap" }}>
+                <span style={{ width: 64 }}>ช็อต {s.number}</span>
+                <span style={{ color: "#94a3b8", flex: 1, minWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.line || s.visual}</span>
+                <a href={s.mediaUrl!} download={`shot-${String(s.number).padStart(2, "0")}.mp4`} target="_blank" rel="noopener noreferrer" style={{ ...btn, padding: "5px 10px", textDecoration: "none" }}>⬇ ดาวน์โหลด</a>
+              </div>
+            ))}
+            <div style={{ fontSize: 12, color: "#64748b" }}>ไฟล์คือคลิปจากโมเดลตรง ๆ (มีเสียงในคลิป ยังไม่มีซับ/เพลง)</div>
+          </div>
+        )
+      ) : (<>
+      <div style={{ fontSize: 12, color: "#64748b" }}>เปิด/ปิดได้ทุกอย่าง — ระบบนำช็อตที่เสร็จแล้วมาต่อกันตามลำดับ</div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -635,6 +674,7 @@ function FilmPanel({ view, busy, onEdit, onMusic, onAssemble }: {
           onClick={onAssemble}
         >
           {film.status === "assembling" ? "กำลังตัดต่อ… (ไม่กี่นาที)" : film.status === "done" ? "ตัดต่อใหม่" : "🎬 ตัดต่อเป็นหนัง"}
+          {film.status !== "assembling" && film.credits > 0 && ` · ${film.credits} เครดิต`}
         </button>
         <span style={{ fontSize: 12, color: "#94a3b8" }}>ช็อตที่เสร็จ {done} / {project.shots.length}</span>
       </div>
@@ -642,9 +682,10 @@ function FilmPanel({ view, busy, onEdit, onMusic, onAssemble }: {
       {film.status === "done" && film.url && (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <video src={film.url} controls playsInline preload="metadata" style={{ width: "100%", borderRadius: 12, background: "#000" }} />
-          <a href={film.url} download style={{ ...btn, alignSelf: "flex-start", textDecoration: "none" }}>⬇ ดาวน์โหลดหนัง{film.seconds ? ` (${fmtTime(film.seconds)})` : ""}</a>
+          <a href={film.url} download target="_blank" rel="noopener noreferrer" style={{ ...btn, alignSelf: "flex-start", textDecoration: "none" }}>⬇ ดาวน์โหลดหนัง{film.seconds ? ` (${fmtTime(film.seconds)})` : ""}</a>
         </div>
       )}
+      </>)}
     </div>
   );
 }
@@ -805,6 +846,8 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
     if (view.edit.music === "generate" && view.music.status !== "done") {
       return toast("error", "ดนตรีประกอบยังไม่พร้อม", "สร้างดนตรีก่อน หรือปิดดนตรีประกอบ");
     }
+    const cost = view.film.credits > 0 ? `ใช้ ${view.film.credits} เครดิต (ถ้าตัดต่อไม่สำเร็จคืนเครดิตอัตโนมัติ)` : "ไม่เสียเครดิต";
+    if (!confirm(`${view.film.status === "done" ? "ตัดต่อใหม่" : "ตัดต่อเป็นหนัง"}? ${cost}`)) return;
     const data = await act<ProjectView>("assemble", `/api/story/${id}/assemble`, { method: "POST" });
     if (data) setView(data);
   };

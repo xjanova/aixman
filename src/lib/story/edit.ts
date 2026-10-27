@@ -96,6 +96,22 @@ export function musicSeconds(filmSeconds: number): number {
 }
 
 // ---------------------------------------------------------------------------
+// Price of the cut
+// ---------------------------------------------------------------------------
+
+/**
+ * Separate files are free; the joined film costs credits per started minute,
+ * never less than a floor. Both numbers are ai_settings
+ * (`story_assemble_credits_per_minute`, `story_assemble_min_credits`).
+ */
+export const ASSEMBLE_PRICE_DEFAULTS = { perMinute: 4, minimum: 3 } as const;
+
+export function assemblePrice(filmSeconds: number, price: { perMinute: number; minimum: number } = ASSEMBLE_PRICE_DEFAULTS): number {
+  if (filmSeconds <= 0) return 0;
+  return Math.max(price.minimum, Math.ceil(filmSeconds / 60) * price.perMinute);
+}
+
+// ---------------------------------------------------------------------------
 // The cut
 // ---------------------------------------------------------------------------
 
