@@ -39,6 +39,8 @@ export interface EtaEstimate {
   includesWarmup: boolean;
   /** Seconds of machine start-up still ahead of this job (0 once one is up). */
   warmupRemainingSeconds: number;
+  /** A full start-up for this model, which `warmupRemainingSeconds` counts down from. */
+  warmupSeconds: number;
 }
 
 function median(values: number[]): number | null {
@@ -273,7 +275,7 @@ export class GpuEta {
       include: { worker: true },
     });
     if (!job || ['completed', 'failed', 'cancelled'].includes(job.status)) {
-      return { seconds: null, basis: 'baseline', queuePosition: null, includesWarmup: false, warmupRemainingSeconds: 0 };
+      return { seconds: null, basis: 'baseline', queuePosition: null, includesWarmup: false, warmupRemainingSeconds: 0, warmupSeconds: 0 };
     }
 
     const [historyRender, historyWarmup, cfg] = await Promise.all([
@@ -301,6 +303,7 @@ export class GpuEta {
         queuePosition: 0,
         includesWarmup: false,
         warmupRemainingSeconds: 0,
+        warmupSeconds: Math.round(warmup),
       };
     }
 
@@ -366,6 +369,7 @@ export class GpuEta {
       queuePosition: ahead + 1,
       includesWarmup,
       warmupRemainingSeconds: Math.round(warmupRemainingSeconds),
+      warmupSeconds: Math.round(warmup),
     };
   }
 }

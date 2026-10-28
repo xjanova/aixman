@@ -8,19 +8,17 @@ import { GpuProgress, estimatedFraction, type RenderPhase } from '@/lib/services
 import { GpuBalance, INSUFFICIENT_BALANCE_GRACE_MS } from '@/lib/services/gpu-balance';
 import { getGpuConfig } from '@/lib/gpu/config';
 import { publicProvider } from '@/lib/public-provider';
+import { startupPlaces } from '@/lib/queue-progress';
 
 /**
  * What the customer sees while an in-house job waits: a queue.
  *
  * How the work is run — renting a machine, booting it, loading weights — is a
  * trade secret, so none of it is named here. A machine that is still starting
- * is shown as places in the queue instead, one place per this many seconds of
- * start-up left, which count down as it boots. The ETA beside it stays the
- * real estimate, so the wait itself is never misstated.
+ * is shown as places in the queue instead (startupPlaces), which count down
+ * steadily as it boots. The ETA beside it stays the real estimate, so the wait
+ * itself is never misstated.
  */
-const STARTUP_SECONDS_PER_PLACE = 30;
-/** A slow boot must not show an absurd queue; the ETA carries the rest. */
-const MAX_STARTUP_PLACES = 8;
 
 const QUEUE_LABELS = {
   queued: 'อยู่ในคิว',
@@ -130,7 +128,7 @@ export async function GET(
       // The ETA's count includes jobs already rendering ahead, which is what
       // "people in front of you" means to a customer.
       const real = eta.queuePosition ?? (await GpuQueue.getQueuePosition(generation.id)) ?? 1;
-      const startup = Math.min(MAX_STARTUP_PLACES, Math.ceil(eta.warmupRemainingSeconds / STARTUP_SECONDS_PER_PLACE));
+      const startup = startupPlaces(eta.warmupRemainingSeconds, eta.warmupSeconds);
       const position = real + startup;
       gpu = {
         stage: 'queued',

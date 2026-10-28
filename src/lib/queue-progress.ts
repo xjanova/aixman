@@ -61,6 +61,29 @@ export function shownFraction(p: QueueProgress | null, now: number): number | nu
   return Math.min(0.99, Math.max(p.floor, p.fraction + drift));
 }
 
+/** A short start-up: one place per this many seconds of it. */
+export const STARTUP_SECONDS_PER_PLACE = 30;
+/** A slow start-up must not show an absurd queue; the ETA carries its length. */
+export const MAX_STARTUP_PLACES = 10;
+
+/**
+ * Places in the queue that stand for a machine still starting (the customer
+ * is shown a queue, never the start-up). The whole start-up is spread over at
+ * most MAX_STARTUP_PLACES places, so the number falls steadily from the first
+ * poll to the last: a 2-minute one counts 4 → 1 every 30 s, a 20-minute one
+ * 10 → 1 every 2 minutes. A flat 30 s a place capped at 8 sat on 8 for all
+ * but the last four minutes of a 20-minute start-up.
+ *
+ * `totalSeconds` is the expected full start-up, `remainingSeconds` what is
+ * left of it; 0 once a machine is up.
+ */
+export function startupPlaces(remainingSeconds: number, totalSeconds: number): number {
+  if (!(remainingSeconds > 0)) return 0;
+  const span = Math.max(remainingSeconds, Number.isFinite(totalSeconds) ? totalSeconds : 0);
+  const perPlace = Math.max(STARTUP_SECONDS_PER_PLACE, span / MAX_STARTUP_PLACES);
+  return Math.min(MAX_STARTUP_PLACES, Math.ceil(remainingSeconds / perPlace));
+}
+
 /** Fold a new reading into the last one. */
 export function nextQueueProgress(prev: QueueProgress | null, gpu: QueueReading, at: number): QueueProgress {
   const reported = typeof gpu.progress === 'number' ? gpu.progress : null;
