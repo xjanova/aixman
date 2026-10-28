@@ -5,11 +5,13 @@
  * settings *and* the uploads it was made from — so the customer can change one
  * thing and order again. The uploads live in two places on the row: the old
  * `inputImage` column (usually a base64 data URL, sometimes one of our own
- * object URLs) and `params` (`inputAudio`, `inputVideo`, `inputImageEnd`; see
- * generation.ts and RetentionService's INPUT_URL_PARAMS).
+ * object URLs) and `params` (`inputAudio`, `inputVideo`, `inputImageEnd`, and
+ * the list `referenceImages`; see generation.ts and RetentionService's
+ * INPUT_URL_PARAMS / INPUT_URL_LIST_PARAMS).
  *
  * Only what /api/generate would accept back is returned: the three URL fields
- * must be uploads of ours (it refuses anything else with 400), and the image
+ * and every reference picture must be uploads of ours (it refuses anything
+ * else, GenerationService.checkReferences the list), and the image
  * must be an image data URL or one of ours. Anything else on the row — an old
  * provider URL, a value a client made up — is dropped rather than handed to a
  * page that would show it and then send it.
@@ -19,6 +21,8 @@ export interface OrderInputs {
   inputImageEnd: string | null;
   inputAudio: string | null;
   inputVideo: string | null;
+  /** The pictures a several-reference order composed from, in the order sent. */
+  referenceImages: string[];
 }
 
 const IMAGE_DATA_URL = /^data:image\/[a-z0-9.+-]+;base64,/i;
@@ -28,6 +32,7 @@ export const NO_ORDER_INPUTS: OrderInputs = {
   inputImageEnd: null,
   inputAudio: null,
   inputVideo: null,
+  referenceImages: [],
 };
 
 export function orderInputs(
@@ -41,11 +46,15 @@ export function orderInputs(
   const upload = (value: unknown): string | null =>
     typeof value === 'string' && value !== '' && isOurUpload(value) ? value : null;
   const image = row.inputImage;
+  const references = Array.isArray(params.referenceImages) ? params.referenceImages : [];
 
   return {
     inputImage: image && (IMAGE_DATA_URL.test(image) || isOurUpload(image)) ? image : null,
     inputImageEnd: upload(params.inputImageEnd),
     inputAudio: upload(params.inputAudio),
     inputVideo: upload(params.inputVideo),
+    // A list with one foreign entry is dropped whole: putting back part of it
+    // would order a different picture from the one being reopened.
+    referenceImages: references.every((r) => upload(r) !== null) ? (references as string[]) : [],
   };
 }

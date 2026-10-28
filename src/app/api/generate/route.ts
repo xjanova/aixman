@@ -34,6 +34,9 @@ export async function POST(request: NextRequest) {
       inputAudio: body.inputAudio,
       inputVideo: body.inputVideo,
       inputImageEnd: body.inputImageEnd,
+      // Checked by GenerationService.checkReferences before any credit moves:
+      // a list, no more than the model takes, and only our own uploads.
+      referenceImages: body.referenceImages,
       styleId: body.styleId,
     };
 

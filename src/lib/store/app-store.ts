@@ -2,6 +2,7 @@ import type { ClipRule, LipsyncBilling, VoiceRule } from '@/lib/lipsync-rules';
 import { create } from 'zustand';
 import type { DurationCurve } from '@/lib/pricing';
 import type { LengthFromAudio } from '@/lib/voice-length';
+import type { ReferenceCaps } from '@/lib/reference-caps';
 
 interface AIModel {
   id: number;
@@ -68,6 +69,11 @@ interface AIModel {
    * GenerationService checks the stored files against. Null otherwise.
    */
   videoLipsync?: { clip: ClipRule; voice: VoiceRule | null; billing: LipsyncBilling | null } | null;
+  /**
+   * How many reference pictures one order may carry, and whether a clip opens
+   * or ends on a given frame — what GenerationService.checkReferences enforces.
+   */
+  references?: ReferenceCaps | null;
   /**
    * Quality modes (rented-GPU models, e.g. Qwen-Image เร็ว / คุณภาพสูง), each
    * priced at the base price times its multiplier — the same sum

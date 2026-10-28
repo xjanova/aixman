@@ -29,6 +29,7 @@ test('a lip-sync order gives back its voice track and its clip', () => {
     inputImageEnd: null,
     inputAudio: `${OURS}voice.mp3`,
     inputVideo: `${OURS}clip.mp4`,
+    referenceImages: [],
   });
 });
 
@@ -56,7 +57,7 @@ test('anything /api/generate would refuse is dropped, not shown', () => {
     },
     isOurs
   );
-  assert.deepEqual(out, { inputImage: null, inputImageEnd: null, inputAudio: null, inputVideo: null });
+  assert.deepEqual(out, { inputImage: null, inputImageEnd: null, inputAudio: null, inputVideo: null, referenceImages: [] });
 });
 
 test('a data URL that is not a picture is not an image input', () => {
@@ -69,4 +70,23 @@ test('params that are not an object are read as no uploads', () => {
     const out = orderInputs({ inputImage: null, params }, isOurs);
     assert.equal(out.inputAudio, null);
   }
+});
+
+test('a several-reference picture gives back its references in order', () => {
+  const refs = [`${OURS}a.webp`, `${OURS}b.webp`, `${OURS}c.webp`];
+  const out = orderInputs({ inputImage: refs[0], params: { referenceImages: refs } }, isOurs);
+  assert.deepEqual(out.referenceImages, refs);
+});
+
+test('a reference list with a stranger in it is not put back at all', () => {
+  const out = orderInputs(
+    { inputImage: null, params: { referenceImages: [`${OURS}a.webp`, 'https://elsewhere.example/b.png'] } },
+    isOurs
+  );
+  assert.deepEqual(out.referenceImages, []);
+});
+
+test('a reference list that is not a list is ignored', () => {
+  const out = orderInputs({ inputImage: null, params: { referenceImages: `${OURS}a.webp` } }, isOurs);
+  assert.deepEqual(out.referenceImages, []);
 });

@@ -63,7 +63,7 @@ function fmt(sec: number): string {
 }
 
 /** 16-bit PCM WAV. Written by hand so no dependency is needed for the format. */
-function toWav(buffer: AudioBuffer): Blob {
+export function toWav(buffer: AudioBuffer): Blob {
   const channels = Math.min(buffer.numberOfChannels, 2);
   const frames = buffer.length;
   const bytes = 44 + frames * channels * 2;
@@ -103,7 +103,7 @@ function toWav(buffer: AudioBuffer): Blob {
  * MP3 at 192 kbps. The encoder is pulled in only when someone actually asks
  * for an MP3 — it is a sizeable module and most listeners never download.
  */
-async function toMp3(buffer: AudioBuffer, onProgress?: (f: number) => void): Promise<Blob> {
+export async function toMp3(buffer: AudioBuffer, onProgress?: (f: number) => void): Promise<Blob> {
   const mod = await import("@breezystack/lamejs");
   const lame = (mod as unknown as { default?: typeof mod }).default ?? mod;
   const channels = Math.min(buffer.numberOfChannels, 2);
@@ -164,7 +164,7 @@ function saveBlob(blob: Blob, name: string) {
  * unreported. At module scope the compiler never looks, and the effect that
  * calls this stays plain enough to keep checking.
  */
-async function loadAudio(source: Blob | string): Promise<{ blob: Blob; decoded: AudioBuffer } | null> {
+export async function loadAudio(source: Blob | string): Promise<{ blob: Blob; decoded: AudioBuffer } | null> {
   let blob: Blob | null = null;
   if (typeof source === "string") {
     const res = await fetch(source);

@@ -1,25 +1,23 @@
 "use client";
 
 /**
- * /generate — AI image/video/edit studio (X-DREAMER themed)
+ * /generate — AI image/video/edit/lip-sync/music studio (X-DREAMER themed)
  *
- * Layout follows the X-DREAMER `StudioPage` reference (3-column workspace):
- *   left  : prompt + controls (model, style, aspect, batch, ref-image, advanced)
- *   center: generation canvas (4-frame batch grid + result)
- *   right : reference / credits panel
+ * Two parts on one screen, plus a floating orb:
+ *   composer: numbered sections (model, prompt, the files the mode takes,
+ *             settings) and the order bar — balance, price, the button
+ *   stage   : the order tray, the canvas, and a row of the latest pieces
+ *   orb     : the mode menu (ModeOrb), above every layout, draggable
  *
- * All feature logic from the previous neumorphism page is preserved:
- *   tabs (image/video/edit), model picker, prompt + negative prompt,
- *   style picker, aspect ratio, batch size, img2img + strength, file upload
- *   for edit/video, advanced settings, polling, download, favorite, share,
- *   upscale, credit balance.
+ * Below 1100 px the two parts stack, the page scrolls, and the order bar is
+ * fixed to the bottom of the screen.
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
-import Link from "next/link";
 import { useAppStore } from "@/lib/store/app-store";
 import { useToast } from "@/components/ui/toast-provider";
 import { creditsForDuration } from "@/lib/pricing";
@@ -45,10 +43,22 @@ import {
 import { downloadGeneration, extensionOf, saveFavorite } from "@/lib/client-actions";
 import { nextQueueProgress, shownFraction, type QueueProgress, type QueueReading } from "@/lib/queue-progress";
 import { AUDIO_EXT, AudioCover, AudioResult } from "@/components/xdreamer/audio";
-import { AudioWave } from "@/components/xdreamer/audio-wave";
+import { loadAudio } from "@/components/xdreamer/audio-wave";
+import { AudioTrimmer, coversWhole, cutAudio, initialTrim, trimKey, type TrimRange } from "@/components/xdreamer/audio-trim";
+import { ModeOrb, type OrbItem } from "@/components/xdreamer/mode-orb";
 import { NO_ORDER_INPUTS, type OrderInputs } from "@/lib/order-inputs";
 import { loginHref } from "@/lib/safe-callback";
 import { checkClip, checkVoice, lipsyncCredits, type ClipFacts } from "@/lib/lipsync-rules";
+import { MAX_BYTES } from "@/lib/uploads";
+import {
+  composeReferencePrompt,
+  defaultRole,
+  nextRole,
+  referenceToken,
+  roleLabel,
+  splitReferencePrompt,
+  type ReferenceRole,
+} from "@/lib/studio-references";
 
 const HUE = 70;
 
@@ -244,6 +254,13 @@ function clockNow(): number {
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 
 /**
+ * Largest audio file decoded in the page to be drawn and cut. A decoded track
+ * is float samples at the device's rate — a few minutes is a hundred MB or
+ * more — so anything past this goes up whole.
+ */
+const DECODE_LIMIT_BYTES = 80 * 1024 * 1024;
+
+/**
  * What the customer was writing, kept across a reload. Per browser only —
  * a convenience, never the record of an order.
  */
@@ -306,6 +323,9 @@ const MUSIC_STARTERS = [
   "ดนตรีประกอบโฆษณา สร้างแรงบันดาลใจ ออร์เคสตรา",
 ];
 
+/** What the voice and song pickers take. */
+const AUDIO_ACCEPT = "audio/mpeg,audio/wav,audio/ogg,audio/flac,audio/mp4,audio/x-m4a";
+
 /** Used to warn when a Thai prompt is sent to an English-only model. */
 const THAI_CHARS = /\p{Script=Thai}/u;
 
@@ -350,6 +370,26 @@ interface HistoryItem {
 }
 
 /**
+ * One reference picture of an image order: its R2 URL once uploaded (null
+ * while the upload runs) and what it shows, which goes into the prompt.
+ */
+interface RefPic {
+  id: number;
+  url: string | null;
+  role: ReferenceRole;
+}
+
+/**
+ * A voice or song picked from disk, decoded so it can be drawn and cut. Only a
+ * file read in this tab has one: R2 sends no CORS header, so a track put back
+ * from a past order can be played but never read.
+ */
+interface TrimSource {
+  file: File;
+  buffer: AudioBuffer;
+}
+
+/**
  * Everything a history item puts over the form, kept so "↶" can give the
  * customer back what they were writing before they opened it.
  */
@@ -370,8 +410,10 @@ interface FormSnapshot {
   musicStyle: MusicStyleParams;
   instrumental: boolean;
   videoMode: "t2v" | "i2v";
-  refImage: string | null;
-  refImagePreview: string | null;
+  refs: RefPic[];
+  trimSrc: TrimSource | null;
+  trimSel: TrimRange | null;
+  trimUploaded: string | null;
   inputImage: string | null;
   inputImagePreview: string | null;
   inputImageEnd: string | null;
@@ -400,27 +442,39 @@ interface GenerationStatus {
 // ─── X-DREAMER UI primitives (local helpers) ───────────────────────────
 function Pill({ active, children, onClick, disabled, title }: { active?: boolean; children: React.ReactNode; onClick?: () => void; disabled?: boolean; title?: string }) {
   return (
-    <button onClick={onClick} disabled={disabled} title={title} style={{
-      padding: "8px 14px", borderRadius: 999, fontSize: 13, cursor: disabled ? "not-allowed" : "pointer",
-      // Dimmed rather than hidden, with the reason in the tooltip.
-      opacity: disabled ? 0.38 : 1,
-      background: active ? `linear-gradient(135deg, hsla(${160 + HUE},70%,55%,0.25), hsla(${270 + HUE},70%,60%,0.25))` : "rgba(255,255,255,0.04)",
-      color: active ? "#fff" : "rgba(226,232,240,0.65)",
-      border: active ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
-      boxShadow: active ? "inset 0 0 0 1px rgba(255,255,255,0.05)" : "none",
-      transition: "all 200ms",
-    }}>{children}</button>
+    <button type="button" className="rp-pill" data-on={active ? "true" : "false"} onClick={onClick} disabled={disabled} title={title}>
+      {children}
+    </button>
   );
 }
 
-function Section({ label, children, grow = false }: { label: string; children: React.ReactNode; grow?: boolean }) {
+/** One numbered section of the composer: "01 โมเดล", with an optional note on the right. */
+function Field({ no, label, aside, children }: { no: string; label: string; aside?: string; children: React.ReactNode }) {
   return (
-    <div style={grow ? { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" } : undefined}>
-      <div style={{ fontSize: 11, letterSpacing: "0.14em", color: "#a5f3fc", marginBottom: 8, textTransform: "uppercase" }}>{label}</div>
+    <div>
+      <div className="rp-lbl"><i>{no}</i>{label}{aside && <span>{aside}</span>}</div>
       {children}
     </div>
   );
 }
+
+/** "01", "02" … — sections are numbered as they are drawn. */
+function sectionNo(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+/** The motes rising through the fountain behind the studio. Fixed, so every render agrees. */
+const MOTES: { left: string; dur: string; delay: string; tone: "c" | "v" | "p" }[] = [
+  { left: "8%", dur: "19s", delay: "-3s", tone: "c" },
+  { left: "21%", dur: "24s", delay: "-11s", tone: "v" },
+  { left: "34%", dur: "17s", delay: "-6s", tone: "c" },
+  { left: "47%", dur: "27s", delay: "-15s", tone: "p" },
+  { left: "58%", dur: "21s", delay: "-2s", tone: "v" },
+  { left: "66%", dur: "18s", delay: "-9s", tone: "c" },
+  { left: "75%", dur: "25s", delay: "-19s", tone: "v" },
+  { left: "86%", dur: "20s", delay: "-5s", tone: "c" },
+  { left: "94%", dur: "23s", delay: "-13s", tone: "p" },
+];
 
 /**
  * Longest input these endpoints are priced for.
@@ -558,6 +612,9 @@ async function fetchOrderInputs(generationId: number): Promise<OrderInputs | nul
       inputImageEnd: text(data.inputImageEnd),
       inputAudio: text(data.inputAudio),
       inputVideo: text(data.inputVideo),
+      referenceImages: Array.isArray(data.referenceImages)
+        ? data.referenceImages.filter((u: unknown): u is string => typeof u === "string" && u !== "")
+        : [],
     };
   } catch {
     return null;
@@ -650,7 +707,8 @@ function FilePick({
 }) {
   if (busy) {
     return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 18, borderRadius: 12, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#94a3b8", fontSize: 12 }}>
+      <div className="rp-drop" data-busy="true" role="status">
+        <span className="rp-spin" aria-hidden="true" />
         กำลังอัปโหลด…
       </div>
     );
@@ -658,20 +716,64 @@ function FilePick({
 
   if (value) {
     return (
-      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", borderRadius: 10, background: "rgba(2,6,23,0.45)", border: "1px solid rgba(255,255,255,0.08)" }}>
-        <span style={{ fontSize: 14 }}>✓</span>
-        <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: "#e2e8f0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{value}</span>
-        <button onClick={onClear} aria-label="เอาไฟล์ออก"
-          style={{ width: 22, height: 22, borderRadius: "50%", background: "rgba(0,0,0,0.5)", color: "#fff", border: "none", cursor: "pointer", fontSize: 13, lineHeight: 1 }}>×</button>
+      <div className="rp-filechip">
+        <span className="rp-filechip-ic" aria-hidden="true">✓</span>
+        <span className="rp-filechip-name">{value}</span>
+        <button type="button" onClick={onClear} aria-label="เอาไฟล์ออก">×</button>
       </div>
     );
   }
 
   return (
-    <label style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, borderRadius: 12, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#64748b", fontSize: 12, cursor: "pointer" }}>
-      <div style={{ fontSize: 22, marginBottom: 4 }}>↑</div>
+    <label className="rp-drop">
+      <span className="rp-drop-ic" aria-hidden="true">↑</span>
       {hint}
-      <input type="file" accept={accept} style={{ display: "none" }} onChange={onPick} />
+      <small>หรือลากไฟล์มาวางตรงไหนก็ได้</small>
+      <input type="file" accept={accept} hidden onChange={onPick} />
+    </label>
+  );
+}
+
+/**
+ * A picture slot: the picture with × once it is there, else a drop zone. The
+ * pictures are the customer's own or a URL of ours, so a plain <img>.
+ */
+function ImageSlot({
+  src, alt, hint, accept, busy = false, onPick, onClear, onLoad, onError,
+}: {
+  src: string | null;
+  alt: string;
+  hint: string;
+  accept: string;
+  busy?: boolean;
+  onPick: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onClear: () => void;
+  onLoad?: (img: HTMLImageElement) => void;
+  onError?: () => void;
+}) {
+  if (busy) {
+    return (
+      <div className="rp-drop" data-busy="true" role="status">
+        <span className="rp-spin" aria-hidden="true" />
+        กำลังอัปโหลด…
+      </div>
+    );
+  }
+  if (src) {
+    return (
+      <div className="rp-pic">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={src} alt={alt} onLoad={onLoad ? (e) => onLoad(e.currentTarget) : undefined} onError={onError} />
+        <button type="button" onClick={onClear} aria-label={`เอา${alt}ออก`}>×</button>
+      </div>
+    );
+  }
+  return (
+    <label className="rp-drop">
+      <span className="rp-drop-ic" aria-hidden="true">↑</span>
+      {hint}
+      <small>ลาก &amp; วาง หรือ Ctrl+V</small>
+      <input type="file" accept={accept} hidden onChange={onPick} />
     </label>
   );
 }
@@ -697,53 +799,68 @@ function aspectNumber(aspect: string): number {
  */
 const GENERATING_FRAME_MAX_H = "var(--gen-frame-h, min(460px, 44vh))";
 
-/**
- * Compact control that opens its contents in a floating panel.
- *
- * The studio has to fit one screen without scrolling, and the expensive items
- * were the ones rendered inline as grids — 12 style buttons, 10 template
- * chips, 9 prompt tags. Collapsing those to a single trigger row is what buys
- * the height back. Nothing is removed; it moves one click away.
- */
-/** Where a panel actually fits, worked out when it opens. */
-type Placement = { up: boolean; left: number; width: number; maxHeight: number };
-
-/**
- * Artwork for the studio's five tabs, keyed by tab.
- *
- * Only files that are actually in public/studio-tabs belong here — a missing
- * one falls back to a text pill, which is better than an <Image> pointed at a
- * 404. Each is a 440x156 PNG with its own Thai and English label drawn in;
- * the button is ~190px on screen. The six (these five and MODEL3D_ART) are one
- * set: generated from one prompt on black with only the icon and label
- * changed, then evened out to 3:1 by repeating a column of plain glass beside
- * the label (any wider and the label gets small), the black keyed out with the
- * glow kept as light, and downscaled premultiplied — a plain resize drags the
- * transparent black into the glow. Redraw one, redraw it the same way, or it
- * stands out of the set.
- *
- * The file names carry a version (-v3): public/sw.js used to keep every image
- * forever, so a redrawn plate under its old name never reached a browser that
- * had the old one. Bump the suffix when the art changes.
- */
-/** The second line on each plate, matching what the artwork has drawn in. */
+/** English names of the tabs — what `?tab=` and a saved draft are checked against. */
 const TAB_EN: Record<TabType, string> = {
   image: "Image", video: "Video", edit: "Edit", lipsync: "Lip Sync", audio: "Music",
 };
 
-const TAB_ART: Partial<Record<TabType, string>> = {
-  image: "/studio-tabs/tab-image-v3.png",
-  video: "/studio-tabs/tab-video-v3.png",
-  edit: "/studio-tabs/tab-edit-v3.png",
-  lipsync: "/studio-tabs/tab-lipsync-v3.png",
-  audio: "/studio-tabs/tab-music-v3.png",
+/** The modes in the order the orb lists them and the composer counts them. */
+const TAB_ORDER: TabType[] = ["image", "video", "edit", "lipsync", "audio"];
+
+const TAB_LABEL: Record<TabType, string> = {
+  image: "สร้างภาพ", video: "สร้างวิดีโอ", edit: "แก้ไขภาพ", lipsync: "ลิปซิงค์", audio: "สร้างเพลง",
 };
 
-/** The 3D studio's plate: drawn in the same set, but it links to its own page. */
-const MODEL3D_ART = "/studio-tabs/tab-model3d-v3.png";
+/**
+ * The orb's icons — one set, drawn together as glass objects on black, keyed
+ * out and cut square (public/studio). The names carry a version because
+ * public/sw.js used to keep every image forever: a redrawn icon under its old
+ * name never reaches a browser that had the old one. Bump the suffix when the
+ * art changes, and redraw the whole set or the new one stands out of it.
+ */
+const TAB_ICON: Record<TabType, string> = {
+  image: "/studio/ic-image-v1.webp",
+  video: "/studio/ic-video-v1.webp",
+  edit: "/studio/ic-edit-v1.webp",
+  lipsync: "/studio/ic-lipsync-v1.webp",
+  audio: "/studio/ic-music-v1.webp",
+};
+/** Drawn in the same set; these two open pages of their own. */
+const MODEL3D_ICON = "/studio/ic-3d-v1.webp";
+const GALLERY_ICON = "/studio/ic-gallery-v1.webp";
 
+const glyph = (shape: React.ReactNode) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    {shape}
+  </svg>
+);
+
+/** The mode in use, as a line icon on the orb itself. */
+const TAB_GLYPH: Record<TabType, React.ReactNode> = {
+  image: glyph(<><rect x="3" y="4" width="18" height="16" rx="3" /><circle cx="9" cy="10" r="2" /><path d="m21 16-5-5-9 9" /></>),
+  video: glyph(<><rect x="2.5" y="6" width="13" height="12" rx="2.5" /><path d="m15.5 10 6-3.5v11l-6-3.5" /></>),
+  edit: glyph(<><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16v4z" /><path d="m13.5 6.5 4 4" /></>),
+  lipsync: glyph(<><path d="M3 12c3-4 6-5 9-5s6 1 9 5c-3 4-6 5-9 5s-6-1-9-5z" /><path d="M3 12h18" /></>),
+  audio: glyph(<><path d="M9 18V5l11-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="17" cy="16" r="3" /></>),
+};
+
+/** Where a panel actually fits, worked out when it opens: fixed coordinates. */
+type Placement = { up: boolean; left: number; top: number; bottom: number; width: number; maxHeight: number };
+
+/**
+ * Compact control that opens its contents in a floating panel. Nothing is
+ * removed by it; it moves one click away — 12 styles, 10 templates and the
+ * prompt builder would otherwise push the order button off the screen.
+ *
+ * The panel goes to <body> at fixed coordinates. The composer scrolls and its
+ * glass has a backdrop-filter, and both would clip it or re-anchor it; and up
+ * or down is decided from the room the trigger has when it is clicked — a
+ * panel that always opened upward once lost two thirds of itself off the top.
+ * `tool` draws the trigger as a small button (the prompt's toolbar), `field`
+ * as a full-width selector showing its value.
+ */
 function Popover({
-  id, open, onToggle, label, value, children, align = "left", width = 300,
+  id, open, onToggle, label, value, children, align = "left", width = 300, variant = "field",
 }: {
   id: string;
   open: string | null;
@@ -753,21 +870,12 @@ function Popover({
   children: React.ReactNode;
   align?: "left" | "right";
   width?: number;
+  variant?: "field" | "tool";
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const isOpen = open === id;
-
-  /**
-   * The panel used to open upward at a fixed width, always.
-   *
-   * That was right while every control sat low in one 336px-wide rail. In four
-   * columns they moved to the TOP of a 270px column against the right edge of
-   * the screen, and the same panel then opened off the top of the viewport —
-   * measured at -66px for the first one, so two thirds of it was simply gone —
-   * and hung 25px past the right edge. Both are decided here instead, from the
-   * room the trigger actually has when it is clicked.
-   */
-  const [place, setPlace] = useState<Placement>({ up: false, left: 0, width, maxHeight: 320 });
+  const [place, setPlace] = useState<Placement>({ up: false, left: 0, top: 0, bottom: 0, width, maxHeight: 360 });
 
   const measure = useCallback(() => {
     const el = ref.current;
@@ -780,37 +888,54 @@ function Popover({
     const above = t.top - gap;
     const below = vh - t.bottom - gap;
     // Downward by default; upward only when down cannot hold the panel and up
-    // has more room. Either way it is absolutely positioned, so neither
-    // direction can push the layout around — only fit decides.
+    // has more room.
     const up = below < Math.min(320, above) && above > below;
     // Hang from whichever edge was asked for, then keep it on screen.
     const wanted = align === "right" ? t.right - w : t.left;
-    const clamped = Math.max(gap, Math.min(wanted, vw - w - gap));
     setPlace({
       up,
-      left: clamped - t.left,
+      left: Math.max(gap, Math.min(wanted, vw - w - gap)),
+      top: t.bottom + 6,
+      bottom: vh - t.top + 6,
       width: w,
-      maxHeight: Math.min(320, Math.max(160, up ? above : below)),
+      maxHeight: Math.min(360, Math.max(160, (up ? above : below) - 6)),
     });
   }, [align, width]);
 
   useEffect(() => {
     if (!isOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onToggle(null);
+    const inside = (n: EventTarget | null) =>
+      n instanceof Node && (ref.current?.contains(n) === true || panelRef.current?.contains(n) === true);
+    const onDown = (e: PointerEvent) => {
+      if (!inside(e.target)) onToggle(null);
     };
-    document.addEventListener("mousedown", onDown);
+    // A fixed panel would float away from a trigger that scrolled: close it.
+    const onScroll = (e: Event) => {
+      if (!inside(e.target)) onToggle(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onToggle(null);
+    };
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("scroll", onScroll, true);
+    document.addEventListener("keydown", onKey);
     window.addEventListener("resize", measure);
     return () => {
-      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("scroll", onScroll, true);
+      document.removeEventListener("keydown", onKey);
       window.removeEventListener("resize", measure);
     };
   }, [isOpen, onToggle, measure]);
 
+  const tool = variant === "tool";
   return (
-    <div ref={ref} style={{ position: "relative", flex: "1 1 132px", minWidth: "min(124px, 100%)" }}>
+    <div ref={ref} className={tool ? "rp-pop rp-pop-tool" : "rp-pop"}>
       <button
         type="button"
+        className={tool ? "rp-tool" : "rp-popbtn"}
+        data-open={isOpen ? "true" : "false"}
+        aria-expanded={isOpen}
         onClick={() => {
           if (isOpen) {
             onToggle(null);
@@ -820,36 +945,31 @@ function Popover({
           measure();
           onToggle(id);
         }}
-        style={{
-          width: "100%", padding: "9px 12px", borderRadius: 10, cursor: "pointer",
-          background: isOpen ? `hsla(${220 + HUE},60%,50%,0.2)` : "rgba(2,6,23,0.5)",
-          border: `1px solid ${isOpen ? `hsla(${220 + HUE},70%,60%,0.45)` : "rgba(255,255,255,0.1)"}`,
-          color: "#e2e8f0", fontSize: 12, fontFamily: "inherit",
-          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
-        }}
       >
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {label}
-          {value && <span style={{ color: `hsl(${220 + HUE},70%,78%)`, marginLeft: 6 }}>{value}</span>}
-        </span>
-        <span style={{ fontSize: 8, opacity: 0.6, flexShrink: 0, transform: isOpen ? "rotate(180deg)" : "none", transition: "transform 200ms" }}>▼</span>
+        {tool ? label : (
+          <>
+            <span className="rp-popbtn-text">{label}{value && <b>{value}</b>}</span>
+            <span className="rp-popbtn-caret" aria-hidden="true">▼</span>
+          </>
+        )}
       </button>
-      {isOpen && (
+      {isOpen && createPortal(
         <div
+          ref={panelRef}
+          className="xdr-pop"
+          role="dialog"
+          aria-label={label}
           style={{
-            position: "absolute",
-            ...(place.up ? { bottom: "calc(100% + 6px)" } : { top: "calc(100% + 6px)" }),
+            position: "fixed",
+            ...(place.up ? { bottom: place.bottom } : { top: place.top }),
             left: place.left,
             width: place.width,
             maxHeight: place.maxHeight,
-            overflowY: "auto",
-            background: "rgba(15,23,42,0.97)", backdropFilter: "blur(20px)",
-            border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12,
-            padding: 12, zIndex: 40, boxShadow: "0 24px 48px -12px rgba(0,0,0,0.7)",
           }}
         >
           {children}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
@@ -1246,8 +1366,14 @@ export default function GeneratePage() {
   const [isFavorited, setIsFavorited] = useState(false);
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const [refImage, setRefImage] = useState<string | null>(null);
-  const [refImagePreview, setRefImagePreview] = useState<string | null>(null);
+  /**
+   * Reference pictures of an image order, in the order they are sent. One for
+   * an img2img model (with `strength`), up to the model's cap for one that
+   * composes from several; each is uploaded to R2 when added.
+   */
+  const [refs, setRefs] = useState<RefPic[]>([]);
+  const refIdRef = useRef(0);
+  const promptRef = useRef<HTMLTextAreaElement>(null);
   const [strength, setStrength] = useState(0.75);
   const [numOutputs, setNumOutputs] = useState(1);
   const [isUpscaling, setIsUpscaling] = useState(false);
@@ -1285,6 +1411,20 @@ export default function GeneratePage() {
    * in hand. That is the one moment a waveform is free.
    */
   const [inputAudioFile, setInputAudioFile] = useState<File | null>(null);
+  /**
+   * The voice or song as picked, decoded, and the part of it to keep. What is
+   * uploaded (`inputAudio`) is that part, cut here — a whole file when the
+   * whole file is kept and small enough. `trimUploaded` is the selection the
+   * upload is of; while it differs from the selection, the order waits.
+   */
+  const [trimSrc, setTrimSrc] = useState<TrimSource | null>(null);
+  const [trimSel, setTrimSel] = useState<TrimRange | null>(null);
+  const [trimDragging, setTrimDragging] = useState(false);
+  const [trimUploaded, setTrimUploaded] = useState<string | null>(null);
+  /** The selection whose upload failed; not retried until the customer asks or moves it. */
+  const [trimFailed, setTrimFailed] = useState<string | null>(null);
+  /** Bumped by every pick and clear, so a late decode or upload is dropped. */
+  const trimSeqRef = useRef(0);
   /**
    * Seconds per uploaded audio URL: the server's reading from /api/uploads, or
    * the player's for a file put back from a past order. Keyed by URL rather
@@ -1496,8 +1636,11 @@ export default function GeneratePage() {
   /** An image→video run has nothing to animate without its first frame. */
   const missingStartFrame = tab === "video" && videoMode === "i2v" && !inputImage;
 
+  /** A voice or song is in the slot — uploaded, or picked and being cut. */
+  const hasAudio = inputAudio !== null || trimSrc !== null;
+
   /** Lip-sync needs both halves: the voice, and the thing that speaks it. */
-  const missingLipsyncInput = tab === "lipsync" && (!inputAudio || !lipsyncSource);
+  const missingLipsyncInput = tab === "lipsync" && (!hasAudio || !lipsyncSource);
 
   /**
    * A model whose clip is as long as the voice (a self-hosted portrait): the
@@ -1507,7 +1650,10 @@ export default function GeneratePage() {
    * still decides).
    */
   const voiceRule = tab === "lipsync" ? selectedModel?.lengthFromAudio ?? null : null;
-  const inputAudioSeconds = inputAudio ? audioLengths[inputAudio] ?? null : null;
+  // A picked file is ordered as the part kept of it, which is what gets uploaded.
+  const inputAudioSeconds = trimSrc && trimSel
+    ? trimSel.end - trimSel.start
+    : inputAudio ? audioLengths[inputAudio] ?? null : null;
   const voiceLength =
     voiceRule && inputAudioSeconds !== null ? voiceRenderSeconds(inputAudioSeconds, voiceRule, selectedModel?.maxDuration) : null;
   /** Longest voice the lip-sync picker accepts: the model's own ceiling where it has one. */
@@ -1534,9 +1680,32 @@ export default function GeneratePage() {
   /** Music controls this model offers; null for API music models and every other tab. */
   const musicOpts = tab === "audio" ? selectedModel?.music ?? null : null;
   /** A cover has nothing to cover until the customer uploads the song. */
-  const missingSourceSong = musicOpts?.sourceSong === true && !inputAudio;
+  const missingSourceSong = musicOpts?.sourceSong === true && !hasAudio;
   /** Longest source track a cover accepts — the upload cap, not the model's. */
   const coverSourceSeconds = musicOpts?.maxSourceSeconds ?? musicOpts?.maxDuration ?? 240;
+
+  /** Longest part of a picked track this tab may keep. */
+  const trimMax = tab === "lipsync" ? lipsyncAudioMax : coverSourceSeconds;
+  /** The selection the order needs uploaded, or null with nothing picked here. */
+  const trimWanted = trimSrc && trimSel ? trimKey(trimSel) : null;
+  /** Longer than the model takes: said under the waveform, and never uploaded. */
+  const trimTooLong = trimSel !== null && trimSrc !== null && trimSel.end - trimSel.start > trimMax + 0.05;
+  /** The upload does not match the selection yet: the order waits for it. */
+  const audioStale = trimWanted !== null && trimWanted !== trimUploaded;
+  const trimState: "saving" | "saved" | "failed" =
+    trimTooLong || !audioStale ? "saved" : trimWanted === trimFailed ? "failed" : "saving";
+
+  /**
+   * How many reference pictures this order may carry: what the model's adapter
+   * forwards (/api/models `references`, checked again by the server). A model
+   * from before that field takes one, the img2img slot it always had.
+   */
+  const refCap = tab === "image" ? (selectedModel?.references ? selectedModel.references.images : 1) : 0;
+  /** Several pictures, each with its role, instead of one with a strength. */
+  const multiRef = refCap >= 2;
+  const refsUploading = refs.some((r) => r.url === null);
+  /** More than this model takes — after switching to a model with a lower cap. */
+  const refsOver = refCap > 0 && refs.length > refCap;
   /**
    * The tag line the model will actually receive, shown before the order.
    *
@@ -1574,7 +1743,11 @@ export default function GeneratePage() {
     // An order placed mid-upload would go out without the end frame.
     uploading === "image" ||
     // …or, on a cover, without the song itself.
-    (musicOpts?.sourceSong === true && uploading === "audio");
+    (musicOpts?.sourceSong === true && uploading === "audio") ||
+    // …or before the reference pictures are up, or with more than the model takes.
+    (tab === "image" && (refsUploading || refsOver)) ||
+    // …or before the part of the track that was kept is the part uploaded.
+    (audioStale && (tab === "lipsync" || musicOpts?.sourceSong === true));
 
   /**
    * Whether /api/upscale would find a model it can run — the same match it
@@ -1593,17 +1766,180 @@ export default function GeneratePage() {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>, isRef = false) => {
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    // So the same picture can be picked again after it was removed.
+    e.target.value = "";
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
       const base64 = reader.result as string;
-      if (isRef) { setRefImage(base64); setRefImagePreview(base64); }
-      else { setInputImage(base64); setInputImagePreview(base64); }
+      setInputImage(base64); setInputImagePreview(base64);
     };
     reader.readAsDataURL(file);
   };
+
+  const clearInputImage = () => { setInputImage(null); setInputImagePreview(null); };
+  /** A portrait made to speak keeps its own shape: its size is read when it draws. */
+  const onInputImageLoad = (img: HTMLImageElement) => {
+    if (inputImagePreview && img.naturalWidth > 0 && img.naturalHeight > 0) {
+      setImageDims({ src: inputImagePreview, width: img.naturalWidth, height: img.naturalHeight });
+    }
+  };
+
+  /**
+   * Reference pictures from the picker, a drop or a paste. An img2img model
+   * takes one (it replaces the one there), a model that composes several takes
+   * up to its cap (they are added). Each goes to R2 as it is added — the order
+   * carries URLs, and GenerationService accepts only ours. Returns how many
+   * made it.
+   */
+  const addRefFiles = async (files: File[]): Promise<number> => {
+    const pictures = files.filter((f) => f.type.startsWith("image/"));
+    if (pictures.length === 0) return 0;
+    if (refCap === 0) {
+      toast("error", "โมเดลนี้ไม่รับภาพอ้างอิง", "เลือกโมเดลที่มีป้าย “รับภาพอ้างอิงได้”");
+      return 0;
+    }
+    const room = multiRef ? refCap - refs.length : 1;
+    if (room <= 0) {
+      toast("error", "ภาพอ้างอิงครบแล้ว", `โมเดลนี้รับได้ ${refCap} ภาพ — เอาภาพเดิมออกก่อน`);
+      return 0;
+    }
+    if (pictures.length > room) {
+      toast("info", `ใส่ได้อีก ${room} ภาพ`, `โมเดลนี้รับภาพอ้างอิงได้ ${refCap} ภาพ ภาพที่เกินไม่ได้ใส่`);
+    }
+    const taken = pictures.slice(0, room);
+    const fits = taken.filter((f) => f.size <= MAX_BYTES.image);
+    if (fits.length < taken.length) toast("error", "ไฟล์ใหญ่เกินไป", "ภาพอ้างอิงต้องไม่เกิน 12 MB ต่อภาพ");
+    if (fits.length === 0) return 0;
+    const start = multiRef ? refs.length : 0;
+    const tiles = fits.map((file, i) => {
+      refIdRef.current += 1;
+      const pic: RefPic = { id: refIdRef.current, url: null, role: defaultRole(start + i) };
+      return { file, pic };
+    });
+    setRefs((rs) => (multiRef ? [...rs, ...tiles.map((t) => t.pic)] : [tiles[0].pic]));
+    const done = await Promise.all(tiles.map(async ({ file, pic }) => {
+      const res = await uploadMedia(file, "image");
+      const url = res.url;
+      if (url) {
+        setRefs((rs) => rs.map((r) => (r.id === pic.id ? { ...r, url } : r)));
+        return true;
+      }
+      setRefs((rs) => rs.filter((r) => r.id !== pic.id));
+      return false;
+    }));
+    const failed = done.filter((ok) => !ok).length;
+    if (failed > 0) {
+      toast("error", "อัปโหลดภาพอ้างอิงไม่สำเร็จ", failed > 1 ? `${failed} ภาพ ลองอีกครั้ง` : "ลองอีกครั้ง");
+    }
+    return done.length - failed;
+  };
+  const removeRef = (id: number) => setRefs((rs) => rs.filter((r) => r.id !== id));
+  const cycleRole = (id: number) =>
+    setRefs((rs) => rs.map((r) => (r.id === id ? { ...r, role: nextRole(r.role) } : r)));
+
+  /** "ภาพ 2" into the prompt at the caret — the words that point the model at a picture. */
+  const insertRefToken = (n: number) => {
+    // ✨ is rewriting the box; anything put in now would be lost under its answer.
+    if (enhancing) return;
+    const token = referenceToken(n);
+    const el = promptRef.current;
+    // A box never clicked into reports its caret at 0: add to the end instead.
+    const untouched = !el || (document.activeElement !== el && el.selectionStart === 0 && el.selectionEnd === 0);
+    const from = untouched ? prompt.length : el.selectionStart;
+    const to = untouched ? prompt.length : el.selectionEnd;
+    const before = prompt.slice(0, from);
+    const after = prompt.slice(to);
+    const lead = before && !/\s$/.test(before) ? " " : "";
+    // A space after it too, so typing goes on as a new word.
+    const trail = !/^\s/.test(after) ? " " : "";
+    setPrompt(`${before}${lead}${token}${trail}${after}`.slice(0, 10_000));
+    const caret = Math.min(10_000, before.length + lead.length + token.length + trail.length);
+    requestAnimationFrame(() => {
+      const box = promptRef.current;
+      if (!box) return;
+      box.focus();
+      box.setSelectionRange(caret, caret);
+    });
+  };
+
+  /** Forget the voice or song: the upload, the picked file and its selection. */
+  const clearAudio = () => {
+    trimSeqRef.current += 1;
+    setTrimSrc(null); setTrimSel(null); setTrimUploaded(null); setTrimFailed(null); setTrimDragging(false);
+    setInputAudio(null); setInputAudioName(null); setInputAudioFile(null);
+    setUploading((u) => (u === "audio" ? null : u));
+  };
+
+  /**
+   * A voice or song from disk. Decoded here when the browser can, so it is
+   * drawn and a part of it can be kept — the upload follows the selection
+   * (`commitTrim`). A file this browser cannot decode, or one too big to decode
+   * comfortably, goes up whole under the old length check.
+   */
+  const pickAudio = async (file: File, maxSeconds: number) => {
+    clearAudio();
+    const seq = trimSeqRef.current;
+    if (file.size > DECODE_LIMIT_BYTES) {
+      await uploadMediaFile(file, "audio", maxSeconds);
+      return;
+    }
+    setUploading("audio");
+    const loaded = await loadAudio(file);
+    if (seq !== trimSeqRef.current) return;
+    setUploading(null);
+    if (!loaded || !(loaded.decoded.duration > 0)) {
+      await uploadMediaFile(file, "audio", maxSeconds);
+      return;
+    }
+    setTrimSrc({ file, buffer: loaded.decoded });
+    setTrimSel(initialTrim(loaded.decoded.duration, maxSeconds));
+  };
+
+  /**
+   * Upload the part of the track that is kept: the file itself when all of it
+   * is kept and the server takes its size, else the selection cut here. The
+   * slot's URL and `trimUploaded` change together, so the order always carries
+   * the part it says it does.
+   */
+  const commitTrim = async () => {
+    if (!trimSrc || !trimSel) return;
+    const seq = trimSeqRef.current;
+    const src = trimSrc;
+    const range = trimSel;
+    const key = trimKey(range);
+    const whole = coversWhole(range, src.buffer.duration) && src.file.size <= MAX_BYTES.audio;
+    const file = whole ? src.file : await cutAudio(src.buffer, range, src.file.name);
+    if (seq !== trimSeqRef.current) return;
+    if (!file) {
+      setTrimFailed(key);
+      toast("error", "ตัดเสียงไม่สำเร็จ", "เบราว์เซอร์นี้ตัดไฟล์ไม่ได้ ลองตัดเสียงก่อนแล้วอัปโหลดใหม่");
+      return;
+    }
+    const res = await uploadMedia(file, "audio");
+    if (seq !== trimSeqRef.current) return;
+    const url = res.url;
+    if (!url) {
+      setTrimFailed(key);
+      toast("error", "อัปโหลดไม่สำเร็จ", res.error ?? "ลองใหม่อีกครั้ง");
+      return;
+    }
+    setInputAudio(url); setInputAudioName(src.file.name); setInputAudioFile(file);
+    setAudioLengths((m) => ({ ...m, [url]: res.durationSeconds ?? range.end - range.start }));
+    setTrimUploaded(key);
+  };
+  const commitTrimRef = useRef(commitTrim);
+  useEffect(() => {
+    commitTrimRef.current = commitTrim;
+  });
+  // The selection settles (no handle held for a moment) → upload that part.
+  useEffect(() => {
+    if (!trimWanted || trimDragging || trimTooLong || trimWanted === trimUploaded || trimWanted === trimFailed) return;
+    const t = setTimeout(() => void commitTrimRef.current(), 450);
+    return () => clearTimeout(t);
+  }, [trimWanted, trimDragging, trimTooLong, trimUploaded, trimFailed]);
 
   /**
    * Send a lip-sync input to R2 and keep the URL it comes back with.
@@ -1635,7 +1971,8 @@ export default function GeneratePage() {
     // without it the change event never fires a second time.
     e.target.value = "";
     if (!file) return;
-    await uploadMediaFile(file, kind, maxSeconds);
+    if (kind === "audio") await pickAudio(file, maxSeconds);
+    else await uploadMediaFile(file, kind, maxSeconds);
   };
 
   /** The upload itself, shared by the pickers and a file dropped on the studio. */
@@ -1861,7 +2198,7 @@ export default function GeneratePage() {
       toast(
         "error",
         "ยังใส่ไฟล์ไม่ครบ",
-        !inputAudio
+        !hasAudio
           ? "ต้องอัปโหลดไฟล์เสียงที่จะให้พูด"
           : lipsyncNeeds === "image"
             ? "ต้องอัปโหลดรูปหน้าคนที่จะให้พูด"
@@ -1883,6 +2220,29 @@ export default function GeneratePage() {
     }
     if (missingSourceSong) {
       toast("error", "ยังไม่ได้อัปโหลดเพลงต้นฉบับ", "โหมดคัฟเวอร์ต้องมีเพลงให้ AI ถอดทำนองก่อน");
+      return;
+    }
+    if (tab === "image" && refsUploading) {
+      toast("info", "ภาพอ้างอิงยังอัปโหลดไม่เสร็จ", "รอสักครู่แล้วกดอีกครั้ง");
+      return;
+    }
+    if (tab === "image" && refsOver) {
+      toast("error", "ภาพอ้างอิงเกินจำนวน", `โมเดลนี้รับได้ ${refCap} ภาพ — เอาออกให้เหลือ ${refCap} ภาพก่อนสั่ง`);
+      return;
+    }
+    if (audioStale && (tab === "lipsync" || musicOpts?.sourceSong === true)) {
+      if (trimTooLong) toast("error", "ช่วงเสียงยาวเกินไป", `โมเดลนี้รับไม่เกิน ${Math.floor(trimMax)} วินาที ลากขอบให้สั้นลง`);
+      else toast("info", "กำลังเตรียมช่วงเสียงที่เลือก", "รอสักครู่แล้วกดอีกครั้ง");
+      return;
+    }
+    // Reference pictures travel as URLs. A model that composes several is told
+    // in the prompt what each one is (studio-references.ts) — the same words
+    // the customer points at with "ภาพ 1", "ภาพ 2".
+    const sentPics = refCap > 0 ? refs.filter((r): r is RefPic & { url: string } => r.url !== null) : [];
+    const multiSend = multiRef && sentPics.length > 0;
+    const promptToSend = multiSend ? composeReferencePrompt(prompt, sentPics.map((r) => r.role)) : prompt.trim();
+    if (promptToSend.length > 10_000) {
+      toast("error", "พรอมต์ยาวเกินไป", "รวมคำอธิบายภาพอ้างอิงแล้วเกิน 10,000 ตัวอักษร ตัดพรอมต์ให้สั้นลง");
       return;
     }
     // One click, one order. The page used to lock for the whole render, which
@@ -1914,7 +2274,9 @@ export default function GeneratePage() {
     // On video the mode decides: text→video must not smuggle a start frame in,
     // or the provider silently switches endpoint behind the customer's back.
     const imageToSend =
-      tab === "image" ? refImage : tab === "audio" || (tab === "video" && videoMode === "t2v") ? null : inputImage;
+      tab === "image"
+        ? (multiSend ? null : sentPics[0]?.url ?? null)
+        : tab === "audio" || (tab === "video" && videoMode === "t2v") ? null : inputImage;
     // The music tab hides the picture controls, but their state lives on — an
     // image tab's negative prompt reaching the music model would be sung as
     // the lyrics, and its image style appended to the song's description.
@@ -1929,7 +2291,9 @@ export default function GeneratePage() {
       // produces is a clip, and the tab exists only to give it the right
       // controls here.
       type: tab === "lipsync" ? "video" : tab,
-      prompt: prompt.trim(),
+      prompt: promptToSend,
+      // Checked against the model's cap and our bucket again on the server.
+      referenceImages: multiSend ? sentPics.map((r) => r.url) : undefined,
       negativePrompt: music ? undefined : negativePrompt.trim() || undefined,
       styleId: music ? undefined : selectedStyle || undefined,
       inputImage: tab === "lipsync" && lipsyncNeeds === "video" ? undefined : imageToSend || undefined,
@@ -1950,7 +2314,7 @@ export default function GeneratePage() {
         // Priced by the server at this mode's multiplier — the same sum the
         // button shows. Only a mode this viewer may use is honoured.
         quality: activeQuality?.id,
-        strength: refImage && tab === "image" ? strength : undefined,
+        strength: tab === "image" && !multiSend && sentPics.length > 0 ? strength : undefined,
         numOutputs: tab === "image" ? outputs : undefined,
         // Every video adapter reads `duration`; none of them read steps or
         // cfgScale. Sending diffusion knobs to a video endpoint is noise at
@@ -2067,7 +2431,8 @@ export default function GeneratePage() {
   const captureForm = (): FormSnapshot => ({
     tab, modelId: selectedModelId, prompt, negativePrompt, lyrics, aspectRatio, duration, resolution,
     qualityId, numOutputs, strength, steps, guidance, musicStyle, instrumental, videoMode,
-    refImage, refImagePreview, inputImage, inputImagePreview, inputImageEnd,
+    refs: refs.filter((r) => r.url !== null), trimSrc, trimSel, trimUploaded,
+    inputImage, inputImagePreview, inputImageEnd,
     inputAudio, inputAudioName, inputAudioFile, sourceVideo, sourceVideoName,
   });
 
@@ -2078,7 +2443,9 @@ export default function GeneratePage() {
     setQualityId(f.qualityId); setNumOutputs(f.numOutputs);
     setStrength(f.strength); setSteps(f.steps); setGuidance(f.guidance);
     setMusicStyle(f.musicStyle); setInstrumental(f.instrumental); setVideoMode(f.videoMode);
-    setRefImage(f.refImage); setRefImagePreview(f.refImagePreview);
+    setRefs(f.refs);
+    trimSeqRef.current += 1;
+    setTrimSrc(f.trimSrc); setTrimSel(f.trimSel); setTrimUploaded(f.trimUploaded); setTrimFailed(null); setTrimDragging(false);
     setInputImage(f.inputImage); setInputImagePreview(f.inputImagePreview); setInputImageEnd(f.inputImageEnd);
     setInputAudio(f.inputAudio); setInputAudioName(f.inputAudioName); setInputAudioFile(f.inputAudioFile);
     setSourceVideo(f.sourceVideo); setSourceVideoName(f.sourceVideoName);
@@ -2089,16 +2456,22 @@ export default function GeneratePage() {
    * slot is emptied, so the form shows what that order used and nothing left
    * over from before.
    */
-  const fillAttachments = (kind: TabType, inputs: OrderInputs) => {
+  const fillAttachments = (kind: TabType, inputs: OrderInputs, roles: ReferenceRole[] | null = null) => {
     const image = inputs.inputImage;
-    const ref = kind === "image" ? image : null;
+    // An image order's pictures: the several it composed from, or its one reference.
+    const pics = kind !== "image" ? [] : inputs.referenceImages.length > 0 ? inputs.referenceImages : image ? [image] : [];
+    setRefs(pics.map((url, i) => {
+      refIdRef.current += 1;
+      return { id: refIdRef.current, url, role: roles && roles.length === pics.length ? roles[i] : defaultRole(i) };
+    }));
     const main = kind === "image" ? null : image;
-    setRefImage(ref); setRefImagePreview(ref);
     setInputImage(main); setInputImagePreview(main);
     // The server only takes an end frame alongside a start frame.
     setInputImageEnd(kind === "video" && image ? inputs.inputImageEnd : null);
     if (kind === "video") setVideoMode(image ? "i2v" : "t2v");
     const audio = kind === "lipsync" || kind === "audio" ? inputs.inputAudio : null;
+    trimSeqRef.current += 1;
+    setTrimSrc(null); setTrimSel(null); setTrimUploaded(null); setTrimFailed(null);
     setInputAudio(audio); setInputAudioName(audio ? "ไฟล์เสียงจากงานเดิม" : null); setInputAudioFile(null);
     const video = kind === "lipsync" ? inputs.inputVideo : null;
     setSourceVideo(video); setSourceVideoName(video ? "คลิปจากงานเดิม" : null);
@@ -2118,7 +2491,9 @@ export default function GeneratePage() {
 
     // Kept once, from before the first piece opened over it: browsing on from
     // piece to piece must not replace the draft with the last piece opened.
-    const hasDraft = Boolean(prompt.trim() || lyrics.trim() || refImage || inputImage || inputImageEnd || inputAudio || sourceVideo);
+    const hasDraft = Boolean(
+      prompt.trim() || lyrics.trim() || refs.length > 0 || inputImage || inputImageEnd || inputAudio || trimSrc || sourceVideo
+    );
     const keepsDraft = !viewing && hasDraft;
     if (keepsDraft) setFormBeforeOpen(captureForm());
 
@@ -2138,7 +2513,10 @@ export default function GeneratePage() {
     });
 
     setTab(kind);
-    setPrompt((g.prompt ?? "").slice(0, 10_000));
+    // A several-reference order carries its pictures' roles in the prompt it
+    // was sent with: they go back on the pictures, the words back in the box.
+    const split = kind === "image" ? splitReferencePrompt(g.prompt ?? "") : { prompt: g.prompt ?? "", roles: null };
+    setPrompt(split.prompt.slice(0, 10_000));
     setNegativePrompt(g.negativePrompt ?? "");
     setPromptBeforeEnhance(null);
     setEnhanceNote(null);
@@ -2163,7 +2541,9 @@ export default function GeneratePage() {
       keepsDraft ? "ร่างที่เขียนค้างไว้ยังเก็บอยู่ — กด ↶ ใต้ผลงานเพื่อกลับไป" : null,
     ].filter(Boolean);
     if (notes.length > 0) toast("info", "เปิดงานเดิมแล้ว", notes.join(" · "));
-    document.querySelector(".rp-studio-center")?.scrollTo({ top: 0, behavior: "smooth" });
+    document.querySelector(".rp-studio-canvas")?.scrollTo({ top: 0, behavior: "smooth" });
+    // Stacked, the canvas is below the composer: bring it into view.
+    if (window.innerWidth < 1100) document.querySelector(".rp-stage")?.scrollIntoView({ behavior: "smooth", block: "start" });
 
     // The files come in their own request (a start frame can be megabytes).
     // Until they land the slots are empty and the order button waits.
@@ -2178,7 +2558,7 @@ export default function GeneratePage() {
       return;
     }
     setOpenedInputs(inputs);
-    fillAttachments(kind, inputs);
+    fillAttachments(kind, inputs, split.roles);
   };
 
   /** "↶": the draft from before the first history item was opened, and an empty canvas. */
@@ -2189,6 +2569,20 @@ export default function GeneratePage() {
     setOpenedInputs(null);
     applyForm(formBeforeOpen);
     clearCanvas();
+  };
+
+  /** Switch mode — from the orb. */
+  const pickTab = (key: TabType) => {
+    setTab(key); setResult(null); setNumOutputs(1);
+    // The canvas is cleared, so no history item is open any more.
+    setViewing(null); setFormBeforeOpen(null);
+    // Files of an order still loading belong to the tab being left.
+    if (key !== tab && loadingInputs) { openSeqRef.current++; setLoadingInputs(false); }
+    // The audio upload is shared between lip-sync and the cover panel, and
+    // their limits differ by a factor of six: a four minute song accepted for
+    // a cover must not still be sitting there when the customer opens
+    // lip-sync, where the bill follows the track's length.
+    if (key !== tab) clearAudio();
   };
 
   /**
@@ -2206,6 +2600,13 @@ export default function GeneratePage() {
 
   /** Carry a finished picture into the next step: animate it, edit it, or reference it. */
   const carryResultTo = (target: "video" | "edit" | "ref", url: string) => {
+    // A model that composes several keeps the pictures already there, and this
+    // one joins them; any other model takes it as its one reference.
+    const joins = target === "ref" && tab === "image" && multiRef;
+    if (joins && refs.length >= refCap) {
+      toast("error", "ภาพอ้างอิงครบแล้ว", `โมเดลนี้รับได้ ${refCap} ภาพ — เอาภาพเดิมออกก่อน`);
+      return;
+    }
     clearCanvas();
     if (target === "video") {
       setTab("video");
@@ -2221,9 +2622,14 @@ export default function GeneratePage() {
       toast("info", "ใส่เป็นภาพต้นฉบับแล้ว", "พิมพ์ว่าต้องการแก้อะไรในภาพ");
     } else {
       setTab("image");
-      setRefImage(url);
-      setRefImagePreview(url);
-      toast("info", "ใส่เป็นภาพอ้างอิงแล้ว", "ปรับความเข้มได้ที่ปุ่ม ↑ ภาพอ้างอิง");
+      refIdRef.current += 1;
+      const pic: RefPic = { id: refIdRef.current, url, role: defaultRole(joins ? refs.length : 0) };
+      setRefs((rs) => (joins ? [...rs, pic] : [pic]));
+      toast(
+        "info",
+        "ใส่เป็นภาพอ้างอิงแล้ว",
+        joins ? `เป็นภาพ ${refs.length + 1} — กดป้ายใต้ภาพเพื่อบอกว่าเป็นตัวละคร ชุด หรือสถานที่` : "ปรับความเข้มได้ที่ช่องภาพอ้างอิง",
+      );
     }
   };
 
@@ -2235,8 +2641,8 @@ export default function GeneratePage() {
   const acceptFile = async (file: File) => {
     if (file.type.startsWith("audio/") || file.type.startsWith("video/")) {
       const kind = file.type.startsWith("audio/") ? "audio" : "video";
-      if (kind === "audio" && tab === "lipsync") return uploadMediaFile(file, "audio", lipsyncAudioMax);
-      if (kind === "audio" && musicOpts?.sourceSong) return uploadMediaFile(file, "audio", coverSourceSeconds);
+      if (kind === "audio" && tab === "lipsync") return pickAudio(file, lipsyncAudioMax);
+      if (kind === "audio" && musicOpts?.sourceSong) return pickAudio(file, coverSourceSeconds);
       if (kind === "video" && tab === "lipsync" && lipsyncNeeds === "video") return uploadMediaFile(file, "video", clipMaxSeconds);
       toast(
         "info",
@@ -2249,6 +2655,11 @@ export default function GeneratePage() {
       toast("error", "ไฟล์ชนิดนี้ใช้ไม่ได้", "รองรับภาพ เสียง และวิดีโอ");
       return;
     }
+    // Reference pictures go up to R2 as they are added (addRefFiles).
+    if (tab === "image") {
+      if ((await addRefFiles([file])) > 0) toast("success", "ใส่เป็นภาพอ้างอิงแล้ว");
+      return;
+    }
     if (file.size > MAX_IMAGE_BYTES) {
       toast("error", "ไฟล์ภาพใหญ่เกินไป", "รองรับไม่เกิน 12 MB");
       return;
@@ -2258,10 +2669,7 @@ export default function GeneratePage() {
       toast("error", "อ่านไฟล์ภาพไม่ได้");
       return;
     }
-    if (tab === "image") {
-      setRefImage(url); setRefImagePreview(url);
-      toast("success", "ใส่เป็นภาพอ้างอิงแล้ว");
-    } else if (tab === "edit") {
+    if (tab === "edit") {
       setInputImage(url); setInputImagePreview(url);
       toast("success", "ใส่เป็นภาพต้นฉบับแล้ว");
     } else if (tab === "video") {
@@ -2368,10 +2776,73 @@ export default function GeneratePage() {
    */
   const originalImage = viewing
     ? (resultIsImage ? openedInputs?.inputImage ?? null : null)
-    : (tab === "image" ? refImagePreview : null);
+    : (tab === "image" && !multiRef ? refs[0]?.url ?? null : null);
   if (!session) return null;
 
   // ─── RENDER ─────────────────────────────────────────────────────────
+  // Sections are numbered as they are drawn: the music tab adds lyrics, and
+  // only a cover takes a file.
+  const tabNo = TAB_ORDER.indexOf(tab) + 1;
+  const showLyrics = tab === "audio";
+  const showInputs = tab !== "audio" || musicOpts?.sourceSong === true;
+  const inputsAt = showLyrics ? 4 : 3;
+  const settingsAt = inputsAt + (showInputs ? 1 : 0);
+  const inputsLabel =
+    tab === "image" ? "ภาพอ้างอิง"
+      : tab === "video" ? "เริ่มจาก"
+        : tab === "edit" ? "ภาพต้นฉบับ"
+          : tab === "lipsync" ? "ไฟล์ที่ใช้"
+            : "เพลงต้นฉบับที่จะคัฟเวอร์";
+  /** The first order still rendering, for the phone's bar above the composer. */
+  const runningJob = jobs.find((j) => j.status === "running") ?? null;
+  const runningFraction =
+    runningJob?.progress?.stage === "rendering" ? shownFraction(runningJob.progress, runningJob.progress.at) : null;
+  const canvasState = isGenerating ? "กำลังสร้าง"
+    : result?.status === "completed" ? (viewing ? "งานเดิม" : "เสร็จแล้ว")
+      : result?.status === "failed" ? "ไม่สำเร็จ" : "พร้อมสร้าง";
+  /**
+   * The model card's reference line, in reference-caps.ts referenceLabel's
+   * words — that module reads the server catalogue, so it is not imported
+   * here. On the video tab only a model wired for a first frame says so: an
+   * API clip model takes its start frame another way and reports none.
+   */
+  const caps = selectedModel?.references ?? null;
+  const refText = !caps ? null
+    : tab === "image" ? (caps.images > 0 ? `รับภาพอ้างอิงได้ ${caps.images} ภาพ` : "ไม่รับภาพอ้างอิง")
+      : tab === "video" && caps.firstFrame ? (caps.lastFrame ? "รับภาพเฟรมแรกและเฟรมสุดท้าย" : "รับภาพเฟรมแรก 1 ภาพ")
+        : null;
+  const trimTooLongNote = trimTooLong && trimSel ? (
+    <span style={{ color: "#fbbf24" }}>
+      ช่วงที่เลือกยาว {(trimSel.end - trimSel.start).toFixed(1)} วินาที — โมเดลนี้รับไม่เกิน {Math.floor(trimMax)} วินาที ลากขอบให้สั้นลง
+    </span>
+  ) : null;
+  /** Under the voice: the clip is as long as the voice, and so is the price. */
+  const voiceNote = trimTooLongNote ?? (voiceRule ? (
+    voiceLength?.ok === false ? (
+      <span style={{ color: "#fbbf24" }}>{voiceLength.message}</span>
+    ) : hasAudio
+      ? `ความยาวคลิป = ความยาวเสียง${voiceLength ? ` ${voiceLength.seconds.toFixed(1)} วินาที` : ""} · ✦ ${totalCredits} เครดิต`
+      : `คิดเครดิตตามความยาวเสียง: ✦ ${creditsFor(null)} (ไม่เกิน 5 วิ) ถึง ✦ ${creditsFor(lipsyncAudioMax)} (${lipsyncAudioMax} วิ)`
+  ) : null);
+  const orbModes: OrbItem[] = TAB_ORDER.map((key) => {
+    const blocked = tabBlockedReason(key);
+    return {
+      key,
+      label: TAB_LABEL[key],
+      icon: TAB_ICON[key],
+      active: tab === key,
+      // The tab in use stays reachable even when its models went away under it.
+      blocked: blocked !== null && tab !== key ? blocked : null,
+      onPick: () => pickTab(key),
+    };
+  });
+  const orbLinks: OrbItem[] = [
+    // Picture to 3D model has a studio of its own — nothing on this canvas
+    // fits a scene you turn around.
+    { key: "model3d", label: "สร้างโมเดล 3D", icon: MODEL3D_ICON, href: "/generate/3d", blocked: model3dBlocked },
+    { key: "gallery", label: "แกลเลอรี", icon: GALLERY_ICON, href: "/gallery" },
+  ];
+
   return (
     <div className="rp-studio" style={{ color: "#f1f5f9" }}
       // A file dropped anywhere lands where this tab takes one (acceptFile).
@@ -2387,15 +2858,26 @@ export default function GeneratePage() {
         if (!e.dataTransfer.types.includes("Files")) return;
         e.preventDefault();
         setDragging(false);
-        const file = e.dataTransfer.files?.[0];
-        if (file) void acceptFile(file);
+        const files = Array.from(e.dataTransfer.files ?? []);
+        // Several pictures at once go into the reference slots together.
+        if (tab === "image" && files.length > 1) void addRefFiles(files);
+        else if (files[0]) void acceptFile(files[0]);
       }}>
+
+      {/* The memory fountain, faint, behind everything; a few motes rise through it. */}
+      <div className="rp-bg" aria-hidden="true">
+        <div className="rp-bg-img" />
+        <div className="rp-bg-veil" />
+        {MOTES.map((m, i) => (
+          <span key={i} className="rp-mote" data-tone={m.tone} style={{ left: m.left, animationDuration: m.dur, animationDelay: m.delay }} />
+        ))}
+      </div>
 
       {dragging && (
         <div className="rp-drop-hint" aria-hidden="true">
           <div>
             <div style={{ fontSize: 34, marginBottom: 6 }}>⤓</div>
-            {tab === "image" ? "วางภาพเพื่อใช้เป็นภาพอ้างอิง"
+            {tab === "image" ? (refCap === 0 ? "โมเดลนี้ไม่รับภาพอ้างอิง" : "วางภาพเพื่อใช้เป็นภาพอ้างอิง")
               : tab === "edit" ? "วางภาพที่ต้องการแก้ไข"
                 : tab === "video" ? "วางภาพเพื่อเริ่มคลิปจากภาพนี้"
                   : tab === "lipsync" ? "วางไฟล์เสียง คลิป หรือรูปหน้าคน"
@@ -2404,283 +2886,280 @@ export default function GeneratePage() {
         </div>
       )}
 
-      {/* ═══ JOB — which tool, which model, what it costs ═══
-          The rail used to carry all fifteen control groups at 336px wide,
-          which is what made every label truncate. Each column now answers
-          one question, and the balance sits with the model that spends it. */}
-      <aside className="rp-studio-jobs rp-scroll" style={{ borderRight: "1px solid rgba(255,255,255,0.06)", padding: 18, display: "flex", flexDirection: "column", gap: 12, background: "rgba(15,23,42,0.25)" }}>
+      {/* Phone: the composer fills the screen, so what is rendering is said
+          above it, one tap from the canvas further down. */}
+      {runningJobs > 0 && (
+        <button type="button" className="rp-jobbar"
+          onClick={() => document.querySelector(".rp-stage")?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+          <span className="rp-spin" aria-hidden="true" />
+          <span>กำลังสร้าง {runningJobs} งาน{runningFraction != null ? ` · ${Math.floor(runningFraction * 100)}%` : ""}</span>
+          <b>ดูผลงาน ↓</b>
+        </button>
+      )}
 
-        {/* The five things the studio makes.
-            Each one is a piece of art with its own label baked into it, and
-            they stack rather than sit side by side: at 3:1 in a 220px column,
-            five across would leave each 36px wide. A tab whose art has not
-            landed yet falls back to the plain pill, so the menu never waits
-            on a file. */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {([
-            { key: "image" as TabType, label: "สร้างภาพ", icon: "▧" },
-            { key: "video" as TabType, label: "สร้างวิดีโอ", icon: "▶" },
-            { key: "edit"  as TabType, label: "แก้ไขภาพ", icon: "✦" },
-            { key: "lipsync" as TabType, label: "ลิปซิงค์", icon: "♪" },
-            { key: "audio" as TabType, label: "สร้างเพลง", icon: "♫" },
-          ]).map(t => {
-            const blocked = tabBlockedReason(t.key);
-            const disabled = blocked !== null && tab !== t.key;
-            const art = TAB_ART[t.key];
-            const pick = () => {
-              setTab(t.key); setResult(null); setNumOutputs(1);
-              // The canvas is cleared, so no history item is open any more.
-              setViewing(null); setFormBeforeOpen(null);
-              // Files of an order still loading belong to the tab being left.
-              if (t.key !== tab && loadingInputs) { openSeqRef.current++; setLoadingInputs(false); }
-              // The audio upload is shared between lip-sync and the cover
-              // panel, and their limits differ by a factor of six: a four
-              // minute song accepted for a cover must not still be sitting
-              // there when the customer opens lip-sync, where the bill
-              // follows the track's length.
-              if (t.key !== tab) { setInputAudio(null); setInputAudioName(null); setInputAudioFile(null); }
-            };
+      {/* ═══ COMPOSER — everything handed to the model, and the order ═══
+          The glass is a layer of its own beside the content, not around it:
+          backdrop-filter makes an element the containing block of whatever is
+          fixed inside it, and on a phone the order bar is fixed to the screen. */}
+      <section className="rp-composer" aria-label="ตั้งค่างาน">
+        <div className="rp-hud rp-composer-glass" aria-hidden="true"><span className="rp-led"><i /></span></div>
+        <div className="rp-cscroll rp-scroll">
+          <div className="rp-chead">
+            <div style={{ minWidth: 0 }}>
+              <div className="rp-crumb">
+                <span className="rp-dot" data-run={runningJobs > 0 ? "true" : "false"} aria-hidden="true" />
+                <span className="rp-mono">{sectionNo(tabNo)} / 05</span> สตูดิโอ
+              </div>
+              <h1 className="rp-title">{TAB_LABEL[tab]}</h1>
+            </div>
+            {/* Reference material, not controls. */}
+            <Popover id="tips" open={openPanel} onToggle={setOpenPanel} label="? คำแนะนำ" width={320} align="right" variant="tool">
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {(tab === "audio" ? [
+                  "บอกแนวเพลง อารมณ์ และเครื่องดนตรี เช่น 'ลูกทุ่งอีสานสนุกๆ แคน พิณ เสียงร้องชาย'",
+                  "ใส่จังหวะช่วยได้มาก เช่น 90 BPM (ช้าๆ) หรือ 128 BPM (เต้นได้)",
+                  "เนื้อเพลงแบ่งท่อนด้วย [verse] [chorus] [bridge] — ประโยคสั้นร้องชัดกว่า",
+                  "เว้นเนื้อเพลงว่างไว้ = เพลงบรรเลง เหมาะกับดนตรีประกอบคลิป",
+                ] : [
+                  "พิมพ์ไอเดียสั้น ๆ แล้วกด ✨ ปรับพรอมต์ด้วย AI — ระบบเรียบเรียงให้ตรงรูปแบบที่โมเดลนั้นเข้าใจดีที่สุด แก้ต่อได้ก่อนสั่ง",
+                  tab === "video"
+                    ? "ปุ่ม 🎥 กล้องและฉาก เติมการเคลื่อนกล้อง ขนาดภาพ และแสงเป็นประโยคที่โมเดลวิดีโออ่านเข้าใจ"
+                    : "ปุ่ม ✦ ตัวช่วยพรอมต์ เติมคำศัพท์ช่างภาพ: สไตล์ แสง เลนส์ สี",
+                  "โมเดลที่รับภาพอ้างอิงหลายภาพ: ใส่ภาพตัวละคร ชุด สิ่งของ สถานที่ แล้วพิมพ์ ภาพ 1, ภาพ 2 ในพรอมต์",
+                  "วางภาพ (Ctrl+V) หรือลากไฟล์มาวางตรงไหนก็ได้ ระบบใส่ให้ในช่องที่แท็บนี้ใช้",
+                  "สั่งต่อกันได้ถึง 3 งานพร้อมกัน ดูทุกงานที่แถบเหนือแคนวาส · Ctrl/⌘+Enter = ทอ",
+                  "ได้ภาพที่ชอบแล้ว กด ▶ ทำเป็นวิดีโอ เพื่อใช้เป็นเฟรมแรกของคลิปได้ทันที",
+                  "img2img: ความเข้ม 0.5–0.7 = balance, > 0.8 = ตามภาพอ้างอิงมาก",
+                ]).concat("ลูกแก้วมุมจอ: ชี้หรือแตะเพื่อเปลี่ยนโหมด ลากไปวางตรงไหนก็ได้").map((tip, i) => (
+                  <div key={i} style={{ display: "flex", gap: 8 }}>
+                    <span style={{ color: `hsl(${(160 + i * 30 + HUE) % 360},70%,70%)`, flexShrink: 0 }}>✦</span>
+                    <span style={{ fontSize: 12, color: "rgba(203,213,225,0.78)", lineHeight: 1.5 }}>{tip}</span>
+                  </div>
+                ))}
+              </div>
+            </Popover>
+          </div>
 
-            if (art) {
-              return (
-                <button key={t.key} type="button" className="rp-tab-art"
-                  data-active={tab === t.key ? "true" : "false"}
-                  disabled={disabled} onClick={pick}
-                  title={blocked ?? t.label} aria-label={t.label}
-                  aria-current={tab === t.key ? "true" : undefined}>
-                  <Image src={art} alt={t.label} width={440} height={156} sizes="220px" priority={t.key === "image"} />
-                </button>
-              );
-            }
-
-            // Drawn to match the artwork beside it — same plate, same 3:1, same
-            // neon edge — so a tab still waiting on its art reads as part of
-            // the set rather than as the one that is missing.
-            return (
-            <button key={t.key} type="button" className="rp-tab-plate"
-              data-active={tab === t.key ? "true" : "false"}
-              disabled={disabled}
-              title={blocked ?? t.label}
-              onClick={pick}
-              aria-current={tab === t.key ? "true" : undefined}>
-              <span className="rp-tab-plate-icon" aria-hidden="true">{t.icon}</span>
-              <span className="rp-tab-plate-text">
-                <span className="rp-tab-plate-th">{t.label}</span>
-                <span className="rp-tab-plate-en">{TAB_EN[t.key]}</span>
-              </span>
-              <span className="rp-tab-plate-go" aria-hidden="true">&rsaquo;</span>
-            </button>
-            );
-          })}
-          {/* Picture to 3D model has a studio of its own — nothing on this
-              canvas fits a scene you turn around. Dimmed with the reason, like
-              the tabs above, while no 3D model can be ordered. */}
-          {model3dBlocked ? (
-            <button type="button" className="rp-tab-art" data-active="false" disabled
-              title={model3dBlocked} aria-label="สร้างโมเดล 3D">
-              <Image src={MODEL3D_ART} alt="สร้างโมเดล 3D" width={440} height={156} sizes="220px" />
-            </button>
-          ) : (
-            <Link href="/generate/3d" className="rp-tab-art" data-active="false"
-              title="สร้างโมเดล 3D" aria-label="สร้างโมเดล 3D">
-              <Image src={MODEL3D_ART} alt="สร้างโมเดล 3D" width={440} height={156} sizes="220px" />
-            </Link>
-          )}
-        </div>
-
-        {/* Model Selector */}
-        <Section label="โมเดล AI">
-          <div ref={dropdownRef} style={{ position: "relative" }}>
-            <button onClick={() => setShowModelDropdown(!showModelDropdown)}
-              style={{ ...xdrInputStyle, padding: "11px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", textAlign: "left" }}>
-              <div style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
-                <span style={{ fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {selectedModel ? selectedModel.name : "เลือกโมเดล..."}
+          {/* ── 01 Model ── */}
+          <Field no="01" label="โมเดล">
+            <div ref={dropdownRef}>
+              <button type="button" className="rp-model rp-raised" aria-expanded={showModelDropdown}
+                onClick={() => setShowModelDropdown(!showModelDropdown)}>
+                {/* eslint-disable-next-line @next/next/no-img-element -- small fixed art */}
+                <img className="rp-mlogo" src={TAB_ICON[tab]} alt="" width={44} height={44} />
+                <span className="rp-mbody">
+                  <span className="rp-mname">{selectedModel ? selectedModel.name : modelsLoaded ? "เลือกโมเดล..." : "กำลังโหลดโมเดล…"}</span>
+                  {selectedModel && (
+                    <span className="rp-mmeta">
+                      <span className="rp-tag" data-tone={selectedModel.canOrder === false ? "warn" : "ok"}>
+                        {selectedModel.canOrder === false ? (selectedModel.status === "tuning" ? "กำลังปรับแต่ง" : "ยังใช้ไม่ได้") : "พร้อมใช้"}
+                      </span>
+                      {refText && <span className="rp-tag" data-tone="ref">{refText}</span>}
+                      <span className="rp-tag">{selectedModel.provider.name}</span>
+                    </span>
+                  )}
                 </span>
-                {selectedModel && <span style={{ fontSize: 11, color: "#94a3b8" }}>· {selectedModel.provider.name}</span>}
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                {selectedModel && (
-                  <span style={{ padding: "2px 6px", borderRadius: 6, background: "hsla(48,90%,60%,0.15)", color: "#fbbf24", fontSize: 10, fontWeight: 600 }}>
-                    ✦ {selectedModel.creditsPerUnit}
-                  </span>
-                )}
-                <span style={{ fontSize: 9, opacity: 0.6, transform: showModelDropdown ? "rotate(180deg)" : "none", transition: "transform 200ms" }}>▼</span>
-              </div>
-            </button>
-            {showModelDropdown && (
-              <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, maxHeight: 280, overflowY: "auto", background: "rgba(15,23,42,0.95)", backdropFilter: "blur(20px)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, zIndex: 30, boxShadow: "0 20px 40px -10px rgba(0,0,0,0.5)" }}>
-                {filteredModels.length === 0 ? (
-                  <div style={{ padding: 16, textAlign: "center", fontSize: 13, color: "#94a3b8" }}>ไม่มีโมเดลสำหรับหมวดนี้</div>
-                ) : filteredModels.map(m => {
-                  // A model that cannot be ordered right now — still being
-                  // proven out, or its provider not connected / failing —
-                  // stays visible, dimmed, with the reason. Picking it is
-                  // blocked: the alternative is letting a customer spend
-                  // credits on a render that cannot be delivered.
-                  const blocked = m.canOrder === false;
-                  const reason = m.unavailableReason ?? m.tuningMessage ?? "ยังใช้งานไม่ได้ ลองใหม่ภายหลัง";
-                  return (
-                  <button key={m.id} disabled={blocked}
-                    title={blocked ? reason : undefined}
-                    onClick={() => { if (blocked) return; setSelectedModelId(m.id); setShowModelDropdown(false); }}
-                    style={{ width: "100%", padding: "10px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", border: "none", cursor: blocked ? "not-allowed" : "pointer", textAlign: "left", background: selectedModelId === m.id ? `hsla(${220 + HUE},60%,50%,0.15)` : "transparent", color: "#e2e8f0", borderBottom: "1px solid rgba(255,255,255,0.04)", opacity: blocked ? 0.45 : 1 }}>
-                    <div style={{ minWidth: 0, flex: 1 }}>
-                      <div style={{ fontSize: 13, fontWeight: 500, display: "flex", alignItems: "center", gap: 6 }}>
-                        {m.name}
-                        {m.isFeatured && <span style={{ fontSize: 10, color: "#fbbf24" }}>✦</span>}
-                        {blocked && (
-                          <span style={{
-                            fontSize: 9, padding: "1px 6px", borderRadius: 999, fontWeight: 600,
-                            background: m.status === "tuning" ? "hsla(38,90%,55%,0.18)" : "rgba(148,163,184,0.18)",
-                            color: m.status === "tuning" ? "#fbbf24" : "#cbd5e1",
-                          }}>
-                            {m.status === "tuning" ? "กำลังปรับแต่ง" : "ยังใช้ไม่ได้"}
+                <span className="rp-mprice">
+                  {selectedModel && <b>✦ {selectedModel.creditsPerUnit}</b>}
+                  <span>เปลี่ยนโมเดล {showModelDropdown ? "▴" : "▾"}</span>
+                </span>
+              </button>
+              {/* In the flow, not floating: the composer scrolls, and a list
+                  hung over it would be cut off by its edge. */}
+              {showModelDropdown && (
+                <div className="rp-mlist rp-well rp-scroll" role="listbox" aria-label="เลือกโมเดล">
+                  {filteredModels.length === 0 ? (
+                    <div style={{ padding: 16, textAlign: "center", fontSize: 13, color: "#94a3b8" }}>ไม่มีโมเดลสำหรับหมวดนี้</div>
+                  ) : filteredModels.map(m => {
+                    // A model that cannot be ordered right now — still being
+                    // proven out, or its provider not connected / failing —
+                    // stays visible, dimmed, with the reason. Picking it is
+                    // blocked: the alternative is letting a customer spend
+                    // credits on a render that cannot be delivered.
+                    const blocked = m.canOrder === false;
+                    const reason = m.unavailableReason ?? m.tuningMessage ?? "ยังใช้งานไม่ได้ ลองใหม่ภายหลัง";
+                    return (
+                      <button key={m.id} type="button" role="option" aria-selected={selectedModelId === m.id} disabled={blocked}
+                        className="rp-mopt" data-on={selectedModelId === m.id ? "true" : "false"}
+                        title={blocked ? reason : undefined}
+                        onClick={() => { if (blocked) return; setSelectedModelId(m.id); setShowModelDropdown(false); }}>
+                        <span style={{ minWidth: 0, flex: 1 }}>
+                          <span style={{ fontSize: 13, fontWeight: 500, display: "flex", alignItems: "center", gap: 6 }}>
+                            {m.name}
+                            {m.isFeatured && <span style={{ fontSize: 10, color: "#fbbf24" }}>✦</span>}
+                            {blocked && (
+                              <span style={{
+                                fontSize: 9, padding: "1px 6px", borderRadius: 999, fontWeight: 600,
+                                background: m.status === "tuning" ? "hsla(38,90%,55%,0.18)" : "rgba(148,163,184,0.18)",
+                                color: m.status === "tuning" ? "#fbbf24" : "#cbd5e1",
+                              }}>
+                                {m.status === "tuning" ? "กำลังปรับแต่ง" : "ยังใช้ไม่ได้"}
+                              </span>
+                            )}
                           </span>
-                        )}
-                      </div>
-                      <div style={{ fontSize: 11, color: "#94a3b8" }}>
-                        {blocked ? reason : `${m.provider.name}${m.subcategory ? ` · ${m.subcategory}` : ""}`}
+                          <span style={{ display: "block", fontSize: 11, color: "#94a3b8" }}>
+                            {blocked ? reason : `${m.provider.name}${m.subcategory ? ` · ${m.subcategory}` : ""}`}
+                          </span>
+                        </span>
+                        <span style={{ padding: "2px 6px", borderRadius: 6, background: "hsla(48,90%,60%,0.15)", color: "#fbbf24", fontSize: 10, fontWeight: 600, flexShrink: 0 }}>✦ {m.creditsPerUnit}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </Field>
+
+          {/* ── 02 Prompt ── */}
+          <Field no="02" label={tab === "lipsync" ? "Prompt (ไม่บังคับ)" : tab === "audio" ? "สไตล์เพลง" : "Prompt"}
+            aside={`${prompt.trim() ? `${prompt.trim().split(/\s+/).length} คำ · ` : ""}${prompt.length.toLocaleString()} / 10,000`}>
+            <div className="rp-prompt rp-well">
+              {/* Read-only while ✨ works: its answer replaces the box, and would
+                  silently drop anything typed in the meantime (Context-IR can
+                  take a minute). */}
+              <textarea ref={promptRef} value={prompt} onChange={(e) => setPrompt(e.target.value)} onKeyDown={onSubmitKey}
+                readOnly={enhancing} aria-busy={enhancing} aria-label="Prompt"
+                placeholder={
+                  tab === "lipsync"
+                    ? lipsyncNeeds === "image"
+                      ? "อธิบายท่าทาง/บรรยากาศเพิ่มได้ เช่น พิธีกรยิ้มแย้ม พูดกับกล้อง..."
+                      : "ไม่ต้องใส่ก็ได้ — เสียงที่อัปโหลดเป็นตัวกำหนดผลลัพธ์"
+                    : tab === "video"
+                      ? "อธิบายวิดีโอที่ต้องการ..."
+                      : tab === "audio"
+                        ? "แนวเพลง อารมณ์ เครื่องดนตรี เสียงร้อง เช่น ป๊อปไทยสดใส เสียงร้องหญิง กีตาร์โปร่ง จังหวะเร็ว"
+                        : multiRef && refs.length > 1
+                          ? "เช่น ผู้หญิงจาก ภาพ 1 สวมชุดจาก ภาพ 2 ยืนหน้าร้านใน ภาพ 3 แสงเย็นอ่อน ๆ"
+                          : "อธิบายภาพที่ต้องการ..."
+                }
+                style={{ minHeight: tab === "audio" ? 72 : 104, opacity: enhancing ? 0.6 : 1 }} />
+              {/* The prompt assistant: short idea in, the model's own format
+                  out. The result replaces the box's text where the customer
+                  can read and edit it — and ↶ puts back what they wrote. */}
+              <div className="rp-ptools">
+                <button type="button" className="rp-tool rp-tool-ai" onClick={handleEnhance} disabled={enhancing || !prompt.trim()}
+                  title={tab === "video" && selectedModel?.modelId === "minimax-h3"
+                    ? "เรียบเรียงเป็นโครงช็อต กล้อง และเสียง ตามรูปแบบที่ MiniMax H3 ถูกฝึกมา"
+                    : "ให้ AI ขยายไอเดียสั้น ๆ เป็นพรอมต์ที่โมเดลเข้าใจดีที่สุด"}>
+                  <span className={enhancing ? "xdr-motion" : undefined} style={enhancing ? { display: "inline-block", animation: "spin 1.2s linear infinite" } : undefined}>✨</span>
+                  {enhancing
+                    ? (tab === "video" && selectedModel?.modelId === "minimax-h3" ? "กำลังเรียบเรียงฉาก… (อาจถึง 1 นาที)" : "กำลังเรียบเรียง…")
+                    : tab === "audio" ? "ช่วยเขียนสไตล์เพลง" : "ปรับพรอมต์ด้วย AI"}
+                </button>
+                {promptBeforeEnhance !== null && !enhancing && (
+                  <button type="button" className="rp-tool rp-raised" onClick={undoEnhance}>↶ ใช้ข้อความเดิม</button>
+                )}
+                {/* Prompt builder. Pictures get their vocabulary as comma-joined
+                    phrases; clips get camera and shot direction as sentences
+                    (the form video models read it in); songs keep their tag chips. */}
+                <Popover id="tags" open={openPanel} onToggle={setOpenPanel} variant="tool" width={320}
+                  label={tab === "audio" ? "+ แท็ก" : tab === "video" || tab === "lipsync" ? "🎥 กล้องและฉาก" : "✦ ตัวช่วยพรอมต์"}>
+                  {tab === "audio" ? (
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {MUSIC_TAG_CHIPS.map((t) => {
+                        const already = prompt.toLowerCase().includes(t.toLowerCase());
+                        return (
+                          <button key={t} type="button" onClick={() => addPromptTag(t)}
+                            style={{
+                              padding: "5px 10px", borderRadius: 999, fontSize: 11, cursor: "pointer", fontFamily: "inherit",
+                              background: already ? `hsla(${220 + HUE},60%,50%,0.18)` : "rgba(255,255,255,0.05)",
+                              color: already ? "#a5f3fc" : "#94a3b8",
+                              border: already ? `1px solid hsla(${220 + HUE},70%,60%,0.4)` : "1px solid rgba(255,255,255,0.1)",
+                            }}>+ {t}</button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                      {(tab === "video" || tab === "lipsync" ? VIDEO_BUILDER : IMAGE_BUILDER).map((group) => (
+                        <div key={group.label}>
+                          <div style={{ fontSize: 10.5, letterSpacing: "0.08em", color: "#a5f3fc", marginBottom: 6 }}>{group.label}</div>
+                          <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                            {group.items.map((item) => {
+                              const already = prompt.toLowerCase().includes(item.en.toLowerCase());
+                              const sentence = tab === "video" || tab === "lipsync";
+                              return (
+                                <button key={item.en} type="button" title={item.en}
+                                  onClick={() => (sentence ? addPromptSentence(item.en) : addPromptTag(item.en))}
+                                  style={{
+                                    padding: "5px 9px", borderRadius: 999, fontSize: 11, cursor: "pointer", fontFamily: "inherit",
+                                    background: already ? `hsla(${220 + HUE},60%,50%,0.18)` : "rgba(255,255,255,0.05)",
+                                    color: already ? "#a5f3fc" : "#cbd5e1",
+                                    border: already ? `1px solid hsla(${220 + HUE},70%,60%,0.4)` : "1px solid rgba(255,255,255,0.1)",
+                                  }}>{already ? "✓ " : "+ "}{item.th}</button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                      <div style={{ fontSize: 10.5, color: "#64748b", lineHeight: 1.5 }}>
+                        ชี้ที่ปุ่มเพื่อดูข้อความภาษาอังกฤษที่จะเติมลงพรอมต์ · โมเดลส่วนใหญ่อ่านคำศัพท์ภาพยนตร์/ถ่ายภาพภาษาอังกฤษได้แม่นที่สุด
                       </div>
                     </div>
-                    <span style={{ padding: "2px 6px", borderRadius: 6, background: "hsla(48,90%,60%,0.15)", color: "#fbbf24", fontSize: 10, fontWeight: 600 }}>✦ {m.creditsPerUnit}</span>
-                  </button>
-                  );
-                })}
+                  )}
+                </Popover>
+                {/* Templates are about pictures — none of them reaches a music model. */}
+                {templates.length > 0 && tab !== "edit" && tab !== "audio" && (
+                  <Popover id="templates" open={openPanel} onToggle={setOpenPanel} label="เทมเพลต" variant="tool" width={300}>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {templates.slice(0, 10).map(t => (
+                        <button key={t.id} type="button" title={t.description || t.prompt}
+                          onClick={() => { setPrompt(t.prompt); setNegativePrompt(t.negativePrompt || ""); setOpenPanel(null); }}
+                          style={{
+                            padding: "6px 11px", borderRadius: 999, fontSize: 11, cursor: "pointer", fontFamily: "inherit",
+                            background: "rgba(255,255,255,0.05)", color: "#cbd5e1",
+                            border: "1px solid rgba(255,255,255,0.1)",
+                          }}>
+                          {t.isFeatured ? "★ " : ""}{t.name}
+                        </button>
+                      ))}
+                    </div>
+                  </Popover>
+                )}
+                <span className="rp-kbd rp-mono" title="สั่งสร้างจากช่องพิมพ์ได้เลย">Ctrl/⌘ + Enter = ทอ</span>
+              </div>
+            </div>
+            {/* The free Pollinations model does not understand Thai — it renders
+                an unrelated image instead of failing, so warn before credits are spent. */}
+            {selectedModel?.provider.slug === "pollinations" && THAI_CHARS.test(prompt) && (
+              <div className="rp-warn" style={{ marginTop: 8 }}>
+                โมเดลฟรีอ่านภาษาไทยไม่ออก — จะได้ภาพที่ไม่ตรงกับที่พิมพ์ กรุณาพิมพ์ prompt เป็นภาษาอังกฤษ หรือเลือกโมเดลแบบเสียเครดิต
               </div>
             )}
-          </div>
-        </Section>
-
-        {/* Credit balance — absorbs the right rail's credits card, including
-            its top-up link, into a single line. */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, fontSize: 12, color: "#94a3b8" }}>
-          <span style={{ color: "#fbbf24" }}>✦</span>
-          เครดิต <span style={{ fontWeight: 600, color: "#f1f5f9" }}>{creditBalance.toLocaleString()}</span>
-          <a href="/pricing" style={{ color: "#a5f3fc", textDecoration: "none", borderBottom: "1px dotted rgba(165,243,252,0.4)" }}>+ เติม</a>
-        </div>
-      </aside>
-
-      {/* ═══ INPUT — everything handed to the model ═══
-          Prompt, lyrics and every upload together, because "where do I put
-          my file" was the question this layout kept failing to answer. */}
-      <aside className="rp-studio-input rp-scroll" style={{ borderRight: "1px solid rgba(255,255,255,0.06)", padding: 18, display: "flex", flexDirection: "column", gap: 12, background: "rgba(15,23,42,0.18)" }}>
-
-
-        {/* Prompt — the only element allowed to grow, so it absorbs whatever
-            height the viewport has spare and the rail still fits one screen. */}
-        <Section label={tab === "lipsync" ? "Prompt (ไม่บังคับ)" : tab === "audio" ? "สไตล์เพลง" : "Prompt"} grow>
-          {/* Read-only while ✨ works: its answer replaces the box, and would
-              silently drop anything typed in the meantime (Context-IR can take
-              a minute). */}
-          <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} onKeyDown={onSubmitKey}
-            readOnly={enhancing} aria-busy={enhancing}
-            placeholder={
-              tab === "lipsync"
-                ? lipsyncNeeds === "image"
-                  ? "อธิบายท่าทาง/บรรยากาศเพิ่มได้ เช่น พิธีกรยิ้มแย้ม พูดกับกล้อง..."
-                  : "ไม่ต้องใส่ก็ได้ — เสียงที่อัปโหลดเป็นตัวกำหนดผลลัพธ์"
-                : tab === "video"
-                  ? "อธิบายวิดีโอที่ต้องการ..."
-                  : tab === "audio"
-                    ? "แนวเพลง อารมณ์ เครื่องดนตรี เสียงร้อง เช่น ป๊อปไทยสดใส เสียงร้องหญิง กีตาร์โปร่ง จังหวะเร็ว"
-                    : "อธิบายภาพที่ต้องการ..."
-            }
-            style={{ ...xdrInputStyle, padding: 14, fontSize: 14, lineHeight: 1.5, resize: "none", flex: 1, minHeight: tab === "audio" ? 72 : 96, opacity: enhancing ? 0.6 : 1 }} />
-          {/* The free Pollinations model does not understand Thai — it renders an
-              unrelated image instead of failing, so warn before credits are spent. */}
-          {selectedModel?.provider.slug === "pollinations" && THAI_CHARS.test(prompt) && (
-            <div style={{
-              marginTop: 8, padding: "8px 12px", borderRadius: 10, fontSize: 12, lineHeight: 1.5,
-              background: "hsla(38,90%,55%,0.12)", color: "#fbbf24",
-              border: "1px solid hsla(38,90%,55%,0.3)",
-            }}>
-              โมเดลฟรีอ่านภาษาไทยไม่ออก — จะได้ภาพที่ไม่ตรงกับที่พิมพ์ กรุณาพิมพ์ prompt เป็นภาษาอังกฤษ หรือเลือกโมเดลแบบเสียเครดิต
-            </div>
-          )}
-          {/* The prompt assistant: short idea in, the model's own format out.
-              The result replaces the box's text where the customer can read
-              and edit it — and ↶ puts back what they wrote. */}
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
-            <button type="button" onClick={handleEnhance} disabled={enhancing || !prompt.trim()}
-              title={tab === "video" && selectedModel?.modelId === "minimax-h3"
-                ? "เรียบเรียงเป็นโครงช็อต กล้อง และเสียง ตามรูปแบบที่ MiniMax H3 ถูกฝึกมา"
-                : "ให้ AI ขยายไอเดียสั้น ๆ เป็นพรอมต์ที่โมเดลเข้าใจดีที่สุด"}
-              style={{
-                display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 9,
-                fontSize: 12, fontFamily: "inherit", fontWeight: 600,
-                cursor: enhancing || !prompt.trim() ? "default" : "pointer",
-                opacity: !prompt.trim() && !enhancing ? 0.45 : 1,
-                background: `linear-gradient(135deg, hsla(${280 + HUE},75%,55%,0.28), hsla(${190 + HUE},80%,50%,0.22))`,
-                color: "#f5f3ff", border: `1px solid hsla(${280 + HUE},70%,65%,0.45)`,
-              }}>
-              <span className={enhancing ? "xdr-motion" : undefined} style={enhancing ? { display: "inline-block", animation: "spin 1.2s linear infinite" } : undefined}>✨</span>
-              {enhancing
-                ? (tab === "video" && selectedModel?.modelId === "minimax-h3" ? "กำลังเรียบเรียงฉาก… (อาจถึง 1 นาที)" : "กำลังเรียบเรียง…")
-                : tab === "audio" ? "ช่วยเขียนสไตล์เพลง" : "ปรับพรอมต์ด้วย AI"}
-            </button>
-            {promptBeforeEnhance !== null && !enhancing && (
-              <button type="button" onClick={undoEnhance}
-                style={{ padding: "7px 10px", borderRadius: 9, fontSize: 11.5, fontFamily: "inherit", cursor: "pointer", background: "rgba(255,255,255,0.04)", color: "#94a3b8", border: "1px solid rgba(255,255,255,0.1)" }}>
-                ↶ ใช้ข้อความเดิม
-              </button>
+            {enhanceNote && (
+              <div style={{ fontSize: 10.5, color: "#a78bfa", marginTop: 6 }}>✦ {enhanceNote} — แก้ต่อได้ตามใจ</div>
             )}
-            <span style={{ marginLeft: "auto", fontSize: 10.5, color: "#475569" }} title="สั่งสร้างจากช่องพิมพ์ได้เลย">Ctrl/⌘ + Enter = ทอ</span>
-          </div>
-          {enhanceNote && (
-            <div style={{ fontSize: 10.5, color: "#a78bfa", marginTop: 5 }}>✦ {enhanceNote} — แก้ต่อได้ตามใจ</div>
-          )}
-          {/* Live prompt stats — replaces the right rail's "รายละเอียด prompt"
-              card in one line instead of three stacked rows. */}
-          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 10.5, color: "#64748b", fontFamily: "ui-monospace,monospace" }}>
-            <span>{prompt.trim() ? `${prompt.trim().split(/\s+/).length} คำ` : "ยังไม่มี prompt"}</span>
-            <span>{prompt.length.toLocaleString()} / 10,000</span>
-          </div>
-        </Section>
+          </Field>
 
-        {tab === "audio" && (
-          <>
-
-              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                <span style={{ fontSize: 11, color: "#94a3b8", marginRight: 2 }}>เนื้อเพลง</span>
+          {/* ── Lyrics (music) ── */}
+          {showLyrics && (
+            <Field no={sectionNo(3)} label="เนื้อเพลง" aside={`${lyrics.length.toLocaleString()} / 3,000`}>
+              <div className="rp-lyrics-tools">
                 {SECTION_TAGS.map((tag) => (
-                  <button key={tag} type="button" disabled={instrumental}
-                    onClick={() => setLyrics((l) => `${l.replace(/\s*$/, "")}${l.trim() ? "\n\n" : ""}${tag}\n`.slice(0, 3000))}
-                    style={{
-                      padding: "3px 8px", borderRadius: 7, fontSize: 10.5,
-                      cursor: instrumental ? "default" : "pointer", opacity: instrumental ? 0.4 : 1,
-                      background: "hsla(265,60%,60%,0.12)", color: "#c4b5fd",
-                      border: "1px solid hsla(265,60%,60%,0.28)",
-                      fontFamily: "ui-monospace,monospace",
-                    }}>
+                  <button key={tag} type="button" className="rp-sectag rp-mono" disabled={instrumental}
+                    onClick={() => setLyrics((l) => `${l.replace(/\s*$/, "")}${l.trim() ? "\n\n" : ""}${tag}\n`.slice(0, 3000))}>
                     {tag}
                   </button>
                 ))}
-                <label style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#94a3b8", cursor: "pointer" }}>
+                <label className="rp-check">
                   <input type="checkbox" checked={instrumental} onChange={(e) => setInstrumental(e.target.checked)} />
                   เพลงบรรเลง (ไม่มีเสียงร้อง)
                 </label>
               </div>
-              <textarea value={lyrics} onChange={(e) => setLyrics(e.target.value.slice(0, 3000))} onKeyDown={onSubmitKey}
-                disabled={instrumental}
-                placeholder={"[Verse]\nเขียนเนื้อร้องที่นี่\n\n[Chorus]\nท่อนฮุกที่อยากให้ติดหู"}
-                style={{
-                  ...xdrInputStyle, marginTop: 6, padding: 12, fontSize: 13, lineHeight: 1.5,
-                  resize: "none", flex: 1, minHeight: 260, opacity: instrumental ? 0.45 : 1,
-                }} />
-              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontSize: 10.5, color: "#64748b" }}>
-                <span>{instrumental ? "โหมดบรรเลง — เนื้อร้องที่พิมพ์ไว้จะถูกเก็บไว้เฉย ๆ" : "วงเล็บเหลี่ยมบอกโมเดลว่าเป็นท่อนอะไร"}</span>
-                <span style={{ fontFamily: "ui-monospace,monospace" }}>{lyrics.length.toLocaleString()} / 3,000</span>
+              <div className="rp-prompt rp-well" style={{ marginTop: 8 }}>
+                <textarea value={lyrics} onChange={(e) => setLyrics(e.target.value.slice(0, 3000))} onKeyDown={onSubmitKey}
+                  disabled={instrumental} aria-label="เนื้อเพลง"
+                  placeholder={"[Verse]\nเขียนเนื้อร้องที่นี่\n\n[Chorus]\nท่อนฮุกที่อยากให้ติดหู"}
+                  style={{ minHeight: 220, opacity: instrumental ? 0.45 : 1 }} />
               </div>
-
+              <div className="rp-note">
+                {instrumental ? "โหมดบรรเลง — เนื้อร้องที่พิมพ์ไว้จะถูกเก็บไว้เฉย ๆ" : "วงเล็บเหลี่ยมบอกโมเดลว่าเป็นท่อนอะไร"}
+              </div>
               {/* Exactly what the model will be told, composed by the same
                   function the server uses. Shown because chips whose effect
                   you cannot see are chips you cannot learn to use. */}
               {styleSummary && (
-                <div style={{
-                  marginTop: 10, padding: "9px 11px", borderRadius: 10,
-                  background: "rgba(2,6,23,0.5)", border: "1px solid rgba(255,255,255,0.08)",
-                }}>
+                <div className="rp-well" style={{ marginTop: 10, padding: "9px 11px", borderRadius: 10 }}>
                   <div style={{ fontSize: 10, letterSpacing: "0.1em", color: "#a5f3fc", marginBottom: 5, textTransform: "uppercase" }}>
                     สไตล์ที่ส่งให้ AI
                   </div>
@@ -2689,291 +3168,585 @@ export default function GeneratePage() {
                   </div>
                 </div>
               )}
-          </>
-        )}
+            </Field>
+          )}
 
-        {/* Text→video or image→video.
-            The providers have always supported both; this is the control that
-            says which one, instead of leaving it to be inferred from whether an
-            upload happens to be present. */}
-        {tab === "video" && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {([
-              { key: "t2v" as const, label: "ข้อความ → วิดีโอ", hint: "เริ่มจากคำอธิบายล้วน" },
-              { key: "i2v" as const, label: "ภาพ → วิดีโอ", hint: "ทำให้ภาพที่มีอยู่เคลื่อนไหว" },
-            ]).map((m) => (
-              <button key={m.key} onClick={() => setVideoMode(m.key)}
-                style={{
-                  flex: "1 1 140px", minWidth: "min(132px, 100%)", padding: "9px 10px", borderRadius: 10, cursor: "pointer", textAlign: "left",
-                  background: videoMode === m.key
-                    ? `linear-gradient(135deg, hsla(${160 + HUE},70%,50%,0.22), hsla(${270 + HUE},70%,55%,0.28))`
-                    : "rgba(255,255,255,0.04)",
-                  color: videoMode === m.key ? "#fff" : "#94a3b8",
-                  border: videoMode === m.key
-                    ? `1px solid hsla(${220 + HUE},70%,60%,0.5)`
-                    : "1px solid rgba(255,255,255,0.08)",
-                }}>
-                <div style={{ fontSize: 12.5, fontWeight: 600 }}>{m.label}</div>
-                <div style={{ fontSize: 10.5, opacity: 0.7, marginTop: 2 }}>{m.hint}</div>
-              </button>
-            ))}
-          </div>
-        )}
+          {/* ── 03 The files this mode takes ── */}
+          {showInputs && (
+            <Field no={sectionNo(inputsAt)} label={inputsLabel}
+              aside={tab === "image" && multiRef ? `${refs.length} / ${refCap} ภาพ` : undefined}>
 
-        {/* Image upload — the edit source, or the video start frame when the
-            mode calls for one. */}
-        {(tab === "edit" ||
-          (tab === "video" && videoMode === "i2v") ||
-          (tab === "lipsync" && lipsyncNeeds === "image")) && (
-          <Section
-            label={
-              tab === "edit" ? "ภาพต้นฉบับ" : tab === "lipsync" ? "รูปหน้าคนที่จะให้พูด" : "ภาพเริ่มต้น"
-            }
-          >
-            {inputImagePreview ? (
-              <div style={{ position: "relative" }}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={inputImagePreview} alt="Input" style={{ width: "100%", borderRadius: 10, maxHeight: 180, objectFit: "cover" }}
-                  onLoad={(e) => {
-                    const img = e.currentTarget;
-                    if (inputImagePreview && img.naturalWidth > 0 && img.naturalHeight > 0) {
-                      setImageDims({ src: inputImagePreview, width: img.naturalWidth, height: img.naturalHeight });
-                    }
-                  }}
-                  onError={() => dropExpiredInput(inputImagePreview, () => { setInputImage(null); setInputImagePreview(null); })} />
-                <button onClick={() => { setInputImage(null); setInputImagePreview(null); }}
-                  style={{ position: "absolute", top: 8, right: 8, width: 26, height: 26, borderRadius: "50%", background: "rgba(0,0,0,0.65)", color: "#fff", border: "none", cursor: "pointer", fontSize: 14 }}>×</button>
-              </div>
-            ) : (
-              <label style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, borderRadius: 12, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#64748b", fontSize: 12, cursor: "pointer" }}>
-                <div style={{ fontSize: 22, marginBottom: 4 }}>↑</div>
-                อัปโหลดภาพ
-                {/* What the rented worker can read (frame-input.ts) — a GIF or
-                    HEIC portrait would only be refused at the order. */}
-                <input type="file" accept={tab === "lipsync" ? "image/png,image/jpeg,image/webp" : "image/*"}
-                  style={{ display: "none" }} onChange={(e) => handleImageUpload(e)} />
-              </label>
-            )}
-            {tab === "lipsync" && (
-              <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
-                ใช้รูปที่เห็นหน้าชัด หันเข้ากล้อง ปากไม่ถูกบัง — คลิปจะออกมาตามสัดส่วนของรูป
-              </div>
-            )}
-          </Section>
-        )}
-
-        {/* Start frame on a text-only clip. The upload lives behind the mode
-            selector, so on t2v the box is simply absent with nothing saying
-            why. Show the affordance and let it flip the mode in one click. */}
-        {tab === "video" && videoMode === "t2v" && (
-          <Section label="ภาพเริ่มต้น">
-            <button type="button" onClick={() => setVideoMode("i2v")}
-              style={{ width: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, padding: 20, borderRadius: 12, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#64748b", fontSize: 12, cursor: "pointer", fontFamily: "inherit", textAlign: "center", lineHeight: 1.5 }}>
-              <div style={{ fontSize: 22, marginBottom: 2 }}>↑</div>
-              อยากให้คลิปเริ่มจากภาพของคุณ?
-              <span style={{ color: `hsl(${220 + HUE},70%,78%)` }}>กดที่นี่เพื่อสลับเป็นโหมด “ภาพ → วิดีโอ”</span>
-            </button>
-          </Section>
-        )}
-
-        {/* The frame the clip should end on — first-and-last-frame models only.
-            Optional: without it the model decides where the motion goes. */}
-        {offersLastFrame && (
-          <Section label="ภาพสุดท้าย (ไม่บังคับ)">
-            {inputImageEnd ? (
-              <div style={{ position: "relative" }}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={inputImageEnd} alt="End frame" style={{ width: "100%", borderRadius: 10, maxHeight: 180, objectFit: "cover" }}
-                  onError={() => dropExpiredInput(inputImageEnd, () => setInputImageEnd(null))} />
-                <button onClick={() => setInputImageEnd(null)}
-                  style={{ position: "absolute", top: 8, right: 8, width: 26, height: 26, borderRadius: "50%", background: "rgba(0,0,0,0.65)", color: "#fff", border: "none", cursor: "pointer", fontSize: 14 }}>×</button>
-              </div>
-            ) : (
-              <label style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, borderRadius: 12, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#64748b", fontSize: 12, cursor: uploading === "image" ? "wait" : "pointer" }}>
-                <div style={{ fontSize: 22, marginBottom: 4 }}>{uploading === "image" ? "…" : "↑"}</div>
-                {uploading === "image" ? "กำลังอัปโหลด…" : "อัปโหลดภาพที่ต้องการให้คลิปจบ"}
-                <input type="file" accept="image/png,image/jpeg,image/webp" style={{ display: "none" }}
-                  disabled={uploading === "image"} onChange={handleEndFrameUpload} />
-              </label>
-            )}
-          </Section>
-        )}
-
-        {/* Why the end-frame box is not there. Without this the control just
-            vanishes on a model that cannot do first-and-last-frame, which
-            reads as a missing feature rather than a model limit. */}
-        {tab === "video" && videoMode === "i2v" && selectedModel?.video?.lastFrame !== true && (
-          <div style={{ fontSize: 11, lineHeight: 1.6, color: "#64748b", padding: "8px 10px", borderRadius: 8, background: "rgba(2,6,23,0.3)", border: "1px solid rgba(255,255,255,0.06)" }}>
-            โมเดลนี้กำหนด<span style={{ color: "#94a3b8" }}>ภาพสุดท้าย</span>ของคลิปไม่ได้ — ถ้าต้องการ ให้เลือกโมเดลที่รองรับ first-and-last-frame
-          </div>
-        )}
-
-        {/* Lip-sync inputs. Both are uploaded to R2 first and only their URLs
-            travel with the request, so what is held here is a link and a
-            filename rather than the bytes. */}
-        {tab === "lipsync" && lipsyncNeeds === "video" && (
-          <Section label="คลิปต้นฉบับที่จะพากย์ทับ">
-            <FilePick
-              value={sourceVideoName}
-              busy={uploading === "video"}
-              accept="video/mp4,video/webm,video/quicktime"
-              hint="อัปโหลดคลิป (MP4 / WebM)"
-              onPick={(e) => handleMediaUpload(e, "video", clipMaxSeconds)}
-              onClear={() => { setSourceVideo(null); setSourceVideoName(null); }}
-            />
-            {/* A clip put back from a reopened order: the customer may not
-                have it to hand any more, so it is shown rather than named. */}
-            {sourceVideo && sourceVideo === openedInputs?.inputVideo && (
-              <video src={sourceVideo} controls muted playsInline preload="metadata"
-                onError={() => dropExpiredInput(sourceVideo, () => { setSourceVideo(null); setSourceVideoName(null); })}
-                style={{ width: "100%", maxHeight: 180, marginTop: 8, borderRadius: 10, background: "#000", display: "block" }} />
-            )}
-            {sourceClip && (
-              <div style={{ marginTop: 8, fontSize: 11.5, lineHeight: 1.5, color: "#a5f3fc" }}>
-                คลิป {sourceClip.seconds.toFixed(1)} วินาที · {sourceClip.width}×{sourceClip.height}
-                {videoRule?.billing?.kind === "clipBlocks" && clipCheck?.ok !== false ? ` · ✦ ${totalCredits} เครดิต` : ""}
-              </div>
-            )}
-            {clipCheck?.ok === false && (
-              <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 8, fontSize: 11.5, lineHeight: 1.5, background: "hsla(38,90%,55%,0.12)", color: "#fbbf24", border: "1px solid hsla(38,90%,55%,0.25)" }}>
-                {clipCheck.message}
-              </div>
-            )}
-            <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
-              {clipRuleHint(videoRule?.clip, videoRule?.billing ?? null)} · เห็นหน้าชัด · เสียงเดิมในคลิปจะถูกแทนที่ทั้งหมด
-            </div>
-          </Section>
-        )}
-
-        {tab === "lipsync" && (
-          <Section label="ไฟล์เสียงที่จะให้พูด">
-            <FilePick
-              value={inputAudioName}
-              busy={uploading === "audio"}
-              accept="audio/mpeg,audio/wav,audio/ogg,audio/flac,audio/mp4,audio/x-m4a"
-              hint={voiceRule ? `อัปโหลดเสียงพูด (MP3 / WAV / M4A) ไม่เกิน ${lipsyncAudioMax} วินาที` : "อัปโหลดเสียง (MP3 / WAV / M4A)"}
-              onPick={(e) => handleMediaUpload(e, "audio", lipsyncAudioMax)}
-              onClear={() => { setInputAudio(null); setInputAudioName(null); setInputAudioFile(null); }}
-            />
-            {/* Hear what will be spoken before paying for it. */}
-            {voiceRule && inputAudioFile && (
-              <div style={{ marginTop: 10 }}>
-                <AudioWave
-                  key={`${inputAudioFile.name}:${inputAudioFile.size}:${inputAudioFile.lastModified}`}
-                  source={inputAudioFile}
-                  height={48}
-                />
-              </div>
-            )}
-            {inputAudio && inputAudio === openedInputs?.inputAudio && (
-              <audio src={inputAudio} controls preload="metadata"
-                // A track put back from a past order has no upload reading:
-                // the player's is what prices it here (the server re-reads it).
-                onLoadedMetadata={(e) => {
-                  const d = e.currentTarget.duration;
-                  if (Number.isFinite(d) && d > 0) setAudioLengths((m) => (inputAudio in m ? m : { ...m, [inputAudio]: d }));
-                }}
-                onError={() => dropExpiredInput(inputAudio, () => { setInputAudio(null); setInputAudioName(null); })}
-                style={{ width: "100%", height: 36, marginTop: 8 }} />
-            )}
-            {/* The clip is as long as the voice, and so is the price. */}
-            {voiceRule && (
-              voiceLength?.ok === false ? (
-                <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 8, fontSize: 11.5, lineHeight: 1.5, background: "hsla(38,90%,55%,0.12)", color: "#fbbf24", border: "1px solid hsla(38,90%,55%,0.25)" }}>
-                  {voiceLength.message}
+              {/* Reference pictures. Several, each with what it is, for a model
+                  that composes from several; one with its strength for img2img;
+                  none — said rather than offered — for a model that takes none. */}
+              {tab === "image" && (refCap === 0 ? (
+                <div className="rp-note" style={{ marginTop: 0 }}>
+                  โมเดลนี้ไม่รับภาพอ้างอิง — ถ้าอยากให้ภาพออกมาตามรูปของคุณ เลือกโมเดลที่มีป้าย “รับภาพอ้างอิงได้”
+                  {refs.length > 0 ? " · ภาพที่ใส่ไว้จะไม่ถูกส่งไปกับงานนี้" : ""}
                 </div>
               ) : (
-                <div style={{ marginTop: 8, fontSize: 11.5, lineHeight: 1.5, color: "#a5f3fc" }}>
-                  {inputAudio
-                    ? `ความยาวคลิป = ความยาวเสียง${voiceLength ? ` ${voiceLength.seconds.toFixed(1)} วินาที` : ""} · ✦ ${totalCredits} เครดิต`
-                    : `คิดเครดิตตามความยาวเสียง: ✦ ${creditsFor(null)} (ไม่เกิน 5 วิ) ถึง ✦ ${creditsFor(lipsyncAudioMax)} (${lipsyncAudioMax} วิ)`}
+                <div className="rp-refbox rp-well">
+                  {multiRef && (
+                    <div className="rp-rmeter" aria-hidden="true">
+                      {Array.from({ length: refCap }, (_, i) => <i key={i} data-on={i < refs.length ? "true" : "false"} />)}
+                    </div>
+                  )}
+                  <div className="rp-rgrid" data-single={multiRef ? undefined : "true"}>
+                    {refs.map((r, i) => (
+                      <div key={r.id} className="rp-rtile" data-main={multiRef && i === 0 ? "true" : undefined}>
+                        {r.url ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={r.url} alt={`ภาพอ้างอิง ${i + 1}`} loading="lazy"
+                            onError={() => dropExpiredInput(r.url, () => removeRef(r.id))} />
+                        ) : (
+                          <span className="rp-spin" role="status" aria-label="กำลังอัปโหลด" />
+                        )}
+                        {multiRef && <span className="rp-rno rp-mono">{i + 1}</span>}
+                        <button type="button" className="rp-rx" onClick={() => removeRef(r.id)} aria-label={`เอาภาพ ${i + 1} ออก`}>×</button>
+                        {multiRef && (
+                          <button type="button" className="rp-rrole" onClick={() => cycleRole(r.id)} title="กดเพื่อเปลี่ยนว่าภาพนี้คืออะไร">
+                            {roleLabel(r.role)} ▾
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                    {refs.length < refCap && (
+                      <label className="rp-radd">
+                        <span aria-hidden="true" style={{ fontSize: 18, lineHeight: 1 }}>＋</span>
+                        {multiRef ? "เพิ่มภาพ" : "อัปโหลดภาพอ้างอิง"}
+                        <small>{multiRef ? `อีก ${refCap - refs.length} ภาพ · เลือกหลายภาพได้` : "ลาก & วาง หรือ Ctrl+V"}</small>
+                        <input type="file" accept="image/png,image/jpeg,image/webp" multiple={multiRef} hidden
+                          onChange={(e) => { const files = Array.from(e.target.files ?? []); e.target.value = ""; void addRefFiles(files); }} />
+                      </label>
+                    )}
+                  </div>
+                  {multiRef ? (
+                    <>
+                      <div className="rp-rhint">
+                        พิมพ์ <b>ภาพ 1</b>, <b>ภาพ 2</b> … ในพรอมต์เพื่อบอกว่าใช้ภาพไหนตรงไหน · กดป้ายใต้ภาพเพื่อบอกว่าเป็นตัวละคร ชุด สิ่งของ หรือสถานที่
+                      </div>
+                      {refs.length > 0 && (
+                        <div className="rp-rins">
+                          <span>แทรกในพรอมต์:</span>
+                          {refs.map((r, i) => (
+                            <button key={r.id} type="button" className="rp-raised" onClick={() => insertRefToken(i + 1)}>{referenceToken(i + 1)}</button>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : refs.length > 0 && (
+                    <div className="rp-slider">
+                      <div><span>ความเข้มอ้างอิง</span><b className="rp-mono">{Math.round(strength * 100)}%</b></div>
+                      <input type="range" min={0} max={1} step={0.05} value={strength} onChange={(e) => setStrength(+e.target.value)}
+                        aria-label="ความเข้มอ้างอิง" />
+                    </div>
+                  )}
+                  {refsOver && (
+                    <div className="rp-warn" style={{ marginTop: 10 }}>
+                      โมเดลนี้รับภาพอ้างอิงได้ {refCap} ภาพ — เอาออกให้เหลือ {refCap} ภาพก่อนสั่ง
+                    </div>
+                  )}
                 </div>
-              )
-            )}
-            {clipVoiceCheck?.ok === false && (
-              <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 8, fontSize: 11.5, lineHeight: 1.5, background: "hsla(38,90%,55%,0.12)", color: "#fbbf24", border: "1px solid hsla(38,90%,55%,0.25)" }}>
-                {clipVoiceCheck.message}
-              </div>
-            )}
-            <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
-              พูดภาษาอะไรก็ได้รวมถึงไทย — โมเดลอ่านคลื่นเสียงเป็นรูปปาก ไม่ได้อ่านภาษา
-            </div>
-          </Section>
-        )}
+              ))}
 
-        {/* Cover mode: the model transcribes this song's melody and sings it
-            again in the style above. The upload path is the lip-sync one, so
-            the same size and length limits apply. */}
-        {musicOpts?.sourceSong && (
-          <Section label="เพลงต้นฉบับที่จะคัฟเวอร์">
-            {/* `coverSourceSeconds` is what a cover may start *from* — a
-                different number from what the model may sing, and set by the
-                12 MB upload cap rather than by the model. Floored, not
-                rounded: the cap is 5 min 30 s and `Math.round` advertised
-                "6 นาที", which is an invitation to pick a file the uploader
-                then rejects. Under-promise on a limit. */}
-            <FilePick
-              value={inputAudioName}
-              busy={uploading === "audio"}
-              accept="audio/mpeg,audio/wav,audio/ogg,audio/flac,audio/mp4,audio/x-m4a"
-              hint={`อัปโหลดเพลง MP3 (ไม่เกิน ${Math.floor(coverSourceSeconds / 60)} นาที, 12 MB)`}
-              onPick={(e) => handleMediaUpload(e, "audio", coverSourceSeconds)}
-              onClear={() => { setInputAudio(null); setInputAudioName(null); setInputAudioFile(null); }}
-            />
-            {inputAudioFile && (
-              <div style={{ marginTop: 10 }}>
-                {/* Keyed on the file itself: picking another track remounts
-                    the player rather than leaving the old waveform up. */}
-                <AudioWave
-                  key={`${inputAudioFile.name}:${inputAudioFile.size}:${inputAudioFile.lastModified}`}
-                  source={inputAudioFile}
-                  height={64}
-                />
-              </div>
-            )}
-            {/* The song of a reopened cover. No waveform: R2 sends no CORS
-                header, so the browser can play it but not read its samples. */}
-            {!inputAudioFile && inputAudio && inputAudio === openedInputs?.inputAudio && (
-              <audio src={inputAudio} controls preload="metadata"
-                onError={() => dropExpiredInput(inputAudio, () => { setInputAudio(null); setInputAudioName(null); })}
-                style={{ width: "100%", height: 36, marginTop: 10 }} />
-            )}
-            <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 6, lineHeight: 1.5 }}>
-              AI ถอดเฉพาะ<strong style={{ color: "#94a3b8" }}>ทำนอง</strong>ออกมาแล้วร้องใหม่ทั้งเพลง — เสียงร้องเดิมไม่ได้ถูกนำมาใช้
-              ถ้าอยากได้คำร้องเดิม ให้พิมพ์ลงช่องเนื้อเพลง · WAV/FLAC ทั้งเพลงมักเกิน 12 MB ให้แปลงเป็น MP3 ก่อน
-            </div>
-          </Section>
-        )}
-      </aside>
+              {/* Text→video or image→video. The providers have always supported
+                  both; this is the control that says which one, instead of
+                  leaving it to be inferred from whether an upload is present. */}
+              {tab === "video" && (
+                <>
+                  <div className="rp-seg rp-well">
+                    {([
+                      { key: "t2v" as const, label: "ข้อความ → วิดีโอ", hint: "เริ่มจากคำอธิบายล้วน" },
+                      { key: "i2v" as const, label: "ภาพ → วิดีโอ", hint: "ทำให้ภาพที่มีอยู่เคลื่อนไหว" },
+                    ]).map((m) => (
+                      <button key={m.key} type="button" data-on={videoMode === m.key ? "true" : "false"} onClick={() => setVideoMode(m.key)}>
+                        <b>{m.label}</b>
+                        <span>{m.hint}</span>
+                      </button>
+                    ))}
+                  </div>
+                  {videoMode === "t2v" ? (
+                    // The upload lives behind the mode, so on t2v the slot would
+                    // simply be absent with nothing saying why. Offer it, one click.
+                    <button type="button" className="rp-drop" style={{ marginTop: 10 }} onClick={() => setVideoMode("i2v")}>
+                      <span className="rp-drop-ic" aria-hidden="true">↑</span>
+                      อยากให้คลิปเริ่มจากภาพของคุณ?
+                      <small>กดที่นี่เพื่อสลับเป็นโหมด “ภาพ → วิดีโอ”</small>
+                    </button>
+                  ) : (
+                    <div className="rp-frames" data-two={offersLastFrame ? "true" : undefined}>
+                      <div>
+                        <div className="rp-sub">ภาพเริ่มต้น</div>
+                        <ImageSlot src={inputImagePreview} alt="ภาพเริ่มต้น" hint="อัปโหลดภาพ" accept="image/*"
+                          onPick={handleImageUpload} onClear={clearInputImage} onLoad={onInputImageLoad}
+                          onError={() => dropExpiredInput(inputImagePreview, clearInputImage)} />
+                      </div>
+                      {/* The frame the clip should end on — first-and-last-frame
+                          models only. Optional: without it the model decides. */}
+                      {offersLastFrame && (
+                        <div>
+                          <div className="rp-sub">ภาพสุดท้าย (ไม่บังคับ)</div>
+                          <ImageSlot src={inputImageEnd} alt="ภาพสุดท้าย" hint="ภาพที่ต้องการให้คลิปจบ" accept="image/png,image/jpeg,image/webp"
+                            busy={uploading === "image"} onPick={handleEndFrameUpload} onClear={() => setInputImageEnd(null)}
+                            onError={() => dropExpiredInput(inputImageEnd, () => setInputImageEnd(null))} />
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {/* Why there is no end-frame slot: without this it just
+                      vanishes, which reads as a missing feature, not a model limit. */}
+                  {videoMode === "i2v" && selectedModel?.video?.lastFrame !== true && (
+                    <div className="rp-note">
+                      โมเดลนี้กำหนด<span style={{ color: "#94a3b8" }}>ภาพสุดท้าย</span>ของคลิปไม่ได้ — ถ้าต้องการ ให้เลือกโมเดลที่รองรับ first-and-last-frame
+                    </div>
+                  )}
+                </>
+              )}
 
-      {/* ═══ CENTER — canvas / result ═══ */}
-      <main className="rp-studio-center rp-scroll" style={{ padding: 20 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <Pill active>
-              {tab === "image" ? `ภาพ ${outputs} ใบ` : tab === "video" ? "วิดีโอ" : tab === "lipsync" ? "ลิปซิงค์" : tab === "audio" ? "เพลง" : "แก้ไขภาพ"}
-            </Pill>
-            {/* Variations is just another order, so it follows the button's rule. */}
-            <Pill disabled={cannotSubmit}
-              title={cannotSubmit && selectedModel?.canOrder === false ? (selectedModel.unavailableReason ?? undefined) : undefined}
-              onClick={() => { if (cannotSubmit) return; handleGenerate({ seed: Math.floor(Math.random() * 2_147_483_647) }); }}>Variations</Pill>
-            {tab === "image" && (
-              <Pill disabled={!upscaleAvailable}
-                title={upscaleAvailable ? undefined : "Upscale ยังไม่เปิดให้บริการ"}
-                onClick={() => upscaleAvailable && result?.id && handleUpscale()}>{isUpscaling ? "⟳ Upscale" : "Upscale"}</Pill>
-            )}
-            <Pill onClick={() => { window.location.href = "/gallery"; }}>History</Pill>
-          </div>
-          <div style={{ fontSize: 11, color: "#64748b", fontFamily: "ui-monospace,monospace" }}>
-            session · {session?.user?.name?.toLowerCase().replace(/\s+/g, "_") || "weaver"}
-          </div>
+              {tab === "edit" && (
+                <ImageSlot src={inputImagePreview} alt="ภาพต้นฉบับ" hint="อัปโหลดภาพที่ต้องการแก้ไข" accept="image/*"
+                  onPick={handleImageUpload} onClear={clearInputImage} onLoad={onInputImageLoad}
+                  onError={() => dropExpiredInput(inputImagePreview, clearInputImage)} />
+              )}
+
+              {/* Lip-sync: the thing that speaks, and the voice. Clip and voice
+                  go to R2 first and only their URLs travel with the order. */}
+              {tab === "lipsync" && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                  {lipsyncNeeds === "image" ? (
+                    <div>
+                      <div className="rp-sub">รูปหน้าคนที่จะให้พูด</div>
+                      {/* What the rented worker can read (frame-input.ts) — a GIF
+                          or HEIC portrait would only be refused at the order. */}
+                      <ImageSlot src={inputImagePreview} alt="รูปหน้าคน" hint="อัปโหลดรูปหน้าคน" accept="image/png,image/jpeg,image/webp"
+                        onPick={handleImageUpload} onClear={clearInputImage} onLoad={onInputImageLoad}
+                        onError={() => dropExpiredInput(inputImagePreview, clearInputImage)} />
+                      <div className="rp-note">ใช้รูปที่เห็นหน้าชัด หันเข้ากล้อง ปากไม่ถูกบัง — คลิปจะออกมาตามสัดส่วนของรูป</div>
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="rp-sub">คลิปต้นฉบับที่จะพากย์ทับ</div>
+                      <FilePick
+                        value={sourceVideoName}
+                        busy={uploading === "video"}
+                        accept="video/mp4,video/webm,video/quicktime"
+                        hint="อัปโหลดคลิป (MP4 / WebM)"
+                        onPick={(e) => handleMediaUpload(e, "video", clipMaxSeconds)}
+                        onClear={() => { setSourceVideo(null); setSourceVideoName(null); }}
+                      />
+                      {/* A clip put back from a reopened order: the customer may
+                          not have it to hand any more, so it is shown, not named. */}
+                      {sourceVideo && sourceVideo === openedInputs?.inputVideo && (
+                        <video src={sourceVideo} controls muted playsInline preload="metadata"
+                          onError={() => dropExpiredInput(sourceVideo, () => { setSourceVideo(null); setSourceVideoName(null); })}
+                          style={{ width: "100%", maxHeight: 180, marginTop: 8, borderRadius: 10, background: "#000", display: "block" }} />
+                      )}
+                      {sourceClip && (
+                        <div style={{ marginTop: 8, fontSize: 11.5, lineHeight: 1.5, color: "#a5f3fc" }}>
+                          คลิป {sourceClip.seconds.toFixed(1)} วินาที · {sourceClip.width}×{sourceClip.height}
+                          {videoRule?.billing?.kind === "clipBlocks" && clipCheck?.ok !== false ? ` · ✦ ${totalCredits} เครดิต` : ""}
+                        </div>
+                      )}
+                      {clipCheck?.ok === false && <div className="rp-warn" style={{ marginTop: 8 }}>{clipCheck.message}</div>}
+                      <div className="rp-note">
+                        {clipRuleHint(videoRule?.clip, videoRule?.billing ?? null)} · เห็นหน้าชัด · เสียงเดิมในคลิปจะถูกแทนที่ทั้งหมด
+                      </div>
+                    </div>
+                  )}
+
+                  <div>
+                    <div className="rp-sub">ไฟล์เสียงที่จะให้พูด</div>
+                    {/* Hear it, and keep only the part to be spoken, before paying for it. */}
+                    {trimSrc && trimSel ? (
+                      <AudioTrimmer file={trimSrc.file} buffer={trimSrc.buffer} range={trimSel} maxSeconds={lipsyncAudioMax}
+                        onChange={setTrimSel} onDragging={setTrimDragging} accept={AUDIO_ACCEPT}
+                        onPick={(e) => handleMediaUpload(e, "audio", lipsyncAudioMax)} onClear={clearAudio}
+                        state={trimState} onRetry={() => setTrimFailed(null)} note={voiceNote} />
+                    ) : (
+                      <>
+                        <FilePick
+                          value={inputAudioName}
+                          busy={uploading === "audio"}
+                          accept={AUDIO_ACCEPT}
+                          hint={voiceRule ? `อัปโหลดเสียงพูด (MP3 / WAV / M4A) ใช้ได้ไม่เกิน ${lipsyncAudioMax} วินาที` : "อัปโหลดเสียง (MP3 / WAV / M4A)"}
+                          onPick={(e) => handleMediaUpload(e, "audio", lipsyncAudioMax)}
+                          onClear={clearAudio}
+                        />
+                        {inputAudio && inputAudio === openedInputs?.inputAudio && (
+                          <audio src={inputAudio} controls preload="metadata"
+                            // A track put back from a past order has no upload
+                            // reading: the player's prices it here (the server re-reads it).
+                            onLoadedMetadata={(e) => {
+                              const d = e.currentTarget.duration;
+                              if (Number.isFinite(d) && d > 0) setAudioLengths((m) => (inputAudio in m ? m : { ...m, [inputAudio]: d }));
+                            }}
+                            onError={() => dropExpiredInput(inputAudio, clearAudio)}
+                            style={{ width: "100%", height: 36, marginTop: 8 }} />
+                        )}
+                        {voiceNote && <div className="rp-note" style={{ color: "#a5f3fc" }}>{voiceNote}</div>}
+                      </>
+                    )}
+                    {clipVoiceCheck?.ok === false && <div className="rp-warn" style={{ marginTop: 8 }}>{clipVoiceCheck.message}</div>}
+                    <div className="rp-note">พูดภาษาอะไรก็ได้รวมถึงไทย — โมเดลอ่านคลื่นเสียงเป็นรูปปาก ไม่ได้อ่านภาษา</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Cover mode: the model transcribes this song's melody and sings
+                  it again in the style above. */}
+              {tab === "audio" && musicOpts?.sourceSong && (
+                <>
+                  {trimSrc && trimSel ? (
+                    <AudioTrimmer file={trimSrc.file} buffer={trimSrc.buffer} range={trimSel} maxSeconds={coverSourceSeconds}
+                      onChange={setTrimSel} onDragging={setTrimDragging} accept={AUDIO_ACCEPT}
+                      onPick={(e) => handleMediaUpload(e, "audio", coverSourceSeconds)} onClear={clearAudio}
+                      state={trimState} onRetry={() => setTrimFailed(null)} note={trimTooLongNote} />
+                  ) : (
+                    <>
+                      {/* `coverSourceSeconds` is what a cover may start *from* —
+                          not what the model may sing. Floored, not rounded: the
+                          cap is 5 min 30 s and `Math.round` advertised "6 นาที".
+                          Under-promise on a limit. */}
+                      <FilePick
+                        value={inputAudioName}
+                        busy={uploading === "audio"}
+                        accept={AUDIO_ACCEPT}
+                        hint={`อัปโหลดเพลง MP3 / WAV — ใช้ได้ไม่เกิน ${Math.floor(coverSourceSeconds / 60)} นาที เลือกช่วงได้หลังอัปโหลด`}
+                        onPick={(e) => handleMediaUpload(e, "audio", coverSourceSeconds)}
+                        onClear={clearAudio}
+                      />
+                      {/* The song of a reopened cover. No waveform: R2 sends no
+                          CORS header, so the browser can play it but not read it. */}
+                      {inputAudio && inputAudio === openedInputs?.inputAudio && (
+                        <audio src={inputAudio} controls preload="metadata"
+                          onError={() => dropExpiredInput(inputAudio, clearAudio)}
+                          style={{ width: "100%", height: 36, marginTop: 10 }} />
+                      )}
+                    </>
+                  )}
+                  <div className="rp-note">
+                    AI ถอดเฉพาะ<strong style={{ color: "#94a3b8" }}>ทำนอง</strong>ออกมาแล้วร้องใหม่ทั้งเพลง — เสียงร้องเดิมไม่ได้ถูกนำมาใช้
+                    ถ้าอยากได้คำร้องเดิม ให้พิมพ์ลงช่องเนื้อเพลง · ไฟล์ใหญ่เกิน 12 MB ระบบแปลงช่วงที่เลือกเป็น MP3 ให้เอง
+                  </div>
+                </>
+              )}
+            </Field>
+          )}
+
+          {/* ── Settings: the knobs, as chips where a glance should tell ── */}
+          <Field no={sectionNo(settingsAt)} label="ตั้งค่า">
+            <div className="rp-sets">
+              {/* Lip-sync has no aspect to choose: the result keeps the shape
+                  of the clip or the portrait it was given. */}
+              {tab !== "edit" && tab !== "lipsync" && tab !== "audio" && (
+                <div>
+                  <div className="rp-sub">สัดส่วน</div>
+                  <div className="rp-chips">
+                    {aspectRatios
+                      .filter(ar => tab !== "video" || VIDEO_ASPECTS.includes(ar.value))
+                      .map(ar => {
+                        const [w, h] = ar.value.split(":").map(Number);
+                        const unit = 13 / Math.max(w, h);
+                        return (
+                          <button key={ar.value} type="button" className="rp-chip rp-raised" data-on={aspectRatio === ar.value ? "true" : "false"}
+                            onClick={() => setAspectRatio(ar.value)}>
+                            <span className="rp-shape" aria-hidden="true" style={{ width: Math.round(w * unit), height: Math.round(h * unit) }} />
+                            {ar.label}
+                          </button>
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
+
+              {/* Clip length. `ai_models.max_duration` is the ceiling — offering
+                  20s on a model that tops out at 5 just buys a failed job.
+                  Hidden on a model that decides its own length: there the number
+                  was never a length anyone received, only where the song got cut. */}
+              {(tab === "video" || (tab === "audio" && !musicOpts?.autoLength)) && (
+                <div>
+                  <div className="rp-sub">ความยาว</div>
+                  <div className="rp-chips">
+                    {durationChoices.map(d => (
+                      <button key={d} type="button" className="rp-chip rp-raised" data-on={duration === d ? "true" : "false"} onClick={() => setDuration(d)}>
+                        {tab === "audio" && d >= 60 && d % 60 === 0 ? `${d / 60} นาที` : `${d}s`}
+                        {/* Priced by length: say so before the order, not on the receipt. */}
+                        {selectedModel?.durationCurve && <small>✦ {creditsFor(d)}</small>}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Hidden when the model yields one output per order — offering 4
+                  would take payment for images it never renders. */}
+              {tab === "image" && selectedModel?.maxOutputs !== 1 && (
+                <div>
+                  <div className="rp-sub">จำนวน</div>
+                  <div className="rp-chips">
+                    {[1, 2, 3, 4].map(n => (
+                      <button key={n} type="button" className="rp-chip rp-raised" data-on={numOutputs === n ? "true" : "false"}
+                        style={{ minWidth: 44, justifyContent: "center" }} onClick={() => setNumOutputs(n)}>{n}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Resolution presets — only where the model offers a real choice
+                  for this aspect ratio (H3: 768p / 720p / 544p on 16:9). */}
+              {resolutionChoices.length > 1 && (
+                <div>
+                  <div className="rp-sub">ความละเอียด</div>
+                  <div className="rp-chips">
+                    {resolutionChoices.map(r => (
+                      <button key={r.id} type="button" className="rp-chip rp-raised" data-on={activeResolution?.id === r.id ? "true" : "false"}
+                        onClick={() => setResolution(r.id)}>{r.label}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Quality modes — only where the model offers a real choice (Qwen-
+                  Image: Lightning vs the full model). Each carries its price
+                  multiplier, and the button's total already includes it. */}
+              {qualityModes && qualityModes.length > 1 && (
+                <div>
+                  <div className="rp-sub">คุณภาพ</div>
+                  <div className="rp-chips">
+                    {qualityModes.map((m) => (
+                      <button key={m.id} type="button" className="rp-chip rp-raised" data-on={activeQuality?.id === m.id ? "true" : "false"}
+                        title={m.description} onClick={() => setQualityId(m.id)}>
+                        {m.label}{m.adminOnly ? " · ทดลอง (เห็นเฉพาะแอดมิน)" : ""}
+                        <small>{m.creditsMultiplier === 1 ? "ราคาปกติ" : `×${m.creditsMultiplier} เครดิต`}</small>
+                      </button>
+                    ))}
+                  </div>
+                  {activeQuality?.description && <div className="rp-note">{activeQuality.description}</div>}
+                </div>
+              )}
+
+              <div className="rp-poprow">
+                {/* The image styles are about pictures — none reaches a music model. */}
+                {stylesLoaded && styles.length > 0 && tab !== "edit" && tab !== "audio" && (
+                  <Popover id="style" open={openPanel} onToggle={setOpenPanel} label="สไตล์"
+                    value={selectedStyle ? (styles.find(s => s.id === selectedStyle)?.name ?? "") : "—"} width={300}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6 }}>
+                      {styles.slice(0, 12).map(s => (
+                        <button key={s.id} type="button" onClick={() => setSelectedStyle(selectedStyle === s.id ? null : s.id)}
+                          style={{
+                            padding: "7px 6px", borderRadius: 8, fontSize: 11, cursor: "pointer", fontFamily: "inherit",
+                            background: selectedStyle === s.id ? `hsla(${220 + HUE},60%,50%,0.25)` : "rgba(255,255,255,0.04)",
+                            color: selectedStyle === s.id ? "#fff" : "#94a3b8",
+                            border: selectedStyle === s.id ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
+                          }}>{s.name}</button>
+                      ))}
+                    </div>
+                  </Popover>
+                )}
+
+                {/* ── Song direction ───────────────────────────────────────
+                    Three panels rather than one: the official YuE2 template asks
+                    for language, genre, vocal, tempo, instruments and mood, which
+                    is far more than fits one popover, and they are chosen at
+                    different moments. Every chip ends up in the model's `[Tags]`
+                    line; the two sliders do not, they are real node inputs. */}
+                {musicOpts?.controls && (
+                  <Popover id="genre" open={openPanel} onToggle={setOpenPanel} label="แนวเพลง"
+                    value={MUSIC_GENRES.find((g) => g.id === musicStyle.genre)?.label ?? "อิสระ"} width={320}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                      <ChipRow label="แนวเพลง" options={MUSIC_GENRES} value={musicStyle.genre}
+                        onChange={(v) => setMusicField("genre", v as string | undefined)}
+                        hint="กดซ้ำเพื่อยกเลิก" />
+                      <ChipRow label="ภาษาที่ร้อง" options={MUSIC_LANGUAGES} value={musicStyle.language}
+                        disabled={instrumental}
+                        onChange={(v) => setMusicField("language", v as string | undefined)} />
+                      <ChipRow label="อารมณ์" options={MUSIC_MOODS} value={musicStyle.moods ?? []} max={3}
+                        onChange={(v) => setMusicField("moods", v as string[] | undefined)}
+                        hint={`เลือกได้ ${musicStyle.moods?.length ?? 0}/3`} />
+                    </div>
+                  </Popover>
+                )}
+
+                {musicOpts?.controls && (
+                  <Popover id="voice" open={openPanel} onToggle={setOpenPanel} label="เสียงร้อง"
+                    value={instrumental ? "บรรเลง" : MUSIC_VOCALS.find((v) => v.id === musicStyle.vocal)?.label ?? "อิสระ"}
+                    width={300}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                      {instrumental && (
+                        <div style={{ fontSize: 11, color: "#fbbf24", lineHeight: 1.5 }}>
+                          เปิดโหมดเพลงบรรเลงอยู่ — ตัวเลือกเสียงร้องถูกปิดไว้ ปลดได้ที่ช่องเนื้อเพลง
+                        </div>
+                      )}
+                      <ChipRow label="ผู้ร้อง" options={MUSIC_VOCALS} value={musicStyle.vocal} disabled={instrumental}
+                        onChange={(v) => setMusicField("vocal", v as string | undefined)} />
+                      <ChipRow label="ช่วงวัย" options={MUSIC_AGES} value={musicStyle.age} disabled={instrumental}
+                        onChange={(v) => setMusicField("age", v as string | undefined)} />
+                      <ChipRow label="ลักษณะเสียง" options={MUSIC_TIMBRES} value={musicStyle.timbre} disabled={instrumental}
+                        onChange={(v) => setMusicField("timbre", v as string | undefined)} />
+                    </div>
+                  </Popover>
+                )}
+
+                {musicOpts?.controls && (
+                  <Popover id="arrange" open={openPanel} onToggle={setOpenPanel} label="ดนตรี"
+                    value={musicComplexity(musicStyle.complexity).label} width={320} align="right">
+                    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                      <ChipRow label="เครื่องดนตรี" options={MUSIC_INSTRUMENTS} value={musicStyle.instruments ?? []} max={6}
+                        onChange={(v) => setMusicField("instruments", v as string[] | undefined)}
+                        hint={`เลือกได้ ${musicStyle.instruments?.length ?? 0}/6`} />
+
+                      {/* Tempo is off by default: an unasked-for BPM is a
+                          constraint the model did not need, and a wrong one
+                          fights the lyrics. */}
+                      <div>
+                        <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 11, color: "#94a3b8", marginBottom: 6, cursor: "pointer" }}>
+                          <input type="checkbox" checked={musicStyle.bpm !== undefined}
+                            onChange={(e) => setMusicField("bpm", e.target.checked ? 100 : undefined)} />
+                          กำหนดจังหวะเอง {musicStyle.bpm === undefined && <span style={{ color: "#64748b" }}>(ปล่อยให้ AI เลือก)</span>}
+                        </label>
+                        {musicStyle.bpm !== undefined && (
+                          <StyleSlider label="จังหวะ" value={musicStyle.bpm} min={MUSIC_BPM_MIN} max={MUSIC_BPM_MAX} step={2}
+                            format={(v) => `${v} BPM`} onChange={(v) => setMusicField("bpm", v)} />
+                        )}
+                      </div>
+
+                      {/* Real node inputs, not tags: density picks YuE2's `mode`
+                          (chord-annotated score vs melody only) and variety is
+                          its sampling temperature. */}
+                      <StyleSlider label="ความซับซ้อนของดนตรี" value={musicStyle.complexity ?? MUSIC_COMPLEXITY_DEFAULT}
+                        min={1} max={5} step={1}
+                        format={(v) => musicComplexity(v).label}
+                        onChange={(v) => setMusicField("complexity", v)} />
+
+                      <StyleSlider label="ความแปลกใหม่" value={musicStyle.variance ?? MUSIC_VARIANCE_DEFAULT}
+                        min={MUSIC_VARIANCE_MIN} max={MUSIC_VARIANCE_MAX} step={0.05}
+                        format={(v) => (v < 0.85 ? `ปลอดภัย ${v.toFixed(2)}` : v > 1.15 ? `กล้าเสี่ยง ${v.toFixed(2)}` : `สมดุล ${v.toFixed(2)}`)}
+                        onChange={(v) => setMusicField("variance", v)} />
+
+                      <button type="button"
+                        onClick={() => setMusicStyle({ complexity: MUSIC_COMPLEXITY_DEFAULT, variance: MUSIC_VARIANCE_DEFAULT })}
+                        style={{
+                          padding: "7px 0", borderRadius: 8, fontSize: 11.5, fontFamily: "inherit", cursor: "pointer",
+                          background: "rgba(255,255,255,0.04)", color: "#94a3b8", border: "1px solid rgba(255,255,255,0.08)",
+                        }}>
+                        ล้างตัวเลือกทั้งหมด
+                      </button>
+                    </div>
+                  </Popover>
+                )}
+
+                {/* Video keeps this panel too — steps and guidance mean nothing
+                    to a video endpoint, but seed does, and locking the whole
+                    panel away took reproducible clips with it. */}
+                <Popover id="advanced" open={openPanel} onToggle={setOpenPanel} label="⚙ ขั้นสูง" width={300} align="right">
+                  <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                    {/* The music model is a distilled turbo: its step count is
+                        fixed server-side, and more steps only slow it and smear it. */}
+                    {tab !== "video" && tab !== "audio" && (
+                      <>
+                        <div>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", marginBottom: 6 }}>
+                            <span>Steps</span>
+                            <span style={{ fontFamily: "ui-monospace,monospace", color: "#e2e8f0" }}>{steps}</span>
+                          </div>
+                          <input type="range" min={10} max={80} step={1} value={steps} onChange={(e) => setSteps(+e.target.value)}
+                            style={{ width: "100%", accentColor: `hsl(${220 + HUE},70%,60%)` }} />
+                        </div>
+                        <div>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", marginBottom: 6 }}>
+                            <span>Guidance</span>
+                            <span style={{ fontFamily: "ui-monospace,monospace", color: "#e2e8f0" }}>{guidance.toFixed(1)}</span>
+                          </div>
+                          <input type="range" min={1} max={20} step={0.5} value={guidance} onChange={(e) => setGuidance(+e.target.value)}
+                            style={{ width: "100%", accentColor: `hsl(${220 + HUE},70%,60%)` }} />
+                        </div>
+                      </>
+                    )}
+                    <div>
+                      <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 6 }}>Seed</div>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <input type="number" value={seed ?? ""} onChange={(e) => setSeed(e.target.value ? +e.target.value : null)}
+                          placeholder="auto" style={{ ...xdrInputStyle, flex: 1, padding: 10, fontFamily: "ui-monospace,monospace" }} />
+                        <button type="button" onClick={() => setSeed(Math.floor(Math.random() * 99999))}
+                          style={{ padding: "0 12px", borderRadius: 10, background: "rgba(255,255,255,0.05)", color: "#94a3b8", border: "1px solid rgba(255,255,255,0.1)", cursor: "pointer" }}>↻</button>
+                      </div>
+                    </div>
+                  </div>
+                </Popover>
+              </div>
+
+              {tab !== "edit" && tab !== "audio" && (
+                <input className="rp-input rp-well" value={negativePrompt} onChange={(e) => setNegativePrompt(e.target.value)}
+                  aria-label="Negative prompt" placeholder="Negative prompt — blurry, low quality, text..." />
+              )}
+            </div>
+          </Field>
+
+          {/* Every model in this tab may still be unproven, in which case
+              auto-select lands on one anyway. Say why the button is dead
+              rather than letting it look broken. */}
+          {selectedModel?.canOrder === false && (
+            <div className="rp-warn">
+              {selectedModel.unavailableReason ?? selectedModel.tuningMessage ?? "โมเดลนี้ยังใช้งานไม่ได้ในขณะนี้ กรุณาลองใหม่ภายหลัง"}
+            </div>
+          )}
+          {loadingInputs && <div className="rp-info">กำลังโหลดไฟล์แนบของงานเดิม…</div>}
+          {missingStartFrame && !loadingInputs && <div className="rp-warn">โหมด “ภาพ → วิดีโอ” ต้องอัปโหลดภาพเริ่มต้นก่อน</div>}
+          {missingLipsyncInput && !loadingInputs && (
+            <div className="rp-warn">
+              {!hasAudio
+                ? "ต้องอัปโหลดไฟล์เสียงที่จะให้พูดก่อน"
+                : lipsyncNeeds === "image"
+                  ? "ต้องอัปโหลดรูปหน้าคนที่จะให้พูดก่อน"
+                  : "ต้องอัปโหลดคลิปต้นฉบับที่จะพากย์ทับก่อน"}
+            </div>
+          )}
         </div>
 
+        {/* ═══ The order: balance, price, and the button that spends it ═══
+            It no longer locks while a render runs: orders queue side by side
+            in the tray, up to MAX_PARALLEL_JOBS. */}
+        <div className="rp-order">
+          {/* Said before the order, not after the server refuses it. The
+              server stays the judge — a balance topped up in another tab is
+              read fresh there — so the button is not locked by this. */}
+          {shortOfCredits && (
+            <div className="rp-short">
+              เครดิตไม่พอสำหรับงานนี้ — ต้องใช้ {totalCredits.toLocaleString()} มีอยู่ {creditBalance.toLocaleString()}{" "}
+              <a href="/pricing">เติมเครดิต →</a>
+            </div>
+          )}
+          <div className="rp-osum">
+            <span>คงเหลือ <b>{creditBalance.toLocaleString()}</b> เครดิต</span>
+            <a href="/pricing">+ เติมเครดิต</a>
+          </div>
+          <button type="button" className="rp-go" onClick={() => handleGenerate()} disabled={cannotSubmit}>
+            {runningJobs >= MAX_PARALLEL_JOBS ? (
+              <span className="rp-go-label" style={{ fontSize: 14 }}>⟳ กำลังสร้าง {runningJobs} งาน — รอให้เสร็จก่อน</span>
+            ) : (
+              <>
+                <span className="rp-go-label">ทอ</span>
+                <span className="rp-gop">✦ {outputs > 1 ? `${outputs} ภาพ · ` : ""}{totalCredits || "—"} เครดิต</span>
+              </>
+            )}
+          </button>
+          <div className="rp-onote">
+            {runningJobs >= MAX_PARALLEL_JOBS
+              ? "รอให้งานใดงานหนึ่งเสร็จก่อน แล้วค่อยสั่งเพิ่ม"
+              : runningJobs > 0
+                ? `กำลังสร้างอยู่ ${runningJobs} งาน · สั่งเพิ่มได้อีก ${MAX_PARALLEL_JOBS - runningJobs} งาน`
+                : `ทำพร้อมกันได้ ${MAX_PARALLEL_JOBS} งาน · Ctrl/⌘ + Enter = ทอ`}
+          </div>
+        </div>
+      </section>
+
+      {/* ═══ STAGE — the orders, the canvas, the latest pieces ═══ */}
+      <main className="rp-stage">
         {/* The order tray: every order placed from this page, newest first.
             Orders render side by side (up to MAX_PARALLEL_JOBS); the canvas
             shows the one picked here. */}
         {jobs.length > 0 && (
-          <div className="rp-tray" role="list" aria-label="งานที่สั่ง">
+          <div className="rp-tray rp-scroll" role="list" aria-label="งานที่สั่ง">
             {jobs.map((j) => {
               const on = j.id === focusId;
               const fraction = j.status === "running" && j.progress?.stage === "rendering" ? shownFraction(j.progress, j.progress.at) : null;
@@ -2996,7 +3769,7 @@ export default function GeneratePage() {
                     ) : j.status === "failed" ? (
                       <span style={{ color: "#fca5a5", fontWeight: 700 }}>!</span>
                     ) : (
-                      <span className="rp-tray-spin" aria-hidden="true" />
+                      <span className="rp-spin" aria-hidden="true" />
                     )}
                   </span>
                   <span className="rp-tray-text">
@@ -3021,199 +3794,210 @@ export default function GeneratePage() {
           </div>
         )}
 
-        {/* Result canvas — the only element that flexes, so the workspace
-            fills the viewport exactly instead of overflowing it. */}
-        <div className="rp-studio-canvas rp-scroll" style={{
-          borderRadius: 18, padding: 20,
-          background: "rgba(15,23,42,0.45)",
-          border: "1px solid rgba(255,255,255,0.06)",
-          backdropFilter: "blur(18px)",
-        }}>
-          {isGenerating ? (
-            <div style={{ width: "100%" }}>
-              {/* Width follows the height cap, so the frame keeps its shape and
-                  always fits: one frame per output that is actually coming —
-                  a 2×2 grid fills the same box as a single frame. */}
-              <div style={{ width: `min(100%, calc(${GENERATING_FRAME_MAX_H} * ${aspectNumber(canvasAspect)}))`, margin: "0 auto" }}>
-                {canvasTab === "image" && tab === "image" && outputs > 1 ? (
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 10 }}>
-                    {Array.from({ length: outputs }).map((_, i) => (
-                      <StudioFrame key={i} index={i} seed={(i + 1) * 0.137} aspect={canvasAspect} generating={true} progress={progress} />
+        <div className="rp-canvas rp-hud">
+          <span className="rp-led" aria-hidden="true"><i /></span>
+          <div className="rp-cbar">
+            <span className="rp-dot" data-run={isGenerating ? "true" : "false"} aria-hidden="true" />
+            <span className="rp-mono">{TAB_LABEL[canvasTab]}{canvasTab === "audio" ? "" : ` · ${canvasAspect}`}</span>
+            <span>{canvasState}</span>
+            <span className="rp-cbar-r">
+              {/* Variations is just another order, so it follows the button's rule. */}
+              <Pill disabled={cannotSubmit}
+                title={cannotSubmit && selectedModel?.canOrder === false ? (selectedModel.unavailableReason ?? undefined) : "สั่งอีกรอบด้วย seed ใหม่"}
+                onClick={() => { if (cannotSubmit) return; handleGenerate({ seed: Math.floor(Math.random() * 2_147_483_647) }); }}>Variations</Pill>
+              {tab === "image" && (
+                <Pill disabled={!upscaleAvailable}
+                  title={upscaleAvailable ? undefined : "Upscale ยังไม่เปิดให้บริการ"}
+                  onClick={() => upscaleAvailable && result?.id && handleUpscale()}>{isUpscaling ? "⟳ Upscale" : "Upscale"}</Pill>
+              )}
+              <Pill onClick={() => { window.location.href = "/gallery"; }}>History</Pill>
+            </span>
+          </div>
+
+          {/* Result canvas — the only element that flexes, so the workspace
+              fills the viewport exactly instead of overflowing it. */}
+          <div className="rp-studio-canvas rp-scroll">
+            {isGenerating ? (
+              <div style={{ width: "100%" }}>
+                {/* Width follows the height cap, so the frame keeps its shape
+                    and always fits: one frame per output that is actually
+                    coming — a 2×2 grid fills the same box as a single frame. */}
+                <div style={{ width: `min(100%, calc(${GENERATING_FRAME_MAX_H} * ${aspectNumber(canvasAspect)}))`, margin: "0 auto" }}>
+                  {canvasTab === "image" && tab === "image" && outputs > 1 ? (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 10 }}>
+                      {Array.from({ length: outputs }).map((_, i) => (
+                        <StudioFrame key={i} index={i} seed={(i + 1) * 0.137} aspect={canvasAspect} generating={true} progress={progress} />
+                      ))}
+                    </div>
+                  ) : (
+                    <StudioFrame index={0} seed={0.42} aspect={canvasAspect} generating={true} progress={progress} />
+                  )}
+                </div>
+                <GeneratingStatus progress={progress} tab={canvasTab} startedAt={genStartedAt} />
+                {runningJobs < MAX_PARALLEL_JOBS && (
+                  <div style={{ textAlign: "center", fontSize: 11, color: "rgba(165,243,252,0.6)", marginTop: 8 }}>
+                    สั่งงานถัดไปต่อได้เลย — ระบบทำพร้อมกันได้ {MAX_PARALLEL_JOBS} งาน
+                  </div>
+                )}
+              </div>
+            ) : result?.status === "completed" && result.resultUrl ? (
+              <div style={{ width: "100%" }}>
+                {result.resultUrls && result.resultUrls.length > 1 ? (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12, marginBottom: 16 }}>
+                    {result.resultUrls.map((url, i) => (
+                      <div key={i} style={{ position: "relative", borderRadius: 12, overflow: "hidden", border: "1px solid rgba(255,255,255,0.06)" }}>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={url} alt={`Result ${i + 1}`} style={{ width: "100%", display: "block", objectFit: "contain" }} />
+                        <button type="button" onClick={() => handleDownload(url)} aria-label={`ดาวน์โหลดภาพที่ ${i + 1}`}
+                          style={{ position: "absolute", top: 8, right: 8, width: 32, height: 32, borderRadius: 8, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", color: "#fff", border: "1px solid rgba(255,255,255,0.15)", cursor: "pointer", fontSize: 13 }}>↓</button>
+                      </div>
                     ))}
                   </div>
                 ) : (
-                  <StudioFrame index={0} seed={0.42} aspect={canvasAspect} generating={true} progress={progress} />
+                  <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", marginBottom: 16, border: "1px solid rgba(255,255,255,0.06)" }}>
+                    {originalImage ? (
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12 }}>
+                        <div style={{ position: "relative" }}>
+                          <span style={{ position: "absolute", top: 8, left: 8, zIndex: 2, padding: "3px 8px", borderRadius: 999, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", fontSize: 10, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>ต้นฉบับ</span>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={originalImage} alt="Original" style={{ width: "100%", borderRadius: 12, opacity: 0.7, objectFit: "contain" }} />
+                        </div>
+                        <div style={{ position: "relative" }}>
+                          <span style={{ position: "absolute", top: 8, left: 8, zIndex: 2, padding: "3px 8px", borderRadius: 999, background: `hsla(${160 + HUE},70%,50%,0.3)`, backdropFilter: "blur(8px)", fontSize: 10, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>ผลลัพธ์</span>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={result.resultUrl} alt={prompt} style={{ width: "100%", borderRadius: 12, objectFit: "contain" }} />
+                        </div>
+                      </div>
+                    ) : AUDIO_EXT.test(result.resultUrl) ? (
+                      <AudioResult src={result.resultUrl} title={viewing?.prompt || songTitle || "เพลงของคุณ"} genId={result.id} />
+                    ) : resultIsVideo ? (
+                      <video src={result.resultUrl} controls autoPlay loop style={{ width: "100%", borderRadius: 12, maxHeight: 600, margin: "0 auto", display: "block" }} />
+                    ) : (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={result.resultUrl} alt={prompt} style={{ width: "100%", borderRadius: 12, maxHeight: 600, objectFit: "contain", margin: "0 auto", display: "block" }} />
+                    )}
+                  </div>
                 )}
-              </div>
-              <GeneratingStatus progress={progress} tab={canvasTab} startedAt={genStartedAt} />
-              {runningJobs < MAX_PARALLEL_JOBS && (
-                <div style={{ textAlign: "center", fontSize: 11, color: "rgba(165,243,252,0.6)", marginTop: 8 }}>
-                  สั่งงานถัดไปต่อได้เลย — ระบบทำพร้อมกันได้ {MAX_PARALLEL_JOBS} งาน
-                </div>
-              )}
-            </div>
-          ) : result?.status === "completed" && result.resultUrl ? (
-            <div style={{ width: "100%" }}>
-              {result.resultUrls && result.resultUrls.length > 1 ? (
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12, marginBottom: 16 }}>
-                  {result.resultUrls.map((url, i) => (
-                    <div key={i} style={{ position: "relative", borderRadius: 12, overflow: "hidden", border: "1px solid rgba(255,255,255,0.06)" }}>
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={url} alt={`Result ${i + 1}`} style={{ width: "100%", display: "block", objectFit: "contain" }} />
-                      <button onClick={() => handleDownload(url)}
-                        style={{ position: "absolute", top: 8, right: 8, width: 32, height: 32, borderRadius: 8, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", color: "#fff", border: "1px solid rgba(255,255,255,0.15)", cursor: "pointer", fontSize: 13 }}>↓</button>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", marginBottom: 16, border: "1px solid rgba(255,255,255,0.06)" }}>
-                  {originalImage ? (
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12 }}>
-                      <div style={{ position: "relative" }}>
-                        <span style={{ position: "absolute", top: 8, left: 8, zIndex: 2, padding: "3px 8px", borderRadius: 999, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", fontSize: 10, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>ต้นฉบับ</span>
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={originalImage} alt="Original" style={{ width: "100%", borderRadius: 12, opacity: 0.7, objectFit: "contain" }} />
-                      </div>
-                      <div style={{ position: "relative" }}>
-                        <span style={{ position: "absolute", top: 8, left: 8, zIndex: 2, padding: "3px 8px", borderRadius: 999, background: `hsla(${160 + HUE},70%,50%,0.3)`, backdropFilter: "blur(8px)", fontSize: 10, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>ผลลัพธ์</span>
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={result.resultUrl} alt={prompt} style={{ width: "100%", borderRadius: 12, objectFit: "contain" }} />
-                      </div>
-                    </div>
-                  ) : AUDIO_EXT.test(result.resultUrl) ? (
-                    <AudioResult src={result.resultUrl} title={viewing?.prompt || songTitle || "เพลงของคุณ"} genId={result.id} />
-                  ) : resultIsVideo ? (
-                    <video src={result.resultUrl} controls autoPlay loop style={{ width: "100%", borderRadius: 12, maxHeight: 600, margin: "0 auto", display: "block" }} />
-                  ) : (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={result.resultUrl} alt={prompt} style={{ width: "100%", borderRadius: 12, maxHeight: 600, objectFit: "contain", margin: "0 auto", display: "block" }} />
-                  )}
-                </div>
-              )}
 
-              {/* Action toolbar */}
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <Pill onClick={() => handleDownload()}>↓ ดาวน์โหลด</Pill>
-                  <Pill active={isFavorited} onClick={handleFavorite}>{isFavorited ? "♥ บันทึกแล้ว" : "♡ บันทึก"}</Pill>
-                  <Pill onClick={handleShare}>⎋ แชร์</Pill>
-                  {resultIsImage && (
-                    <Pill onClick={handleUpscale}>{isUpscaling ? "⟳ Upscaling..." : "⤢ Upscale"}</Pill>
-                  )}
-                </div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {viewing && formBeforeOpen && (
-                    <Pill onClick={restoreDraft} title="คืน prompt การตั้งค่า และไฟล์แนบที่เขียนค้างไว้ก่อนเปิดงานนี้">↶ กลับไปร่างเดิม</Pill>
-                  )}
-                  <Pill onClick={clearCanvas}>↻ สร้างใหม่</Pill>
-                </div>
-              </div>
-
-              {/* The next step for a finished picture — the chain a creator
-                  actually follows: still → clip, still → edit, still → the
-                  reference for the next still. */}
-              {resultIsImage && (
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
-                  <span style={{ fontSize: 11, color: "#64748b", alignSelf: "center" }}>ใช้ภาพนี้ต่อ:</span>
-                  <Pill onClick={() => carryResultTo("video", result.resultUrl as string)}
-                    disabled={tabBlockedReason("video") !== null} title={tabBlockedReason("video") ?? "เปิดแท็บวิดีโอ ใส่ภาพนี้เป็นเฟรมแรก"}>▶ ทำเป็นวิดีโอ</Pill>
-                  <Pill onClick={() => carryResultTo("edit", result.resultUrl as string)}
-                    disabled={tabBlockedReason("edit") !== null} title={tabBlockedReason("edit") ?? "เปิดแท็บแก้ไขภาพ"}>✦ แก้ไขภาพนี้</Pill>
-                  <Pill onClick={() => carryResultTo("ref", result.resultUrl as string)} title="สร้างภาพใหม่โดยอ้างอิงภาพนี้">⎘ ใช้เป็นภาพอ้างอิง</Pill>
-                </div>
-              )}
-
-              {/* Retention notice — stated at the moment of delivery, because a
-                  customer who is never told the window will lose work they
-                  assumed was permanent. */}
-              {result.daysLeft != null && (
-                <div style={{
-                  marginTop: 12, padding: "8px 12px", borderRadius: 10, fontSize: 12,
-                  background: result.daysLeft <= 3 ? "rgba(248,113,113,0.12)" : "rgba(148,163,184,0.10)",
-                  color: result.daysLeft <= 3 ? "#fca5a5" : "rgba(203,213,225,0.85)",
-                  display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
-                }}>
-                  <span>
-                    {result.daysLeft <= 0
-                      ? "ไฟล์นี้หมดอายุแล้ว"
-                      : `เก็บไฟล์ไว้อีก ${result.daysLeft} วัน — กรุณาดาวน์โหลดเก็บไว้`}
-                  </span>
-                  {result.expiresAt && (
-                    <span style={{ opacity: 0.7 }}>
-                      (ถึง {new Date(result.expiresAt).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" })})
-                    </span>
-                  )}
-                </div>
-              )}
-
-              {/* Generation info */}
-              <div style={{ display: "flex", alignItems: "center", gap: 16, marginTop: 14, fontSize: 11, color: "#64748b" }}>
-                {result.creditsUsed > 0 && <span>✦ {result.creditsUsed} เครดิต</span>}
-                {result.processingMs && <span>⌚ {(result.processingMs / 1000).toFixed(1)}s</span>}
-                <span style={{ color: "#34d399" }}>✓ สำเร็จ</span>
-              </div>
-            </div>
-          ) : result?.status === "failed" ? (
-            <div style={{ textAlign: "center" }}>
-              <div style={{ width: 80, height: 80, borderRadius: 20, background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)", display: "grid", placeItems: "center", margin: "0 auto 18px", fontSize: 36, color: "#fca5a5" }}>!</div>
-              <h3 style={{ fontSize: 22, fontWeight: 300, margin: "0 0 8px", color: "#fff" }}>สร้างไม่สำเร็จ</h3>
-              <p style={{ fontSize: 13, color: "rgba(203,213,225,0.7)", marginBottom: 18 }}>{result.error ? localizeOrderError(result.error) : "เกิดข้อผิดพลาด"}</p>
-              <button onClick={clearCanvas}
-                style={{ padding: "10px 22px", borderRadius: 10, background: `linear-gradient(135deg, hsl(${160 + HUE},70%,50%), hsl(${280 + HUE},70%,55%))`, color: "#fff", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 500 }}>
-                ลองอีกครั้ง
-              </button>
-            </div>
-          ) : (
-            <div style={{ width: "100%" }}>
-              {tab === "audio" ? (
-                // No sample songs to show yet — offer starting points instead,
-                // one tap to put a description in the prompt.
-                <div style={{ maxWidth: 560, margin: "0 auto", textAlign: "center" }}>
-                  <div style={{ fontSize: 44, marginBottom: 8, color: "#c4b5fd" }}>♫</div>
-                  <h3 style={{ fontSize: 22, fontWeight: 300, color: "#fff", margin: "0 0 6px" }}>สร้างเพลงของคุณเอง</h3>
-                  <p style={{ fontSize: 13, color: "rgba(203,213,225,0.7)", margin: "0 0 18px" }}>
-                    บอกแนวเพลงกับอารมณ์ ใส่เนื้อเพลงเองได้ หรือเว้นว่างไว้เป็นเพลงบรรเลง
-                  </p>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
-                    {MUSIC_STARTERS.map((s) => (
-                      <button key={s} type="button" onClick={() => setPrompt(s)}
-                        style={{ padding: "8px 14px", borderRadius: 999, fontSize: 12, cursor: "pointer", background: "rgba(255,255,255,0.05)", color: "#cbd5e1", border: "1px solid rgba(255,255,255,0.12)" }}>
-                        {s}
-                      </button>
-                    ))}
+                {/* Action toolbar */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <Pill onClick={() => handleDownload()}>↓ ดาวน์โหลด</Pill>
+                    <Pill active={isFavorited} onClick={handleFavorite}>{isFavorited ? "♥ บันทึกแล้ว" : "♡ บันทึก"}</Pill>
+                    <Pill onClick={handleShare}>⎋ แชร์</Pill>
+                    {resultIsImage && (
+                      <Pill onClick={handleUpscale}>{isUpscaling ? "⟳ Upscaling..." : "⤢ Upscale"}</Pill>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {viewing && formBeforeOpen && (
+                      <Pill onClick={restoreDraft} title="คืน prompt การตั้งค่า และไฟล์แนบที่เขียนค้างไว้ก่อนเปิดงานนี้">↶ กลับไปร่างเดิม</Pill>
+                    )}
+                    <Pill onClick={clearCanvas}>↻ สร้างใหม่</Pill>
                   </div>
                 </div>
-              ) : tab === "image" ? (
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 16 }}>
-                  {STUDIO_SAMPLES.image.map((s) => (
-                    <SampleFrame key={s.src} src={s.src} label={s.label} aspect={aspectRatio} />
-                  ))}
+
+                {/* The next step for a finished picture — the chain a creator
+                    actually follows: still → clip, still → edit, still → the
+                    reference for the next still. */}
+                {resultIsImage && (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+                    <span style={{ fontSize: 11, color: "#64748b", alignSelf: "center" }}>ใช้ภาพนี้ต่อ:</span>
+                    <Pill onClick={() => carryResultTo("video", result.resultUrl as string)}
+                      disabled={tabBlockedReason("video") !== null} title={tabBlockedReason("video") ?? "เปิดแท็บวิดีโอ ใส่ภาพนี้เป็นเฟรมแรก"}>▶ ทำเป็นวิดีโอ</Pill>
+                    <Pill onClick={() => carryResultTo("edit", result.resultUrl as string)}
+                      disabled={tabBlockedReason("edit") !== null} title={tabBlockedReason("edit") ?? "เปิดแท็บแก้ไขภาพ"}>✦ แก้ไขภาพนี้</Pill>
+                    <Pill onClick={() => carryResultTo("ref", result.resultUrl as string)} title="สร้างภาพใหม่โดยอ้างอิงภาพนี้">⎘ ใช้เป็นภาพอ้างอิง</Pill>
+                  </div>
+                )}
+
+                {/* Retention notice — stated at the moment of delivery, because
+                    a customer who is never told the window will lose work they
+                    assumed was permanent. */}
+                {result.daysLeft != null && (
+                  <div style={{
+                    marginTop: 12, padding: "8px 12px", borderRadius: 10, fontSize: 12,
+                    background: result.daysLeft <= 3 ? "rgba(248,113,113,0.12)" : "rgba(148,163,184,0.10)",
+                    color: result.daysLeft <= 3 ? "#fca5a5" : "rgba(203,213,225,0.85)",
+                    display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+                  }}>
+                    <span>
+                      {result.daysLeft <= 0
+                        ? "ไฟล์นี้หมดอายุแล้ว"
+                        : `เก็บไฟล์ไว้อีก ${result.daysLeft} วัน — กรุณาดาวน์โหลดเก็บไว้`}
+                    </span>
+                    {result.expiresAt && (
+                      <span style={{ opacity: 0.7 }}>
+                        (ถึง {new Date(result.expiresAt).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" })})
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {/* Generation info */}
+                <div style={{ display: "flex", alignItems: "center", gap: 16, marginTop: 14, fontSize: 11, color: "#64748b" }}>
+                  {result.creditsUsed > 0 && <span>✦ {result.creditsUsed} เครดิต</span>}
+                  {result.processingMs && <span>⌚ {(result.processingMs / 1000).toFixed(1)}s</span>}
+                  <span style={{ color: "#34d399" }}>✓ สำเร็จ</span>
                 </div>
-              ) : (
-                <div style={{ aspectRatio: ASPECT_RATIO_CSS[aspectRatio] || "1/1", maxHeight: 520, margin: "0 auto" }}>
-                  {(STUDIO_SAMPLES[tab] || STUDIO_SAMPLES.edit).map((s) => (
-                    <SampleFrame key={s.src} src={s.src} label={s.label} aspect={aspectRatio} isVideo={tab === "video"} />
-                  ))}
-                </div>
-              )}
-              <p style={{ fontSize: 13, color: "rgba(203,213,225,0.55)", marginTop: 20, textAlign: "center" }}>
-                {tab === "audio" ? "" : "ตัวอย่างผลงานที่สร้างบนแพลตฟอร์มนี้ — "}เลือกโมเดล พิมพ์ prompt แล้วกด <span style={{ color: "#a5f3fc" }}>ทอ</span> เพื่อเริ่มสร้าง{tab === "video" ? "วิดีโอ" : tab === "edit" ? "การแก้ไข" : tab === "audio" ? "เพลง" : "ภาพ"}ของคุณเอง
-              </p>
-            </div>
-          )}
+              </div>
+            ) : result?.status === "failed" ? (
+              <div style={{ textAlign: "center" }}>
+                <div style={{ width: 80, height: 80, borderRadius: 20, background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)", display: "grid", placeItems: "center", margin: "0 auto 18px", fontSize: 36, color: "#fca5a5" }}>!</div>
+                <h3 style={{ fontSize: 22, fontWeight: 300, margin: "0 0 8px", color: "#fff" }}>สร้างไม่สำเร็จ</h3>
+                <p style={{ fontSize: 13, color: "rgba(203,213,225,0.7)", marginBottom: 18 }}>{result.error ? localizeOrderError(result.error) : "เกิดข้อผิดพลาด"}</p>
+                <button type="button" onClick={clearCanvas}
+                  style={{ padding: "10px 22px", borderRadius: 10, background: `linear-gradient(135deg, hsl(${160 + HUE},70%,50%), hsl(${280 + HUE},70%,55%))`, color: "#fff", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 500 }}>
+                  ลองอีกครั้ง
+                </button>
+              </div>
+            ) : (
+              <div style={{ width: "100%" }}>
+                {tab === "audio" ? (
+                  // No sample songs to show yet — offer starting points instead,
+                  // one tap to put a description in the prompt.
+                  <div style={{ maxWidth: 560, margin: "0 auto", textAlign: "center" }}>
+                    <div style={{ fontSize: 44, marginBottom: 8, color: "#c4b5fd" }}>♫</div>
+                    <h3 style={{ fontSize: 22, fontWeight: 300, color: "#fff", margin: "0 0 6px" }}>สร้างเพลงของคุณเอง</h3>
+                    <p style={{ fontSize: 13, color: "rgba(203,213,225,0.7)", margin: "0 0 18px" }}>
+                      บอกแนวเพลงกับอารมณ์ ใส่เนื้อเพลงเองได้ หรือเว้นว่างไว้เป็นเพลงบรรเลง
+                    </p>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
+                      {MUSIC_STARTERS.map((s) => (
+                        <button key={s} type="button" className="rp-chip rp-raised" onClick={() => setPrompt(s)}>
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : tab === "image" ? (
+                  <div className="rp-samples">
+                    {STUDIO_SAMPLES.image.map((s) => (
+                      <SampleFrame key={s.src} src={s.src} label={s.label} aspect={aspectRatio} />
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ aspectRatio: ASPECT_RATIO_CSS[aspectRatio] || "1/1", maxHeight: 520, maxWidth: "100%", margin: "0 auto" }}>
+                    {(STUDIO_SAMPLES[tab] || STUDIO_SAMPLES.edit).map((s) => (
+                      <SampleFrame key={s.src} src={s.src} label={s.label} aspect={aspectRatio} isVideo={tab === "video"} />
+                    ))}
+                  </div>
+                )}
+                <p style={{ fontSize: 13, color: "rgba(203,213,225,0.55)", marginTop: 20, textAlign: "center" }}>
+                  {tab === "audio" ? "" : "ตัวอย่างผลงานที่สร้างบนแพลตฟอร์มนี้ — "}เลือกโมเดล พิมพ์ prompt แล้วกด <span style={{ color: "#a5f3fc" }}>ทอ</span> เพื่อเริ่มสร้าง{tab === "video" ? "วิดีโอ" : tab === "edit" ? "การแก้ไข" : tab === "audio" ? "เพลง" : "ภาพ"}ของคุณเอง
+                </p>
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* History strip — recent generations. Stepped aside while a result
-            is being made: its two rows took ~420px of a one-screen layout and
-            left the canvas too short to show the queue and its animation. It
-            comes back, with the new result in it, when the job settles. */}
-        {history.length > 0 && !isGenerating && (
-          <div style={{ marginTop: 20 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-              <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em", textTransform: "uppercase" }}>· รุ่นก่อนหน้า (history)</div>
-              <a href="/gallery" style={{ fontSize: 11, color: "#a5f3fc", textDecoration: "none", letterSpacing: "0.05em" }}>ดูทั้งหมด →</a>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(56px, 1fr))", gap: 8 }}>
+        {/* The latest pieces, one row. It stays while a render runs now: a
+            single row costs 46 px, and the canvas sizes itself from what is
+            left (container query), so the queue animation still fits. */}
+        {history.length > 0 && (
+          <div className="rp-recent">
+            <span className="rp-rl">ล่าสุด · <a href="/gallery">ดูทั้งหมด →</a></span>
+            <div className="rp-recent-row rp-scroll">
               {history.slice(0, 16).map((g) => {
                 const src = g.thumbnailUrl || g.resultUrl;
                 const isVideo = g.type === "video" || g.resultUrl?.endsWith(".mp4");
@@ -3222,22 +4006,12 @@ export default function GeneratePage() {
                 // A song has nothing to draw; it gets a note on its own colour.
                 const isAudio = g.type === "audio" || AUDIO_EXT.test(src ?? "");
                 return (
-                  <button key={g.id} type="button" title={`${g.prompt}\n— กดเพื่อเปิดงานนี้ พร้อม prompt การตั้งค่า และไฟล์แนบเดิม`}
+                  <button key={g.id} type="button" className="rp-thumb" title={`${g.prompt}\n— กดเพื่อเปิดงานนี้ พร้อม prompt การตั้งค่า และไฟล์แนบเดิม`}
                     // Opens the piece on the canvas and puts the whole order
                     // back on its own tab (openHistory).
                     onClick={() => void openHistory(g)}
                     aria-current={viewing?.id === g.id ? "true" : undefined}
-                    style={{
-                      aspectRatio: "1",
-                      borderRadius: 8,
-                      padding: 0,
-                      overflow: "hidden",
-                      position: "relative",
-                      // The piece open on the canvas, so it is clear which order the form holds.
-                      border: viewing?.id === g.id ? `1.5px solid hsla(${220 + HUE},80%,65%,0.9)` : "1px solid rgba(255,255,255,0.05)",
-                      cursor: "pointer",
-                      background: `linear-gradient(135deg, hsl(${(g.id * 23 + HUE) % 360}, 50%, 15%), hsl(${(g.id * 23 + 60 + HUE) % 360}, 50%, 8%))`,
-                    }}>
+                    style={{ background: `linear-gradient(135deg, hsl(${(g.id * 23 + HUE) % 360}, 50%, 15%), hsl(${(g.id * 23 + 60 + HUE) % 360}, 50%, 8%))` }}>
                     {/* A video's thumbnail is the video itself (rented-GPU jobs
                         store the mp4 there), and <img> draws that as a broken
                         icon. #t=0.1 makes the browser paint the first frame. */}
@@ -3245,16 +4019,13 @@ export default function GeneratePage() {
                       <AudioCover seed={g.prompt} bars={6} label={false} style={{ position: "absolute", inset: 0 }} />
                     )}
                     {src && !isAudio && srcIsVideo && (
-                      <video src={`${src}#t=0.1`} muted playsInline preload="metadata"
-                        style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", pointerEvents: "none" }} />
+                      <video src={`${src}#t=0.1`} muted playsInline preload="metadata" />
                     )}
                     {src && !isAudio && !srcIsVideo && (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={src} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                      <img src={src} alt="" loading="lazy" />
                     )}
-                    {isVideo && (
-                      <span style={{ position: "absolute", bottom: 4, right: 4, fontSize: 9, color: "#fff", background: "rgba(0,0,0,0.6)", padding: "2px 5px", borderRadius: 4 }}>▶</span>
-                    )}
+                    {isVideo && <span className="rp-thumb-play" aria-hidden="true">▶</span>}
                   </button>
                 );
               })}
@@ -3263,803 +4034,560 @@ export default function GeneratePage() {
         )}
       </main>
 
-      {/* ═══ SETTINGS — the knobs, and the button that spends them ═══ */}
-      <aside className="rp-studio-set rp-scroll" style={{ borderLeft: "1px solid rgba(255,255,255,0.06)", padding: 18, display: "flex", flexDirection: "column", gap: 12, background: "rgba(15,23,42,0.25)" }}>
+      <ModeOrb modes={orbModes} links={orbLinks} title={TAB_LABEL[tab]} glyph={TAB_GLYPH[tab]} />
 
-
-        {/* ── Compact control deck ─────────────────────────────────────
-            Everything below is one-line triggers. Each opens upward so a
-            panel near the bottom of the rail never pushes the layout. */}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {/* Prompt builder. Pictures get their vocabulary as comma-joined
-              phrases; clips get camera and shot direction as sentences (the
-              form video models read it in); songs keep their tag chips. */}
-          <Popover id="tags" open={openPanel} onToggle={setOpenPanel}
-            label={tab === "audio" ? "+ แท็ก" : tab === "video" || tab === "lipsync" ? "🎥 กล้องและฉาก" : "✦ ตัวช่วยพรอมต์"}
-            // No wider than the settings column: the rail scrolls, so a panel
-            // that overhangs its box is clipped rather than drawn over the canvas.
-            width={286}>
-            {tab === "audio" ? (
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {MUSIC_TAG_CHIPS.map((t) => {
-                  const already = prompt.toLowerCase().includes(t.toLowerCase());
-                  return (
-                    <button key={t} type="button" onClick={() => addPromptTag(t)}
-                      style={{
-                        padding: "5px 10px", borderRadius: 999, fontSize: 11, cursor: "pointer",
-                        background: already ? `hsla(${220 + HUE},60%,50%,0.18)` : "rgba(255,255,255,0.05)",
-                        color: already ? "#a5f3fc" : "#94a3b8",
-                        border: already ? `1px solid hsla(${220 + HUE},70%,60%,0.4)` : "1px solid rgba(255,255,255,0.1)",
-                      }}>+ {t}</button>
-                  );
-                })}
-              </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                {(tab === "video" || tab === "lipsync" ? VIDEO_BUILDER : IMAGE_BUILDER).map((group) => (
-                  <div key={group.label}>
-                    <div style={{ fontSize: 10.5, letterSpacing: "0.08em", color: "#a5f3fc", marginBottom: 6 }}>{group.label}</div>
-                    <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-                      {group.items.map((item) => {
-                        const already = prompt.toLowerCase().includes(item.en.toLowerCase());
-                        const sentence = tab === "video" || tab === "lipsync";
-                        return (
-                          <button key={item.en} type="button" title={item.en}
-                            onClick={() => (sentence ? addPromptSentence(item.en) : addPromptTag(item.en))}
-                            style={{
-                              padding: "5px 9px", borderRadius: 999, fontSize: 11, cursor: "pointer", fontFamily: "inherit",
-                              background: already ? `hsla(${220 + HUE},60%,50%,0.18)` : "rgba(255,255,255,0.05)",
-                              color: already ? "#a5f3fc" : "#cbd5e1",
-                              border: already ? `1px solid hsla(${220 + HUE},70%,60%,0.4)` : "1px solid rgba(255,255,255,0.1)",
-                            }}>{already ? "✓ " : "+ "}{item.th}</button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
-                <div style={{ fontSize: 10.5, color: "#64748b", lineHeight: 1.5 }}>
-                  ชี้ที่ปุ่มเพื่อดูข้อความภาษาอังกฤษที่จะเติมลงพรอมต์ · โมเดลส่วนใหญ่อ่านคำศัพท์ภาพยนตร์/ถ่ายภาพภาษาอังกฤษได้แม่นที่สุด
-                </div>
-              </div>
-            )}
-          </Popover>
-
-          {/* The templates, the negative prompt, the image styles, the aspect
-              and the reference image are all about pictures — none of them
-              reaches a music model, so the music tab does not offer them. */}
-          {templates.length > 0 && tab !== "edit" && tab !== "audio" && (
-            <Popover id="templates" open={openPanel} onToggle={setOpenPanel} label="เทมเพลต" width={286}>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {templates.slice(0, 10).map(t => (
-                  <button key={t.id} type="button" title={t.description || t.prompt}
-                    onClick={() => { setPrompt(t.prompt); setNegativePrompt(t.negativePrompt || ""); setOpenPanel(null); }}
-                    style={{
-                      padding: "6px 11px", borderRadius: 999, fontSize: 11, cursor: "pointer",
-                      background: "rgba(255,255,255,0.05)", color: "#cbd5e1",
-                      border: "1px solid rgba(255,255,255,0.1)",
-                    }}>
-                    {t.isFeatured ? "★ " : ""}{t.name}
-                  </button>
-                ))}
-              </div>
-            </Popover>
-          )}
-        </div>
-
-        {/* Negative Prompt */}
-        {tab !== "edit" && tab !== "audio" && (
-          <input value={negativePrompt} onChange={(e) => setNegativePrompt(e.target.value)}
-            placeholder="Negative prompt — blurry, low quality, text..."
-            style={{ ...xdrInputStyle, fontSize: 12, padding: "9px 12px" }} />
-        )}
-
-        {/* Style + aspect on one row */}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {stylesLoaded && styles.length > 0 && tab !== "edit" && tab !== "audio" && (
-            <Popover id="style" open={openPanel} onToggle={setOpenPanel} label="สไตล์"
-              value={selectedStyle ? (styles.find(s => s.id === selectedStyle)?.name ?? "") : "—"} width={286}>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6 }}>
-                {styles.slice(0, 12).map(s => (
-                  <button key={s.id} onClick={() => setSelectedStyle(selectedStyle === s.id ? null : s.id)}
-                    style={{
-                      padding: "7px 6px", borderRadius: 8, fontSize: 11, cursor: "pointer",
-                      background: selectedStyle === s.id ? `hsla(${220 + HUE},60%,50%,0.25)` : "rgba(255,255,255,0.04)",
-                      color: selectedStyle === s.id ? "#fff" : "#94a3b8",
-                      border: selectedStyle === s.id ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
-                    }}>{s.name}</button>
-                ))}
-              </div>
-            </Popover>
-          )}
-
-          {/* Quality modes — only where the model offers a real choice (Qwen-
-              Image: Lightning vs the full model). Each carries its price
-              multiplier, and the button's total already includes it. */}
-          {qualityModes && qualityModes.length > 1 && (
-            <Popover id="quality" open={openPanel} onToggle={setOpenPanel} label="คุณภาพ"
-              value={activeQuality?.label ?? "—"} width={290}>
-              <div style={{ display: "grid", gap: 6 }}>
-                {qualityModes.map((m) => {
-                  const on = activeQuality?.id === m.id;
-                  return (
-                    <button key={m.id} type="button" onClick={() => { setQualityId(m.id); setOpenPanel(null); }}
-                      style={{
-                        textAlign: "left", padding: "9px 11px", borderRadius: 9, cursor: "pointer", fontFamily: "inherit",
-                        background: on ? `hsla(${220 + HUE},60%,50%,0.25)` : "rgba(255,255,255,0.04)",
-                        color: on ? "#fff" : "#94a3b8",
-                        border: on ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
-                      }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5, fontWeight: 600 }}>
-                        <span>{m.label}{m.adminOnly ? " · ทดลอง (เห็นเฉพาะแอดมิน)" : ""}</span>
-                        <span style={{ color: "#fbbf24", fontSize: 11, whiteSpace: "nowrap" }}>
-                          {m.creditsMultiplier === 1 ? "ราคาปกติ" : `×${m.creditsMultiplier} เครดิต`}
-                        </span>
-                      </div>
-                      <div style={{ fontSize: 11, opacity: 0.85, marginTop: 3, lineHeight: 1.45 }}>{m.description}</div>
-                    </button>
-                  );
-                })}
-              </div>
-            </Popover>
-          )}
-
-          {/* Lip-sync has no aspect to choose: the result keeps the shape of the
-              clip or the portrait it was given. */}
-          {tab !== "edit" && tab !== "lipsync" && tab !== "audio" && (
-            <Popover id="aspect" open={openPanel} onToggle={setOpenPanel} label="สัดส่วน" value={aspectRatio} width={220} align="right">
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6 }}>
-                {aspectRatios
-                  .filter(ar => tab !== "video" || VIDEO_ASPECTS.includes(ar.value))
-                  .map(ar => (
-                  <button key={ar.value} onClick={() => { setAspectRatio(ar.value); setOpenPanel(null); }}
-                    style={{
-                      padding: "8px 0", borderRadius: 8, fontSize: 12, cursor: "pointer",
-                      background: aspectRatio === ar.value ? `hsla(${220 + HUE},60%,50%,0.25)` : "rgba(255,255,255,0.04)",
-                      color: aspectRatio === ar.value ? "#fff" : "#94a3b8",
-                      border: aspectRatio === ar.value ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
-                    }}>{ar.label}</button>
-                ))}
-              </div>
-            </Popover>
-          )}
-
-          {/* Clip length. `ai_models.max_duration` is the ceiling — offering a
-              20s option on a model that tops out at 5 just buys a failed job.
-              Hidden entirely on a model that decides its own length: there the
-              number was never a length anyone received, only the point at which
-              the song got cut off. */}
-          {(tab === "video" || (tab === "audio" && !musicOpts?.autoLength)) && (
-            <Popover id="duration" open={openPanel} onToggle={setOpenPanel} label="ความยาว"
-              value={`${duration}s`} width={200} align="right">
-              <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(durationChoices.length, 4)},1fr)`, gap: 6 }}>
-                {durationChoices.map(d => (
-                  <button key={d} onClick={() => { setDuration(d); setOpenPanel(null); }}
-                    style={{
-                      padding: "8px 0", borderRadius: 8, fontSize: 12, cursor: "pointer", fontWeight: 600,
-                      background: duration === d ? `hsla(${220 + HUE},60%,50%,0.25)` : "rgba(255,255,255,0.04)",
-                      color: duration === d ? "#fff" : "#94a3b8",
-                      border: duration === d ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
-                    }}>
-                    {d}s
-                    {/* Priced by length: say so before the order, not on the receipt. */}
-                    {selectedModel?.durationCurve && (
-                      <span style={{ display: "block", fontSize: 10, fontWeight: 500, color: "#fbbf24", marginTop: 2 }}>✦ {creditsFor(d)}</span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </Popover>
-          )}
-
-          {/* ── Song direction ─────────────────────────────────────────────
-              Three panels rather than one: the official YuE2 template asks for
-              language, genre, vocal, tempo, instruments and mood, which is far
-              more than fits one popover, and they are chosen at different
-              moments — the genre first, the voice next, the arrangement last.
-              Every chip here ends up in the model's `[Tags]` line; the two
-              sliders do not, they are real node inputs. */}
-          {musicOpts?.controls && (
-            <Popover id="genre" open={openPanel} onToggle={setOpenPanel} label="แนวเพลง"
-              value={MUSIC_GENRES.find((g) => g.id === musicStyle.genre)?.label ?? "อิสระ"} width={320}>
-              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                <ChipRow label="แนวเพลง" options={MUSIC_GENRES} value={musicStyle.genre}
-                  onChange={(v) => setMusicField("genre", v as string | undefined)}
-                  hint="กดซ้ำเพื่อยกเลิก" />
-                <ChipRow label="ภาษาที่ร้อง" options={MUSIC_LANGUAGES} value={musicStyle.language}
-                  disabled={instrumental}
-                  onChange={(v) => setMusicField("language", v as string | undefined)} />
-                <ChipRow label="อารมณ์" options={MUSIC_MOODS} value={musicStyle.moods ?? []} max={3}
-                  onChange={(v) => setMusicField("moods", v as string[] | undefined)}
-                  hint={`เลือกได้ ${musicStyle.moods?.length ?? 0}/3`} />
-              </div>
-            </Popover>
-          )}
-
-          {musicOpts?.controls && (
-            <Popover id="voice" open={openPanel} onToggle={setOpenPanel} label="เสียงร้อง"
-              value={instrumental ? "บรรเลง" : MUSIC_VOCALS.find((v) => v.id === musicStyle.vocal)?.label ?? "อิสระ"}
-              width={300}>
-              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                {instrumental && (
-                  <div style={{ fontSize: 11, color: "#fbbf24", lineHeight: 1.5 }}>
-                    เปิดโหมดเพลงบรรเลงอยู่ — ตัวเลือกเสียงร้องถูกปิดไว้ ปลดได้ที่ช่องเนื้อเพลง
-                  </div>
-                )}
-                <ChipRow label="ผู้ร้อง" options={MUSIC_VOCALS} value={musicStyle.vocal} disabled={instrumental}
-                  onChange={(v) => setMusicField("vocal", v as string | undefined)} />
-                <ChipRow label="ช่วงวัย" options={MUSIC_AGES} value={musicStyle.age} disabled={instrumental}
-                  onChange={(v) => setMusicField("age", v as string | undefined)} />
-                <ChipRow label="ลักษณะเสียง" options={MUSIC_TIMBRES} value={musicStyle.timbre} disabled={instrumental}
-                  onChange={(v) => setMusicField("timbre", v as string | undefined)} />
-              </div>
-            </Popover>
-          )}
-
-          {musicOpts?.controls && (
-            <Popover id="arrange" open={openPanel} onToggle={setOpenPanel} label="ดนตรี"
-              value={musicComplexity(musicStyle.complexity).label} width={320} align="right">
-              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                <ChipRow label="เครื่องดนตรี" options={MUSIC_INSTRUMENTS} value={musicStyle.instruments ?? []} max={6}
-                  onChange={(v) => setMusicField("instruments", v as string[] | undefined)}
-                  hint={`เลือกได้ ${musicStyle.instruments?.length ?? 0}/6`} />
-
-                {/* Tempo is off by default: an unasked-for BPM is a constraint
-                    the model did not need, and a wrong one fights the lyrics. */}
-                <div>
-                  <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 11, color: "#94a3b8", marginBottom: 6, cursor: "pointer" }}>
-                    <input type="checkbox" checked={musicStyle.bpm !== undefined}
-                      onChange={(e) => setMusicField("bpm", e.target.checked ? 100 : undefined)} />
-                    กำหนดจังหวะเอง {musicStyle.bpm === undefined && <span style={{ color: "#64748b" }}>(ปล่อยให้ AI เลือก)</span>}
-                  </label>
-                  {musicStyle.bpm !== undefined && (
-                    <StyleSlider label="จังหวะ" value={musicStyle.bpm} min={MUSIC_BPM_MIN} max={MUSIC_BPM_MAX} step={2}
-                      format={(v) => `${v} BPM`} onChange={(v) => setMusicField("bpm", v)} />
-                  )}
-                </div>
-
-                {/* Real node inputs, not tags: density picks YuE2's `mode`
-                    (chord-annotated score vs melody only) and variety is its
-                    sampling temperature. */}
-                <StyleSlider label="ความซับซ้อนของดนตรี" value={musicStyle.complexity ?? MUSIC_COMPLEXITY_DEFAULT}
-                  min={1} max={5} step={1}
-                  format={(v) => musicComplexity(v).label}
-                  onChange={(v) => setMusicField("complexity", v)} />
-
-                <StyleSlider label="ความแปลกใหม่" value={musicStyle.variance ?? MUSIC_VARIANCE_DEFAULT}
-                  min={MUSIC_VARIANCE_MIN} max={MUSIC_VARIANCE_MAX} step={0.05}
-                  format={(v) => (v < 0.85 ? `ปลอดภัย ${v.toFixed(2)}` : v > 1.15 ? `กล้าเสี่ยง ${v.toFixed(2)}` : `สมดุล ${v.toFixed(2)}`)}
-                  onChange={(v) => setMusicField("variance", v)} />
-
-                <button type="button"
-                  onClick={() => setMusicStyle({ complexity: MUSIC_COMPLEXITY_DEFAULT, variance: MUSIC_VARIANCE_DEFAULT })}
-                  style={{
-                    padding: "7px 0", borderRadius: 8, fontSize: 11.5, fontFamily: "inherit", cursor: "pointer",
-                    background: "rgba(255,255,255,0.04)", color: "#94a3b8", border: "1px solid rgba(255,255,255,0.08)",
-                  }}>
-                  ล้างตัวเลือกทั้งหมด
-                </button>
-              </div>
-            </Popover>
-          )}
-
-          {/* Resolution presets — only where the model offers a real choice for
-              this aspect ratio (H3: 768p / 720p / 544p on 16:9). */}
-          {resolutionChoices.length > 1 && (
-            <Popover id="resolution" open={openPanel} onToggle={setOpenPanel} label="ความละเอียด"
-              value={activeResolution?.id ?? "—"} width={220} align="right">
-              <div style={{ display: "grid", gap: 6 }}>
-                {resolutionChoices.map(r => (
-                  <button key={r.id} onClick={() => { setResolution(r.id); setOpenPanel(null); }}
-                    style={{
-                      padding: "8px 10px", borderRadius: 8, fontSize: 12, cursor: "pointer", textAlign: "left", fontWeight: 600,
-                      background: activeResolution?.id === r.id ? `hsla(${220 + HUE},60%,50%,0.25)` : "rgba(255,255,255,0.04)",
-                      color: activeResolution?.id === r.id ? "#fff" : "#94a3b8",
-                      border: activeResolution?.id === r.id ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
-                    }}>{r.label}</button>
-                ))}
-              </div>
-            </Popover>
-          )}
-        </div>
-
-        {/* Count + advanced + reference on one row */}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {/* Hidden when the model yields one output per order — offering 4
-              would take payment for images it never renders. */}
-          {tab === "image" && selectedModel?.maxOutputs !== 1 && (
-            <Popover id="count" open={openPanel} onToggle={setOpenPanel} label="จำนวน" value={String(numOutputs)} width={200}>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 6 }}>
-                {[1, 2, 3, 4].map(n => (
-                  <button key={n} onClick={() => { setNumOutputs(n); setOpenPanel(null); }}
-                    style={{
-                      padding: "8px 0", borderRadius: 8, fontSize: 13, cursor: "pointer", fontWeight: 600,
-                      background: numOutputs === n ? `hsla(${220 + HUE},60%,50%,0.25)` : "rgba(255,255,255,0.04)",
-                      color: numOutputs === n ? "#fff" : "#94a3b8",
-                      border: numOutputs === n ? `1px solid hsla(${220 + HUE},70%,60%,0.5)` : "1px solid rgba(255,255,255,0.08)",
-                    }}>{n}</button>
-                ))}
-              </div>
-            </Popover>
-          )}
-
-          {/* Reference image — functional, so it stays a first-class control
-              rather than moving behind a panel.
-
-              Hidden on video. handleGenerate only ever forwards refImage on the
-              image tab, so a video customer could drop an image in here, see it
-              accepted, press generate, and get a text-only clip — the upload was
-              discarded without a word. The video start frame is its own control
-              below, wired to the mode selector. */}
-          {tab !== "video" && tab !== "audio" && (
-          <Popover id="ref" open={openPanel} onToggle={setOpenPanel} label="↑ ภาพอ้างอิง"
-            value={refImagePreview ? "1" : "—"} width={286} align="right">
-            {refImagePreview ? (
-              <div style={{ position: "relative" }}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={refImagePreview} alt="Reference" style={{ width: "100%", height: 130, objectFit: "cover", borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)" }} />
-                <button onClick={() => { setRefImage(null); setRefImagePreview(null); }}
-                  style={{ position: "absolute", top: 6, right: 6, width: 24, height: 24, borderRadius: "50%", background: "rgba(0,0,0,0.7)", color: "#fff", border: "none", cursor: "pointer", fontSize: 13 }}>×</button>
-                {tab === "image" && (
-                  <div style={{ marginTop: 10 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", marginBottom: 6 }}>
-                      <span>ความเข้มอ้างอิง</span>
-                      <span style={{ color: `hsl(${220 + HUE},70%,75%)`, fontFamily: "ui-monospace,monospace" }}>{Math.round(strength * 100)}%</span>
-                    </div>
-                    <input type="range" min={0} max={1} step={0.05} value={strength} onChange={(e) => setStrength(+e.target.value)}
-                      style={{ width: "100%", accentColor: `hsl(${220 + HUE},70%,60%)` }} />
-                  </div>
-                )}
-              </div>
-            ) : (
-              <label style={{ display: "grid", placeItems: "center", height: 120, borderRadius: 10, border: "1.5px dashed rgba(255,255,255,0.15)", background: "rgba(2,6,23,0.3)", color: "#64748b", fontSize: 12, cursor: "pointer", textAlign: "center" }}>
-                <div>
-                  <div style={{ fontSize: 20, marginBottom: 4 }}>↑</div>
-                  ลาก &amp; วางภาพ ที่นี่
-                </div>
-                <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => handleImageUpload(e, true)} />
-              </label>
-            )}
-          </Popover>
-          )}
-        </div>
-
-        {/* Advanced + tips on one row. The tips used to be four stacked cards
-            in the right rail; they are reference material, not controls. */}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {/* Video keeps this panel too — steps and guidance mean nothing to a
-              video endpoint, but seed does, and locking the whole panel away
-              took reproducible clips with it. */}
-          <Popover id="advanced" open={openPanel} onToggle={setOpenPanel} label="⚙ ขั้นสูง" width={286}>
-              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                {/* The music model is a distilled turbo: its step count is
-                    fixed server-side, and more steps only slow it and smear it. */}
-                {tab !== "video" && tab !== "audio" && (
-                <>
-                <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", marginBottom: 6 }}>
-                    <span>Steps</span>
-                    <span style={{ fontFamily: "ui-monospace,monospace", color: "#e2e8f0" }}>{steps}</span>
-                  </div>
-                  <input type="range" min={10} max={80} step={1} value={steps} onChange={(e) => setSteps(+e.target.value)}
-                    style={{ width: "100%", accentColor: `hsl(${220 + HUE},70%,60%)` }} />
-                </div>
-                <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", marginBottom: 6 }}>
-                    <span>Guidance</span>
-                    <span style={{ fontFamily: "ui-monospace,monospace", color: "#e2e8f0" }}>{guidance.toFixed(1)}</span>
-                  </div>
-                  <input type="range" min={1} max={20} step={0.5} value={guidance} onChange={(e) => setGuidance(+e.target.value)}
-                    style={{ width: "100%", accentColor: `hsl(${220 + HUE},70%,60%)` }} />
-                </div>
-                </>
-                )}
-                <div>
-                  <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 6 }}>Seed</div>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    <input type="number" value={seed ?? ""} onChange={(e) => setSeed(e.target.value ? +e.target.value : null)}
-                      placeholder="auto" style={{ ...xdrInputStyle, flex: 1, padding: 10, fontFamily: "ui-monospace,monospace" }} />
-                    <button type="button" onClick={() => setSeed(Math.floor(Math.random() * 99999))}
-                      style={{ padding: "0 12px", borderRadius: 10, background: "rgba(255,255,255,0.05)", color: "#94a3b8", border: "1px solid rgba(255,255,255,0.1)", cursor: "pointer" }}>↻</button>
-                  </div>
-                </div>
-              </div>
-            </Popover>
-
-          <Popover id="tips" open={openPanel} onToggle={setOpenPanel} label="? คำแนะนำ" width={300} align="right">
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {(tab === "audio" ? [
-                "บอกแนวเพลง อารมณ์ และเครื่องดนตรี เช่น 'ลูกทุ่งอีสานสนุกๆ แคน พิณ เสียงร้องชาย'",
-                "ใส่จังหวะช่วยได้มาก เช่น 90 BPM (ช้าๆ) หรือ 128 BPM (เต้นได้)",
-                "เนื้อเพลงแบ่งท่อนด้วย [verse] [chorus] [bridge] — ประโยคสั้นร้องชัดกว่า",
-                "เว้นเนื้อเพลงว่างไว้ = เพลงบรรเลง เหมาะกับดนตรีประกอบคลิป",
-              ] : [
-                "พิมพ์ไอเดียสั้น ๆ แล้วกด ✨ ปรับพรอมต์ด้วย AI — ระบบเรียบเรียงให้ตรงรูปแบบที่โมเดลนั้นเข้าใจดีที่สุด แก้ต่อได้ก่อนสั่ง",
-                tab === "video"
-                  ? "ปุ่ม 🎥 กล้องและฉาก เติมการเคลื่อนกล้อง ขนาดภาพ และแสงเป็นประโยคที่โมเดลวิดีโออ่านเข้าใจ"
-                  : "ปุ่ม ✦ ตัวช่วยพรอมต์ เติมคำศัพท์ช่างภาพ: สไตล์ แสง เลนส์ สี",
-                "วางภาพ (Ctrl+V) หรือลากไฟล์มาวางตรงไหนก็ได้ ระบบใส่ให้ในช่องที่แท็บนี้ใช้",
-                "สั่งต่อกันได้ถึง 3 งานพร้อมกัน ดูทุกงานที่แถบเหนือแคนวาส · Ctrl/⌘+Enter = ทอ",
-                "ได้ภาพที่ชอบแล้ว กด ▶ ทำเป็นวิดีโอ เพื่อใช้เป็นเฟรมแรกของคลิปได้ทันที",
-                "img2img: ความเข้ม 0.5–0.7 = balance, > 0.8 = ตามภาพอ้างอิงมาก",
-              ]).map((tip, i) => (
-                <div key={i} style={{ display: "flex", gap: 8 }}>
-                  <span style={{ color: `hsl(${(160 + i * 30 + HUE) % 360},70%,70%)`, flexShrink: 0 }}>✦</span>
-                  <span style={{ fontSize: 12, color: "rgba(203,213,225,0.78)", lineHeight: 1.5 }}>{tip}</span>
-                </div>
-              ))}
-            </div>
-          </Popover>
-        </div>
-
-        {/* Every model in this tab may still be unproven, in which case
-            auto-select lands on one anyway. Say why the button is dead rather
-            than letting it look broken. */}
-        {selectedModel?.canOrder === false && (
-          <div style={{
-            marginTop: 12, padding: "10px 12px", borderRadius: 10, fontSize: 12,
-            background: "hsla(38,90%,55%,0.12)", color: "#fbbf24",
-            border: "1px solid hsla(38,90%,55%,0.25)",
-          }}>
-            {selectedModel.unavailableReason ?? selectedModel.tuningMessage ?? "โมเดลนี้ยังใช้งานไม่ได้ในขณะนี้ กรุณาลองใหม่ภายหลัง"}
-          </div>
-        )}
-
-        {loadingInputs && (
-          <div style={{
-            marginTop: 12, padding: "10px 12px", borderRadius: 10, fontSize: 12,
-            background: "rgba(148,163,184,0.10)", color: "rgba(203,213,225,0.85)",
-            border: "1px solid rgba(255,255,255,0.08)",
-          }}>
-            กำลังโหลดไฟล์แนบของงานเดิม…
-          </div>
-        )}
-
-        {missingStartFrame && !loadingInputs && (
-          <div style={{
-            marginTop: 12, padding: "10px 12px", borderRadius: 10, fontSize: 12,
-            background: "hsla(38,90%,55%,0.12)", color: "#fbbf24",
-            border: "1px solid hsla(38,90%,55%,0.25)",
-          }}>
-            โหมด “ภาพ → วิดีโอ” ต้องอัปโหลดภาพเริ่มต้นก่อน
-          </div>
-        )}
-
-        {missingLipsyncInput && !loadingInputs && (
-          <div style={{
-            marginTop: 12, padding: "10px 12px", borderRadius: 10, fontSize: 12,
-            background: "hsla(38,90%,55%,0.12)", color: "#fbbf24",
-            border: "1px solid hsla(38,90%,55%,0.25)",
-          }}>
-            {!inputAudio
-              ? "ต้องอัปโหลดไฟล์เสียงที่จะให้พูดก่อน"
-              : lipsyncNeeds === "image"
-                ? "ต้องอัปโหลดรูปหน้าคนที่จะให้พูดก่อน"
-                : "ต้องอัปโหลดคลิปต้นฉบับที่จะพากย์ทับก่อน"}
-          </div>
-        )}
-
-        {/* Said before the order, not after the server refuses it. The
-            server stays the judge — a balance topped up in another tab is
-            read fresh there — so the button is not locked by this. */}
-        {shortOfCredits && (
-          <div style={{
-            marginTop: "auto", padding: "10px 12px", borderRadius: 10, fontSize: 12, lineHeight: 1.5,
-            background: "rgba(248,113,113,0.1)", color: "#fca5a5", border: "1px solid rgba(248,113,113,0.28)",
-          }}>
-            เครดิตไม่พอสำหรับงานนี้ — ต้องใช้ {totalCredits.toLocaleString()} มีอยู่ {creditBalance.toLocaleString()}{" "}
-            <a href="/pricing" style={{ color: "#fecaca", fontWeight: 600, whiteSpace: "nowrap" }}>เติมเครดิต →</a>
-          </div>
-        )}
-
-        {/* Generate Button. It no longer locks while a render runs: orders
-            queue side by side in the tray, up to MAX_PARALLEL_JOBS. */}
-        <button onClick={() => handleGenerate()}
-          disabled={cannotSubmit}
-          style={{
-            marginTop: shortOfCredits ? 0 : "auto", padding: 16, borderRadius: 12,
-            background: `linear-gradient(135deg, hsl(${160 + HUE},70%,45%), hsl(${280 + HUE},70%,55%))`,
-            color: "#fff", border: "none", fontSize: 15, fontWeight: 600,
-            cursor: cannotSubmit ? "not-allowed" : "pointer",
-            opacity: cannotSubmit ? 0.6 : 1,
-            boxShadow: `0 10px 24px -8px hsla(${270 + HUE},70%,50%,0.55)`,
-          }}>
-          {runningJobs >= MAX_PARALLEL_JOBS ? (
-            `⟳ กำลังสร้าง ${runningJobs} งาน — รอให้เสร็จก่อน`
-          ) : (
-            <>
-              ทอ ✦ {outputs > 1 ? `${outputs} ภาพ · ` : ""}{totalCredits || "—"} credits
-              {runningJobs > 0 && <span style={{ display: "block", fontSize: 11, fontWeight: 500, opacity: 0.85, marginTop: 2 }}>กำลังสร้างอยู่ {runningJobs} งาน · สั่งเพิ่มได้</span>}
-            </>
-          )}
-        </button>
-      </aside>
-
-      <style jsx>{`
+      <style jsx global>{`
+        @property --rp-a { syntax: "<angle>"; initial-value: 0deg; inherits: false; }
+        @keyframes rp-led { to { --rp-a: 360deg; } }
         @keyframes spin { to { transform: rotate(360deg); } }
-        /* Visible scrollbar for any pane that does overflow */
-        .rp-scroll {
-          scrollbar-width: thin;
-          scrollbar-color: rgba(165,243,252,0.25) transparent;
-          scrollbar-gutter: stable;
+        @keyframes rp-breathe { from { transform: scale(1); } to { transform: scale(1.035) translateY(-6px); } }
+        @keyframes rp-rise {
+          0% { transform: translate(0, 0); opacity: 0; }
+          12% { opacity: 0.75; }
+          70% { opacity: 0.45; }
+          100% { transform: translate(28px, -105vh); opacity: 0; }
         }
-        .rp-scroll::-webkit-scrollbar { width: 8px; }
-        .rp-scroll::-webkit-scrollbar-track { background: rgba(2,6,23,0.4); }
-        .rp-scroll::-webkit-scrollbar-thumb {
-          background: rgba(165,243,252,0.18);
-          border-radius: 4px;
-          border: 1px solid rgba(255,255,255,0.05);
-        }
-        .rp-scroll::-webkit-scrollbar-thumb:hover { background: rgba(165,243,252,0.35); }
-        /* ── Viewport-locked studio ──────────────────────────────────
-           The whole workspace is exactly one screen: nothing scrolls the
-           document, and the canvas takes whatever height is left over.
+        @keyframes rp-pulse { 50% { opacity: 0.45; } }
+        @keyframes rp-sheen { 0%, 60% { left: -50%; } 100% { left: 120%; } }
 
-           overflow:auto on the rails rather than hidden is deliberate.
-           On a short window (a 768px-tall laptop) the controls genuinely
-           cannot all fit, and clipping them would make them unreachable —
-           the same "everything disappeared" failure this layout was
-           rebuilt to avoid. Instead they fall back to a visible custom
-           scrollbar, which normal-height screens never see. */
+        /* ── Viewport-locked studio ──────────────────────────────────────
+           On a wide screen the workspace is exactly one screen: nothing
+           scrolls the document, the composer scrolls inside its card, and
+           the canvas takes whatever height is left. */
         .rp-studio {
-          display: grid;
-          grid-template-columns: 220px 380px minmax(0, 1fr) 300px;
+          --cy: 103, 232, 249;
+          --vi: 167, 139, 250;
+          position: relative;
+          display: flex;
+          gap: 22px;
+          padding: 16px 26px 22px;
           height: calc(100dvh - 80px);
+          box-sizing: border-box;
           overflow: hidden;
         }
-        .rp-studio-jobs,
-        .rp-studio-input,
-        .rp-studio-set {
-          min-height: 0;
-          overflow-y: auto;
+        .rp-studio .rp-mono { font-family: var(--font-geist-mono), ui-monospace, monospace; letter-spacing: 0.02em; }
+
+        /* The memory fountain: fixed behind the studio, under its content. */
+        .rp-studio .rp-bg { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
+        .rp-studio .rp-bg-img {
+          position: absolute; inset: -2%;
+          background: url(/studio/bg-fountain-v1.webp) center 62% / cover no-repeat;
+          opacity: 0.42; filter: saturate(1.05);
+          -webkit-mask: radial-gradient(120% 95% at 58% 70%, #000 35%, transparent 85%);
+          mask: radial-gradient(120% 95% at 58% 70%, #000 35%, transparent 85%);
+          animation: rp-breathe 18s ease-in-out infinite alternate;
         }
-        /* Flex items shrink by default, so on a short window every control
-           squashed below its own height — a 20px-tall Generate button rather
-           than a scrollbar. Pin them, and let the prompt (which carries an
-           inline flex:1, and inline wins over this rule) be the only thing
-           that gives. Past its min-height the rail scrolls instead. */
-        .rp-studio-jobs > *,
-        .rp-studio-input > *,
-        .rp-studio-set > * { flex-shrink: 0; }
-        /* Tab artwork. The images are all equally bright, so the unselected
-           ones are held back and the chosen one lit, rather than relying on
-           the art to say which is active. */
-        .rp-tab-art {
-          display: block;
-          width: 100%;
-          padding: 0;
-          border: none;
-          background: transparent;
-          border-radius: 10px;
-          line-height: 0;
-          cursor: pointer;
-          filter: saturate(0.85) brightness(0.82);
-          transition: filter 220ms ease, transform 220ms ease;
+        .rp-studio .rp-bg-veil {
+          position: absolute; inset: 0;
+          background: radial-gradient(900px 600px at 18% 30%, rgba(3, 6, 18, 0.78), transparent 70%),
+            linear-gradient(180deg, rgba(3, 6, 18, 0.55), rgba(3, 6, 18, 0.2) 40%, rgba(3, 6, 18, 0.6));
         }
-        .rp-tab-art :global(img) { width: 100%; height: auto; display: block; }
-        .rp-tab-art:hover:not(:disabled) {
-          filter: saturate(1.1) brightness(1.08) drop-shadow(0 0 13px hsla(190,90%,60%,0.5));
-          transform: translateY(-1px);
+        .rp-studio .rp-mote {
+          position: absolute; bottom: -12px; width: 3px; height: 3px; border-radius: 50%;
+          background: rgba(var(--cy), 0.9); box-shadow: 0 0 10px 2px rgba(var(--cy), 0.45);
+          opacity: 0; animation: rp-rise linear infinite;
         }
-        .rp-tab-art[data-active="true"] {
-          filter: saturate(1.15) brightness(1.15) drop-shadow(0 0 16px hsla(280,90%,65%,0.55));
-        }
-        .rp-tab-art:disabled {
-          filter: grayscale(0.75) brightness(0.4);
-          cursor: not-allowed;
-        }
-        /* The stand-in plate: same proportions and neon edge as the artwork. */
-        .rp-tab-plate {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          width: 100%;
-          aspect-ratio: 3 / 1;
-          padding: 0 12px;
-          border-radius: 12px;
-          cursor: pointer;
-          text-align: left;
-          font-family: inherit;
-          color: #e8eaf6;
-          border: 1.5px solid transparent;
+        .rp-studio .rp-mote[data-tone="v"] { background: rgba(var(--vi), 0.9); box-shadow: 0 0 10px 2px rgba(var(--vi), 0.45); }
+        .rp-studio .rp-mote[data-tone="p"] { background: rgba(244, 114, 182, 0.9); box-shadow: 0 0 10px 2px rgba(244, 114, 182, 0.4); }
+        .rp-studio > .rp-composer, .rp-studio > .rp-stage, .rp-studio > .rp-jobbar { position: relative; z-index: 1; }
+
+        /* ── Surfaces ── a card is tinted glass with depth: a lit top edge, a
+           shaded bottom, a gradient rim, and a thin LED running round it. */
+        .rp-studio .rp-hud {
+          position: relative; border-radius: 18px; isolation: isolate;
           background:
-            linear-gradient(rgba(2,6,23,0.92), rgba(2,6,23,0.92)) padding-box,
-            linear-gradient(120deg, hsl(280,85%,62%), hsl(190,90%,58%), hsl(160,80%,55%)) border-box;
-          filter: saturate(0.7) brightness(0.62);
-          transition: filter 220ms ease, transform 220ms ease;
+            radial-gradient(60% 22px at 50% 0, rgba(var(--cy), 0.16), transparent),
+            linear-gradient(90deg, transparent 18%, rgba(var(--cy), 0.85) 50%, transparent 82%) top center / 70% 1px no-repeat,
+            linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0) 120px),
+            linear-gradient(165deg, rgba(17, 27, 56, 0.8), rgba(7, 11, 27, 0.86) 55%, rgba(12, 9, 32, 0.88));
+          backdrop-filter: blur(24px) saturate(150%);
+          -webkit-backdrop-filter: blur(24px) saturate(150%);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), inset 0 -1px 0 rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(2, 4, 12, 0.85),
+            0 34px 70px -30px rgba(0, 0, 0, 0.95), 0 0 60px -22px rgba(34, 211, 238, 0.28);
         }
-        .rp-tab-plate-icon { font-size: 22px; opacity: 0.9; flex-shrink: 0; }
-        .rp-tab-plate-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
-        .rp-tab-plate-th { font-size: 15px; font-weight: 600; }
-        .rp-tab-plate-en { font-size: 10.5px; letter-spacing: 0.22em; text-transform: uppercase; opacity: 0.65; }
-        .rp-tab-plate-go { font-size: 18px; opacity: 0.75; flex-shrink: 0; }
-        .rp-tab-plate:hover:not(:disabled) {
-          filter: saturate(1.1) brightness(1.08) drop-shadow(0 0 13px hsla(190,90%,60%,0.5));
-          transform: translateY(-1px);
+        .rp-studio .rp-hud::before {
+          content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1px; pointer-events: none;
+          background: linear-gradient(155deg, rgba(var(--cy), 0.42), rgba(var(--vi), 0.16) 32%, rgba(255, 255, 255, 0.035) 58%, rgba(236, 72, 153, 0.22));
+          -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          -webkit-mask-composite: xor; mask-composite: exclude;
         }
-        .rp-tab-plate[data-active="true"] {
-          filter: saturate(1.15) brightness(1.15) drop-shadow(0 0 16px hsla(280,90%,65%,0.55));
+        .rp-studio .rp-led {
+          position: absolute; inset: -1px; border-radius: 19px; pointer-events: none; z-index: 2;
+          filter: drop-shadow(0 0 3px rgba(103, 232, 249, 0.95)) drop-shadow(0 0 8px rgba(139, 92, 246, 0.6));
         }
-        .rp-tab-plate:disabled { filter: grayscale(0.75) brightness(0.4); cursor: not-allowed; }
-        @media (prefers-reduced-motion: reduce) {
-          .rp-tab-art, .rp-tab-plate { transition: none; }
-          .rp-tab-art:hover:not(:disabled), .rp-tab-plate:hover:not(:disabled) { transform: none; }
+        .rp-studio .rp-led i {
+          position: absolute; inset: 0; border-radius: inherit; padding: 1.5px;
+          background: conic-gradient(from var(--rp-a), transparent 0 74%, rgba(var(--vi), 0) 75%, rgba(var(--vi), 0.9) 83%, rgba(var(--cy), 1) 89%, #fff 90%, transparent 91%);
+          -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          -webkit-mask-composite: xor; mask-composite: exclude;
+          animation: rp-led 9s linear infinite;
         }
-        .rp-studio-center {
-          min-height: 0;
-          overflow-y: auto;
-          display: flex;
-          flex-direction: column;
+        /* raised sits on the glass; a well is cut into it */
+        .rp-studio .rp-raised {
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.065), rgba(255, 255, 255, 0.015));
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.11), inset 0 0 0 1px rgba(255, 255, 255, 0.05), 0 6px 14px -8px rgba(0, 0, 0, 0.8);
+          border: 0;
         }
-        /* Order tray — one row, scrolls sideways rather than pushing the
-           canvas down when there are many. */
-        .rp-tray {
-          display: flex;
-          gap: 8px;
-          overflow-x: auto;
-          padding-bottom: 6px;
-          margin-bottom: 12px;
-          flex-shrink: 0;
-          scrollbar-width: thin;
+        .rp-studio .rp-well {
+          background: linear-gradient(180deg, rgba(1, 3, 12, 0.72), rgba(8, 13, 30, 0.6));
+          box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(255, 255, 255, 0.05), 0 1px 0 rgba(255, 255, 255, 0.04);
+          border: 0;
         }
-        .rp-tray-item {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          min-width: 168px;
-          max-width: 220px;
-          padding: 6px 10px 6px 6px;
-          border-radius: 11px;
-          cursor: pointer;
-          text-align: left;
-          font-family: inherit;
-          color: #e2e8f0;
-          background: rgba(15,23,42,0.55);
-          border: 1px solid rgba(255,255,255,0.08);
-          transition: border-color 160ms ease, background 160ms ease;
+        .rp-studio .rp-dot {
+          display: inline-block; width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+          background: #34d399; box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.14), 0 0 10px rgba(52, 211, 153, 0.8);
+          animation: rp-pulse 2.4s ease-in-out infinite;
         }
-        .rp-tray-item:hover { background: rgba(30,41,59,0.7); }
-        .rp-tray-item[data-active="true"] {
-          border-color: hsla(290,80%,65%,0.6);
-          background: hsla(260,60%,30%,0.35);
-        }
-        .rp-tray-item[data-status="failed"] { border-color: rgba(248,113,113,0.35); }
-        .rp-tray-thumb {
-          width: 38px;
-          height: 38px;
-          border-radius: 8px;
-          flex-shrink: 0;
-          overflow: hidden;
-          display: grid;
-          place-items: center;
-          background: linear-gradient(135deg, hsl(250,45%,18%), hsl(200,45%,12%));
-        }
-        .rp-tray-thumb :global(img),
-        .rp-tray-thumb :global(video) {
-          width: 100%;
-          height: 100%;
-          object-fit: cover;
-          display: block;
-          pointer-events: none;
-        }
-        .rp-tray-spin {
-          width: 18px;
-          height: 18px;
-          border-radius: 50%;
-          border: 2px solid rgba(165,243,252,0.25);
-          border-top-color: #a5f3fc;
+        .rp-studio .rp-dot[data-run="true"] { background: #c4b5fd; box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.16), 0 0 10px rgba(167, 139, 250, 0.85); }
+        .rp-studio .rp-spin {
+          display: inline-block; width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0;
+          border: 2px solid rgba(165, 243, 252, 0.25); border-top-color: #a5f3fc;
           animation: spin 900ms linear infinite;
         }
-        .rp-tray-text { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
-        .rp-tray-prompt {
-          font-size: 11.5px;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
+
+        /* ── Scrollbars: a faint LED rail with a glowing bead ──
+           The site sets scrollbar-width/-color on every element, and Chrome
+           ignores the ::-webkit-scrollbar styles while either is set. */
+        .rp-studio .rp-scroll, .xdr-pop { scrollbar-width: auto; scrollbar-color: auto; }
+        .rp-studio .rp-scroll::-webkit-scrollbar, .xdr-pop::-webkit-scrollbar { width: 12px; height: 12px; }
+        .rp-studio .rp-scroll::-webkit-scrollbar-track, .xdr-pop::-webkit-scrollbar-track {
+          margin: 14px 0;
+          background: linear-gradient(90deg, transparent 5.5px, rgba(var(--cy), 0.13) 5.5px 6.5px, transparent 6.5px);
         }
-        .rp-tray-state { font-size: 10.5px; color: #94a3b8; }
-        .rp-tray-item[data-status="completed"] .rp-tray-state { color: #34d399; }
-        .rp-tray-item[data-status="failed"] .rp-tray-state { color: #fca5a5; }
-        .rp-tray-clear {
-          flex-shrink: 0;
-          padding: 0 12px;
-          border-radius: 11px;
-          font-size: 11px;
-          font-family: inherit;
-          cursor: pointer;
-          color: #94a3b8;
-          background: transparent;
-          border: 1px dashed rgba(255,255,255,0.14);
+        .rp-studio .rp-scroll::-webkit-scrollbar-track:horizontal {
+          margin: 0 14px;
+          background: linear-gradient(180deg, transparent 5.5px, rgba(var(--cy), 0.13) 5.5px 6.5px, transparent 6.5px);
         }
-        /* Drop target over the whole studio while a file is dragged in. */
-        .rp-drop-hint {
-          position: fixed;
-          inset: 12px;
-          z-index: 60;
-          display: grid;
-          place-items: center;
-          text-align: center;
-          font-size: 16px;
-          font-weight: 600;
-          color: #e0f2fe;
-          border-radius: 20px;
-          border: 2px dashed hsla(190,90%,65%,0.7);
-          background: rgba(3,6,18,0.72);
-          backdrop-filter: blur(4px);
-          pointer-events: none;
+        .rp-studio .rp-scroll::-webkit-scrollbar-thumb, .xdr-pop::-webkit-scrollbar-thumb {
+          border-radius: 8px; border: 4px solid transparent; background-clip: padding-box;
+          background-image: linear-gradient(180deg, #67e8f9, #a78bfa 70%, #f0abfc);
+          box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
         }
-        @media (prefers-reduced-motion: reduce) {
-          .rp-tray-spin { animation: none; }
+        .rp-studio .rp-scroll::-webkit-scrollbar-thumb:horizontal { background-image: linear-gradient(90deg, #67e8f9, #a78bfa 70%, #f0abfc); }
+        .rp-studio .rp-scroll::-webkit-scrollbar-thumb:hover, .xdr-pop::-webkit-scrollbar-thumb:hover { border-width: 3px; }
+        .rp-studio .rp-scroll::-webkit-scrollbar-button, .xdr-pop::-webkit-scrollbar-button { display: none; }
+        .rp-studio .rp-scroll::-webkit-scrollbar-corner { background: transparent; }
+        @supports not selector(::-webkit-scrollbar) {
+          .rp-studio .rp-scroll, .xdr-pop { scrollbar-width: thin; scrollbar-color: rgba(103, 232, 249, 0.55) transparent; }
         }
-        /* The canvas block is the flexible one; header + history keep their
-           natural height so they are always on screen. */
-        .rp-studio-canvas {
-          flex: 1;
-          min-height: 0;
-          display: flex;
-          /* "safe": content taller than the canvas starts at the top instead
-             of being centred past both edges. With plain center + hidden,
-             anything too tall lost its top and bottom with no way to reach
-             them — which is how the queue animation went missing. */
-          align-items: safe center;
-          justify-content: safe center;
-          overflow-x: hidden;
-          overflow-y: auto;
-          /* Its height comes from the layout, never from its content, so it
-             can be a size container: the in-progress frame sizes itself from
-             the room left here (less ~170px for the status block and padding). */
+
+        /* ── Composer ── */
+        .rp-studio .rp-composer { width: 404px; flex-shrink: 0; display: flex; flex-direction: column; min-height: 0; }
+        .rp-studio .rp-composer-glass { position: absolute; inset: 0; z-index: 0; }
+        .rp-studio .rp-cscroll {
+          position: relative; z-index: 1; flex: 1; min-height: 0; overflow: auto;
+          padding: 18px 10px 12px 20px; margin-right: 4px;
+          display: flex; flex-direction: column; gap: 18px;
+        }
+        .rp-studio .rp-cscroll > * { flex-shrink: 0; }
+        .rp-studio .rp-chead { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        .rp-studio .rp-crumb { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: #64748b; }
+        .rp-studio .rp-crumb .rp-mono { color: rgba(var(--cy), 0.75); }
+        .rp-studio .rp-title { margin: 4px 0 0; font-size: 21px; font-weight: 600; color: #f8fafc; letter-spacing: -0.01em; }
+        .rp-studio .rp-lbl { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; color: #a3b0c4; margin-bottom: 8px; font-weight: 500; }
+        .rp-studio .rp-lbl i {
+          font-style: normal; font-family: var(--font-geist-mono), ui-monospace, monospace; font-size: 10.5px;
+          color: rgba(var(--cy), 0.75); padding: 1px 5px; border-radius: 5px;
+          background: rgba(var(--cy), 0.06); box-shadow: inset 0 0 0 1px rgba(var(--cy), 0.22);
+        }
+        .rp-studio .rp-lbl span { margin-left: auto; font-size: 11px; color: #475569; font-weight: 400; font-family: var(--font-geist-mono), ui-monospace, monospace; }
+        .rp-studio .rp-sub { font-size: 11.5px; color: #8391a7; margin: 0 0 6px; }
+        .rp-studio .rp-note { margin-top: 7px; font-size: 11px; line-height: 1.55; color: #64748b; }
+        .rp-studio .rp-warn, .rp-studio .rp-info {
+          padding: 9px 12px; border-radius: 10px; font-size: 12px; line-height: 1.5;
+          background: hsla(38, 90%, 55%, 0.12); color: #fbbf24; box-shadow: inset 0 0 0 1px hsla(38, 90%, 55%, 0.28);
+        }
+        .rp-studio .rp-info { background: rgba(148, 163, 184, 0.1); color: rgba(203, 213, 225, 0.85); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08); }
+
+        /* model card */
+        .rp-studio .rp-model {
+          display: flex; align-items: center; gap: 12px; width: 100%; padding: 11px 12px; border-radius: 13px;
+          color: inherit; font: inherit; text-align: left; cursor: pointer;
+        }
+        .rp-studio .rp-model:hover { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), inset 0 0 0 1px rgba(var(--cy), 0.32), 0 6px 14px -8px rgba(0, 0, 0, 0.8); }
+        .rp-studio .rp-mlogo { width: 44px; height: 44px; flex-shrink: 0; object-fit: contain; filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.5)); }
+        .rp-studio .rp-mbody { min-width: 0; flex: 1; }
+        .rp-studio .rp-mname { display: block; font-size: 14.5px; font-weight: 600; color: #f8fafc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .rp-studio .rp-mmeta { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+        .rp-studio .rp-tag { font-size: 11px; padding: 2px 7px; border-radius: 6px; background: rgba(139, 92, 246, 0.14); color: #c4b5fd; }
+        .rp-studio .rp-tag[data-tone="ok"] { background: rgba(52, 211, 153, 0.12); color: #6ee7b7; }
+        .rp-studio .rp-tag[data-tone="warn"] { background: hsla(38, 90%, 55%, 0.16); color: #fbbf24; }
+        .rp-studio .rp-tag[data-tone="ref"] { background: rgba(var(--cy), 0.1); color: #a5f3fc; }
+        .rp-studio .rp-mprice { margin-left: auto; text-align: right; flex-shrink: 0; }
+        .rp-studio .rp-mprice b { display: block; font-size: 14px; color: #fde68a; font-weight: 600; }
+        .rp-studio .rp-mprice span { font-size: 11px; color: #64748b; white-space: nowrap; }
+        .rp-studio .rp-mlist { margin-top: 8px; max-height: 300px; overflow-y: auto; border-radius: 12px; padding: 4px; }
+        .rp-studio .rp-mopt {
+          width: 100%; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 0; border-radius: 9px;
+          background: transparent; color: #e2e8f0; text-align: left; font: inherit; cursor: pointer;
+        }
+        .rp-studio .rp-mopt:hover:not(:disabled) { background: rgba(255, 255, 255, 0.04); }
+        .rp-studio .rp-mopt[data-on="true"] { background: rgba(var(--cy), 0.1); box-shadow: inset 0 0 0 1px rgba(var(--cy), 0.35); }
+        .rp-studio .rp-mopt:disabled { opacity: 0.45; cursor: not-allowed; }
+
+        /* prompt */
+        .rp-studio .rp-prompt { border-radius: 13px; overflow: hidden; transition: box-shadow 160ms ease; }
+        .rp-studio .rp-prompt:focus-within {
+          box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(var(--cy), 0.55), 0 0 0 3px rgba(var(--cy), 0.07), 0 0 18px -4px rgba(var(--cy), 0.45);
+        }
+        .rp-studio .rp-prompt textarea {
+          display: block; width: 100%; box-sizing: border-box; padding: 13px 14px 10px; border: 0; outline: none; resize: vertical;
+          background: transparent; color: #e2e8f0; font: inherit; font-size: 14px; line-height: 1.7; caret-color: #67e8f9;
+        }
+        .rp-studio .rp-prompt textarea::placeholder { color: #475569; }
+        .rp-studio .rp-ptools { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 8px 10px; border-top: 1px solid rgba(255, 255, 255, 0.05); }
+        .rp-studio .rp-tool, .xdr-pop .rp-tool {
+          display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 0; border-radius: 8px;
+          font: inherit; font-size: 12.5px; color: #cbd5e1; cursor: pointer; white-space: nowrap;
+        }
+        .rp-studio .rp-tool:disabled { opacity: 0.45; cursor: default; }
+        .rp-studio .rp-tool-ai {
+          background: linear-gradient(135deg, rgba(168, 85, 247, 0.26), rgba(34, 211, 238, 0.18));
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), inset 0 0 0 1px rgba(192, 132, 252, 0.45), 0 6px 16px -8px rgba(168, 85, 247, 0.7);
+          color: #f5f3ff; font-weight: 600;
+        }
+        .rp-studio .rp-kbd { margin-left: auto; font-size: 10.5px; color: #475569; }
+
+        /* popover triggers */
+        .rp-studio .rp-pop { position: relative; flex: 1 1 132px; min-width: min(124px, 100%); }
+        .rp-studio .rp-pop-tool { flex: none; min-width: 0; }
+        .rp-studio .rp-popbtn {
+          width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+          padding: 9px 12px; border: 0; border-radius: 10px; cursor: pointer; font: inherit; font-size: 12.5px; color: #e2e8f0;
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.065), rgba(255, 255, 255, 0.015));
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.11), inset 0 0 0 1px rgba(255, 255, 255, 0.05), 0 6px 14px -8px rgba(0, 0, 0, 0.8);
+        }
+        .rp-studio .rp-pop-tool .rp-tool {
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.065), rgba(255, 255, 255, 0.015));
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.11), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+        }
+        .rp-studio .rp-popbtn[data-open="true"], .rp-studio .rp-pop-tool .rp-tool[data-open="true"] {
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), inset 0 0 0 1px rgba(var(--cy), 0.5), 0 0 16px -6px rgba(var(--cy), 0.6);
+        }
+        .rp-studio .rp-popbtn-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .rp-studio .rp-popbtn-text b { color: #a5f3fc; font-weight: 500; margin-left: 6px; }
+        .rp-studio .rp-popbtn-caret { font-size: 9px; opacity: 0.6; flex-shrink: 0; transition: transform 200ms; }
+        .rp-studio [data-open="true"] .rp-popbtn-caret { transform: rotate(180deg); }
+        .xdr-pop {
+          --cy: 103, 232, 249;
+          z-index: 70; overflow-y: auto; box-sizing: border-box; padding: 12px; border-radius: 13px; color: #e2e8f0;
+          background: linear-gradient(180deg, rgba(17, 27, 56, 0.97), rgba(7, 11, 27, 0.98));
+          backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), inset 0 0 0 1px rgba(var(--cy), 0.22),
+            0 24px 48px -12px rgba(0, 0, 0, 0.85), 0 0 40px -16px rgba(34, 211, 238, 0.35);
+        }
+
+        /* lyrics */
+        .rp-studio .rp-lyrics-tools { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+        .rp-studio .rp-sectag {
+          padding: 3px 8px; border-radius: 7px; font-size: 10.5px; cursor: pointer;
+          background: hsla(265, 60%, 60%, 0.12); color: #c4b5fd; border: 1px solid hsla(265, 60%, 60%, 0.28);
+        }
+        .rp-studio .rp-sectag:disabled { opacity: 0.4; cursor: default; }
+        .rp-studio .rp-check { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: #94a3b8; cursor: pointer; }
+
+        /* uploads */
+        .rp-studio .rp-drop {
+          width: 100%; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+          padding: 20px 14px; border: 0; border-radius: 12px; cursor: pointer; text-align: center; line-height: 1.5;
+          font: inherit; font-size: 12.5px; color: #a5f3fc;
+          background: rgba(var(--cy), 0.04); outline: 1px dashed rgba(var(--cy), 0.35); outline-offset: -1px;
+          transition: background 160ms ease;
+        }
+        .rp-studio .rp-drop:hover { background: rgba(var(--cy), 0.09); }
+        .rp-studio .rp-drop small { font-size: 11px; color: #64748b; }
+        .rp-studio .rp-drop[data-busy="true"] { cursor: wait; color: #94a3b8; flex-direction: row; gap: 10px; }
+        .rp-studio .rp-drop-ic { font-size: 20px; line-height: 1; }
+        .rp-studio .rp-filechip {
+          display: flex; align-items: center; gap: 9px; padding: 9px 10px; border-radius: 11px;
+          background: linear-gradient(180deg, rgba(1, 3, 12, 0.72), rgba(8, 13, 30, 0.6));
+          box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+        }
+        .rp-studio .rp-filechip-ic {
+          width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0; display: grid; place-items: center; font-size: 13px;
+          color: #6ee7b7; background: rgba(52, 211, 153, 0.12); box-shadow: inset 0 0 0 1px rgba(52, 211, 153, 0.3);
+        }
+        .rp-studio .rp-filechip-name { flex: 1; min-width: 0; font-size: 12.5px; color: #e2e8f0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .rp-studio .rp-filechip button, .rp-studio .rp-pic button {
+          width: 24px; height: 24px; flex-shrink: 0; border-radius: 50%; border: 0; cursor: pointer; font-size: 14px; line-height: 1;
+          color: #fff; background: rgba(3, 6, 18, 0.72); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+        }
+        .rp-studio .rp-pic {
+          position: relative; border-radius: 12px; overflow: hidden; background: #0b1020;
+          box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12), 0 8px 18px -10px rgba(0, 0, 0, 0.9);
+        }
+        .rp-studio .rp-pic img { display: block; width: 100%; max-height: 200px; object-fit: cover; }
+        .rp-studio .rp-pic button { position: absolute; top: 8px; right: 8px; }
+        .rp-studio .rp-seg { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 4px; border-radius: 11px; }
+        .rp-studio .rp-seg button {
+          display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 8px 6px; border: 0; border-radius: 8px;
+          background: transparent; color: #8391a7; font: inherit; cursor: pointer; text-align: center;
+        }
+        .rp-studio .rp-seg button b { font-size: 13px; font-weight: 500; }
+        .rp-studio .rp-seg button span { font-size: 10.5px; opacity: 0.75; }
+        .rp-studio .rp-seg button[data-on="true"] {
+          color: #f8fafc;
+          background: linear-gradient(180deg, rgba(var(--cy), 0.16), rgba(var(--cy), 0.05));
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), inset 0 0 0 1px rgba(var(--cy), 0.4);
+        }
+        .rp-studio .rp-frames { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin-top: 10px; }
+        .rp-studio .rp-frames[data-two="true"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .rp-studio .rp-frames[data-two="true"] .rp-pic img { aspect-ratio: 16 / 10; }
+        .rp-studio .rp-frames[data-two="true"] .rp-drop { aspect-ratio: 16 / 10; padding: 8px; }
+
+        /* reference pictures */
+        .rp-studio .rp-refbox { border-radius: 13px; padding: 12px; }
+        .rp-studio .rp-rmeter { display: flex; gap: 3px; margin: 0 0 11px; }
+        .rp-studio .rp-rmeter i { flex: 1; height: 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.07); }
+        .rp-studio .rp-rmeter i[data-on="true"] { background: linear-gradient(90deg, #67e8f9, #a78bfa); box-shadow: 0 0 6px rgba(var(--cy), 0.7); }
+        .rp-studio .rp-rgrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+        .rp-studio .rp-rgrid[data-single="true"] { grid-template-columns: minmax(0, 1fr); }
+        .rp-studio .rp-rtile {
+          position: relative; aspect-ratio: 1; border-radius: 10px; overflow: hidden; background: #0b1020;
+          display: grid; place-items: center;
+          box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12), 0 8px 16px -10px rgba(0, 0, 0, 0.9);
+        }
+        .rp-studio .rp-rgrid[data-single="true"] .rp-rtile { aspect-ratio: 16 / 10; }
+        .rp-studio .rp-rtile img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+        .rp-studio .rp-rtile[data-main="true"] {
+          box-shadow: inset 0 0 0 1.5px rgba(var(--cy), 0.8), 0 0 14px -4px rgba(var(--cy), 0.7), 0 8px 16px -10px rgba(0, 0, 0, 0.9);
+        }
+        .rp-studio .rp-rtile::after {
+          content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 48%;
+          background: linear-gradient(transparent, rgba(3, 6, 18, 0.88)); pointer-events: none;
+        }
+        .rp-studio .rp-rno {
+          position: absolute; left: 5px; top: 5px; z-index: 1; min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box;
+          border-radius: 9px; display: grid; place-items: center; font-size: 10.5px; font-weight: 600; color: #03131a;
+          background: linear-gradient(180deg, #cffafe, #67e8f9); box-shadow: 0 0 8px rgba(var(--cy), 0.8);
+        }
+        .rp-studio .rp-rx {
+          position: absolute; right: 4px; top: 4px; z-index: 1; width: 22px; height: 22px; border: 0; border-radius: 50%; padding: 0;
+          display: grid; place-items: center; cursor: pointer; color: #e2e8f0; font-size: 13px; line-height: 1;
+          background: rgba(3, 6, 18, 0.72); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+          opacity: 0; transition: opacity 120ms;
+        }
+        .rp-studio .rp-rtile:hover .rp-rx, .rp-studio .rp-rx:focus-visible { opacity: 1; }
+        @media (hover: none) { .rp-studio .rp-rx { opacity: 1; } }
+        .rp-studio .rp-rrole {
+          position: absolute; left: 4px; right: 4px; bottom: 4px; z-index: 1; display: flex; align-items: center; justify-content: center;
+          gap: 3px; padding: 3px 0; border: 0; border-radius: 6px; cursor: pointer; font: inherit; font-size: 10.5px; color: #e2e8f0;
+          background: rgba(7, 12, 28, 0.55); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+          -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+          white-space: nowrap; overflow: hidden;
+        }
+        .rp-studio .rp-rrole:hover { box-shadow: inset 0 0 0 1px rgba(var(--cy), 0.55); }
+        .rp-studio .rp-radd {
+          aspect-ratio: 1; border-radius: 10px; cursor: pointer; font-size: 11.5px; color: #a5f3fc; text-align: center;
+          display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+          background: rgba(var(--cy), 0.04); outline: 1px dashed rgba(var(--cy), 0.35); outline-offset: -1px;
+        }
+        .rp-studio .rp-rgrid[data-single="true"] .rp-radd { aspect-ratio: 16 / 10; }
+        .rp-studio .rp-radd small { font-size: 9.5px; color: #64748b; line-height: 1.3; padding: 0 4px; }
+        .rp-studio .rp-radd:hover { background: rgba(var(--cy), 0.09); }
+        .rp-studio .rp-rhint { margin-top: 10px; font-size: 11.5px; color: #7d8ba1; line-height: 1.55; }
+        .rp-studio .rp-rhint b { color: #a5f3fc; font-weight: 500; }
+        .rp-studio .rp-rins { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 8px; }
+        .rp-studio .rp-rins > span { font-size: 11px; color: #64748b; margin-right: 2px; }
+        .rp-studio .rp-rins button { cursor: pointer; font: inherit; font-size: 11.5px; padding: 3px 8px; border-radius: 6px; color: #a5f3fc; }
+        .rp-studio .rp-slider { margin-top: 12px; }
+        .rp-studio .rp-slider > div { display: flex; justify-content: space-between; font-size: 11.5px; color: #94a3b8; margin-bottom: 6px; }
+        .rp-studio .rp-slider b { color: #a5f3fc; font-weight: 500; }
+        .rp-studio .rp-slider input { width: 100%; accent-color: #67e8f9; }
+
+        /* settings */
+        .rp-studio .rp-sets { display: flex; flex-direction: column; gap: 14px; }
+        .rp-studio .rp-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+        .rp-studio .rp-chip {
+          display: inline-flex; align-items: center; gap: 7px; padding: 7px 12px; border-radius: 9px;
+          font: inherit; font-size: 13px; color: #94a3b8; cursor: pointer;
+        }
+        .rp-studio .rp-chip:hover { color: #e2e8f0; }
+        .rp-studio .rp-chip[data-on="true"] {
+          color: #fff;
+          background: linear-gradient(180deg, rgba(var(--cy), 0.16), rgba(var(--cy), 0.05));
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), inset 0 0 0 1px rgba(var(--cy), 0.45), inset 0 -2px 0 rgba(var(--cy), 0.9), 0 6px 16px -6px rgba(var(--cy), 0.55);
+        }
+        .rp-studio .rp-chip small { font-size: 10.5px; color: #fbbf24; font-family: var(--font-geist-mono), ui-monospace, monospace; }
+        .rp-studio .rp-shape { display: inline-block; border: 1.5px solid currentColor; border-radius: 2px; box-sizing: border-box; }
+        .rp-studio .rp-poprow { display: flex; flex-wrap: wrap; gap: 6px; }
+        .rp-studio .rp-input {
+          width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 10px; outline: none;
+          color: #f1f5f9; font: inherit; font-size: 12.5px;
+        }
+        .rp-studio .rp-input::placeholder { color: #475569; }
+        .rp-studio .rp-input:focus { box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(var(--cy), 0.5); }
+
+        /* the order */
+        .rp-studio .rp-order {
+          position: relative; z-index: 1; flex-shrink: 0; padding: 12px 20px 16px; border-radius: 0 0 18px 18px;
+          background: linear-gradient(180deg, rgba(3, 6, 18, 0), rgba(3, 6, 18, 0.5));
+        }
+        .rp-studio .rp-order::before {
+          content: ""; position: absolute; left: 20px; right: 20px; top: 0; height: 1px;
+          background: linear-gradient(90deg, transparent, rgba(var(--cy), 0.3), transparent);
+        }
+        .rp-studio .rp-short {
+          margin-bottom: 10px; padding: 8px 11px; border-radius: 10px; font-size: 12px; line-height: 1.5;
+          background: rgba(248, 113, 113, 0.1); color: #fca5a5; box-shadow: inset 0 0 0 1px rgba(248, 113, 113, 0.28);
+        }
+        .rp-studio .rp-short a { color: #fecaca; font-weight: 600; white-space: nowrap; }
+        .rp-studio .rp-osum { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 12.5px; color: #94a3b8; margin-bottom: 10px; }
+        .rp-studio .rp-osum b { color: #f8fafc; font-weight: 600; }
+        .rp-studio .rp-osum a { font-size: 12px; text-decoration: none; padding: 3px 9px; border-radius: 7px; background: rgba(var(--cy), 0.12); color: #a5f3fc; white-space: nowrap; }
+        .rp-studio .rp-go {
+          position: relative; overflow: hidden; width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+          padding: 15px 18px; border: 0; border-radius: 13px; cursor: pointer; color: #fff; font: inherit; font-size: 16px; font-weight: 600;
+          background: linear-gradient(120deg, #06b6d4, #8b5cf6 55%, #ec4899);
+          box-shadow: 0 14px 34px -12px rgba(139, 92, 246, 0.75), inset 0 1px 0 rgba(255, 255, 255, 0.3), inset 0 -2px 0 rgba(0, 0, 0, 0.18);
+        }
+        .rp-studio .rp-go::after {
+          content: ""; position: absolute; top: 0; bottom: 0; width: 40%; left: -50%;
+          background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.22), transparent);
+          animation: rp-sheen 4.5s ease-in-out infinite;
+        }
+        .rp-studio .rp-go:disabled { cursor: not-allowed; opacity: 0.55; filter: saturate(0.6); }
+        .rp-studio .rp-go:disabled::after { animation: none; }
+        .rp-studio .rp-go-label { position: relative; z-index: 1; }
+        .rp-studio .rp-gop {
+          position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 6px; font-size: 14px;
+          padding: 4px 10px; border-radius: 8px; background: rgba(3, 6, 18, 0.28); white-space: nowrap;
+        }
+        .rp-studio .rp-onote { text-align: center; font-size: 11.5px; color: #64748b; margin-top: 9px; }
+
+        /* ── Stage ── */
+        .rp-studio .rp-stage { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 14px; }
+        .rp-studio .rp-tray { display: flex; gap: 8px; overflow-x: auto; flex-shrink: 0; padding-bottom: 4px; }
+        .rp-studio .rp-tray-item {
+          display: flex; align-items: center; gap: 10px; min-width: 176px; max-width: 230px; padding: 6px 12px 6px 6px;
+          border: 0; border-radius: 11px; cursor: pointer; text-align: left; font: inherit; color: #e2e8f0;
+          background: linear-gradient(180deg, rgba(17, 27, 56, 0.7), rgba(7, 11, 27, 0.75));
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 0 0 1px rgba(255, 255, 255, 0.05), 0 8px 18px -10px rgba(0, 0, 0, 0.9);
+          backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+        }
+        .rp-studio .rp-tray-item[data-active="true"] {
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), inset 0 0 0 1px rgba(var(--vi), 0.5), 0 0 18px -6px rgba(var(--vi), 0.7);
+        }
+        .rp-studio .rp-tray-item[data-status="failed"] { box-shadow: inset 0 0 0 1px rgba(248, 113, 113, 0.35); }
+        .rp-studio .rp-tray-thumb {
+          width: 34px; height: 34px; border-radius: 8px; flex-shrink: 0; overflow: hidden; display: grid; place-items: center;
+          background: linear-gradient(135deg, hsl(250, 45%, 18%), hsl(200, 45%, 12%));
+        }
+        .rp-studio .rp-tray-thumb img, .rp-studio .rp-tray-thumb video { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+        .rp-studio .rp-tray-text { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+        .rp-studio .rp-tray-prompt { font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .rp-studio .rp-tray-state { font-size: 11px; color: #c4b5fd; }
+        .rp-studio .rp-tray-item[data-status="completed"] .rp-tray-state { color: #6ee7b7; }
+        .rp-studio .rp-tray-item[data-status="failed"] .rp-tray-state { color: #fca5a5; }
+        .rp-studio .rp-tray-clear {
+          flex-shrink: 0; padding: 0 12px; border-radius: 11px; font: inherit; font-size: 12px; cursor: pointer;
+          color: #64748b; background: transparent; border: 1px dashed rgba(255, 255, 255, 0.14);
+        }
+        .rp-studio .rp-canvas { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 12px 16px 14px; }
+        .rp-studio .rp-cbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; font-size: 11.5px; color: #64748b; margin-bottom: 10px; position: relative; z-index: 3; }
+        .rp-studio .rp-cbar .rp-mono { color: #7d8ba1; }
+        .rp-studio .rp-cbar-r { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+        .rp-studio .rp-pill {
+          padding: 6px 12px; border: 0; border-radius: 9px; font: inherit; font-size: 12.5px; cursor: pointer; color: #94a3b8;
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.065), rgba(255, 255, 255, 0.015));
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.11), inset 0 0 0 1px rgba(255, 255, 255, 0.05), 0 6px 14px -8px rgba(0, 0, 0, 0.8);
+          transition: color 160ms ease, box-shadow 160ms ease;
+        }
+        .rp-studio .rp-pill:hover:not(:disabled) { color: #e2e8f0; }
+        .rp-studio .rp-pill[data-on="true"] {
+          color: #fff;
+          background: linear-gradient(180deg, rgba(var(--cy), 0.16), rgba(var(--cy), 0.05));
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), inset 0 0 0 1px rgba(var(--cy), 0.45);
+        }
+        /* Dimmed rather than hidden, with the reason in the tooltip. */
+        .rp-studio .rp-pill:disabled { opacity: 0.38; cursor: not-allowed; }
+        /* The canvas block is the flexible one; the bar above it and the
+           recent row below keep their natural height so they stay on screen. */
+        .rp-studio .rp-studio-canvas {
+          flex: 1; min-height: 0; display: flex; border-radius: 12px;
+          /* "safe": content taller than the canvas starts at the top instead of
+             being centred past both edges — which is how the queue animation
+             once went missing. */
+          align-items: safe center; justify-content: safe center;
+          overflow-x: hidden; overflow-y: auto;
+          /* Its height comes from the layout, never from its content, so it can
+             be a size container: the in-progress frame sizes itself from the
+             room left here (less ~170px for the status block). */
           container-type: size;
           --gen-frame-h: min(460px, max(160px, calc(100cqh - 170px)));
         }
-        /* Four columns need ~1500px before the canvas — the whole point of the
-           page — starts losing. Measured at 1272px: chrome took 820px and the
-           result was left 452px, a third of the display. Below that the two
-           input-side columns stack into one instead, which buys the canvas
-           about 200px back and keeps it above half the width. */
-        @media (max-width: 1500px) {
-          .rp-studio {
-            grid-template-columns: 340px minmax(0, 1fr) 270px;
-            grid-template-rows: auto minmax(0, 1fr);
-          }
-          .rp-studio-jobs {
-            grid-column: 1;
-            grid-row: 1;
-            border-bottom: 1px solid rgba(255,255,255,0.06);
-          }
-          .rp-studio-input { grid-column: 1; grid-row: 2; }
-          .rp-studio-center { grid-column: 2; grid-row: 1 / -1; }
-          .rp-studio-set { grid-column: 3; grid-row: 1 / -1; }
+        .rp-studio .rp-samples { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; max-width: 760px; margin: 0 auto; }
+        .rp-studio .rp-recent { display: flex; align-items: center; gap: 12px; flex-shrink: 0; min-height: 46px; padding-right: 110px; }
+        .rp-studio .rp-rl { font-size: 12px; color: #64748b; flex-shrink: 0; white-space: nowrap; }
+        .rp-studio .rp-rl a { color: #a5f3fc; text-decoration: none; }
+        .rp-studio .rp-recent-row { display: flex; gap: 8px; overflow-x: auto; min-width: 0; padding: 2px 2px 4px; }
+        .rp-studio .rp-thumb {
+          position: relative; width: 46px; height: 46px; flex-shrink: 0; padding: 0; border: 0; border-radius: 9px; overflow: hidden; cursor: pointer;
+          box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12), 0 6px 14px -8px rgba(0, 0, 0, 0.9);
         }
-        @media (max-width: 1180px) {
-          /* Below this the four-column workspace stops being usable — let the
-             page breathe and scroll normally instead of squeezing every rail.
-             It stacks earlier than the old two-pane layout did, because four
-             columns run out of room sooner. */
-          .rp-studio {
-            grid-template-columns: 1fr;
-            grid-template-rows: none;
-            height: auto;
-            overflow: visible;
+        .rp-studio .rp-thumb img, .rp-studio .rp-thumb video { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+        .rp-studio .rp-thumb[aria-current="true"] { box-shadow: inset 0 0 0 1.5px rgba(var(--cy), 0.9), 0 0 12px -2px rgba(var(--cy), 0.7); }
+        .rp-studio .rp-thumb-play { position: absolute; bottom: 3px; right: 3px; font-size: 8px; color: #fff; background: rgba(0, 0, 0, 0.6); padding: 1px 4px; border-radius: 4px; }
+
+        /* Drop target over the whole studio while a file is dragged in. */
+        .rp-studio .rp-drop-hint {
+          position: fixed; inset: 12px; z-index: 60; display: grid; place-items: center; text-align: center;
+          font-size: 16px; font-weight: 600; color: #e0f2fe; border-radius: 20px;
+          border: 2px dashed hsla(190, 90%, 65%, 0.7); background: rgba(3, 6, 18, 0.72);
+          backdrop-filter: blur(4px); pointer-events: none;
+        }
+        .rp-studio .rp-jobbar { display: none; }
+
+        /* ── Stacked (tablet, phone) ──────────────────────────────────────
+           Below this the composer would squeeze the canvas to nothing: the
+           parts stack, the page scrolls normally, and the order bar stays on
+           the bottom of the screen. */
+        @media (max-width: 1099px) {
+          .rp-studio { flex-direction: column; height: auto; overflow: visible; padding: 12px 14px 112px; gap: 14px; }
+          /* Above the stage: the fixed order bar lives in the composer's
+             stacking context, and the stage, later in the page, painted over it. */
+          .rp-studio > .rp-composer { width: auto; z-index: 2; }
+          .rp-studio .rp-cscroll { overflow: visible; padding: 16px 16px 18px; margin-right: 0; }
+          .rp-studio .rp-order {
+            position: fixed; left: 12px; right: 12px; bottom: 14px; z-index: 40;
+            display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; column-gap: 12px;
+            padding: 9px 9px 9px 16px; border-radius: 18px;
+            background: linear-gradient(180deg, rgba(24, 36, 72, 0.88), rgba(8, 13, 32, 0.94));
+            backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), inset 0 0 0 1px rgba(var(--cy), 0.16), 0 18px 40px -16px rgba(0, 0, 0, 0.9);
           }
-          .rp-studio-jobs,
-          .rp-studio-input,
-          .rp-studio-center,
-          .rp-studio-set { grid-column: auto; grid-row: auto; }
-          .rp-studio-jobs,
-          .rp-studio-input,
-          .rp-studio-set {
-            overflow: visible;
-            border-right: none !important;
-            border-left: none !important;
-            border-bottom: 1px solid rgba(255,255,255,0.06) !important;
+          .rp-studio .rp-order::before { left: 20%; right: 20%; top: -1px; background: linear-gradient(90deg, transparent, rgba(var(--cy), 0.75), transparent); }
+          .rp-studio .rp-short { grid-column: 1 / -1; margin: 0 0 8px; }
+          .rp-studio .rp-osum { flex-direction: column; align-items: flex-start; gap: 3px; margin: 0; font-size: 11.5px; }
+          .rp-studio .rp-osum a { padding: 2px 8px; font-size: 11px; }
+          .rp-studio .rp-go { padding: 12px 14px; font-size: 15px; }
+          .rp-studio .rp-gop { font-size: 13px; padding: 3px 8px; }
+          .rp-studio .rp-onote { display: none; }
+          .rp-studio .rp-jobbar {
+            display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 12px; border: 0; border-radius: 12px; cursor: pointer;
+            font: inherit; font-size: 12.5px; color: #e2e8f0; text-align: left;
+            background: linear-gradient(180deg, rgba(76, 29, 149, 0.32), rgba(30, 16, 70, 0.4));
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), inset 0 0 0 1px rgba(var(--vi), 0.45), 0 0 18px -6px rgba(var(--vi), 0.7);
           }
-          .rp-studio-center { overflow: visible; }
+          .rp-studio .rp-jobbar b { margin-left: auto; font-weight: 500; color: #c4b5fd; }
+          .rp-studio .rp-stage { scroll-margin-top: 90px; }
+          .rp-studio .rp-canvas { min-height: 380px; }
           /* Here the canvas grows with its content, which a size container
-             cannot do — fall back to the viewport for the frame cap. */
-          .rp-studio-canvas {
-            overflow: visible; min-height: 320px;
-            container-type: normal;
-            --gen-frame-h: min(460px, 44vh);
-          }
+             cannot do — the frame cap falls back to the viewport. */
+          .rp-studio .rp-studio-canvas { overflow: visible; min-height: 300px; container-type: normal; --gen-frame-h: min(460px, 44vh); }
+          .rp-studio .rp-recent { padding-right: 0; }
+        }
+        @media (max-width: 640px) {
+          .rp-studio { padding: 10px 10px 108px; }
+          .rp-studio .rp-cscroll { padding: 14px 12px 16px; }
+          .rp-studio .rp-canvas { padding: 10px 10px 12px; }
+          .rp-studio .rp-samples { gap: 10px; }
+          .rp-studio .rp-kbd { display: none; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .rp-studio .rp-bg-img, .rp-studio .rp-mote, .rp-studio .rp-led i, .rp-studio .rp-dot, .rp-studio .rp-go::after { animation: none; }
+          .rp-studio .rp-mote { display: none; }
+          .rp-studio .rp-spin { animation-duration: 2.4s; }
         }
       `}</style>
     </div>
