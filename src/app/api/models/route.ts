@@ -14,6 +14,7 @@ import { communityMachineAvailable } from '@/lib/gpu/community-availability';
 import { getAllStoredWorkflows, visibleQualityModes } from '@/lib/gpu/workflow-overrides';
 import { apiVideoLipsyncRule, type ClipRule, type LipsyncBilling, type VoiceRule } from '@/lib/lipsync-rules';
 import { referenceCaps } from '@/lib/reference-caps';
+import { modelPreview } from '@/lib/model-samples';
 
 /**
  * Public model list for the studio and the mobile app.
@@ -224,6 +225,10 @@ export async function GET() {
         category: m.category,
         subcategory: m.subcategory,
         thumbnail: m.thumbnail,
+        // The picker's picture: the admin's thumbnail, else the family's bundled
+        // sample (model-samples.ts), with the credit its licence requires.
+        // Null = the studio draws its category art.
+        preview: modelPreview(m.modelId, m.thumbnail),
         isFeatured: m.isFeatured,
         creditsPerUnit: m.creditsPerUnit,
         unitType: m.unitType,

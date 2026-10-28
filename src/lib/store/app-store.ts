@@ -3,6 +3,7 @@ import { create } from 'zustand';
 import type { DurationCurve } from '@/lib/pricing';
 import type { LengthFromAudio } from '@/lib/voice-length';
 import type { ReferenceCaps } from '@/lib/reference-caps';
+import type { ModelPreview } from '@/lib/model-samples';
 
 interface AIModel {
   id: number;
@@ -14,8 +15,11 @@ interface AIModel {
   maxWidth: number | null;
   maxHeight: number | null;
   maxDuration: number | null;
+  description?: string | null;
   isFeatured: boolean;
   provider: { name: string; slug: string; logo: string | null };
+  /** Picker picture: the admin's thumbnail or the family's sample (model-samples.ts). */
+  preview?: ModelPreview | null;
   /**
    * False while a self-hosted model is still being proven out on this
    * deployment. It stays listed so customers can see it is coming, but ordering

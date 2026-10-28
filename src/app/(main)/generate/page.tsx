@@ -326,6 +326,30 @@ const MUSIC_STARTERS = [
 /** What the voice and song pickers take. */
 const AUDIO_ACCEPT = "audio/mpeg,audio/wav,audio/ogg,audio/flac,audio/mp4,audio/x-m4a";
 
+/**
+ * The model gallery's order: what can be ordered now first, then the rest, each
+ * keeping the admin's sort order — a customer should not scroll past a page of
+ * closed models to find the open ones.
+ */
+function pickerOrder<T extends { canOrder?: boolean }>(models: T[]): T[] {
+  return [...models.filter((m) => m.canOrder !== false), ...models.filter((m) => m.canOrder === false)];
+}
+
+/**
+ * A model picture that fails to load (an admin's thumbnail URL gone stale)
+ * falls back to the category art instead of a broken-image box.
+ */
+function previewFallback(art: string) {
+  return (e: React.SyntheticEvent<HTMLImageElement>) => {
+    const img = e.currentTarget;
+    if (img.dataset.fellBack) return;
+    img.dataset.fellBack = "true";
+    img.src = art;
+    img.removeAttribute("data-photo");
+    img.parentElement?.setAttribute("data-photo", "false");
+  };
+}
+
 /** Used to warn when a Thai prompt is sent to an English-only model. */
 const THAI_CHARS = /\p{Script=Thai}/u;
 
@@ -2945,8 +2969,9 @@ export default function GeneratePage() {
             <div ref={dropdownRef}>
               <button type="button" className="rp-model rp-raised" aria-expanded={showModelDropdown}
                 onClick={() => setShowModelDropdown(!showModelDropdown)}>
-                {/* eslint-disable-next-line @next/next/no-img-element -- small fixed art */}
-                <img className="rp-mlogo" src={TAB_ICON[tab]} alt="" width={44} height={44} />
+                {/* eslint-disable-next-line @next/next/no-img-element -- small fixed art or the model's sample */}
+                <img key={selectedModel?.id ?? "none"} className="rp-mlogo" data-photo={selectedModel?.preview ? "true" : undefined}
+                  src={selectedModel?.preview?.src || TAB_ICON[tab]} alt="" width={44} height={44} onError={previewFallback(TAB_ICON[tab])} />
                 <span className="rp-mbody">
                   <span className="rp-mname">{selectedModel ? selectedModel.name : modelsLoaded ? "เลือกโมเดล..." : "กำลังโหลดโมเดล…"}</span>
                   {selectedModel && (
@@ -2969,8 +2994,8 @@ export default function GeneratePage() {
               {showModelDropdown && (
                 <div className="rp-mlist rp-well rp-scroll" role="listbox" aria-label="เลือกโมเดล">
                   {filteredModels.length === 0 ? (
-                    <div style={{ padding: 16, textAlign: "center", fontSize: 13, color: "#94a3b8" }}>ไม่มีโมเดลสำหรับหมวดนี้</div>
-                  ) : filteredModels.map(m => {
+                    <div style={{ gridColumn: "1 / -1", padding: 16, textAlign: "center", fontSize: 13, color: "#94a3b8" }}>ไม่มีโมเดลสำหรับหมวดนี้</div>
+                  ) : pickerOrder(filteredModels).map(m => {
                     // A model that cannot be ordered right now — still being
                     // proven out, or its provider not connected / failing —
                     // stays visible, dimmed, with the reason. Picking it is
@@ -2978,30 +3003,27 @@ export default function GeneratePage() {
                     // credits on a render that cannot be delivered.
                     const blocked = m.canOrder === false;
                     const reason = m.unavailableReason ?? m.tuningMessage ?? "ยังใช้งานไม่ได้ ลองใหม่ภายหลัง";
+                    const on = selectedModelId === m.id;
                     return (
-                      <button key={m.id} type="button" role="option" aria-selected={selectedModelId === m.id} disabled={blocked}
-                        className="rp-mopt" data-on={selectedModelId === m.id ? "true" : "false"}
-                        title={blocked ? reason : undefined}
+                      <button key={m.id} type="button" role="option" aria-selected={on} disabled={blocked}
+                        className="rp-mopt" data-on={on ? "true" : "false"}
+                        title={blocked ? reason : m.description ?? undefined}
                         onClick={() => { if (blocked) return; setSelectedModelId(m.id); setShowModelDropdown(false); }}>
-                        <span style={{ minWidth: 0, flex: 1 }}>
-                          <span style={{ fontSize: 13, fontWeight: 500, display: "flex", alignItems: "center", gap: 6 }}>
-                            {m.name}
-                            {m.isFeatured && <span style={{ fontSize: 10, color: "#fbbf24" }}>✦</span>}
-                            {blocked && (
-                              <span style={{
-                                fontSize: 9, padding: "1px 6px", borderRadius: 999, fontWeight: 600,
-                                background: m.status === "tuning" ? "hsla(38,90%,55%,0.18)" : "rgba(148,163,184,0.18)",
-                                color: m.status === "tuning" ? "#fbbf24" : "#cbd5e1",
-                              }}>
-                                {m.status === "tuning" ? "กำลังปรับแต่ง" : "ยังใช้ไม่ได้"}
-                              </span>
-                            )}
-                          </span>
-                          <span style={{ display: "block", fontSize: 11, color: "#94a3b8" }}>
-                            {blocked ? reason : `${m.provider.name}${m.subcategory ? ` · ${m.subcategory}` : ""}`}
-                          </span>
+                        <span className="rp-mart" data-photo={m.preview ? "true" : "false"}>
+                          {/* eslint-disable-next-line @next/next/no-img-element -- bundled sample or an admin's URL */}
+                          <img src={m.preview?.src || TAB_ICON[tab]} alt="" loading="lazy" decoding="async" onError={previewFallback(TAB_ICON[tab])} />
+                          <span className="rp-mchip">✦ {m.creditsPerUnit}</span>
+                          {m.isFeatured && !blocked && <span className="rp-mstar">✦ แนะนำ</span>}
+                          {blocked && <span className="rp-mstate" data-tone={m.status === "tuning" ? "tuning" : "off"}>
+                            {m.status === "tuning" ? "กำลังปรับแต่ง" : "ยังใช้ไม่ได้"}
+                          </span>}
+                          {on && <span className="rp-mcheck" aria-hidden="true">✓</span>}
+                          {m.preview?.credit && <span className="rp-mcredit">{m.preview.credit}</span>}
                         </span>
-                        <span style={{ padding: "2px 6px", borderRadius: 6, background: "hsla(48,90%,60%,0.15)", color: "#fbbf24", fontSize: 10, fontWeight: 600, flexShrink: 0 }}>✦ {m.creditsPerUnit}</span>
+                        <span className="rp-mcap">
+                          <b>{m.name}</b>
+                          <small>{blocked ? reason : `${m.provider.name}${m.subcategory ? ` · ${m.subcategory}` : ""}`}</small>
+                        </span>
                       </button>
                     );
                   })}
@@ -4219,14 +4241,48 @@ export default function GeneratePage() {
         .rp-studio .rp-mprice { margin-left: auto; text-align: right; flex-shrink: 0; }
         .rp-studio .rp-mprice b { display: block; font-size: 14px; color: #fde68a; font-weight: 600; }
         .rp-studio .rp-mprice span { font-size: 11px; color: #64748b; white-space: nowrap; }
-        .rp-studio .rp-mlist { margin-top: 8px; max-height: 300px; overflow-y: auto; border-radius: 12px; padding: 4px; }
-        .rp-studio .rp-mopt {
-          width: 100%; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 0; border-radius: 9px;
-          background: transparent; color: #e2e8f0; text-align: left; font: inherit; cursor: pointer;
+        .rp-studio .rp-mlogo[data-photo="true"] { object-fit: cover; border-radius: 10px; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12); filter: none; }
+        /* model gallery: each model's sample picture, as many to a row as fit */
+        .rp-studio .rp-mlist {
+          margin-top: 8px; max-height: 452px; overflow-y: auto; border-radius: 12px; padding: 6px;
+          display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px;
         }
-        .rp-studio .rp-mopt:hover:not(:disabled) { background: rgba(255, 255, 255, 0.04); }
-        .rp-studio .rp-mopt[data-on="true"] { background: rgba(var(--cy), 0.1); box-shadow: inset 0 0 0 1px rgba(var(--cy), 0.35); }
-        .rp-studio .rp-mopt:disabled { opacity: 0.45; cursor: not-allowed; }
+        .rp-studio .rp-mopt {
+          display: flex; flex-direction: column; min-width: 0; padding: 0; border: 0; border-radius: 11px; overflow: hidden;
+          background: rgba(255, 255, 255, 0.025); color: #e2e8f0; text-align: left; font: inherit; cursor: pointer;
+          box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06); transition: box-shadow 160ms ease, transform 160ms ease;
+        }
+        .rp-studio .rp-mopt:hover:not(:disabled) { transform: translateY(-1px); box-shadow: inset 0 0 0 1px rgba(var(--cy), 0.4), 0 10px 18px -12px rgba(0, 0, 0, 0.9); }
+        .rp-studio .rp-mopt:focus-visible { outline: 2px solid rgba(var(--cy), 0.8); outline-offset: 1px; }
+        .rp-studio .rp-mopt[data-on="true"] { box-shadow: inset 0 0 0 2px rgba(var(--cy), 0.75), 0 0 18px -6px rgba(var(--cy), 0.6); }
+        .rp-studio .rp-mopt:disabled { cursor: not-allowed; }
+        .rp-studio .rp-mopt:disabled .rp-mart img { filter: grayscale(0.85) brightness(0.55); }
+        .rp-studio .rp-mopt:disabled .rp-mcap { opacity: 0.6; }
+        .rp-studio .rp-mart { position: relative; display: block; aspect-ratio: 4 / 3; overflow: hidden; background: radial-gradient(120% 90% at 30% 20%, rgba(139, 92, 246, 0.28), rgba(15, 23, 42, 0.9)); }
+        .rp-studio .rp-mart img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 420ms cubic-bezier(0.2, 0.7, 0.2, 1); }
+        .rp-studio .rp-mart[data-photo="false"] img { position: absolute; inset: 0; margin: auto; width: 38%; height: auto; max-height: 52%; object-fit: contain; filter: drop-shadow(0 8px 14px rgba(0, 0, 0, 0.55)) saturate(0.8); }
+        .rp-studio .rp-mart::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(2, 6, 23, 0.35) 0%, transparent 30%, transparent 62%, rgba(2, 6, 23, 0.55) 100%); pointer-events: none; }
+        .rp-studio .rp-mopt:hover:not(:disabled) .rp-mart img { transform: scale(1.06); }
+        .rp-studio .rp-mchip, .rp-studio .rp-mstar, .rp-studio .rp-mstate, .rp-studio .rp-mcheck {
+          position: absolute; z-index: 1; font-size: 10px; font-weight: 600; line-height: 1; padding: 4px 6px; border-radius: 999px;
+          backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+        }
+        .rp-studio .rp-mchip { top: 6px; right: 6px; background: rgba(2, 6, 23, 0.62); color: #fde68a; }
+        .rp-studio .rp-mstar { top: 6px; left: 6px; background: rgba(251, 191, 36, 0.2); color: #fde68a; box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.35); }
+        .rp-studio .rp-mstate { top: 6px; left: 6px; background: rgba(15, 23, 42, 0.75); color: #cbd5e1; }
+        .rp-studio .rp-mstate[data-tone="tuning"] { color: #fbbf24; box-shadow: inset 0 0 0 1px hsla(38, 90%, 55%, 0.4); }
+        .rp-studio .rp-mcheck { bottom: 6px; right: 6px; width: 20px; height: 20px; padding: 0; display: grid; place-items: center; font-size: 12px; background: rgba(var(--cy), 0.9); color: #04121a; }
+        .rp-studio .rp-mcredit {
+          position: absolute; z-index: 1; left: 6px; bottom: 5px; right: 32px; font-size: 8.5px; line-height: 1.2;
+          color: rgba(226, 232, 240, 0.78); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .rp-studio .rp-mcap { display: block; padding: 7px 9px 8px; min-width: 0; }
+        .rp-studio .rp-mcap b { display: block; font-size: 12.5px; font-weight: 600; color: #f1f5f9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .rp-studio .rp-mcap small { display: block; margin-top: 2px; font-size: 10.5px; color: #8391a7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        @media (prefers-reduced-motion: reduce) {
+          .rp-studio .rp-mopt, .rp-studio .rp-mart img { transition: none; }
+          .rp-studio .rp-mopt:hover:not(:disabled), .rp-studio .rp-mopt:hover:not(:disabled) .rp-mart img { transform: none; }
+        }
 
         /* prompt */
         .rp-studio .rp-prompt { border-radius: 13px; overflow: hidden; transition: box-shadow 160ms ease; }

@@ -17,6 +17,7 @@ import {
   Video,
   Paintbrush,
 } from "lucide-react";
+import { modelPreview } from "@/lib/model-samples";
 
 interface AiModel {
   id: number;
@@ -28,6 +29,8 @@ interface AiModel {
   description: string | null;
   category: string;
   subcategory: string | null;
+  /** The admin's own picker picture; empty = the bundled sample (model-samples.ts). */
+  thumbnail: string | null;
   creditsPerUnit: number;
   costPerUnit: number;
   unitType: string;
@@ -80,6 +83,7 @@ export default function ModelsPage() {
   const [filterProvider, setFilterProvider] = useState("");
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingModel, setEditingModel] = useState<AiModel | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
   const [newModel, setNewModel] = useState({ ...defaultNewModel });
 
   const fetchModels = () => {
@@ -148,7 +152,8 @@ export default function ModelsPage() {
 
   const handleEdit = async () => {
     if (!editingModel) return;
-    await fetch(`/api/admin/models/${editingModel.id}`, {
+    setEditError(null);
+    const res = await fetch(`/api/admin/models/${editingModel.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -161,8 +166,14 @@ export default function ModelsPage() {
         unitType: editingModel.unitType,
         sortOrder: editingModel.sortOrder,
         description: editingModel.description,
+        thumbnail: editingModel.thumbnail ?? "",
       }),
     });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setEditError(data.error || "บันทึกไม่สำเร็จ");
+      return;
+    }
     setEditingModel(null);
     fetchModels();
   };
@@ -333,7 +344,7 @@ export default function ModelsPage() {
                         )}
                       </button>
                       <button
-                        onClick={() => setEditingModel({ ...model })}
+                        onClick={() => { setEditError(null); setEditingModel({ ...model }); }}
                         className="p-1.5 rounded-lg hover:bg-surface-light transition-all"
                         title="แก้ไข"
                       >
@@ -630,6 +641,33 @@ export default function ModelsPage() {
                   className="w-full p-2.5 rounded-lg bg-surface-light text-sm focus:outline-none focus:ring-1 focus:ring-primary/50 resize-none"
                 />
               </div>
+              <div>
+                <label className="text-xs text-muted mb-1 block">
+                  ภาพตัวอย่างบนหน้าเลือกโมเดล (URL https:// หรือ /path — เว้นว่าง = ใช้ภาพในระบบ)
+                </label>
+                <div className="flex gap-3 items-start">
+                  {(() => {
+                    const src = modelPreview(editingModel.modelId, editingModel.thumbnail)?.src;
+                    return src ? (
+                      // eslint-disable-next-line @next/next/no-img-element -- an admin's URL or a bundled sample
+                      <img src={src} alt="" className="w-24 h-[72px] rounded-lg object-cover bg-surface-light shrink-0" />
+                    ) : (
+                      <div className="w-24 h-[72px] rounded-lg bg-surface-light shrink-0 grid place-items-center text-[10px] text-muted text-center px-1">
+                        ไม่มีภาพ
+                      </div>
+                    );
+                  })()}
+                  <input
+                    value={editingModel.thumbnail || ""}
+                    onChange={(e) =>
+                      setEditingModel({ ...editingModel, thumbnail: e.target.value })
+                    }
+                    placeholder="https://…/sample.webp"
+                    maxLength={500}
+                    className="flex-1 min-w-0 p-2.5 rounded-lg bg-surface-light text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  />
+                </div>
+              </div>
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="text-xs text-muted mb-1 block">
@@ -701,6 +739,7 @@ export default function ModelsPage() {
                 </select>
               </div>
             </div>
+            {editError && <p className="mt-4 text-sm text-red-400">{editError}</p>}
             <div className="flex justify-end gap-3 mt-6">
               <button
                 onClick={() => setEditingModel(null)}

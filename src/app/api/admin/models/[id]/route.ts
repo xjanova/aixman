@@ -27,6 +27,16 @@ export async function PATCH(
       if (data[f] !== undefined && data[f] !== null) data[f] = parseInt(String(data[f]), 10);
     }
 
+    // The picker picture is drawn as an <img> on every customer's studio: only
+    // an https URL or a path on this site, and empty means "use the bundled one".
+    if (data.thumbnail !== undefined) {
+      const thumb = typeof data.thumbnail === 'string' ? data.thumbnail.trim() : '';
+      if (thumb && (thumb.length > 500 || !/^(https:\/\/|\/(?!\/))[^\s"'<>]+$/.test(thumb))) {
+        return NextResponse.json({ error: 'ภาพตัวอย่างต้องเป็นลิงก์ https:// หรือ /path ยาวไม่เกิน 500 ตัวอักษร' }, { status: 400 });
+      }
+      data.thumbnail = thumb || null;
+    }
+
     const model = await prisma.aiModel.update({
       where: { id: modelId },
       data,
