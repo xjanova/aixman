@@ -65,6 +65,12 @@ function writeSaved(v: Saved): void {
   }
 }
 
+/** The visible area, without the page's scrollbar — innerWidth counts it, and a dock clamped to that ran under it. */
+function viewport(): { w: number; h: number } {
+  const root = document.documentElement;
+  return { w: root.clientWidth || window.innerWidth, h: root.clientHeight || window.innerHeight };
+}
+
 /** The site's nav bar is 80 px; the orb never hides under it. */
 const TOP_LIMIT = 120;
 const ORB = 76;
@@ -77,9 +83,7 @@ export function ModeOrb({ modes, links, title, glyph }: {
   /** The mode's line icon, drawn on the orb. */
   glyph: React.ReactNode;
 }) {
-  const [vp, setVp] = useState(() =>
-    typeof window === "undefined" ? { w: 1440, h: 900 } : { w: window.innerWidth, h: window.innerHeight }
-  );
+  const [vp, setVp] = useState(() => (typeof window === "undefined" ? { w: 1440, h: 900 } : viewport()));
   const [saved, setSaved] = useState<Saved | null>(() => (typeof window === "undefined" ? null : readSaved()));
   const [dragAt, setDragAt] = useState<{ x: number; y: number } | null>(null);
   const [open, setOpen] = useState(false);
@@ -106,7 +110,7 @@ export function ModeOrb({ modes, links, title, glyph }: {
   };
 
   useEffect(() => {
-    const onResize = () => setVp({ w: window.innerWidth, h: window.innerHeight });
+    const onResize = () => setVp(viewport());
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
@@ -158,16 +162,20 @@ export function ModeOrb({ modes, links, title, glyph }: {
     });
     return { at, total: cursor - gap, sep: at[modes.length] - gap / 2 - 0.5 };
   };
+  const sizeAt = (d: number) => (d < reach ? base + (peak - base) * Math.cos(((d / reach) * Math.PI) / 2) : base);
   const flat = layout(all.map(() => base));
-  const width0 = flat.total + 2 * pad;
+  // Kept on screen at its widest — the mouse over an icon — not at rest: the
+  // dock grows from its centre, and clamped at rest its far end ran off the
+  // screen as soon as it magnified. Fixed while open, so nothing slides under
+  // the pointer.
+  const widest = Math.max(...all.map((_, j) => layout(all.map((__, i) => sizeAt(Math.abs(flat.at[i] - flat.at[j])))).total));
+  const width0 = widest + 2 * pad;
   let shift = 0;
   if (x - width0 / 2 < 14) shift = 14 - (x - width0 / 2);
   if (x + width0 / 2 + shift > vp.w - 14) shift = vp.w - 14 - (x + width0 / 2);
   const sizes = all.map((_, i) => {
     if (!shown || mx === null) return base;
-    const centre = shift + flat.at[i] - flat.total / 2 + base / 2;
-    const d = Math.abs(mx - centre);
-    return d < reach ? base + (peak - base) * Math.cos(((d / reach) * Math.PI) / 2) : base;
+    return sizeAt(Math.abs(mx - (shift + flat.at[i] - flat.total / 2 + base / 2)));
   });
   const dock = layout(sizes);
   // Opens from the middle out, closes from the ends in.
@@ -377,14 +385,16 @@ export function ModeOrb({ modes, links, title, glyph }: {
           background: linear-gradient(90deg, transparent, rgba(var(--cy), 0.85), transparent);
         }
         .fd :global(.di) {
-          position: absolute; bottom: calc(50% + 61px); display: flex; flex-direction: column; align-items: center;
+          position: absolute; bottom: calc(50% + 61px); display: flex; flex-direction: column; align-items: center; width: max-content;
           background: none; border: 0; padding: 0; cursor: pointer; font: inherit; color: inherit; text-decoration: none;
           transform-origin: 50% 100%; pointer-events: none;
           transition: transform 480ms cubic-bezier(0.34, 1.56, 0.64, 1), opacity 260ms ease, left 110ms ease-out;
         }
         .fd[data-open="true"] :global(.di) { pointer-events: auto; }
         .fd[data-up="false"] :global(.di) { bottom: auto; top: calc(50% + 61px); transform-origin: 50% 0; }
-        .fd :global(.di img) { display: block; filter: drop-shadow(0 8px 12px rgba(0, 0, 0, 0.55)); transition: width 110ms ease-out, height 110ms ease-out; }
+        /* Not the site-wide max-width: 100% — an item hung right of the orb's
+           76 px box has no width to be 100% of, and its icon shrank to nothing. */
+        .fd :global(.di img) { display: block; max-width: none; filter: drop-shadow(0 8px 12px rgba(0, 0, 0, 0.55)); transition: width 110ms ease-out, height 110ms ease-out; }
         .fd :global(.di.off) { cursor: not-allowed; }
         .fd :global(.di.off img) { filter: grayscale(0.85) brightness(0.5) drop-shadow(0 8px 12px rgba(0, 0, 0, 0.55)); }
         .fd :global(.dot) { position: absolute; bottom: -8px; width: 4px; height: 4px; border-radius: 50%; background: #a5f3fc; box-shadow: 0 0 8px #67e8f9; }

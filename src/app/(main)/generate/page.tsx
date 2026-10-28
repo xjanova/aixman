@@ -4064,6 +4064,9 @@ export default function GeneratePage() {
           height: calc(100dvh - 80px);
           box-sizing: border-box;
           overflow: hidden;
+          /* The (main) layout pads every page by pb-16; here that padding was
+             64 px of document scroll under a page that fits the screen. */
+          margin-bottom: -4rem;
         }
         .rp-studio .rp-mono { font-family: var(--font-geist-mono), ui-monospace, monospace; letter-spacing: 0.02em; }
 
@@ -4543,7 +4546,7 @@ export default function GeneratePage() {
            parts stack, the page scrolls normally, and the order bar stays on
            the bottom of the screen. */
         @media (max-width: 1099px) {
-          .rp-studio { flex-direction: column; height: auto; overflow: visible; padding: 12px 14px 112px; gap: 14px; }
+          .rp-studio { flex-direction: column; height: auto; overflow: visible; padding: 12px 14px 112px; gap: 14px; margin-bottom: 0; }
           /* Above the stage: the fixed order bar lives in the composer's
              stacking context, and the stage, later in the page, painted over it. */
           .rp-studio > .rp-composer { width: auto; z-index: 2; }
