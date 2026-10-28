@@ -25,11 +25,12 @@ const LIVE_IDS = [
   'latentsync-1.6', 'fal-ai/latentsync', 'fal-ai/infinitalk', 'hunyuan3d-2.1', 'fal-ai/kling-video/lipsync/audio-to-video',
 ];
 
-test('every bundled picture a model points at is on disk', () => {
+test('every bundled picture and clip a model points at is on disk', () => {
   for (const id of LIVE_IDS) {
     const p = modelPreview(id, null);
     if (!p) continue;
     assert.ok(existsSync(path.join('public', p.src)), `${id} → ${p.src}`);
+    if (p.video) assert.ok(existsSync(path.join('public', p.video)), `${id} → ${p.video}`);
   }
 });
 
@@ -50,7 +51,7 @@ test('a family with no published example falls back to the category art', () => 
 });
 
 test("an admin's thumbnail wins and carries no bundled credit", () => {
-  assert.deepEqual(modelPreview('seedream-5.0', ' https://cdn.example.com/x.webp '), { src: 'https://cdn.example.com/x.webp', credit: null });
+  assert.deepEqual(modelPreview('seedream-5.0', ' https://cdn.example.com/x.webp '), { src: 'https://cdn.example.com/x.webp', video: null, credit: null });
   assert.equal(modelPreview('seedream-5.0', '   ')?.src, '/model-samples/seedream-5.webp');
 });
 

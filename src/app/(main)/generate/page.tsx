@@ -46,6 +46,7 @@ import { AUDIO_EXT, AudioCover, AudioResult } from "@/components/xdreamer/audio"
 import { loadAudio } from "@/components/xdreamer/audio-wave";
 import { AudioTrimmer, coversWhole, cutAudio, initialTrim, trimKey, type TrimRange } from "@/components/xdreamer/audio-trim";
 import { ModeOrb, type OrbItem } from "@/components/xdreamer/mode-orb";
+import { ModelBalloons } from "@/components/xdreamer/model-balloons";
 import { NO_ORDER_INPUTS, type OrderInputs } from "@/lib/order-inputs";
 import { loginHref } from "@/lib/safe-callback";
 import { checkClip, checkVoice, lipsyncCredits, type ClipFacts } from "@/lib/lipsync-rules";
@@ -336,7 +337,7 @@ const MUSIC_STARTERS = [
 const AUDIO_ACCEPT = "audio/mpeg,audio/wav,audio/ogg,audio/flac,audio/mp4,audio/x-m4a";
 
 /**
- * The model gallery's order: what can be ordered now first, then the rest, each
+ * The model picker's order: what can be ordered now first, then the rest, each
  * keeping the admin's sort order — a customer should not scroll past a page of
  * closed models to find the open ones.
  */
@@ -851,6 +852,14 @@ const TAB_LABEL: Record<TabType, string> = {
  * name never reaches a browser that had the old one. Bump the suffix when the
  * art changes, and redraw the whole set or the new one stands out of it.
  */
+const PICKER_TITLE: Record<TabType, string> = {
+  image: "เลือกโมเดลสร้างภาพ",
+  video: "เลือกโมเดลสร้างวิดีโอ",
+  edit: "เลือกโมเดลแก้ภาพ",
+  lipsync: "เลือกโมเดลพากย์ทับคลิป",
+  audio: "เลือกโมเดลเพลง",
+};
+
 const TAB_ICON: Record<TabType, string> = {
   image: "/studio/ic-image-v1.webp",
   video: "/studio/ic-video-v1.webp",
@@ -1400,7 +1409,7 @@ export default function GeneratePage() {
   const [result, setResult] = useState<GenerationResult | null>(null);
   const [isFavorited, setIsFavorited] = useState(false);
   const [showModelDropdown, setShowModelDropdown] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLElement>(null);
   /**
    * Reference pictures of an image order, in the order they are sent. One for
    * an img2img model (with `strength`), up to the model's cap for one that
@@ -1793,12 +1802,10 @@ export default function GeneratePage() {
     (m.subcategory === "upscale" || /upscale|esrgan/i.test(m.name) || /upscale|esrgan/i.test(m.modelId))
   );
 
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) setShowModelDropdown(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
+  const closeModelPicker = useCallback(() => setShowModelDropdown(false), []);
+  const pickModel = useCallback((id: number) => {
+    setSelectedModelId(id);
+    setShowModelDropdown(false);
   }, []);
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2936,7 +2943,7 @@ export default function GeneratePage() {
           The glass is a layer of its own beside the content, not around it:
           backdrop-filter makes an element the containing block of whatever is
           fixed inside it, and on a phone the order bar is fixed to the screen. */}
-      <section className="rp-composer" aria-label="ตั้งค่างาน">
+      <section ref={composerRef} className="rp-composer" aria-label="ตั้งค่างาน">
         <div className="rp-hud rp-composer-glass" aria-hidden="true"><span className="rp-led"><i /></span></div>
         <div className="rp-cscroll rp-scroll">
           <div className="rp-chead">
@@ -2977,8 +2984,8 @@ export default function GeneratePage() {
 
           {/* ── 01 Model ── */}
           <Field no="01" label="โมเดล">
-            <div ref={dropdownRef}>
-              <button type="button" className="rp-model rp-raised" aria-expanded={showModelDropdown}
+            <div>
+              <button type="button" className="rp-model rp-raised" aria-expanded={showModelDropdown} aria-haspopup="dialog"
                 onClick={() => setShowModelDropdown(!showModelDropdown)}>
                 {/* eslint-disable-next-line @next/next/no-img-element -- small fixed art or the model's sample */}
                 <img key={selectedModel?.id ?? "none"} className="rp-mlogo" data-photo={selectedModel?.preview ? "true" : undefined}
@@ -3000,45 +3007,10 @@ export default function GeneratePage() {
                   <span>เปลี่ยนโมเดล {showModelDropdown ? "▴" : "▾"}</span>
                 </span>
               </button>
-              {/* In the flow, not floating: the composer scrolls, and a list
-                  hung over it would be cut off by its edge. */}
+              {/* Every model floats up over the stage as a balloon playing its showcase. */}
               {showModelDropdown && (
-                <div className="rp-mlist rp-well rp-scroll" role="listbox" aria-label="เลือกโมเดล">
-                  {filteredModels.length === 0 ? (
-                    <div style={{ gridColumn: "1 / -1", padding: 16, textAlign: "center", fontSize: 13, color: "#94a3b8" }}>ไม่มีโมเดลสำหรับหมวดนี้</div>
-                  ) : pickerOrder(filteredModels).map(m => {
-                    // A model that cannot be ordered right now — still being
-                    // proven out, or its provider not connected / failing —
-                    // stays visible, dimmed, with the reason. Picking it is
-                    // blocked: the alternative is letting a customer spend
-                    // credits on a render that cannot be delivered.
-                    const blocked = m.canOrder === false;
-                    const reason = m.unavailableReason ?? m.tuningMessage ?? "ยังใช้งานไม่ได้ ลองใหม่ภายหลัง";
-                    const on = selectedModelId === m.id;
-                    return (
-                      <button key={m.id} type="button" role="option" aria-selected={on} disabled={blocked}
-                        className="rp-mopt" data-on={on ? "true" : "false"}
-                        title={blocked ? reason : m.description ?? undefined}
-                        onClick={() => { if (blocked) return; setSelectedModelId(m.id); setShowModelDropdown(false); }}>
-                        <span className="rp-mart" data-photo={m.preview ? "true" : "false"}>
-                          {/* eslint-disable-next-line @next/next/no-img-element -- bundled sample or an admin's URL */}
-                          <img src={m.preview?.src || TAB_ICON[tab]} alt="" loading="lazy" decoding="async" onError={previewFallback(TAB_ICON[tab])} />
-                          <span className="rp-mchip">✦ {m.creditsPerUnit}</span>
-                          {m.isFeatured && !blocked && <span className="rp-mstar">✦ แนะนำ</span>}
-                          {blocked && <span className="rp-mstate" data-tone={m.status === "tuning" ? "tuning" : "off"}>
-                            {m.status === "tuning" ? "กำลังปรับแต่ง" : "ยังใช้ไม่ได้"}
-                          </span>}
-                          {on && <span className="rp-mcheck" aria-hidden="true">✓</span>}
-                          {m.preview?.credit && <span className="rp-mcredit">{m.preview.credit}</span>}
-                        </span>
-                        <span className="rp-mcap">
-                          <b>{m.name}</b>
-                          <small>{blocked ? reason : `${m.provider.name}${m.subcategory ? ` · ${m.subcategory}` : ""}`}</small>
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
+                <ModelBalloons models={pickerOrder(filteredModels)} selectedId={selectedModelId} art={TAB_ICON[tab]}
+                  title={PICKER_TITLE[tab]} keepClear={composerRef} onPick={pickModel} onClose={closeModelPicker} />
               )}
             </div>
           </Field>
@@ -4278,47 +4250,6 @@ export default function GeneratePage() {
         .rp-studio .rp-mprice b { display: block; font-size: 14px; color: #fde68a; font-weight: 600; }
         .rp-studio .rp-mprice span { font-size: 11px; color: #64748b; white-space: nowrap; }
         .rp-studio .rp-mlogo[data-photo="true"] { object-fit: cover; border-radius: 10px; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12); filter: none; }
-        /* model gallery: each model's sample picture, as many to a row as fit */
-        .rp-studio .rp-mlist {
-          margin-top: 8px; max-height: 452px; overflow-y: auto; border-radius: 12px; padding: 6px;
-          display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px;
-        }
-        .rp-studio .rp-mopt {
-          display: flex; flex-direction: column; min-width: 0; padding: 0; border: 0; border-radius: 11px; overflow: hidden;
-          background: rgba(255, 255, 255, 0.025); color: #e2e8f0; text-align: left; font: inherit; cursor: pointer;
-          box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06); transition: box-shadow 160ms ease, transform 160ms ease;
-        }
-        .rp-studio .rp-mopt:hover:not(:disabled) { transform: translateY(-1px); box-shadow: inset 0 0 0 1px rgba(var(--cy), 0.4), 0 10px 18px -12px rgba(0, 0, 0, 0.9); }
-        .rp-studio .rp-mopt:focus-visible { outline: 2px solid rgba(var(--cy), 0.8); outline-offset: 1px; }
-        .rp-studio .rp-mopt[data-on="true"] { box-shadow: inset 0 0 0 2px rgba(var(--cy), 0.75), 0 0 18px -6px rgba(var(--cy), 0.6); }
-        .rp-studio .rp-mopt:disabled { cursor: not-allowed; }
-        .rp-studio .rp-mopt:disabled .rp-mart img { filter: grayscale(0.85) brightness(0.55); }
-        .rp-studio .rp-mopt:disabled .rp-mcap { opacity: 0.6; }
-        .rp-studio .rp-mart { position: relative; display: block; aspect-ratio: 4 / 3; overflow: hidden; background: radial-gradient(120% 90% at 30% 20%, rgba(139, 92, 246, 0.28), rgba(15, 23, 42, 0.9)); }
-        .rp-studio .rp-mart img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 420ms cubic-bezier(0.2, 0.7, 0.2, 1); }
-        .rp-studio .rp-mart[data-photo="false"] img { position: absolute; inset: 0; margin: auto; width: 38%; height: auto; max-height: 52%; object-fit: contain; filter: drop-shadow(0 8px 14px rgba(0, 0, 0, 0.55)) saturate(0.8); }
-        .rp-studio .rp-mart::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(2, 6, 23, 0.35) 0%, transparent 30%, transparent 62%, rgba(2, 6, 23, 0.55) 100%); pointer-events: none; }
-        .rp-studio .rp-mopt:hover:not(:disabled) .rp-mart img { transform: scale(1.06); }
-        .rp-studio .rp-mchip, .rp-studio .rp-mstar, .rp-studio .rp-mstate, .rp-studio .rp-mcheck {
-          position: absolute; z-index: 1; font-size: 10px; font-weight: 600; line-height: 1; padding: 4px 6px; border-radius: 999px;
-          backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
-        }
-        .rp-studio .rp-mchip { top: 6px; right: 6px; background: rgba(2, 6, 23, 0.62); color: #fde68a; }
-        .rp-studio .rp-mstar { top: 6px; left: 6px; background: rgba(251, 191, 36, 0.2); color: #fde68a; box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.35); }
-        .rp-studio .rp-mstate { top: 6px; left: 6px; background: rgba(15, 23, 42, 0.75); color: #cbd5e1; }
-        .rp-studio .rp-mstate[data-tone="tuning"] { color: #fbbf24; box-shadow: inset 0 0 0 1px hsla(38, 90%, 55%, 0.4); }
-        .rp-studio .rp-mcheck { bottom: 6px; right: 6px; width: 20px; height: 20px; padding: 0; display: grid; place-items: center; font-size: 12px; background: rgba(var(--cy), 0.9); color: #04121a; }
-        .rp-studio .rp-mcredit {
-          position: absolute; z-index: 1; left: 6px; bottom: 5px; right: 32px; font-size: 8.5px; line-height: 1.2;
-          color: rgba(226, 232, 240, 0.78); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-        }
-        .rp-studio .rp-mcap { display: block; padding: 7px 9px 8px; min-width: 0; }
-        .rp-studio .rp-mcap b { display: block; font-size: 12.5px; font-weight: 600; color: #f1f5f9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .rp-studio .rp-mcap small { display: block; margin-top: 2px; font-size: 10.5px; color: #8391a7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        @media (prefers-reduced-motion: reduce) {
-          .rp-studio .rp-mopt, .rp-studio .rp-mart img { transition: none; }
-          .rp-studio .rp-mopt:hover:not(:disabled), .rp-studio .rp-mopt:hover:not(:disabled) .rp-mart img { transform: none; }
-        }
 
         /* prompt */
         .rp-studio .rp-prompt { border-radius: 13px; overflow: hidden; transition: box-shadow 160ms ease; }

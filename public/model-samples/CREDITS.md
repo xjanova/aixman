@@ -1,9 +1,10 @@
 # Model sample pictures
 
-Shown on the studio model picker (`src/lib/model-samples.ts`). Each is an example
-published by the model's maker or found on the web — not rendered by this site —
-resized to 512×384 WebP. Replace one by overwriting its file, or give a model row its
-own picture with `thumbnail` on Admin → Models.
+Shown in the studio's balloon model picker (`src/lib/model-samples.ts`,
+`src/components/xdreamer/model-balloons.tsx`). Each is an example published by the
+model's maker or found on the web — not rendered by this site — cropped to a 640 px
+square WebP. Replace one by overwriting its file, or give a model row its own
+picture with `thumbnail` on Admin → Models.
 
 | File | Credit | Licence | Source |
 |---|---|---|---|
@@ -33,19 +34,44 @@ own picture with `thumbnail` on Admin → Models.
 | runway-gen3.webp | Runway | vendor promotional, no licence stated | https://runway.com/research/introducing-gen-3-alpha |
 | kling-video.webp | Kuaishou Kling / Replicate (official model page example) | vendor promotional, no licence stated | https://replicate.com/kwaivgi/kling-v2.1-master |
 | kolors.webp | Kuaishou Kolors team | Kolors model licence (repo MODEL_LICENSE; Apache-2.0 code) | https://huggingface.co/Kwai-Kolors/Kolors |
-| luma-ray2.webp | Luma AI / Replicate (official model page featured image) | vendor promotional, no licence stated | https://replicate.com/luma/ray-2-720p |
+| luma-ray2.webp | Luma AI (Ray2 showcase, "an underwater city", on Luma's own CDN) | vendor promotional, no licence stated | https://lumalabs.ai/ray (Ray2 page, archived at https://web.archive.org/web/20250221092529/https://lumalabs.ai/ray) |
 | leonardo-phoenix.webp | Leonardo.Ai Phoenix 1.0 (Commons uploader) | Public domain (as stated on Commons) | https://commons.wikimedia.org/wiki/File:Leonardo_Phoenix_10_A_whimsical_image_shows_a_talented_photogr_1.jpg |
 | leonardo-diffusion-xl.webp | LVictorious (made with Leonardo Diffusion XL) | CC BY-SA 4.0 | https://commons.wikimedia.org/wiki/File:Leonardo_Diffusion_XL_generates_an_image_for_a_digital_product_3.jpg |
 | qwen-image.webp | Qwen team (Alibaba) | Apache-2.0 | https://huggingface.co/Qwen/Qwen-Image |
 | ltx.webp | Lightricks | vendor promotional, no licence stated (video embedded in the LTX-2 repo README; weights under the LTX-2 Community License) | https://github.com/Lightricks/LTX-2 |
-| hunyuan3d.webp | Tencent Hunyuan3D team | Tencent Hunyuan Community License | https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1 |
+| hunyuan3d.webp | Tencent Hunyuan3D team (Hunyuan3D 2.0 README results GIF) | Tencent Hunyuan 3D 2.0 Community License (not for use in the EU, UK or South Korea) | https://github.com/Tencent-Hunyuan/Hunyuan3D-2 |
+
+## Showcase clips
+
+Twelve families also have a looping clip, `<slug>.mp4`, played inside their balloon (`VIDEO_SLUGS` in
+model-samples.ts). Each is a 3.5–7 s window of the clip below, cropped to a 480 px square, 24 fps, H.264 main
+profile, no sound, its loop seam cross-faded (≈ 0.1–0.4 MB each). The `.webp` of the same name is that
+window's first frame (640 px), so the picture and the clip agree; credits and licences are those in the table above.
+
+| Clip | Window used | Source file |
+|---|---|---|
+| seedance.mp4 | 10.0–13.9 s, the daughter and dog running to the door, the hug | https://upload.wikimedia.org/wikipedia/commons/d/d6/Seedance-2-husband-coming-home.webm |
+| sora-2.mp4 | 38.0–42.9 s, the golden-retriever astronaut and the tennis balls | https://upload.wikimedia.org/wikipedia/commons/5/5b/OpenAI_-_This_is_Sora_2.webm |
+| minimax-video.mp4 | whole clip, cropped clear of the "MiniMax · Hailuo AI" corner mark | https://upload.wikimedia.org/wikipedia/commons/a/ae/Cyberpunk_Rainy_Street_%28Hailuo_AI%29.webm |
+| minimax-h3.mp4 | 0–4.4 s of the README's T2VA result (before the white jump flash) | https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/main/assets/t2va.mp4 |
+| ltx.mp4 | 0.1–6.3 s, the campfire shot of the LTX-2 README video (before the captions start) | https://github.com/Lightricks/LTX-2 (README video) |
+| kling-video.mp4 | whole clip ("a woman walking in a park") | https://replicate.com/kwaivgi/kling-v2.1-master (featured example) |
+| kling-lipsync.mp4 | 0–6 s of the model's cover example | https://replicate.com/kwaivgi/kling-lip-sync (cover example) |
+| luma-ray2.mp4 | whole clip | https://static.cdn-luma.com/files/site/ray2/Underwater%20Metropolis.mp4 |
+| runway-gen4.mp4 | 1.5–7.5 s, the floating-house cell of the 3×3 "Physics" reel | https://d3phaj0sisr2ct.cloudfront.net/site/content/videos/gen4/gen-4PhysicsReel_1-3.mp4 |
+| runway-gen3.mp4 | 0.3–7.5 s ("flowers blooming from the concrete"), cropped clear of the corner mark | https://d3phaj0sisr2ct.cloudfront.net/site/videos/gen-3-alpha/carousel-03/gen-3-alpha-output-006.mp4 |
+| latentsync.mp4 | 0–6 s of the README's first lip-synced result (footage of contracted models, per the README) | https://github.com/bytedance/LatentSync (README demo table) |
+| hunyuan3d.mp4 | the whole GIF, one turn of the left figure | https://raw.githubusercontent.com/Tencent-Hunyuan/Hunyuan3D-2/main/assets/images/e2e-1.gif |
+
 Notes:
 - `leonardo-diffusion-xl.webp` is a resized crop of a CC BY-SA 4.0 work and is shared under CC BY-SA 4.0 too.
-  It and `seedream-5.webp` (CC BY 4.0) carry their credit on the picker card (`ATTRIBUTION` in model-samples.ts).
+  It and `seedream-5.webp` (CC BY 4.0) carry their credit on the picker balloon (`ATTRIBUTION` in model-samples.ts).
 - `outpaint.webp` shows FLUX.1 Fill's official outpaint example (no Stability one was published). It is recomposed:
-  the expanded result fills the card, with the original crop inset.
+  the expanded result fills the balloon, with the original crop inset.
 - `creative-upscaler.webp` is Stability's Creative Upscale example, shown for fal's Creative Upscaler.
 - `infinitalk.webp` and `runway-gen3.webp` are cropped to leave out a corner watermark.
-- Video models show a still frame taken from an official or Commons clip.
-- Pictures marked "vendor promotional" are the vendor's own showcase of the model with no licence stated. Replace
-  them (or set an admin thumbnail) if a vendor objects.
+- InfiniteTalk has no clip on purpose: its demo videos are marked academic use only by MeiGen-AI, and the README's
+  first demo is a well-known animated character. `infinitalk.webp` is unchanged.
+- `hunyuan3d` shows Hunyuan3D **2.0** output: 2.1 publishes no clip or GIF.
+- Pictures and clips marked "vendor promotional" are the vendor's own showcase of the model with no licence
+  stated. Replace them (or set an admin thumbnail) if a vendor objects. An admin thumbnail also turns the clip off.

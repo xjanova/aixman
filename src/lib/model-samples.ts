@@ -24,6 +24,17 @@ const SAMPLE_SLUGS = new Set<string>([
   'kolors', 'luma-ray2', 'leonardo-phoenix', 'leonardo-diffusion-xl', 'qwen-image', 'ltx', 'hunyuan3d',
 ]);
 
+/**
+ * Families that also have a looping showcase clip, `public/model-samples/<slug>.mp4`
+ * (480 px square, a few seconds, no sound) — the picker's balloons play it, with
+ * the picture as its poster. The picture is the clip's first frame, so the
+ * balloon does not jump when the clip starts.
+ */
+const VIDEO_SLUGS = new Set<string>([
+  'seedance', 'sora-2', 'minimax-video', 'minimax-h3', 'ltx', 'kling-video', 'kling-lipsync',
+  'luma-ray2', 'runway-gen4', 'runway-gen3', 'latentsync', 'hunyuan3d',
+]);
+
 /** Pictures whose licence requires a credit where they are shown (CC BY / BY-SA). */
 const ATTRIBUTION: Record<string, string> = {
   'seedream-5': '© VulcanSphere · CC BY 4.0',
@@ -97,6 +108,8 @@ function slugFor(modelId: string): string | null {
 
 export interface ModelPreview {
   src: string;
+  /** A short muted loop of the family's showcase clip, else null. */
+  video: string | null;
   /** Credit the picture's licence requires on screen, else null. */
   credit: string | null;
 }
@@ -107,8 +120,13 @@ export interface ModelPreview {
  */
 export function modelPreview(modelId: string, adminThumbnail: string | null): ModelPreview | null {
   const own = adminThumbnail?.trim();
-  if (own) return { src: own, credit: null };
+  // An admin's picture replaces the family's clip too: it may not be the same model.
+  if (own) return { src: own, video: null, credit: null };
   const slug = slugFor(modelId);
   if (!slug || !SAMPLE_SLUGS.has(slug)) return null;
-  return { src: `/model-samples/${slug}.webp`, credit: ATTRIBUTION[slug] ?? null };
+  return {
+    src: `/model-samples/${slug}.webp`,
+    video: VIDEO_SLUGS.has(slug) ? `/model-samples/${slug}.mp4` : null,
+    credit: ATTRIBUTION[slug] ?? null,
+  };
 }
