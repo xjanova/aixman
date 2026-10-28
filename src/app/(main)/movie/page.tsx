@@ -27,7 +27,9 @@ import Link from "next/link";
 import { PageHero } from "@/components/xdreamer/page-hero";
 import { useToast } from "@/components/ui/toast-provider";
 import { loginHref } from "@/lib/safe-callback";
-import { ASPECTS, CAMERA_MOVES, FILM_LENGTHS, LIMITS, LOOKS, MOODS, SHOT_SIZES } from "@/lib/story/cinematic";
+import { ASPECTS, CAMERA_MOVES, FILM_LENGTHS, LIMITS, LOOKS, MOODS, SHOT_SIZES, safeCamera } from "@/lib/story/cinematic";
+import { CameraPreview } from "@/components/camera-preview/CameraPreview";
+import { isCameraMoveId, isShotSizeId, MOVE_HINTS, SIZE_HINTS } from "@/lib/camera-shots";
 
 interface Character {
   id?: number;
@@ -490,6 +492,35 @@ function NewProject({ onCreated }: { onCreated: (id: number) => void }) {
 
 // ─── One shot ───────────────────────────────────────────────────────────
 
+/**
+ * The shot's size and camera move played on a small 3D scene, so the two
+ * dropdowns above it show what they mean. It plays the camera the shot will
+ * really get: a push-in that `safeCamera` holds still is shown held still.
+ */
+function ShotCameraPreview({ shotSize, camera, ledByCharacter }: { shotSize: string; camera: string; ledByCharacter: boolean }) {
+  const used = safeCamera(shotSize, camera, ledByCharacter);
+  const move = isCameraMoveId(used) ? used : "static";
+  const size = isShotSizeId(shotSize) ? shotSize : undefined;
+  return (
+    <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+      <CameraPreview shot={{ move, size }} style={{
+        width: 192, aspectRatio: "16 / 9", display: "block", borderRadius: 10, flexShrink: 0,
+        background: "linear-gradient(180deg, #0b1030 0%, #2b2a7a 55%, #5a2a7e 100%)",
+        boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.08)",
+      }} />
+      <div style={{ fontSize: 12.5, color: "#94a3b8", lineHeight: 1.6, minWidth: 0, flex: "1 1 180px" }}>
+        <div style={{ color: "#e2e8f0" }}>
+          {SHOT_SIZES[shotSize]?.label ?? shotSize} · {CAMERA_MOVES[move]?.label ?? move}
+        </div>
+        <div>{size ? SIZE_HINTS[size] : ""}{size ? " · " : ""}{MOVE_HINTS[move]}</div>
+        {used !== camera && (
+          <div style={{ color: "#fbbf24" }}>ช็อตกว้างที่เปิดด้วยตัวละครจะใช้กล้องนิ่งแทนการดันเข้า เพื่อให้หน้าตัวละครไม่เพี้ยน</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ShotCard({
   shot,
   project,
@@ -652,6 +683,7 @@ function ShotCard({
             </select>
           </div>
         </div>
+        <ShotCameraPreview shotSize={draft.shotSize} camera={draft.camera} ledByCharacter={draft.characterIds.length > 0} />
         {project.characters.length > 0 && (
           <div>
             <span style={label}>ตัวละครในช็อต (คนแรก = ภาพเฟรมแรก)</span>

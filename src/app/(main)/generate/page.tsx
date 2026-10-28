@@ -59,6 +59,8 @@ import {
   splitReferencePrompt,
   type ReferenceRole,
 } from "@/lib/studio-references";
+import { CameraPreview } from "@/components/camera-preview/CameraPreview";
+import { shotHint, type ShotSpec } from "@/lib/camera-shots";
 
 const HUE = 70;
 
@@ -92,11 +94,18 @@ const aspectRatios = [
 ];
 
 /**
+ * One prompt-builder button. `shot` marks a camera option: it is shown as a
+ * looping 3D preview of what that camera does instead of a text chip.
+ */
+interface BuilderItem { th: string; en: string; shot?: ShotSpec }
+type BuilderGroup = { label: string; items: BuilderItem[] };
+
+/**
  * Building blocks for a picture prompt, grouped by what they control. Each
  * inserts the English phrase image models were trained on; the Thai label is
  * only there to be read.
  */
-const IMAGE_BUILDER: { label: string; items: { th: string; en: string }[] }[] = [
+const IMAGE_BUILDER: BuilderGroup[] = [
   { label: "สไตล์ภาพ", items: [
     { th: "ภาพถ่ายสมจริง", en: "photorealistic photograph" },
     { th: "ภาพนิ่งจากหนัง", en: "cinematic film still" },
@@ -116,12 +125,12 @@ const IMAGE_BUILDER: { label: string; items: { th: string; en: string }[] }[] = 
     { th: "โทนมืดดราม่า", en: "moody low-key lighting" },
   ] },
   { label: "มุมกล้อง / เลนส์", items: [
-    { th: "พอร์ตเทรต 85mm", en: "close-up portrait, 85mm lens, shallow depth of field" },
-    { th: "มุมกว้าง 24mm", en: "wide-angle 24mm shot" },
-    { th: "มาโคร", en: "macro shot, extreme detail" },
-    { th: "มุมสูงโดรน", en: "aerial drone view" },
-    { th: "มุมต่ำ", en: "low-angle hero shot" },
-    { th: "มุมบนวางราบ", en: "top-down flat lay" },
+    { th: "พอร์ตเทรต 85mm", en: "close-up portrait, 85mm lens, shallow depth of field", shot: { angle: "portrait-85" } },
+    { th: "มุมกว้าง 24mm", en: "wide-angle 24mm shot", shot: { angle: "wide-24" } },
+    { th: "มาโคร", en: "macro shot, extreme detail", shot: { angle: "macro" } },
+    { th: "มุมสูงโดรน", en: "aerial drone view", shot: { angle: "aerial" } },
+    { th: "มุมต่ำ", en: "low-angle hero shot", shot: { angle: "low-angle" } },
+    { th: "มุมบนวางราบ", en: "top-down flat lay", shot: { angle: "top-down" } },
   ] },
   { label: "สีและบรรยากาศ", items: [
     { th: "พาสเทล", en: "soft pastel palette" },
@@ -143,26 +152,26 @@ const IMAGE_BUILDER: { label: string; items: { th: string; en: string }[] }[] = 
  * as an action in the description ("The camera pushes in…"), and the camera
  * vocabulary is the one MiniMax's prompting guide for H3 defines.
  */
-const VIDEO_BUILDER: { label: string; items: { th: string; en: string }[] }[] = [
+const VIDEO_BUILDER: BuilderGroup[] = [
   { label: "การเคลื่อนกล้อง", items: [
-    { th: "ดันเข้าช้าๆ", en: "The camera pushes in slowly toward the subject." },
-    { th: "ถอยออกเผยฉาก", en: "The camera pulls out slowly to reveal the whole scene." },
-    { th: "แพนไปทางขวา", en: "The camera pans right across the scene." },
-    { th: "เลื่อนข้างตาม", en: "The camera trucks left alongside the subject." },
-    { th: "เงยขึ้นฟ้า", en: "The camera tilts up from the ground to the sky." },
-    { th: "โคจรรอบตัว", en: "An arc shot circles around the subject." },
-    { th: "ติดตามผู้แสดง", en: "A tracking shot follows the subject as they move." },
-    { th: "กล้องนิ่ง", en: "Static shot, the camera holds perfectly still." },
-    { th: "มุมมองสายตา", en: "POV shot through the character's eyes." },
-    { th: "ถือกล้องสั่นนิดๆ", en: "Handheld camera with a slight natural shake." },
-    { th: "โดรนบินผ่าน", en: "Aerial drone shot gliding slowly over the landscape." },
-    { th: "ซูมเข้าใบหน้า", en: "The lens zooms in on the subject's face." },
+    { th: "ดันเข้าช้าๆ", en: "The camera pushes in slowly toward the subject.", shot: { move: "push-in" } },
+    { th: "ถอยออกเผยฉาก", en: "The camera pulls out slowly to reveal the whole scene.", shot: { move: "pull-out" } },
+    { th: "แพนไปทางขวา", en: "The camera pans right across the scene.", shot: { move: "pan-right" } },
+    { th: "เลื่อนข้างตาม", en: "The camera trucks left alongside the subject.", shot: { move: "truck-left" } },
+    { th: "เงยขึ้นฟ้า", en: "The camera tilts up from the ground to the sky.", shot: { move: "tilt-up" } },
+    { th: "โคจรรอบตัว", en: "An arc shot circles around the subject.", shot: { move: "orbit" } },
+    { th: "ติดตามผู้แสดง", en: "A tracking shot follows the subject as they move.", shot: { move: "tracking" } },
+    { th: "กล้องนิ่ง", en: "Static shot, the camera holds perfectly still.", shot: { move: "static" } },
+    { th: "มุมมองสายตา", en: "POV shot through the character's eyes.", shot: { move: "pov" } },
+    { th: "ถือกล้องสั่นนิดๆ", en: "Handheld camera with a slight natural shake.", shot: { move: "handheld" } },
+    { th: "โดรนบินผ่าน", en: "Aerial drone shot gliding slowly over the landscape.", shot: { move: "drone" } },
+    { th: "ซูมเข้าใบหน้า", en: "The lens zooms in on the subject's face.", shot: { move: "zoom-face" } },
   ] },
   { label: "ขนาดภาพ", items: [
-    { th: "ไกลเห็นทั้งฉาก", en: "Wide establishing shot." },
-    { th: "ครึ่งตัว", en: "Medium shot." },
-    { th: "ใกล้ใบหน้า", en: "Close-up shot." },
-    { th: "ใกล้มาก", en: "Extreme close-up." },
+    { th: "ไกลเห็นทั้งฉาก", en: "Wide establishing shot.", shot: { size: "extreme-wide" } },
+    { th: "ครึ่งตัว", en: "Medium shot.", shot: { size: "medium" } },
+    { th: "ใกล้ใบหน้า", en: "Close-up shot.", shot: { size: "close" } },
+    { th: "ใกล้มาก", en: "Extreme close-up.", shot: { size: "extreme-close" } },
   ] },
   { label: "สไตล์และแสง", items: [
     { th: "หนังฟอร์มยักษ์", en: "Live-action, cinematic, anamorphic lens, shallow depth of field." },
@@ -884,7 +893,7 @@ type Placement = { up: boolean; left: number; top: number; bottom: number; width
  * as a full-width selector showing its value.
  */
 function Popover({
-  id, open, onToggle, label, value, children, align = "left", width = 300, variant = "field",
+  id, open, onToggle, label, value, children, align = "left", width = 300, maxHeight = 360, variant = "field",
 }: {
   id: string;
   open: string | null;
@@ -894,12 +903,14 @@ function Popover({
   children: React.ReactNode;
   align?: "left" | "right";
   width?: number;
+  /** Tallest the panel may grow when the screen has room. */
+  maxHeight?: number;
   variant?: "field" | "tool";
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const isOpen = open === id;
-  const [place, setPlace] = useState<Placement>({ up: false, left: 0, top: 0, bottom: 0, width, maxHeight: 360 });
+  const [place, setPlace] = useState<Placement>({ up: false, left: 0, top: 0, bottom: 0, width, maxHeight });
 
   const measure = useCallback(() => {
     const el = ref.current;
@@ -922,9 +933,9 @@ function Popover({
       top: t.bottom + 6,
       bottom: vh - t.top + 6,
       width: w,
-      maxHeight: Math.min(360, Math.max(160, (up ? above : below) - 6)),
+      maxHeight: Math.min(maxHeight, Math.max(160, (up ? above : below) - 6)),
     });
-  }, [align, width]);
+  }, [align, width, maxHeight]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -3074,7 +3085,8 @@ export default function GeneratePage() {
                 {/* Prompt builder. Pictures get their vocabulary as comma-joined
                     phrases; clips get camera and shot direction as sentences
                     (the form video models read it in); songs keep their tag chips. */}
-                <Popover id="tags" open={openPanel} onToggle={setOpenPanel} variant="tool" width={320}
+                <Popover id="tags" open={openPanel} onToggle={setOpenPanel} variant="tool"
+                  width={tab === "audio" ? 320 : 480} maxHeight={tab === "audio" ? 360 : 560}
                   label={tab === "audio" ? "+ แท็ก" : tab === "video" || tab === "lipsync" ? "🎥 กล้องและฉาก" : "✦ ตัวช่วยพรอมต์"}>
                   {tab === "audio" ? (
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -3096,6 +3108,29 @@ export default function GeneratePage() {
                       {(tab === "video" || tab === "lipsync" ? VIDEO_BUILDER : IMAGE_BUILDER).map((group) => (
                         <div key={group.label}>
                           <div style={{ fontSize: 10.5, letterSpacing: "0.08em", color: "#a5f3fc", marginBottom: 6 }}>{group.label}</div>
+                          {group.items.some((item) => item.shot) ? (
+                            // Camera options: each plays what that camera does, on the same little scene.
+                            <div className="rp-camgrid">
+                              {group.items.map((item) => {
+                                const already = prompt.toLowerCase().includes(item.en.toLowerCase());
+                                const sentence = tab === "video" || tab === "lipsync";
+                                return (
+                                  <button key={item.en} type="button" className="rp-camtile" data-on={already ? "true" : "false"}
+                                    title={item.en} aria-pressed={already}
+                                    onClick={() => (sentence ? addPromptSentence(item.en) : addPromptTag(item.en))}>
+                                    <span className="rp-camview">
+                                      {item.shot && <CameraPreview shot={item.shot} />}
+                                      {already && <span className="rp-camcheck" aria-hidden="true">✓</span>}
+                                    </span>
+                                    <span className="rp-camcap">
+                                      <b>{item.th}</b>
+                                      {item.shot && <small>{shotHint(item.shot)}</small>}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          ) : (
                           <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
                             {group.items.map((item) => {
                               const already = prompt.toLowerCase().includes(item.en.toLowerCase());
@@ -3112,6 +3147,7 @@ export default function GeneratePage() {
                               );
                             })}
                           </div>
+                          )}
                         </div>
                       ))}
                       <div style={{ fontSize: 10.5, color: "#64748b", lineHeight: 1.5 }}>
@@ -4334,6 +4370,34 @@ export default function GeneratePage() {
           backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
           box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), inset 0 0 0 1px rgba(var(--cy), 0.22),
             0 24px 48px -12px rgba(0, 0, 0, 0.85), 0 0 40px -16px rgba(34, 211, 238, 0.35);
+        }
+        /* camera options: a looping 3D preview of each move (the panel is portalled, outside .rp-studio) */
+        .xdr-pop .rp-camgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 7px; }
+        .xdr-pop .rp-camtile {
+          display: flex; flex-direction: column; min-width: 0; padding: 0; border: 0; border-radius: 10px; overflow: hidden;
+          background: rgba(255, 255, 255, 0.03); color: #e2e8f0; text-align: left; font: inherit; cursor: pointer;
+          box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07); transition: box-shadow 160ms ease, transform 160ms ease;
+        }
+        .xdr-pop .rp-camtile:hover { transform: translateY(-1px); box-shadow: inset 0 0 0 1px rgba(var(--cy), 0.45), 0 10px 18px -12px rgba(0, 0, 0, 0.9); }
+        .xdr-pop .rp-camtile:focus-visible { outline: 2px solid rgba(var(--cy), 0.8); outline-offset: 1px; }
+        .xdr-pop .rp-camtile[data-on="true"] { box-shadow: inset 0 0 0 2px rgba(var(--cy), 0.75), 0 0 16px -6px rgba(var(--cy), 0.6); }
+        .xdr-pop .rp-camview {
+          position: relative; display: block; aspect-ratio: 16 / 9; overflow: hidden;
+          background: linear-gradient(180deg, #0b1030 0%, #2b2a7a 55%, #5a2a7e 100%);
+        }
+        .xdr-pop .rp-camview canvas { display: block; width: 100%; height: 100%; }
+        .xdr-pop .rp-camview canvas[data-failed="true"] { visibility: hidden; }
+        .xdr-pop .rp-camcheck {
+          position: absolute; right: 5px; bottom: 5px; width: 18px; height: 18px; display: grid; place-items: center;
+          border-radius: 999px; font-size: 11px; font-weight: 700; background: rgba(var(--cy), 0.92); color: #04121a;
+        }
+        .xdr-pop .rp-camcap { display: block; padding: 6px 8px 7px; min-width: 0; }
+        .xdr-pop .rp-camcap b { display: block; font-size: 12px; font-weight: 600; color: #f1f5f9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .xdr-pop .rp-camcap small { display: block; margin-top: 2px; font-size: 10.5px; line-height: 1.35; color: #8391a7; }
+        .xdr-pop .rp-camtile[data-on="true"] .rp-camcap b { color: #a5f3fc; }
+        @media (prefers-reduced-motion: reduce) {
+          .xdr-pop .rp-camtile { transition: none; }
+          .xdr-pop .rp-camtile:hover { transform: none; }
         }
 
         /* lyrics */
