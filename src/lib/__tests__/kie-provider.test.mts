@@ -150,6 +150,62 @@ test('a data: URI frame goes through KIE upload first; the first and last frame 
   });
 });
 
+test('the task id reaches the order before the wait, so a restart can still collect the clip', async () => {
+  const seen: string[] = [];
+  const calls = stubFetch([
+    [CREATE, created],
+    [RECORD, () => {
+      // Stored before the first status read, not after the clip arrives.
+      assert.deepEqual(seen, ['task-1']);
+      return succeeded({ resultUrls: ['https://tempfile.kie.test/k4.mp4'] })();
+    }],
+  ]);
+  const result = await new FastKie().generateVideo({
+    modelId: 'kie/kling-4',
+    prompt: 'a cat walks into the rain',
+    duration: 5,
+    apiKey: 'k',
+    onTaskCreated: async (taskId) => {
+      seen.push(taskId);
+    },
+  });
+  assert.equal(result.success, true);
+  assert.equal(calls.filter((c) => RECORD.test(c.url)).length, 1);
+});
+
+test('an order whose task id could not be stored still waits for its clip', async () => {
+  stubFetch([[CREATE, created], [RECORD, succeeded({ resultUrls: ['https://tempfile.kie.test/k4.mp4'] })]]);
+  const result = await new FastKie().generateVideo({
+    modelId: 'kie/kling-4',
+    prompt: 'p',
+    apiKey: 'k',
+    onTaskCreated: async () => {
+      throw new Error('database away');
+    },
+  });
+  assert.equal(result.success, true);
+  assert.equal(result.resultUrl, 'https://tempfile.kie.test/k4.mp4');
+});
+
+test('a task cut off by a restart is read once: still rendering, then the clip, then a failure', async () => {
+  const kie = new FastKie();
+  stubFetch([[RECORD, state('generating')]]);
+  assert.deepEqual(await kie.taskStatus('k', 'kie/kling-4', 'task-1', Date.now()), { done: false });
+
+  stubFetch([[RECORD, succeeded({ resultUrls: ['https://tempfile.kie.test/k4.mp4'] }, 57)]]);
+  const done = await kie.taskStatus('k', 'kie/kling-4', 'task-1', Date.now() - 1000);
+  assert.equal(done.done, true);
+  assert.equal(done.result?.success, true);
+  assert.equal(done.result?.resultUrl, 'https://tempfile.kie.test/k4.mp4');
+  assert.equal(done.result?.jobId, 'task-1');
+  assert.equal(done.result?.costUsd, 0.285);
+
+  stubFetch([[RECORD, state('fail', { failMsg: 'render failed' })]]);
+  const failed = await kie.taskStatus('k', 'kie/kling-4', 'task-1', Date.now());
+  assert.equal(failed.result?.success, false);
+  assert.equal(failed.result?.orderFault, true);
+});
+
 test('a length the model is not sold at is sent as its shortest one, never as asked', async () => {
   const calls = stubFetch([[CREATE, created], [RECORD, succeeded({ resultUrls: ['https://tempfile.kie.test/c.mp4'] })]]);
   await new FastKie().generateVideo({ modelId: 'kie/seedance-2-fast', prompt: 'rain on a window', duration: 60, apiKey: 'k' });

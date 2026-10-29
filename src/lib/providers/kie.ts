@@ -116,6 +116,12 @@ export class KieProvider extends BaseProvider {
     if (!created.ok) return created.response;
     const taskId = created.taskId;
     try {
+      await params.onTaskCreated?.(taskId);
+    } catch (error) {
+      // Only the restart recovery needs it; the wait below goes on regardless.
+      console.error(`[kie] task ${taskId} not recorded on its order:`, (error as Error).message);
+    }
+    try {
       const result = await this.pollForResult(
         () => this.readTask(params.apiKey, taskId, started, entry.suno === 'stems'),
         pollAttempts(params.maxWaitSeconds ?? entry.maxWaitSeconds, this.pollIntervalMs),
@@ -232,6 +238,20 @@ export class KieProvider extends BaseProvider {
       const refused = failure(code, describe(body?.msg));
       return { ok: false, response: ELSEWHERE_CODES.has(code) ? { ...refused, retryElsewhere: true } : refused };
     }
+  }
+
+  /**
+   * One status read of a task this process is no longer waiting on — an order
+   * whose wait a deploy or crash cut off (ApiOrderSweep). `done: false` while
+   * KIE is still rendering it.
+   */
+  async taskStatus(
+    apiKey: string,
+    modelId: string,
+    taskId: string,
+    started: number
+  ): Promise<{ done: boolean; result?: ProviderResponse }> {
+    return this.readTask(apiKey, taskId, started, getKieEntry(modelId)?.suno === 'stems');
   }
 
   private async readTask(

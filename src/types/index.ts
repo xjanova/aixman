@@ -189,6 +189,12 @@ export interface ProviderGenerateParams {
    * adapter's own limit.
    */
   maxWaitSeconds?: number;
+  /**
+   * Called once the vendor has accepted the order and named its task (KIE),
+   * before the wait for the result. The order stores it, so a restart that
+   * cuts the wait off can still collect the result (ApiOrderSweep).
+   */
+  onTaskCreated?: (taskId: string) => Promise<void>;
 }
 
 // Admin types

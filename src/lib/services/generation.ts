@@ -2,6 +2,8 @@ import { after } from 'next/server';
 import prisma, { SLOW_DB_TX } from '@/lib/db';
 import { Prisma } from '@/generated/prisma/client';
 import { getProvider } from '@/lib/providers';
+import { KieProvider } from '@/lib/providers/kie';
+import { decrypt } from '@/lib/utils/encryption';
 import { getGpuProvider } from '@/lib/gpu';
 import { AccountPoolManager } from './account-pool';
 import { ModelReadiness, TUNING_MESSAGE } from './model-readiness';
@@ -44,6 +46,9 @@ import { kieUnavailable, loadFallbackSettings, pickFallback, type ModelWithProvi
  * a 3D model is coming. Thai, because /api/generate shows it as it is.
  */
 export const TYPE_MISMATCH_MESSAGE = 'โมเดลนี้ไม่รองรับงานประเภทนี้';
+
+/** Orders this process is waiting on right now (runApiOrder). */
+const runningOrders = new Set<number>();
 
 /** An API order already charged, handed to the call that runs it. */
 interface ApiOrderRun {
@@ -667,6 +672,16 @@ export class GenerationService {
    * order the sweep already failed and refunded back into a delivered one.
    */
   private static async runApiOrder(run: ApiOrderRun): Promise<GenerationResult> {
+    // While this process waits on it, ApiOrderSweep leaves the order alone.
+    runningOrders.add(run.generationId);
+    try {
+      return await this.executeApiOrder(run);
+    } finally {
+      runningOrders.delete(run.generationId);
+    }
+  }
+
+  private static async executeApiOrder(run: ApiOrderRun): Promise<GenerationResult> {
     const { userId, model, request, requiredCredits } = run;
     const generation = { id: run.generationId };
     // The row and key the last call went to: a delivery is credited to them,
@@ -778,121 +793,15 @@ export class GenerationService {
       } else {
         result = await attempt(model, run.account, false);
       }
-      // Where a fallback ran the order, the order says so, and its key is the one that served it.
-      const routed = route
-        ? { params: { ...(request.params ?? {}), route } as unknown as Prisma.InputJsonValue, accountPoolId: served.account.id }
-        : {};
-      // A stem split names its files ("เสียงร้อง", "กลอง" …); R2 copies them under random names.
-      const labels =
-        result.success && result.resultLabels && result.resultLabels.length === result.resultUrls?.length
-          ? result.resultLabels
-          : null;
-      // A song's words (output-lyrics.ts), kept the same way, only when they line up.
-      const lyrics =
-        result.success && result.resultLyrics && result.resultLyrics.length === result.resultUrls?.length
-          ? result.resultLyrics
-          : null;
-
-      // 7. Record result — what the vendor says the order cost when it says
-      // (KIE's creditsConsumed), else the row's list price.
-      if (result.success) {
-        const costUsd = result.costUsd ?? Number(served.model.costPerUnit);
-        await AccountPoolManager.recordSuccess(served.account.id, costUsd);
-
-        // Persist provider output to durable R2 storage. Provider URLs expire and
-        // base64 results shouldn't live in the DB long-term. persistAssetSafe is a
-        // no-op (returns the source unchanged) when R2 isn't configured.
-        let finalUrl = result.resultUrl;
-        let finalUrls = result.resultUrls;
-        if (isStorageConfigured()) {
-          const prefix = `generations/${userId}/${generation.id}`;
-          if (finalUrls && finalUrls.length > 0) {
-            finalUrls = await Promise.all(finalUrls.map((u) => persistAssetSafe(u, prefix)));
-            finalUrl = finalUrls[0];
-          } else if (finalUrl) {
-            finalUrl = await persistAssetSafe(finalUrl, prefix);
-          }
-        }
-
-        const settled = await prisma.aiGeneration.updateMany({
-          where: { id: generation.id, status: 'processing' },
-          data: {
-            status: 'completed',
-            resultUrl: finalUrl,
-            resultUrls: (finalUrls ?? Prisma.JsonNull) as Prisma.InputJsonValue,
-            thumbnailUrl: finalUrl, // Use first result as thumbnail
-            providerJobId: result.jobId,
-            costUsd,
-            processingMs: result.processingMs,
-            completedAt: new Date(),
-            ...routed,
-            ...(labels || lyrics
-              ? {
-                  params: {
-                    ...(request.params ?? {}),
-                    ...(route ? { route } : {}),
-                    ...(labels ? { outputLabels: labels } : {}),
-                    ...(lyrics ? { outputLyrics: lyrics } : {}),
-                  } as unknown as Prisma.InputJsonValue,
-                }
-              : {}),
-          },
-        });
-        if (settled.count === 0) {
-          // ApiOrderSweep already failed and refunded it; the file arrived too late.
-          console.warn(`[generation] #${generation.id} delivered after it was settled as failed; result dropped`);
-          return { id: generation.id, status: 'failed', creditsUsed: 0, error: 'settled' };
-        }
-
-        // Fix the retention window at the moment the customer received the
-        // file, so a later settings change cannot shorten what they were
-        // already promised.
-        const { RetentionService, daysUntil } = await import('./retention');
-        await RetentionService.stampExpiry(generation.id);
-        // A model that just delivered is proven, whatever we believed before —
-        // the row that rendered it: a fallback's delivery proves nothing about KIE's.
-        await ModelReadiness.recordSuccess(served.model.id);
-        const stamped = await prisma.aiGeneration.findUnique({
-          where: { id: generation.id },
-          select: { expiresAt: true },
-        });
-
-        return {
-          id: generation.id,
-          status: 'completed',
-          resultUrl: finalUrl,
-          resultUrls: finalUrls,
-          resultLabels: labels ?? undefined,
-          resultLyrics:
-            songLyrics({ ...(request.params ?? {}), ...(labels ? { outputLabels: labels } : {}), ...(lyrics ? { outputLyrics: lyrics } : {}) }, finalUrls) ??
-            undefined,
-          thumbnailUrl: finalUrl,
-          processingMs: result.processingMs,
-          creditsUsed: requiredCredits,
-          expiresAt: stamped?.expiresAt?.toISOString(),
-          daysLeft: daysUntil(stamped?.expiresAt),
-        };
-      } else {
-        // The failure was counted against its key in `attempt`; refund the user.
-        await this.refundCredits(userId, requiredCredits, generation.id);
-
-        await prisma.aiGeneration.updateMany({
-          where: { id: generation.id, status: 'processing' },
-          data: {
-            status: 'failed',
-            errorMessage: result.error,
-            completedAt: new Date(),
-            ...routed,
-          },
-        });
-
-        return {
-          id: generation.id,
-          status: 'failed',
-          creditsUsed: 0,
-          error: result.error,
-        };
-      }
+      return await this.storeResult({
+        userId,
+        generationId: generation.id,
+        params: request.params,
+        requiredCredits,
+        result,
+        served,
+        route,
+      });
     } catch (error) {
       // Record error and refund
       const message = (error as Error).message;
@@ -922,6 +831,194 @@ export class GenerationService {
    * the size and length limits; a fallback row gets the order's params as a
    * studio order on it would carry them (fallbackParams) and its own wait.
    */
+  /**
+   * Store what the provider answered on an order already charged: the files
+   * to R2 and the order completed, or the order failed and refunded. Shared by
+   * `runApiOrder` and `resumeKieOrder`.
+   */
+  private static async storeResult(o: {
+    userId: number;
+    generationId: number;
+    params: GenerationRequest['params'];
+    requiredCredits: number;
+    result: ProviderResponse;
+    /** The row and key that rendered it. */
+    served: { model: ModelWithProvider; account: { id: number } };
+    /** `params.route` when a fallback row ran the order (orderRoute). */
+    route: Record<string, unknown> | null;
+  }): Promise<GenerationResult> {
+    const { userId, generationId, params, requiredCredits, result, served, route } = o;
+    // Where a fallback ran the order, the order says so, and its key is the one that served it.
+    const routed = route
+      ? { params: { ...(params ?? {}), route } as unknown as Prisma.InputJsonValue, accountPoolId: served.account.id }
+      : {};
+    // A stem split names its files ("เสียงร้อง", "กลอง" …); R2 copies them under random names.
+    const labels =
+      result.success && result.resultLabels && result.resultLabels.length === result.resultUrls?.length
+        ? result.resultLabels
+        : null;
+    // A song's words (output-lyrics.ts), kept the same way, only when they line up.
+    const lyrics =
+      result.success && result.resultLyrics && result.resultLyrics.length === result.resultUrls?.length
+        ? result.resultLyrics
+        : null;
+
+    // 7. Record result — what the vendor says the order cost when it says
+    // (KIE's creditsConsumed), else the row's list price.
+    if (result.success) {
+      const costUsd = result.costUsd ?? Number(served.model.costPerUnit);
+      await AccountPoolManager.recordSuccess(served.account.id, costUsd);
+
+      // Persist provider output to durable R2 storage. Provider URLs expire and
+      // base64 results shouldn't live in the DB long-term. persistAssetSafe is a
+      // no-op (returns the source unchanged) when R2 isn't configured.
+      let finalUrl = result.resultUrl;
+      let finalUrls = result.resultUrls;
+      if (isStorageConfigured()) {
+        const prefix = `generations/${userId}/${generationId}`;
+        if (finalUrls && finalUrls.length > 0) {
+          finalUrls = await Promise.all(finalUrls.map((u) => persistAssetSafe(u, prefix)));
+          finalUrl = finalUrls[0];
+        } else if (finalUrl) {
+          finalUrl = await persistAssetSafe(finalUrl, prefix);
+        }
+      }
+
+      const settled = await prisma.aiGeneration.updateMany({
+        where: { id: generationId, status: 'processing' },
+        data: {
+          status: 'completed',
+          resultUrl: finalUrl,
+          resultUrls: (finalUrls ?? Prisma.JsonNull) as Prisma.InputJsonValue,
+          thumbnailUrl: finalUrl, // Use first result as thumbnail
+          providerJobId: result.jobId,
+          costUsd,
+          processingMs: result.processingMs,
+          completedAt: new Date(),
+          ...routed,
+          ...(labels || lyrics
+            ? {
+                params: {
+                  ...(params ?? {}),
+                  ...(route ? { route } : {}),
+                  ...(labels ? { outputLabels: labels } : {}),
+                  ...(lyrics ? { outputLyrics: lyrics } : {}),
+                } as unknown as Prisma.InputJsonValue,
+              }
+            : {}),
+        },
+      });
+      if (settled.count === 0) {
+        // ApiOrderSweep already failed and refunded it; the file arrived too late.
+        console.warn(`[generation] #${generationId} delivered after it was settled as failed; result dropped`);
+        return { id: generationId, status: 'failed', creditsUsed: 0, error: 'settled' };
+      }
+
+      // Fix the retention window at the moment the customer received the
+      // file, so a later settings change cannot shorten what they were
+      // already promised.
+      const { RetentionService, daysUntil } = await import('./retention');
+      await RetentionService.stampExpiry(generationId);
+      // A model that just delivered is proven, whatever we believed before —
+      // the row that rendered it: a fallback's delivery proves nothing about KIE's.
+      await ModelReadiness.recordSuccess(served.model.id);
+      const stamped = await prisma.aiGeneration.findUnique({
+        where: { id: generationId },
+        select: { expiresAt: true },
+      });
+
+      return {
+        id: generationId,
+        status: 'completed',
+        resultUrl: finalUrl,
+        resultUrls: finalUrls,
+        resultLabels: labels ?? undefined,
+        resultLyrics:
+          songLyrics({ ...(params ?? {}), ...(labels ? { outputLabels: labels } : {}), ...(lyrics ? { outputLyrics: lyrics } : {}) }, finalUrls) ??
+          undefined,
+        thumbnailUrl: finalUrl,
+        processingMs: result.processingMs,
+        creditsUsed: requiredCredits,
+        expiresAt: stamped?.expiresAt?.toISOString(),
+        daysLeft: daysUntil(stamped?.expiresAt),
+      };
+    }
+
+    // The failure was counted against its key by the caller; refund the user.
+    await this.refundCredits(userId, requiredCredits, generationId);
+
+    await prisma.aiGeneration.updateMany({
+      where: { id: generationId, status: 'processing' },
+      data: {
+        status: 'failed',
+        errorMessage: result.error,
+        completedAt: new Date(),
+        ...routed,
+      },
+    });
+
+    return {
+      id: generationId,
+      status: 'failed',
+      creditsUsed: 0,
+      error: result.error,
+    };
+  }
+
+  /** Whether this process is still waiting on the order (runApiOrder). */
+  static isRunningHere(generationId: number): boolean {
+    return runningOrders.has(generationId);
+  }
+
+  /**
+   * Collect a KIE order whose wait a deploy or crash cut off. KIE kept
+   * rendering it — and billed us for it — so the task id stored when KIE took
+   * the order (onTaskCreated) is read once: the clip is stored and the order
+   * completed, a failed task refunded, a task still rendering left for the
+   * next sweep. Returns what it did.
+   */
+  static async resumeKieOrder(generationId: number): Promise<'completed' | 'failed' | 'waiting' | 'skipped'> {
+    if (runningOrders.has(generationId)) return 'skipped';
+    const order = await prisma.aiGeneration.findUnique({
+      where: { id: generationId },
+      include: { model: { include: { provider: true } } },
+    });
+    if (!order || order.status !== 'processing' || !order.providerJobId || !order.accountPoolId) return 'skipped';
+    if (order.model.provider.slug !== 'kie') return 'skipped';
+    const pool = await prisma.aiAccountPool.findUnique({ where: { id: order.accountPoolId } });
+    const provider = getProvider('kie');
+    if (!pool || !(provider instanceof KieProvider)) return 'skipped';
+
+    const started = (order.startedAt ?? order.createdAt).getTime();
+    const read = await provider.taskStatus(decrypt(pool.apiKey), order.model.modelId, order.providerJobId, started);
+    if (!read.done || !read.result) return 'waiting';
+    const result = read.result;
+
+    await prisma.aiUsageLog.create({
+      data: {
+        accountPoolId: pool.id,
+        modelId: order.model.modelId,
+        action: order.type,
+        status: result.success ? 'success' : 'error',
+        costUsd: result.success ? result.costUsd ?? Number(order.model.costPerUnit) : 0,
+        responseMs: result.processingMs,
+        errorMessage: result.error,
+        metadata: { generationId, route: 'kie', kieModel: order.model.modelId, resumed: true },
+      },
+    });
+    const stored = await this.storeResult({
+      userId: order.userId,
+      generationId,
+      params: (order.params ?? undefined) as GenerationRequest['params'],
+      requiredCredits: order.creditsUsed,
+      result,
+      served: { model: order.model, account: { id: pool.id } },
+      route: null,
+    });
+    console.log(`[generation] #${generationId} resumed from KIE task ${order.providerJobId}: ${stored.status}`);
+    return stored.status === 'completed' ? 'completed' : 'failed';
+  }
+
   private static async callProvider(
     target: ModelWithProvider,
     account: PoolAccount,
@@ -960,6 +1057,17 @@ export class GenerationService {
       apiEndpoint: account.apiEndpoint,
       extraParams: (viaFallback ? fallbackParams(request.params) : request.params) as Record<string, unknown>,
       maxWaitSeconds: viaFallback ? apiVideoLipsyncRule(target.modelId)?.maxWaitSeconds : run.maxWaitSeconds,
+      // KIE's task id on the order the moment KIE takes it: a deploy that cuts
+      // the wait off then leaves something resumeKieOrder can collect.
+      onTaskCreated:
+        target.provider.slug === 'kie'
+          ? async (taskId: string) => {
+              await prisma.aiGeneration.updateMany({
+                where: { id: run.generationId, status: 'processing' },
+                data: { providerJobId: taskId, accountPoolId: account.id },
+              });
+            }
+          : undefined,
     };
 
     switch (request.type) {
