@@ -56,9 +56,11 @@ function mac(key: string, payload: string): Buffer {
   return createHmac('sha256', key).update(payload).digest();
 }
 
-/** A link for one generation, or null when the secret is not configured. */
-export function signHandoff(genId: number, nowMs = Date.now()): { token: string; exp: number } | null {
-  const key = secret();
+/**
+ * A link for one generation, or null when there is no key. `key` defaults to
+ * AQUACHORD_HANDOFF_SECRET; the routes pass the one aquachord-config.ts keeps.
+ */
+export function signHandoff(genId: number, nowMs = Date.now(), key: string | null = secret()): { token: string; exp: number } | null {
   if (!key || !Number.isSafeInteger(genId) || genId <= 0) return null;
   const exp = Math.floor(nowMs / 1000) + HANDOFF_TTL_SEC;
   const payload = `${genId}.${exp}`;
@@ -75,8 +77,7 @@ const TOKEN_RE = /^[A-Za-z0-9_-]{4,40}\.[A-Za-z0-9_-]{43}$/;
 const PAYLOAD_RE = /^([1-9]\d{0,9})\.(\d{10,12})$/;
 
 /** The generation a link names, if it is genuine and has not expired. */
-export function verifyHandoff(token: unknown, nowMs = Date.now()): { genId: number; exp: number } | null {
-  const key = secret();
+export function verifyHandoff(token: unknown, nowMs = Date.now(), key: string | null = secret()): { genId: number; exp: number } | null {
   if (!key || typeof token !== 'string' || !TOKEN_RE.test(token)) return null;
   const [encoded, signature] = token.split('.');
   const payload = Buffer.from(encoded, 'base64url').toString('utf8');

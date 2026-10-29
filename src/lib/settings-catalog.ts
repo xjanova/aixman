@@ -64,7 +64,7 @@ export const SETTING_CATEGORIES: SettingCategory[] = [
   { id: 'generation', label: 'การสร้างงาน', description: 'ค่าเริ่มต้นของสตูดิโอ (ส่วนใหญ่ยังไม่ได้เชื่อมกับระบบ)' },
   { id: 'workflows', label: 'Workflow และผู้ช่วยพรอมต์', description: 'ค่าปรับแต่ง workflow ComfyUI และผู้ช่วยเขียนพรอมต์ AI — แก้ได้ที่หน้า Workflow ComfyUI' },
   { id: 'rate_limit', label: 'จำกัดการใช้งาน', description: 'เพดานความถี่ (ยังไม่ได้เชื่อมกับระบบ)' },
-  { id: 'integration', label: 'เชื่อมต่อภายนอก', description: 'บริการภายนอก (ยังไม่ได้เชื่อมกับระบบ)' },
+  { id: 'integration', label: 'เชื่อมต่อภายนอก', description: 'บริการภายนอก — ส่งเพลงไปแกะคอร์ดที่ AquaChord' },
   { id: 'system', label: 'ข้อมูลระบบ', description: 'ค่าที่ระบบบันทึกเอง — ดูได้อย่างเดียว' },
   { id: 'other', label: 'อื่น ๆ', description: 'ค่าที่ไม่อยู่ในแคตตาล็อก แก้เป็นข้อความดิบ' },
 ];
@@ -239,7 +239,9 @@ export const SETTINGS_CATALOG: Record<string, SettingMeta> = {
   cooldown_after_errors: { label: 'พักคีย์หลังผิดพลาด', tip: `${UNUSED_TIP} — ตั้งต่อคีย์ได้ที่หน้า Pool`, category: 'rate_limit', input: 'number', unit: 'วินาที', unused: true },
   max_consecutive_errors: { label: 'ผิดพลาดติดกันสูงสุด', tip: UNUSED_TIP, category: 'rate_limit', input: 'number', unused: true },
 
-  // ── เชื่อมต่อภายนอก (ยังไม่ได้เชื่อม) ─────────────────────────────────
+  // ── เชื่อมต่อภายนอก ───────────────────────────────────────────────────
+  aquachord_handoff_enabled: { label: 'ปุ่มส่งเพลงไปแกะคอร์ด (AquaChord)', tip: 'การ์ด "แกะคอร์ดใน AquaChord" ใต้เพลงที่สร้างเสร็จในสตูดิโอและแกลเลอรี — ปิดแล้วการ์ดหายและลิงก์ที่ส่งไปแล้วใช้ไม่ได้ทันที', category: 'integration', input: 'boolean' },
+  aquachord_handoff_secret: { label: 'กุญแจลิงก์ AquaChord', tip: 'ระบบสร้างเองตอนส่งเพลงครั้งแรก ใช้เซ็นลิงก์อายุ 15 นาที — ลบทิ้งแล้วลิงก์ที่ส่งไปแล้วใช้ไม่ได้ ระบบสร้างใหม่ให้เอง', category: 'integration', input: 'text', secret: true },
   xman_webhook_enabled: { label: 'Webhook ไป XMAN', tip: UNUSED_TIP, category: 'integration', input: 'boolean', unused: true },
   google_drive_enabled: { label: 'Google Drive', tip: UNUSED_TIP, category: 'integration', input: 'boolean', unused: true },
   google_analytics_id: { label: 'Google Analytics ID', tip: UNUSED_TIP, category: 'integration', input: 'text', unused: true },

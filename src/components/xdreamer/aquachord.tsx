@@ -15,7 +15,7 @@
  */
 
 import Image from "next/image";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useT } from "@/lib/i18n/client";
 import type { Translate } from "@/lib/i18n/locale";
 
@@ -40,6 +40,16 @@ async function requestAquaChordLink(generationId: number): Promise<LinkResult> {
   } catch {
     return { ok: false, status: 0 };
   }
+}
+
+/** Whether an admin has the handoff on; asked once per page load. A failed check shows the card (the click then explains). */
+let enabledCheck: Promise<boolean> | null = null;
+function handoffSwitchedOn(): Promise<boolean> {
+  enabledCheck ??= fetch("/api/studio/aquachord-handoff")
+    .then((res) => (res.ok ? res.json() : null))
+    .then((data: unknown) => !(data && typeof data === "object" && (data as { enabled?: unknown }).enabled === false))
+    .catch(() => true);
+  return enabledCheck;
 }
 
 function errorText(status: number, t: Translate): string {
@@ -71,7 +81,14 @@ const CHORDS = ["Am", "F", "C", "G"];
 export function AquaChordHandoff({ genId, style }: { genId: number; style?: React.CSSProperties }) {
   const t = useT();
   const [phase, setPhase] = useState<Phase>({ name: "idle" });
+  const [switchedOn, setSwitchedOn] = useState<boolean | null>(null);
   const busy = phase.name === "busy";
+
+  useEffect(() => {
+    let live = true;
+    void handoffSwitchedOn().then((on) => { if (live) setSwitchedOn(on); });
+    return () => { live = false; };
+  }, []);
 
   const send = async () => {
     if (busy) return;
@@ -84,6 +101,9 @@ export function AquaChordHandoff({ genId, style }: { genId: number; style?: Reac
     window.open(result.url, "_blank", "noopener");
     setPhase({ name: "ready", url: result.url });
   };
+
+  // Hidden until the switch is known, and while an admin has it off.
+  if (switchedOn !== true) return null;
 
   return (
     <section className="aqc-card" aria-label={t("แกะคอร์ดใน AquaChord", "Get chords in AquaChord")} style={style}>

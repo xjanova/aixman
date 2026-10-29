@@ -3,7 +3,8 @@ import { getCurrentUserId, isAdmin } from '@/lib/auth';
 import prisma from '@/lib/db';
 import { requestLocale, translator } from '@/lib/i18n/locale';
 import { aixmanBaseUrl } from '@/lib/xman-sso';
-import { aquachordOrigin, handoffAudio, handoffConfigured, signHandoff } from '@/lib/aquachord-handoff';
+import { aquachordOrigin, handoffAudio, signHandoff } from '@/lib/aquachord-handoff';
+import { handoffEnabled, handoffKey } from '@/lib/aquachord-config';
 
 /**
  * "แกะคอร์ดใน AquaChord" — mint the link that hands one finished song to
@@ -15,14 +16,19 @@ import { aquachordOrigin, handoffAudio, handoffConfigured, signHandoff } from '@
  * server or anyone's access log; the studio opens it in a new tab.
  *
  * Body: { "generationId": 123 } → { "url": "https://aquachord.online/#/import?m=…" }
+ * GET → { enabled }: the studio hides the card while an admin has it switched off.
  */
+export async function GET() {
+  return NextResponse.json({ enabled: await handoffEnabled() }, { headers: { 'cache-control': 'no-store' } });
+}
+
 export async function POST(request: NextRequest) {
   const t = translator(requestLocale(request));
   const userId = await getCurrentUserId();
   if (!userId) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
-  if (!handoffConfigured()) {
+  if (!(await handoffEnabled())) {
     return NextResponse.json(
       { error: t('ยังไม่ได้เปิดการส่งเพลงไป AquaChord', 'Sending songs to AquaChord isn’t switched on yet') },
       { status: 503 }
@@ -56,7 +62,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: t('ไฟล์นี้ไม่ใช่ไฟล์เสียง', 'This isn’t an audio file') }, { status: 400 });
   }
 
-  const signed = signHandoff(genId);
+  const signed = signHandoff(genId, Date.now(), await handoffKey());
   if (!signed) {
     return NextResponse.json(
       { error: t('ยังไม่ได้เปิดการส่งเพลงไป AquaChord', 'Sending songs to AquaChord isn’t switched on yet') },

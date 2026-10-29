@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { handoffAudio, handoffHeaders, verifyHandoff } from '@/lib/aquachord-handoff';
+import { handoffEnabled, handoffKey } from '@/lib/aquachord-config';
 
 /**
  * Song Handoff v1 audio — the song's bytes for AquaChord, streamed from R2 the
@@ -25,7 +26,8 @@ export async function GET(
   { params }: { params: Promise<{ token: string }> }
 ) {
   const { token } = await params;
-  const claim = verifyHandoff(token);
+  // Switched off in admin: links already handed out stop working too.
+  const claim = (await handoffEnabled()) ? verifyHandoff(token, Date.now(), await handoffKey()) : null;
   if (!claim) return gone();
 
   const generation = await prisma.aiGeneration.findUnique({

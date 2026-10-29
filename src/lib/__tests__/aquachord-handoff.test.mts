@@ -171,3 +171,13 @@ test('language: the studio choice first, else the lyrics script', () => {
   assert.equal(handoffLang({}, 'Rain on the window, thinking of you'), 'en');
   assert.equal(handoffLang({}, ''), 'auto');
 });
+
+test('a key passed in (the one kept in ai_settings) signs and verifies without the env secret', () => {
+  delete env.AQUACHORD_HANDOFF_SECRET;
+  const key = 'stored-key-0123456789abcdefghijklmnop';
+  const signed = signHandoff(77, NOW, key)!;
+  assert.deepEqual(verifyHandoff(signed.token, NOW, key), { genId: 77, exp: signed.exp });
+  assert.equal(verifyHandoff(signed.token, NOW, 'another-stored-key-0123456789abcdef'), null);
+  assert.equal(verifyHandoff(signed.token, NOW, null), null);
+  assert.equal(signHandoff(77, NOW, null), null);
+});
