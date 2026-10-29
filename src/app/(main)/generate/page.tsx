@@ -44,6 +44,7 @@ import {
 import { downloadGeneration, extensionOf, saveFavorite } from "@/lib/client-actions";
 import { nextQueueProgress, shownFraction, type QueueProgress, type QueueReading } from "@/lib/queue-progress";
 import { AUDIO_EXT, AudioCover, AudioResult } from "@/components/xdreamer/audio";
+import { AquaChordHandoff } from "@/components/xdreamer/aquachord";
 import { SongLyrics } from "@/components/xdreamer/song-lyrics";
 import { AudioTracks, type AudioTrack } from "@/components/xdreamer/audio-tracks";
 import { TrackWave } from "@/components/xdreamer/track-wave";
@@ -4920,6 +4921,7 @@ export default function GeneratePage() {
                         </div>
                       </div>
                     ) : resultTracks ? (
+                      <>
                       <AudioTracks
                         key={result.id}
                         kind={result.resultLabels?.length === resultTracks.length ? "stems" : "versions"}
@@ -4932,6 +4934,12 @@ export default function GeneratePage() {
                           if (next) carrySongTo(next[0], next[1], track.url, track.label);
                         }}
                       />
+                      {/* Versions of one song (Suno's two takes) go to AquaChord as
+                          the first take, with the words it sang; stems have no song. */}
+                      {result.resultLabels?.length !== resultTracks.length && (
+                        <AquaChordHandoff key={`aquachord-${result.id}`} genId={result.id} style={{ marginTop: 14 }} />
+                      )}
+                      </>
                     ) : resultIsAudio ? (
                       <AudioResult src={result.resultUrl} genId={result.id} chords={canvasTab !== "speech"}
                         title={viewing?.prompt || (canvasTab === "speech" ? focusedJob?.prompt || t("เสียงพูด", "Speech") : songTitle || t("เพลงของคุณ", "Your song"))} />
