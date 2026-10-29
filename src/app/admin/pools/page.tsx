@@ -11,6 +11,7 @@ import {
   Clock,
   ToggleLeft,
   ToggleRight,
+  KeyRound,
 } from "lucide-react";
 
 interface PoolAccount {
@@ -40,6 +41,8 @@ interface ProviderOption {
   isActive: boolean;
 }
 
+interface EditForm { label: string; apiKey: string; apiSecret: string; dailyQuota: string; priority: string; rotationMode: string }
+
 const EMPTY_ACCOUNT = { providerId: "", label: "", apiKey: "", apiSecret: "", dailyQuota: "1000", priority: "50", rotationMode: "round_robin" };
 
 export default function PoolsPage() {
@@ -50,6 +53,9 @@ export default function PoolsPage() {
   const [providers, setProviders] = useState<ProviderOption[]>([]);
   const [saving, setSaving] = useState(false);
   const [addError, setAddError] = useState("");
+  const [editing, setEditing] = useState<PoolAccount | null>(null);
+  const [editForm, setEditForm] = useState<EditForm | null>(null);
+  const [editError, setEditError] = useState("");
 
   const fetchPools = () => {
     setLoading(true);
@@ -107,6 +113,56 @@ export default function PoolsPage() {
     }
     setShowAddModal(false);
     setNewAccount(EMPTY_ACCOUNT);
+    fetchPools();
+  };
+
+  // Seeded rows ("… — DEFAULT (replace API key)") hold a dummy key; this is
+  // where the real one goes. A blank key field keeps the stored key.
+  const openEdit = (acc: PoolAccount) => {
+    setEditError("");
+    setEditing(acc);
+    setEditForm({
+      label: acc.label,
+      apiKey: "",
+      apiSecret: "",
+      dailyQuota: String(acc.dailyQuota),
+      priority: String(acc.priority),
+      rotationMode: acc.rotationMode,
+    });
+  };
+
+  const closeEdit = () => {
+    if (saving) return;
+    setEditing(null);
+    setEditForm(null);
+  };
+
+  const handleEdit = async () => {
+    if (saving || !editing || !editForm) return;
+    if (!editForm.label.trim()) return setEditError("ตั้งชื่อ (Label) ก่อน");
+    setSaving(true);
+    setEditError("");
+    const body: Record<string, string> = {
+      label: editForm.label.trim(),
+      dailyQuota: editForm.dailyQuota,
+      priority: editForm.priority,
+      rotationMode: editForm.rotationMode,
+    };
+    if (editForm.apiKey.trim()) body.apiKey = editForm.apiKey.trim();
+    if (editForm.apiSecret.trim()) body.apiSecret = editForm.apiSecret.trim();
+    const r = await fetch(`/api/admin/pools/${editing.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).catch(() => null);
+    setSaving(false);
+    if (!r) return setEditError("ติดต่อเซิร์ฟเวอร์ไม่ได้ ลองใหม่อีกครั้ง");
+    if (!r.ok) {
+      const data = (await r.json().catch(() => ({}))) as { error?: string };
+      return setEditError(data.error || `บันทึกไม่สำเร็จ (HTTP ${r.status})`);
+    }
+    setEditing(null);
+    setEditForm(null);
     fetchPools();
   };
 
@@ -201,6 +257,14 @@ export default function PoolsPage() {
                   <td className="p-3">
                     <div className="flex items-center justify-end gap-1">
                       <button
+                        onClick={() => openEdit(acc)}
+                        className="p-1.5 rounded-lg hover:bg-surface-light transition-all"
+                        title="แก้ไข / ใส่ API Key"
+                        aria-label={`แก้ไข ${acc.label}`}
+                      >
+                        <KeyRound className="w-4 h-4 text-primary-light" />
+                      </button>
+                      <button
                         onClick={() => toggleAccount(acc.id, acc.isActive)}
                         className="p-1.5 rounded-lg hover:bg-surface-light transition-all"
                         title={acc.isActive ? "ปิดใช้งาน" : "เปิดใช้งาน"}
@@ -220,6 +284,58 @@ export default function PoolsPage() {
           </tbody>
         </table>
       </div>
+
+      {/* Edit Modal */}
+      {editing && editForm && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={closeEdit}>
+          <motion.div
+            className="glass rounded-2xl p-6 w-full max-w-md"
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-bold mb-1">แก้ไข Account</h3>
+            <p className="text-xs text-muted mb-4">{editing.provider}</p>
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-muted mb-1 block">Label</label>
+                <input value={editForm.label} onChange={(e) => setEditForm({...editForm, label: e.target.value})} autoComplete="off" className="w-full p-2.5 rounded-lg bg-surface-light text-sm focus:outline-none focus:ring-1 focus:ring-primary/50" />
+              </div>
+              <div>
+                <label className="text-xs text-muted mb-1 block">API Key ใหม่</label>
+                <input value={editForm.apiKey} onChange={(e) => setEditForm({...editForm, apiKey: e.target.value})} type="password" autoComplete="new-password" placeholder="เว้นว่าง = ใช้คีย์เดิม" className="w-full p-2.5 rounded-lg bg-surface-light text-sm focus:outline-none focus:ring-1 focus:ring-primary/50" />
+              </div>
+              <div>
+                <label className="text-xs text-muted mb-1 block">API Secret ใหม่ (เฉพาะผู้ให้บริการที่ใช้ เช่น Kling)</label>
+                <input value={editForm.apiSecret} onChange={(e) => setEditForm({...editForm, apiSecret: e.target.value})} type="password" autoComplete="new-password" placeholder="เว้นว่าง = ใช้ค่าเดิม" className="w-full p-2.5 rounded-lg bg-surface-light text-sm focus:outline-none focus:ring-1 focus:ring-primary/50" />
+              </div>
+              <div>
+                <label className="text-xs text-muted mb-1 block">Rotation Mode</label>
+                <select value={editForm.rotationMode} onChange={(e) => setEditForm({...editForm, rotationMode: e.target.value})} className="w-full p-2.5 rounded-lg bg-surface-light text-sm focus:outline-none focus:ring-1 focus:ring-primary/50">
+                  <option value="round_robin">Round Robin (เวียนไปเรื่อยๆ)</option>
+                  <option value="balanced">Balanced (เฉลี่ย)</option>
+                  <option value="quota_first">Quota First (เหลือเยอะก่อน)</option>
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-muted mb-1 block">Daily Quota (0 = ไม่จำกัด)</label>
+                  <input value={editForm.dailyQuota} onChange={(e) => setEditForm({...editForm, dailyQuota: e.target.value})} type="number" min={0} className="w-full p-2.5 rounded-lg bg-surface-light text-sm focus:outline-none focus:ring-1 focus:ring-primary/50" />
+                </div>
+                <div>
+                  <label className="text-xs text-muted mb-1 block">Priority (1-100)</label>
+                  <input value={editForm.priority} onChange={(e) => setEditForm({...editForm, priority: e.target.value})} type="number" min={0} className="w-full p-2.5 rounded-lg bg-surface-light text-sm focus:outline-none focus:ring-1 focus:ring-primary/50" />
+                </div>
+              </div>
+            </div>
+            {editError && <p className="mt-4 text-sm text-error">{editError}</p>}
+            <div className="flex justify-end gap-3 mt-6">
+              <button onClick={closeEdit} className="px-4 py-2 rounded-lg text-sm text-muted hover:text-foreground">ยกเลิก</button>
+              <button onClick={handleEdit} disabled={saving} className="px-4 py-2 rounded-lg bg-gradient-to-r from-primary to-secondary text-white text-sm font-medium disabled:opacity-60">{saving ? "กำลังบันทึก…" : "บันทึก"}</button>
+            </div>
+          </motion.div>
+        </div>
+      )}
 
       {/* Add Modal */}
       {showAddModal && (

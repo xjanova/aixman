@@ -23,11 +23,20 @@ export async function PATCH(
 
     // Whitelist updatable fields (no mass-assignment).
     const data: Record<string, unknown> = {};
-    for (const f of ['isActive', 'priority', 'dailyQuota', 'rotationMode', 'label'] as const) {
-      if (body[f] !== undefined) data[f] = body[f];
+    if (typeof body.isActive === 'boolean') data.isActive = body.isActive;
+    if (typeof body.label === 'string' && body.label.trim()) data.label = body.label.trim();
+    if (['round_robin', 'balanced', 'quota_first'].includes(body.rotationMode)) data.rotationMode = body.rotationMode;
+    // The edit form sends these as typed text; Prisma refuses a string for an Int.
+    for (const f of ['priority', 'dailyQuota'] as const) {
+      const n = parseInt(body[f], 10);
+      if (Number.isFinite(n) && n >= 0) data[f] = n;
     }
-    // Allow rotating the stored credentials (encrypted before storing).
-    if (typeof body.apiKey === 'string' && body.apiKey.length > 0) data.apiKey = encrypt(body.apiKey);
+    // Allow rotating the stored credentials (encrypted before storing). A new
+    // key starts clean: the errors and cooldown belonged to the old one.
+    if (typeof body.apiKey === 'string' && body.apiKey.trim()) {
+      data.apiKey = encrypt(body.apiKey.trim());
+      Object.assign(data, { consecutiveErrors: 0, cooldownUntil: null, lastError: null });
+    }
     if (typeof body.apiSecret === 'string') data.apiSecret = body.apiSecret ? encrypt(body.apiSecret) : null;
 
     const pool = await prisma.aiAccountPool.update({
