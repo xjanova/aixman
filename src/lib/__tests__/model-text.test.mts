@@ -10,8 +10,10 @@ import assert from 'node:assert/strict';
 import { KIE_CATALOG } from '@/lib/providers/kie-catalog';
 import { MODEL_CATALOG } from '@/lib/gpu/catalog';
 import {
-  MODEL_TEXT_EN, QUALITY_MODE_EN, modelDescription, modelName, qualityModeText, tierLabel, voiceLabel,
+  MODEL_TEXT_EN, QUALITY_MODE_EN, modelDescription, modelName, qualityModeText, tierDescription, tierLabel, voiceLabel,
 } from '@/lib/i18n/model-text';
+import { SUNO_STEMS, sunoStemLabels } from '@/lib/providers/kie-suno';
+import { stemLabelText } from '@/lib/i18n/suno-text';
 
 const THAI = /[฀-๿]/;
 const VENDOR = /\b(kie(\.ai)?|fal(\.ai)?|replicate|byteplus|pollinations|simplepod|runpod|vast\.ai|verda)\b/i;
@@ -51,6 +53,9 @@ test('quality modes, price tiers and voices all read in English', () => {
   for (const entry of KIE_CATALOG) {
     for (const tier of entry.tiers ?? []) {
       assert.ok(!THAI.test(tierLabel(tier.label, 'en')), `${entry.key}: tier "${tier.label}"`);
+      if (tier.description) {
+        assert.ok(tierDescription(tier.description, 'en'), `${entry.key}: tier ${tier.id} has no English description`);
+      }
     }
     for (const voice of entry.speech?.voices ?? []) {
       const label = voiceLabel(voice.id, voice.label, 'en');
@@ -68,4 +73,21 @@ test('Thai visitors get the row as it is; an untranslated row never shows Thai i
   assert.equal(modelDescription('unknown', 'ภาพสวย', 'en'), null);
   assert.equal(modelDescription('unknown', 'Pretty pictures', 'en'), 'Pretty pictures');
   assert.equal(modelDescription('unknown', 'ภาพสวย', 'th'), 'ภาพสวย');
+});
+
+test('every Suno stem name reads in English, on the picker and on the files a split returns', () => {
+  for (const stem of SUNO_STEMS) {
+    const en = stemLabelText(stem.label, 'en');
+    assert.ok(!THAI.test(en), `stem ${stem.id}: "${stem.label}"`);
+    assert.equal(stemLabelText(stem.label, 'th'), stem.label);
+  }
+  // The groups a split names its files by, through the same path the adapter takes.
+  const groups = ['vocals', 'instrumental', 'backing_vocals', 'drums', 'bass', 'guitar', 'keyboard', 'percussion', 'strings', 'synth', 'fx', 'brass', 'woodwinds'];
+  const urls = groups.map((g) => `https://example.com/${g}.mp3`);
+  const labels = sunoStemLabels({ origin_data: groups.map((g, i) => ({ audio_url: urls[i], stem_type_group_name: g })) }, urls);
+  for (const label of labels) assert.ok(!THAI.test(stemLabelText(label, 'en')), `group "${label}"`);
+  // An "ดึงชิ้นเดียว" split: the part, and the song without it.
+  const one = sunoStemLabels({ origin_data: [{ extract: { audio_url: 'a', stem_type_group_name: 'Piano' }, remove: { audio_url: 'b' } }] }, ['a', 'b']);
+  assert.deepEqual(one.map((l) => stemLabelText(l, 'en')), ['Piano', 'Song without piano']);
+  assert.equal(stemLabelText('สเต็ม 3', 'en'), 'Stem 3');
 });

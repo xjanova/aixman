@@ -239,6 +239,25 @@ export function tierLabel(label: string, locale: Locale): string {
   return TIER_LABEL_EN[label] ?? label;
 }
 
+/** KIE price tiers' descriptions by their Thai text (Suno's versions and splits). */
+const TIER_DESCRIPTION_EN: Record<string, string> = {
+  'เสียงร้องเป็นธรรมชาติ รายละเอียดดนตรีครบที่สุด': 'Natural vocals and the fullest musical detail',
+  'กล้าแหวก ฉีกแนว ได้สีสันที่ไม่ซ้ำใคร': 'Bold and offbeat, with a colour all its own',
+  'เบาและเร็ว เหมาะลองไอเดียหลาย ๆ รอบ': 'Light and fast, good for trying an idea several times',
+  'แยกเป็น 2 ไฟล์: เสียงร้องล้วน และดนตรีไม่มีเสียงร้อง (คาราโอเกะ)':
+    'Two files: the vocals alone, and the music without vocals (karaoke)',
+  'แยกได้สูงสุด 12 ไฟล์: ร้องนำ ประสาน กลอง เบส กีตาร์ คีย์บอร์ด เครื่องสาย ฯลฯ — ได้เฉพาะชิ้นที่มีในเพลง':
+    'Up to 12 files: lead vocal, backing vocals, drums, bass, guitar, keys, strings and more — only the parts the song has',
+  'เลือกเครื่องดนตรีหนึ่งชิ้น ได้ 2 ไฟล์: ชิ้นนั้นล้วน และเพลงที่ไม่มีชิ้นนั้น':
+    'Pick one instrument and get two files: that part alone, and the song without it',
+};
+
+/** A price tier's description (KIE `tiers`) for `locale`; empty when it has no English yet. */
+export function tierDescription(description: string, locale: Locale): string {
+  if (locale === 'th' || !THAI.test(description)) return description;
+  return TIER_DESCRIPTION_EN[description] ?? '';
+}
+
 /** A speech voice's label for `locale`. */
 export function voiceLabel(voiceId: string, label: string, locale: Locale): string {
   if (locale === 'th' || !THAI.test(label)) return label;

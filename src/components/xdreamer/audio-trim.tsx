@@ -17,6 +17,7 @@
  */
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useT } from "@/lib/i18n/client";
 import { toMp3, toWav } from "./audio-wave";
 
 export type TrimRange = { start: number; end: number };
@@ -124,6 +125,7 @@ export function AudioTrimmer({
   /** The price line, or a rule the selection breaks. */
   note?: React.ReactNode;
 }) {
+  const t = useT();
   const gradientId = useId();
   const duration = buffer.duration;
   const maxLen = Math.min(maxSeconds, duration);
@@ -252,10 +254,10 @@ export function AudioTrimmer({
           <span className="mono">{clock(duration, true)} · {(file.size / 1024 / 1024).toFixed(1)} MB</span>
         </span>
         <label className="abtn">
-          เปลี่ยนไฟล์
+          {t("เปลี่ยนไฟล์", "Change file")}
           <input type="file" accept={accept} onChange={onPick} hidden />
         </label>
-        <button type="button" className="abtn x" onClick={() => { stop(); onClear(); }} aria-label="เอาไฟล์เสียงออก">×</button>
+        <button type="button" className="abtn x" onClick={() => { stop(); onClear(); }} aria-label={t("เอาไฟล์เสียงออก", "Remove audio file")}>×</button>
       </div>
 
       <div
@@ -265,7 +267,7 @@ export function AudioTrimmer({
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        aria-label="คลื่นเสียง ลากเพื่อเลือกช่วงที่จะใช้"
+        aria-label={t("คลื่นเสียง ลากเพื่อเลือกช่วงที่จะใช้", "Waveform — drag to choose the part to use")}
       >
         <svg className="dim" viewBox={`0 0 ${COLUMNS * 3} 64`} preserveAspectRatio="none" aria-hidden="true"><path d={path} /></svg>
         <svg className="lit" viewBox={`0 0 ${COLUMNS * 3} 64`} preserveAspectRatio="none" aria-hidden="true"
@@ -278,39 +280,42 @@ export function AudioTrimmer({
           <path d={path} fill={`url(#${gradientId})`} />
         </svg>
         <div className="sel" data-grip="m" style={{ left: `${pct(range.start)}%`, width: `${pct(len)}%` }}>
-          <span className="hd l" data-grip="l" role="slider" tabIndex={0} aria-label="จุดเริ่มของช่วง"
+          <span className="hd l" data-grip="l" role="slider" tabIndex={0} aria-label={t("จุดเริ่มของช่วง", "Start of selection")}
             aria-valuemin={0} aria-valuemax={Math.round(duration * 10) / 10} aria-valuenow={range.start}
             aria-valuetext={clock(range.start, true)} onKeyDown={onGripKey("l")}><i /></span>
-          <span className="hd r" data-grip="r" role="slider" tabIndex={0} aria-label="จุดจบของช่วง"
+          <span className="hd r" data-grip="r" role="slider" tabIndex={0} aria-label={t("จุดจบของช่วง", "End of selection")}
             aria-valuemin={0} aria-valuemax={Math.round(duration * 10) / 10} aria-valuenow={range.end}
             aria-valuetext={clock(range.end, true)} onKeyDown={onGripKey("r")}><i /></span>
         </div>
         {head !== null && <span className="phd" style={{ left: `${pct(head)}%` }} aria-hidden="true" />}
       </div>
-      <div className="atime mono" aria-hidden="true">{ticks.map((t, i) => <span key={i}>{t}</span>)}</div>
+      <div className="atime mono" aria-hidden="true">{ticks.map((tick, i) => <span key={i}>{tick}</span>)}</div>
 
       <div className="abar">
-        <button type="button" className="play" onClick={toggle} aria-label={playing ? "หยุด" : "ฟังช่วงที่เลือก"}>
+        <button type="button" className="play" onClick={toggle} aria-label={playing ? t("หยุด", "Stop") : t("ฟังช่วงที่เลือก", "Play selection")}>
           {playing ? (
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
           ) : (
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5Z" /></svg>
           )}
         </button>
-        <span className="arange">ฟังช่วงที่เลือก<br /><span className="mono">{clock(range.start, true)} – {clock(range.end, true)}</span></span>
+        <span className="arange">{t("ฟังช่วงที่เลือก", "Play selection")}<br /><span className="mono">{clock(range.start, true)} – {clock(range.end, true)}</span></span>
         <span className="alen">
-          <b className="mono">{len.toFixed(1)} วิ</b> / สูงสุด {Math.floor(maxSeconds)}
+          <b className="mono">{len.toFixed(1)} {t("วิ", "s")}</b> / {t("สูงสุด", "max")} {Math.floor(maxSeconds)}
           <span className="m"><i style={{ width: `${Math.min(100, (len / Math.max(1, maxSeconds)) * 100)}%` }} /></span>
         </span>
       </div>
 
       <div className="ahint" aria-live="polite">
         {state === "saving" ? (
-          <span className="busy">กำลังเตรียมช่วงที่เลือก…</span>
+          <span className="busy">{t("กำลังเตรียมช่วงที่เลือก…", "Preparing the selection…")}</span>
         ) : state === "failed" ? (
-          <span className="bad">อัปโหลดช่วงนี้ไม่สำเร็จ <button type="button" onClick={onRetry}>ลองอีกครั้ง</button></span>
+          <span className="bad">{t("อัปโหลดช่วงนี้ไม่สำเร็จ", "Couldn't upload this part")} <button type="button" onClick={onRetry}>{t("ลองอีกครั้ง", "Try again")}</button></span>
         ) : (
-          "ลากขอบสีฟ้าเพื่อตัดหัวท้าย · ลากกลางกรอบเพื่อเลื่อนทั้งช่วง · แตะที่ว่างเพื่อเริ่มช่วงใหม่"
+          t(
+            "ลากขอบสีฟ้าเพื่อตัดหัวท้าย · ลากกลางกรอบเพื่อเลื่อนทั้งช่วง · แตะที่ว่างเพื่อเริ่มช่วงใหม่",
+            "Drag the blue edges to trim · drag the middle to move the whole part · tap empty space to start a new one",
+          )
         )}
       </div>
       {note && <div className="anote">{note}</div>}

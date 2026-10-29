@@ -15,6 +15,8 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ModelPreview } from "@/lib/model-samples";
+import { useT } from "@/lib/i18n/client";
+import type { Msg } from "@/lib/i18n/locale";
 
 export interface BalloonModel {
   id: number;
@@ -36,28 +38,28 @@ const MIN_SKY_WIDTH = 560;
 const PICK_MS = 240;
 
 /** What a balloon says under the name: the kind of work, never the service behind it. */
-const KIND_LABEL: Record<string, string> = {
-  general: "ทั่วไป",
-  premium: "พรีเมียม",
-  fast: "เร็ว",
-  design: "งานออกแบบ",
-  cinematic: "โทนภาพยนตร์",
-  instruct: "สั่งแก้ด้วยคำพูด",
-  background: "ลบพื้นหลัง",
-  upscale: "ขยายภาพ",
-  inpaint: "แก้บางส่วน",
-  outpaint: "ขยายขอบภาพ",
-  lipsync: "พากย์ทับคลิป",
-  "lipsync-portrait": "ภาพพูดได้",
-  music: "เพลง",
-  "music-cover": "คัฟเวอร์เพลง",
-  "music-extend": "ต่อเพลง",
-  "music-add": "เติมเสียงร้อง/ดนตรี",
-  "music-stems": "แยกสเต็ม",
-  "music-sounds": "เสียงประกอบ",
-  speech: "เสียงพูด",
-  motion: "เลียนท่าทาง",
-  "video-upscale": "ขยายวิดีโอ",
+const KIND_LABEL: Record<string, Msg> = {
+  general: { th: "ทั่วไป", en: "General" },
+  premium: { th: "พรีเมียม", en: "Premium" },
+  fast: { th: "เร็ว", en: "Fast" },
+  design: { th: "งานออกแบบ", en: "Design" },
+  cinematic: { th: "โทนภาพยนตร์", en: "Cinematic" },
+  instruct: { th: "สั่งแก้ด้วยคำพูด", en: "Edit by prompt" },
+  background: { th: "ลบพื้นหลัง", en: "Remove background" },
+  upscale: { th: "ขยายภาพ", en: "Upscale" },
+  inpaint: { th: "แก้บางส่วน", en: "Inpaint" },
+  outpaint: { th: "ขยายขอบภาพ", en: "Outpaint" },
+  lipsync: { th: "พากย์ทับคลิป", en: "Re-dub a clip" },
+  "lipsync-portrait": { th: "ภาพพูดได้", en: "Talking photo" },
+  music: { th: "เพลง", en: "Music" },
+  "music-cover": { th: "คัฟเวอร์เพลง", en: "Cover" },
+  "music-extend": { th: "ต่อเพลง", en: "Extend" },
+  "music-add": { th: "เติมเสียงร้อง/ดนตรี", en: "Add vocals / band" },
+  "music-stems": { th: "แยกสเต็ม", en: "Stems" },
+  "music-sounds": { th: "เสียงประกอบ", en: "Sounds" },
+  speech: { th: "เสียงพูด", en: "Speech" },
+  motion: { th: "เลียนท่าทาง", en: "Motion copy" },
+  "video-upscale": { th: "ขยายวิดีโอ", en: "Video upscale" },
 };
 
 function hueOf(name: string): number {
@@ -80,6 +82,7 @@ export function ModelBalloons({
   onPick: (id: number) => void;
   onClose: () => void;
 }) {
+  const t = useT();
   const [left, setLeft] = useState(0);
   const [picked, setPicked] = useState<number | null>(null);
   const fieldRef = useRef<HTMLDivElement>(null);
@@ -145,8 +148,8 @@ export function ModelBalloons({
 
   useEffect(() => {
     if (picked === null) return;
-    const t = setTimeout(() => pickRef.current(picked), PICK_MS);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => pickRef.current(picked), PICK_MS);
+    return () => clearTimeout(timer);
   }, [picked]);
 
   const firstFocus = models.find((m) => m.id === selectedId) ?? models.find((m) => m.canOrder !== false);
@@ -159,18 +162,21 @@ export function ModelBalloons({
         <header className="xdr-sky-head">
           <div>
             <h2>{title}</h2>
-            <p>{models.length} โมเดล · แตะลูกที่ชอบ ดูจากผลงานจริงของแต่ละเจ้า</p>
+            <p>{t(
+              `${models.length} โมเดล · แตะลูกที่ชอบ ดูจากผลงานจริงของแต่ละเจ้า`,
+              `${models.length} ${models.length === 1 ? "model" : "models"} · tap the one you like — each shows its own real work`,
+            )}</p>
           </div>
-          <button type="button" className="xdr-sky-close" onClick={onClose} aria-label="ปิด">✕</button>
+          <button type="button" className="xdr-sky-close" onClick={onClose} aria-label={t("ปิด", "Close")}>✕</button>
         </header>
         <div ref={fieldRef} className="xdr-sky-field"
           onPointerDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-          {models.length === 0 && <div className="xdr-sky-empty">ไม่มีโมเดลสำหรับหมวดนี้</div>}
+          {models.length === 0 && <div className="xdr-sky-empty">{t("ไม่มีโมเดลสำหรับหมวดนี้", "No models in this category")}</div>}
           {models.map((m, i) => {
             // A model that cannot be ordered right now stays in the sky,
             // deflated and grey, with the reason — picking it is blocked.
             const blocked = m.canOrder === false;
-            const reason = m.unavailableReason ?? m.tuningMessage ?? "ยังใช้งานไม่ได้ ลองใหม่ภายหลัง";
+            const reason = m.unavailableReason ?? m.tuningMessage ?? t("ยังใช้งานไม่ได้ ลองใหม่ภายหลัง", "Not available yet — try again later");
             const on = selectedId === m.id;
             const p = m.preview;
             const vars = {
@@ -202,8 +208,8 @@ export function ModelBalloons({
                     )}
                     <span className="xdr-bshine" aria-hidden="true" />
                     <span className="xdr-bprice">✦ {m.creditsPerUnit}</span>
-                    {m.isFeatured && !blocked && <span className="xdr-bstar">แนะนำ</span>}
-                    {blocked && <span className="xdr-bstate">{m.status === "tuning" ? "กำลังปรับแต่ง" : "ยังใช้ไม่ได้"}</span>}
+                    {m.isFeatured && !blocked && <span className="xdr-bstar">{t("แนะนำ", "Featured")}</span>}
+                    {blocked && <span className="xdr-bstate">{m.status === "tuning" ? t("กำลังปรับแต่ง", "Being tuned") : t("ยังใช้ไม่ได้", "Unavailable")}</span>}
                     {on && <span className="xdr-bcheck" aria-hidden="true">✓</span>}
                   </span>
                   <span className="xdr-bknot" aria-hidden="true" />
@@ -212,7 +218,7 @@ export function ModelBalloons({
                   </svg>
                   <span className="xdr-btag">
                     <b>{m.name}</b>
-                    <small>{blocked ? reason : KIND_LABEL[m.subcategory ?? ""] ?? "X-DREAMER"}</small>
+                    <small>{blocked ? reason : t(KIND_LABEL[m.subcategory ?? ""] ?? "X-DREAMER")}</small>
                     {p?.credit && <small className="xdr-bcredit">{p.credit}</small>}
                   </span>
                 </span>

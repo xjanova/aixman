@@ -65,6 +65,9 @@ import {
 } from "@/lib/studio-references";
 import { CameraPreview } from "@/components/camera-preview/CameraPreview";
 import { shotHint, type ShotSpec } from "@/lib/camera-shots";
+import { useLocale, useT } from "@/lib/i18n/client";
+import { formatCredits, formatDate, formatNumber, type Msg, type Translate } from "@/lib/i18n/locale";
+import { stemLabelText } from "@/lib/i18n/suno-text";
 
 const HUE = 70;
 
@@ -85,13 +88,13 @@ const videoToolOf = (subcategory?: string | null): VideoTool | null =>
  * cover) or make short sounds. Each lists only its own models.
  */
 type MusicMode = "create" | "cover" | "extend" | "add" | "stems" | "sounds";
-const MUSIC_MODES: { key: MusicMode; label: string; hint: string }[] = [
-  { key: "create", label: "แต่งเพลง", hint: "จากแนวเพลงและเนื้อร้อง" },
-  { key: "cover", label: "คัฟเวอร์", hint: "ทำนองเดิม แนวใหม่" },
-  { key: "extend", label: "ต่อเพลง", hint: "ยาวขึ้นจากจุดที่เลือก" },
-  { key: "add", label: "เติมเสียง", hint: "ใส่เสียงร้อง หรือใส่ดนตรี" },
-  { key: "stems", label: "แยกสเต็ม", hint: "เสียงร้อง กลอง เบส …" },
-  { key: "sounds", label: "เสียงประกอบ", hint: "ลูป บีต เอฟเฟกต์" },
+const MUSIC_MODES: { key: MusicMode; label: Msg; hint: Msg }[] = [
+  { key: "create", label: { th: "แต่งเพลง", en: "Write a song" }, hint: { th: "จากแนวเพลงและเนื้อร้อง", en: "From a style and lyrics" } },
+  { key: "cover", label: { th: "คัฟเวอร์", en: "Cover" }, hint: { th: "ทำนองเดิม แนวใหม่", en: "Same tune, new style" } },
+  { key: "extend", label: { th: "ต่อเพลง", en: "Extend" }, hint: { th: "ยาวขึ้นจากจุดที่เลือก", en: "Longer, from a point you pick" } },
+  { key: "add", label: { th: "เติมเสียง", en: "Add a part" }, hint: { th: "ใส่เสียงร้อง หรือใส่ดนตรี", en: "Add vocals or music" } },
+  { key: "stems", label: { th: "แยกสเต็ม", en: "Split stems" }, hint: { th: "เสียงร้อง กลอง เบส …", en: "Vocals, drums, bass …" } },
+  { key: "sounds", label: { th: "เสียงประกอบ", en: "Sounds" }, hint: { th: "ลูป บีต เอฟเฟกต์", en: "Loops, beats, effects" } },
 ];
 const musicModeOf = (m: { subcategory?: string | null; music?: { sourceSong: boolean } | null }): MusicMode => {
   switch (m.subcategory) {
@@ -135,15 +138,21 @@ function sunoParamsFor(tool: SunoTool, c: SunoChoices, tier: string | undefined)
     continueAt: tool === "extend" ? c.continueAt : undefined,
   };
 }
-const SUNO_VARIETY = ["ตรงสไตล์", "ปกติ", "หลากหลาย", "กล้าลอง", "สุดทาง"];
+const SUNO_VARIETY: Msg[] = [
+  { th: "ตรงสไตล์", en: "On style" },
+  { th: "ปกติ", en: "Normal" },
+  { th: "หลากหลาย", en: "Varied" },
+  { th: "กล้าลอง", en: "Bold" },
+  { th: "สุดทาง", en: "Wild" },
+];
 const SUNO_LENGTHS = [30, 60, 120, 180, 240, 360];
 /** A track this order made, carried on to the next tool: [mode, Suno tool, menu label]. */
-const SONG_NEXT: [MusicMode, SunoTool, string][] = [
-  ["stems", "stems", "✂ แยกสเต็ม"],
-  ["cover", "cover", "↻ คัฟเวอร์เป็นแนวใหม่"],
-  ["extend", "extend", "⏩ ต่อเพลงให้ยาวขึ้น"],
-  ["add", "add-vocals", "🎤 ใส่เสียงร้อง (ดนตรีบรรเลง)"],
-  ["add", "add-instrumental", "🎸 ใส่ดนตรี (เสียงร้องเปล่า)"],
+const SONG_NEXT: [MusicMode, SunoTool, Msg][] = [
+  ["stems", "stems", { th: "✂ แยกสเต็ม", en: "✂ Split stems" }],
+  ["cover", "cover", { th: "↻ คัฟเวอร์เป็นแนวใหม่", en: "↻ Cover in a new style" }],
+  ["extend", "extend", { th: "⏩ ต่อเพลงให้ยาวขึ้น", en: "⏩ Make it longer" }],
+  ["add", "add-vocals", { th: "🎤 ใส่เสียงร้อง (ดนตรีบรรเลง)", en: "🎤 Add vocals (to an instrumental)" }],
+  ["add", "add-instrumental", { th: "🎸 ใส่ดนตรี (เสียงร้องเปล่า)", en: "🎸 Add music (to a bare vocal)" }],
 ];
 const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
@@ -182,8 +191,14 @@ const aspectRatios = [
  * One prompt-builder button. `shot` marks a camera option: it is shown as a
  * looping 3D preview of what that camera does instead of a text chip.
  */
-interface BuilderItem { th: string; en: string; shot?: ShotSpec }
-type BuilderGroup = { label: string; items: BuilderItem[] };
+interface BuilderItem {
+  /** What the chip says, in the visitor's language. */
+  label: Msg;
+  /** The English the chip inserts into the prompt: model text, never translated. */
+  prompt: string;
+  shot?: ShotSpec;
+}
+type BuilderGroup = { label: Msg; items: BuilderItem[] };
 
 /**
  * Building blocks for a picture prompt, grouped by what they control. Each
@@ -191,44 +206,44 @@ type BuilderGroup = { label: string; items: BuilderItem[] };
  * only there to be read.
  */
 const IMAGE_BUILDER: BuilderGroup[] = [
-  { label: "สไตล์ภาพ", items: [
-    { th: "ภาพถ่ายสมจริง", en: "photorealistic photograph" },
-    { th: "ภาพนิ่งจากหนัง", en: "cinematic film still" },
-    { th: "อนิเมะ", en: "anime illustration, clean line art" },
-    { th: "3D เรนเดอร์", en: "3D render, soft global illumination" },
-    { th: "สีน้ำ", en: "watercolor painting" },
-    { th: "สีน้ำมัน", en: "oil painting, visible brush strokes" },
-    { th: "ไอโซเมตริก", en: "isometric illustration" },
-    { th: "โปสเตอร์", en: "graphic poster design, bold typography" },
+  { label: { th: "สไตล์ภาพ", en: "Style" }, items: [
+    { label: { th: "ภาพถ่ายสมจริง", en: "Photoreal" }, prompt: "photorealistic photograph" },
+    { label: { th: "ภาพนิ่งจากหนัง", en: "Film still" }, prompt: "cinematic film still" },
+    { label: { th: "อนิเมะ", en: "Anime" }, prompt: "anime illustration, clean line art" },
+    { label: { th: "3D เรนเดอร์", en: "3D render" }, prompt: "3D render, soft global illumination" },
+    { label: { th: "สีน้ำ", en: "Watercolor" }, prompt: "watercolor painting" },
+    { label: { th: "สีน้ำมัน", en: "Oil painting" }, prompt: "oil painting, visible brush strokes" },
+    { label: { th: "ไอโซเมตริก", en: "Isometric" }, prompt: "isometric illustration" },
+    { label: { th: "โปสเตอร์", en: "Poster" }, prompt: "graphic poster design, bold typography" },
   ] },
-  { label: "แสง", items: [
-    { th: "โกลเด้นอาวร์", en: "golden hour sunlight" },
-    { th: "ไฟสตูดิโอนุ่ม", en: "soft studio softbox lighting" },
-    { th: "นีออนยามค่ำ", en: "neon-lit night, reflections on wet street" },
-    { th: "แสงขอบ", en: "dramatic rim light" },
-    { th: "ลำแสงทะลุหมอก", en: "volumetric god rays through haze" },
-    { th: "โทนมืดดราม่า", en: "moody low-key lighting" },
+  { label: { th: "แสง", en: "Lighting" }, items: [
+    { label: { th: "โกลเด้นอาวร์", en: "Golden hour" }, prompt: "golden hour sunlight" },
+    { label: { th: "ไฟสตูดิโอนุ่ม", en: "Soft studio light" }, prompt: "soft studio softbox lighting" },
+    { label: { th: "นีออนยามค่ำ", en: "Neon night" }, prompt: "neon-lit night, reflections on wet street" },
+    { label: { th: "แสงขอบ", en: "Rim light" }, prompt: "dramatic rim light" },
+    { label: { th: "ลำแสงทะลุหมอก", en: "God rays" }, prompt: "volumetric god rays through haze" },
+    { label: { th: "โทนมืดดราม่า", en: "Moody low-key" }, prompt: "moody low-key lighting" },
   ] },
-  { label: "มุมกล้อง / เลนส์", items: [
-    { th: "พอร์ตเทรต 85mm", en: "close-up portrait, 85mm lens, shallow depth of field", shot: { angle: "portrait-85" } },
-    { th: "มุมกว้าง 24mm", en: "wide-angle 24mm shot", shot: { angle: "wide-24" } },
-    { th: "มาโคร", en: "macro shot, extreme detail", shot: { angle: "macro" } },
-    { th: "มุมสูงโดรน", en: "aerial drone view", shot: { angle: "aerial" } },
-    { th: "มุมต่ำ", en: "low-angle hero shot", shot: { angle: "low-angle" } },
-    { th: "มุมบนวางราบ", en: "top-down flat lay", shot: { angle: "top-down" } },
+  { label: { th: "มุมกล้อง / เลนส์", en: "Camera / lens" }, items: [
+    { label: { th: "พอร์ตเทรต 85mm", en: "85mm portrait" }, prompt: "close-up portrait, 85mm lens, shallow depth of field", shot: { angle: "portrait-85" } },
+    { label: { th: "มุมกว้าง 24mm", en: "24mm wide" }, prompt: "wide-angle 24mm shot", shot: { angle: "wide-24" } },
+    { label: { th: "มาโคร", en: "Macro" }, prompt: "macro shot, extreme detail", shot: { angle: "macro" } },
+    { label: { th: "มุมสูงโดรน", en: "Drone view" }, prompt: "aerial drone view", shot: { angle: "aerial" } },
+    { label: { th: "มุมต่ำ", en: "Low angle" }, prompt: "low-angle hero shot", shot: { angle: "low-angle" } },
+    { label: { th: "มุมบนวางราบ", en: "Top-down flat lay" }, prompt: "top-down flat lay", shot: { angle: "top-down" } },
   ] },
-  { label: "สีและบรรยากาศ", items: [
-    { th: "พาสเทล", en: "soft pastel palette" },
-    { th: "สีสด", en: "vibrant saturated colors" },
-    { th: "ขาวดำ", en: "black and white, high contrast" },
-    { th: "ทีลแอนด์ออเรนจ์", en: "teal and orange color grade" },
-    { th: "โทนฟิล์ม", en: "warm analog film tones, subtle grain" },
+  { label: { th: "สีและบรรยากาศ", en: "Color & mood" }, items: [
+    { label: { th: "พาสเทล", en: "Pastel" }, prompt: "soft pastel palette" },
+    { label: { th: "สีสด", en: "Vivid" }, prompt: "vibrant saturated colors" },
+    { label: { th: "ขาวดำ", en: "Black & white" }, prompt: "black and white, high contrast" },
+    { label: { th: "ทีลแอนด์ออเรนจ์", en: "Teal & orange" }, prompt: "teal and orange color grade" },
+    { label: { th: "โทนฟิล์ม", en: "Film tones" }, prompt: "warm analog film tones, subtle grain" },
   ] },
-  { label: "ความคมชัด", items: [
-    { th: "รายละเอียดสูง", en: "highly detailed" },
-    { th: "โฟกัสคม", en: "sharp focus" },
-    { th: "8K", en: "8k" },
-    { th: "HDR", en: "HDR" },
+  { label: { th: "ความคมชัด", en: "Detail" }, items: [
+    { label: { th: "รายละเอียดสูง", en: "High detail" }, prompt: "highly detailed" },
+    { label: { th: "โฟกัสคม", en: "Sharp focus" }, prompt: "sharp focus" },
+    { label: { th: "8K", en: "8K" }, prompt: "8k" },
+    { label: { th: "HDR", en: "HDR" }, prompt: "HDR" },
   ] },
 ];
 
@@ -238,39 +253,39 @@ const IMAGE_BUILDER: BuilderGroup[] = [
  * vocabulary is the one MiniMax's prompting guide for H3 defines.
  */
 const VIDEO_BUILDER: BuilderGroup[] = [
-  { label: "การเคลื่อนกล้อง", items: [
-    { th: "ดันเข้าช้าๆ", en: "The camera pushes in slowly toward the subject.", shot: { move: "push-in" } },
-    { th: "ถอยออกเผยฉาก", en: "The camera pulls out slowly to reveal the whole scene.", shot: { move: "pull-out" } },
-    { th: "แพนไปทางขวา", en: "The camera pans right across the scene.", shot: { move: "pan-right" } },
-    { th: "เลื่อนข้างตาม", en: "The camera trucks left alongside the subject.", shot: { move: "truck-left" } },
-    { th: "เงยขึ้นฟ้า", en: "The camera tilts up from the ground to the sky.", shot: { move: "tilt-up" } },
-    { th: "โคจรรอบตัว", en: "An arc shot circles around the subject.", shot: { move: "orbit" } },
-    { th: "ติดตามผู้แสดง", en: "A tracking shot follows the subject as they move.", shot: { move: "tracking" } },
-    { th: "กล้องนิ่ง", en: "Static shot, the camera holds perfectly still.", shot: { move: "static" } },
-    { th: "มุมมองสายตา", en: "POV shot through the character's eyes.", shot: { move: "pov" } },
-    { th: "ถือกล้องสั่นนิดๆ", en: "Handheld camera with a slight natural shake.", shot: { move: "handheld" } },
-    { th: "โดรนบินผ่าน", en: "Aerial drone shot gliding slowly over the landscape.", shot: { move: "drone" } },
-    { th: "ซูมเข้าใบหน้า", en: "The lens zooms in on the subject's face.", shot: { move: "zoom-face" } },
+  { label: { th: "การเคลื่อนกล้อง", en: "Camera movement" }, items: [
+    { label: { th: "ดันเข้าช้าๆ", en: "Slow push-in" }, prompt: "The camera pushes in slowly toward the subject.", shot: { move: "push-in" } },
+    { label: { th: "ถอยออกเผยฉาก", en: "Pull out to reveal" }, prompt: "The camera pulls out slowly to reveal the whole scene.", shot: { move: "pull-out" } },
+    { label: { th: "แพนไปทางขวา", en: "Pan right" }, prompt: "The camera pans right across the scene.", shot: { move: "pan-right" } },
+    { label: { th: "เลื่อนข้างตาม", en: "Truck alongside" }, prompt: "The camera trucks left alongside the subject.", shot: { move: "truck-left" } },
+    { label: { th: "เงยขึ้นฟ้า", en: "Tilt up to the sky" }, prompt: "The camera tilts up from the ground to the sky.", shot: { move: "tilt-up" } },
+    { label: { th: "โคจรรอบตัว", en: "Orbit" }, prompt: "An arc shot circles around the subject.", shot: { move: "orbit" } },
+    { label: { th: "ติดตามผู้แสดง", en: "Tracking shot" }, prompt: "A tracking shot follows the subject as they move.", shot: { move: "tracking" } },
+    { label: { th: "กล้องนิ่ง", en: "Static" }, prompt: "Static shot, the camera holds perfectly still.", shot: { move: "static" } },
+    { label: { th: "มุมมองสายตา", en: "POV" }, prompt: "POV shot through the character's eyes.", shot: { move: "pov" } },
+    { label: { th: "ถือกล้องสั่นนิดๆ", en: "Handheld" }, prompt: "Handheld camera with a slight natural shake.", shot: { move: "handheld" } },
+    { label: { th: "โดรนบินผ่าน", en: "Drone flyover" }, prompt: "Aerial drone shot gliding slowly over the landscape.", shot: { move: "drone" } },
+    { label: { th: "ซูมเข้าใบหน้า", en: "Zoom to face" }, prompt: "The lens zooms in on the subject's face.", shot: { move: "zoom-face" } },
   ] },
-  { label: "ขนาดภาพ", items: [
-    { th: "ไกลเห็นทั้งฉาก", en: "Wide establishing shot.", shot: { size: "extreme-wide" } },
-    { th: "ครึ่งตัว", en: "Medium shot.", shot: { size: "medium" } },
-    { th: "ใกล้ใบหน้า", en: "Close-up shot.", shot: { size: "close" } },
-    { th: "ใกล้มาก", en: "Extreme close-up.", shot: { size: "extreme-close" } },
+  { label: { th: "ขนาดภาพ", en: "Shot size" }, items: [
+    { label: { th: "ไกลเห็นทั้งฉาก", en: "Wide establishing" }, prompt: "Wide establishing shot.", shot: { size: "extreme-wide" } },
+    { label: { th: "ครึ่งตัว", en: "Medium" }, prompt: "Medium shot.", shot: { size: "medium" } },
+    { label: { th: "ใกล้ใบหน้า", en: "Close-up" }, prompt: "Close-up shot.", shot: { size: "close" } },
+    { label: { th: "ใกล้มาก", en: "Extreme close-up" }, prompt: "Extreme close-up.", shot: { size: "extreme-close" } },
   ] },
-  { label: "สไตล์และแสง", items: [
-    { th: "หนังฟอร์มยักษ์", en: "Live-action, cinematic, anamorphic lens, shallow depth of field." },
-    { th: "อนิเมะ 2D", en: "2D-animated, anime style." },
-    { th: "3D CG", en: "3D CG animation." },
-    { th: "ฟิล์มเก่า", en: "Vintage film look with soft grain." },
-    { th: "โกลเด้นอาวร์", en: "Warm golden hour light." },
-    { th: "นีออนกลางคืน", en: "Neon-lit night with wet reflections." },
+  { label: { th: "สไตล์และแสง", en: "Style & light" }, items: [
+    { label: { th: "หนังฟอร์มยักษ์", en: "Blockbuster" }, prompt: "Live-action, cinematic, anamorphic lens, shallow depth of field." },
+    { label: { th: "อนิเมะ 2D", en: "2D anime" }, prompt: "2D-animated, anime style." },
+    { label: { th: "3D CG", en: "3D CG" }, prompt: "3D CG animation." },
+    { label: { th: "ฟิล์มเก่า", en: "Vintage film" }, prompt: "Vintage film look with soft grain." },
+    { label: { th: "โกลเด้นอาวร์", en: "Golden hour" }, prompt: "Warm golden hour light." },
+    { label: { th: "นีออนกลางคืน", en: "Neon night" }, prompt: "Neon-lit night with wet reflections." },
   ] },
-  { label: "เสียง (โมเดลที่มีเสียงในตัว)", items: [
-    { th: "เสียงบรรยากาศจริง", en: "Natural ambient sound matching the scene." },
-    { th: "ออร์เคสตรา", en: "Background score: sweeping orchestral strings that build slowly." },
-    { th: "อิเล็กทรอนิกส์", en: "Background score: pulsing electronic beat at a fast tempo." },
-    { th: "ไม่มีดนตรี", en: "No background music." },
+  { label: { th: "เสียง (โมเดลที่มีเสียงในตัว)", en: "Sound (models with built-in audio)" }, items: [
+    { label: { th: "เสียงบรรยากาศจริง", en: "Natural ambience" }, prompt: "Natural ambient sound matching the scene." },
+    { label: { th: "ออร์เคสตรา", en: "Orchestral" }, prompt: "Background score: sweeping orchestral strings that build slowly." },
+    { label: { th: "อิเล็กทรอนิกส์", en: "Electronic" }, prompt: "Background score: pulsing electronic beat at a fast tempo." },
+    { label: { th: "ไม่มีดนตรี", en: "No music" }, prompt: "No background music." },
   ] },
 ];
 
@@ -291,15 +306,20 @@ interface TrayJob {
 
 /**
  * The server answers some refusals in English (the mobile app matches on the
- * text, so it stays). A customer reads them here in Thai.
+ * text, so it stays). A customer reads them here in their own language.
  */
-function localizeOrderError(message: string): string {
+function localizeOrderError(message: string, t: Translate): string {
   const credits = /Insufficient credits\. Need (\d+), have (\d+)/i.exec(message);
-  if (credits) return `เครดิตไม่พอ — งานนี้ใช้ ${credits[1]} เครดิต แต่มีอยู่ ${credits[2]} เครดิต`;
-  if (/Model not available/i.test(message)) return "โมเดลนี้ปิดให้บริการชั่วคราว";
-  if (/temporarily unavailable/i.test(message)) return "บริการไม่ว่างชั่วคราว ลองใหม่ในอีกสักครู่";
-  if (/Prompt is required/i.test(message)) return "กรุณาพิมพ์ prompt ก่อน";
-  if (/Generation failed/i.test(message)) return "สร้างไม่สำเร็จ ลองใหม่อีกครั้ง";
+  if (credits) {
+    return t(
+      `เครดิตไม่พอ — งานนี้ใช้ ${credits[1]} เครดิต แต่มีอยู่ ${credits[2]} เครดิต`,
+      `Not enough credits — this needs ${credits[1]} and you have ${credits[2]}.`,
+    );
+  }
+  if (/Model not available/i.test(message)) return t("โมเดลนี้ปิดให้บริการชั่วคราว", "This model is temporarily unavailable.");
+  if (/temporarily unavailable/i.test(message)) return t("บริการไม่ว่างชั่วคราว ลองใหม่ในอีกสักครู่", "The service is busy right now. Try again in a moment.");
+  if (/Prompt is required/i.test(message)) return t("กรุณาพิมพ์ prompt ก่อน", "Please type a prompt first.");
+  if (/Generation failed/i.test(message)) return t("สร้างไม่สำเร็จ ลองใหม่อีกครั้ง", "Generation failed. Please try again.");
   return message;
 }
 
@@ -308,7 +328,7 @@ type EnhanceOutcome =
   | { ok: false; error: string };
 
 /** "✨ ปรับพรอมต์ด้วย AI" — errors as values, like every request helper here. */
-async function requestEnhance(body: Record<string, unknown>): Promise<EnhanceOutcome> {
+async function requestEnhance(body: Record<string, unknown>, t: Translate): Promise<EnhanceOutcome> {
   try {
     const res = await fetch("/api/studio/enhance-prompt", {
       method: "POST",
@@ -316,11 +336,11 @@ async function requestEnhance(body: Record<string, unknown>): Promise<EnhanceOut
       body: JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) return { ok: false, error: data.error || "ปรับพรอมต์ไม่สำเร็จ" };
-    if (typeof data.prompt !== "string" || !data.prompt.trim()) return { ok: false, error: "AI ไม่ได้ส่งพรอมต์กลับมา" };
+    if (!res.ok) return { ok: false, error: data.error || t("ปรับพรอมต์ไม่สำเร็จ", "Couldn't improve the prompt") };
+    if (typeof data.prompt !== "string" || !data.prompt.trim()) return { ok: false, error: t("AI ไม่ได้ส่งพรอมต์กลับมา", "The AI didn't send a prompt back") };
     return { ok: true, prompt: data.prompt, source: String(data.source ?? ""), engine: data.engine };
   } catch {
-    return { ok: false, error: "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้" };
+    return { ok: false, error: t("ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้", "Couldn't reach the server") };
   }
 }
 
@@ -410,12 +430,15 @@ const MUSIC_TAG_CHIPS = [
 const SECTION_TAGS = ["[Verse]", "[Chorus]", "[Bridge]", "[Outro]"];
 
 /** One-tap starting points for the music tab, shown before the first song. */
-const MUSIC_STARTERS = [
-  "ป๊อปไทยสดใส เสียงร้องหญิง กีตาร์โปร่ง จังหวะเร็ว",
-  "ลูกทุ่งอีสานสนุกๆ แคน พิณ เสียงร้องชาย",
-  "lo-fi ชิลๆ เปียโน ฝนตก ฟังตอนทำงาน",
-  "ดนตรีประกอบโฆษณา สร้างแรงบันดาลใจ ออร์เคสตรา",
+const MUSIC_STARTERS: Msg[] = [
+  { th: "ป๊อปไทยสดใส เสียงร้องหญิง กีตาร์โปร่ง จังหวะเร็ว", en: "Bright Thai pop, female vocal, acoustic guitar, fast tempo" },
+  { th: "ลูกทุ่งอีสานสนุกๆ แคน พิณ เสียงร้องชาย", en: "Fun Isan luk thung, khaen, phin, male vocal" },
+  { th: "lo-fi ชิลๆ เปียโน ฝนตก ฟังตอนทำงาน", en: "Chill lo-fi, piano, rain, music to work to" },
+  { th: "ดนตรีประกอบโฆษณา สร้างแรงบันดาลใจ ออร์เคสตรา", en: "Inspiring orchestral music for an ad" },
 ];
+
+/** A song-style picker with nothing picked. */
+const ANY: Msg = { th: "อิสระ", en: "Any" };
 
 /** What the voice and song pickers take. */
 const AUDIO_ACCEPT = "audio/mpeg,audio/wav,audio/ogg,audio/flac,audio/mp4,audio/x-m4a";
@@ -659,26 +682,34 @@ function probeDuration(file: File, kind: "audio" | "video"): Promise<number | nu
 function clipRuleHint(
   rule: { minSeconds?: number; maxSeconds: number; minSide?: number; maxSide?: number; containers?: string[] } | undefined,
   billing: { kind: "flat" } | { kind: "clipBlocks"; blockSeconds: number } | null,
+  t: Translate,
 ): string {
-  if (!rule) return `คลิปยาวไม่เกิน ${MAX_INPUT_SECONDS} วินาที`;
-  const parts = [rule.minSeconds ? `คลิปยาว ${rule.minSeconds}–${rule.maxSeconds} วินาที` : `คลิปยาวไม่เกิน ${rule.maxSeconds} วินาที`];
-  if (rule.minSide && rule.maxSide) parts.push(`ความละเอียดด้านละ ${rule.minSide}–${rule.maxSide} พิกเซล`);
-  if (rule.containers?.length) parts.push("ไฟล์ MP4 หรือ MOV");
-  if (billing?.kind === "clipBlocks") parts.push(`คิดเครดิตตามความยาวคลิป ช่วงละ ${billing.blockSeconds} วินาที`);
+  if (!rule) return t(`คลิปยาวไม่เกิน ${MAX_INPUT_SECONDS} วินาที`, `Clips up to ${MAX_INPUT_SECONDS} seconds`);
+  const parts = [
+    rule.minSeconds
+      ? t(`คลิปยาว ${rule.minSeconds}–${rule.maxSeconds} วินาที`, `Clips of ${rule.minSeconds}–${rule.maxSeconds} seconds`)
+      : t(`คลิปยาวไม่เกิน ${rule.maxSeconds} วินาที`, `Clips up to ${rule.maxSeconds} seconds`),
+  ];
+  if (rule.minSide && rule.maxSide) parts.push(t(`ความละเอียดด้านละ ${rule.minSide}–${rule.maxSide} พิกเซล`, `${rule.minSide}–${rule.maxSide} px per side`));
+  if (rule.containers?.length) parts.push(t("ไฟล์ MP4 หรือ MOV", "MP4 or MOV"));
+  if (billing?.kind === "clipBlocks") {
+    parts.push(t(`คิดเครดิตตามความยาวคลิป ช่วงละ ${billing.blockSeconds} วินาที`, `billed by clip length, per ${billing.blockSeconds}-second block`));
+  }
   return parts.join(" · ");
 }
 
 async function uploadMedia(
   file: File,
   kind: "audio" | "video" | "image",
+  t: Translate,
 ): Promise<{ url?: string; error?: string; durationSeconds?: number; width?: number; height?: number; contentType?: string }> {
   try {
     const form = new FormData();
     form.append("file", file);
     const res = await fetch(`/api/uploads?kind=${kind}`, { method: "POST", body: form });
     const data = await res.json();
-    if (!res.ok) return { error: data.error || "ลองใหม่อีกครั้ง" };
-    if (typeof data.url !== "string") return { error: "เซิร์ฟเวอร์ไม่ได้ส่งลิงก์ไฟล์กลับมา" };
+    if (!res.ok) return { error: data.error || t("ลองใหม่อีกครั้ง", "Please try again") };
+    if (typeof data.url !== "string") return { error: t("เซิร์ฟเวอร์ไม่ได้ส่งลิงก์ไฟล์กลับมา", "The server didn't send back a file link") };
     // The server's own reading of the file — the one an order is priced by.
     const seconds = typeof data.durationSeconds === "number" && data.durationSeconds > 0 ? data.durationSeconds : undefined;
     // A clip's picture, read the way the order path reads it.
@@ -691,7 +722,7 @@ async function uploadMedia(
       contentType: typeof data.contentType === "string" ? data.contentType : undefined,
     };
   } catch {
-    return { error: "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้" };
+    return { error: t("ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้", "Couldn't reach the server") };
   }
 }
 
@@ -775,6 +806,7 @@ async function readGeneration(
 /** POST an order. `network` covers an unreachable server and a non-JSON answer. */
 async function postGeneration(
   body: Record<string, unknown>,
+  t: Translate,
 ): Promise<{ kind: "ok"; data: GenerationResult } | { kind: "rejected"; error: string } | { kind: "network" }> {
   try {
     const res = await fetch("/api/generate", {
@@ -783,7 +815,7 @@ async function postGeneration(
       body: JSON.stringify(body),
     });
     const data = await res.json();
-    if (!res.ok) return { kind: "rejected", error: data.error || "ไม่สามารถสร้างได้" };
+    if (!res.ok) return { kind: "rejected", error: data.error || t("ไม่สามารถสร้างได้", "Couldn't create this") };
     return { kind: "ok", data: data as GenerationResult };
   } catch {
     return { kind: "network" };
@@ -799,11 +831,11 @@ type UpscaleOutcome =
   | { kind: "network" };
 
 /** Start an upscale and, unless it finished at once, poll it (60 × 3 s). */
-async function runUpscale(generationId: number): Promise<UpscaleOutcome> {
+async function runUpscale(generationId: number, t: Translate): Promise<UpscaleOutcome> {
   try {
     const res = await fetch("/api/upscale", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ generationId }) });
     const data = await res.json();
-    if (!res.ok) return { kind: "rejected", error: data.error || "เกิดข้อผิดพลาด" };
+    if (!res.ok) return { kind: "rejected", error: data.error || t("เกิดข้อผิดพลาด", "Something went wrong") };
     if (data.status === "completed" && data.resultUrl) {
       return { kind: "done", resultUrl: data.resultUrl, creditsUsed: data.creditsUsed };
     }
@@ -843,11 +875,12 @@ function FilePick({
   onPick: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onClear: () => void;
 }) {
+  const t = useT();
   if (busy) {
     return (
       <div className="rp-drop" data-busy="true" role="status">
         <span className="rp-spin" aria-hidden="true" />
-        กำลังอัปโหลด…
+        {t("กำลังอัปโหลด…", "Uploading…")}
       </div>
     );
   }
@@ -857,7 +890,7 @@ function FilePick({
       <div className="rp-filechip">
         <span className="rp-filechip-ic" aria-hidden="true">✓</span>
         <span className="rp-filechip-name">{value}</span>
-        <button type="button" onClick={onClear} aria-label="เอาไฟล์ออก">×</button>
+        <button type="button" onClick={onClear} aria-label={t("เอาไฟล์ออก", "Remove file")}>×</button>
       </div>
     );
   }
@@ -866,7 +899,7 @@ function FilePick({
     <label className="rp-drop">
       <span className="rp-drop-ic" aria-hidden="true">↑</span>
       {hint}
-      <small>หรือลากไฟล์มาวางตรงไหนก็ได้</small>
+      <small>{t("หรือลากไฟล์มาวางตรงไหนก็ได้", "or drop a file anywhere")}</small>
       <input type="file" accept={accept} hidden onChange={onPick} />
     </label>
   );
@@ -889,11 +922,12 @@ function ImageSlot({
   onLoad?: (img: HTMLImageElement) => void;
   onError?: () => void;
 }) {
+  const t = useT();
   if (busy) {
     return (
       <div className="rp-drop" data-busy="true" role="status">
         <span className="rp-spin" aria-hidden="true" />
-        กำลังอัปโหลด…
+        {t("กำลังอัปโหลด…", "Uploading…")}
       </div>
     );
   }
@@ -902,7 +936,7 @@ function ImageSlot({
       <div className="rp-pic">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={src} alt={alt} onLoad={onLoad ? (e) => onLoad(e.currentTarget) : undefined} onError={onError} />
-        <button type="button" onClick={onClear} aria-label={`เอา${alt}ออก`}>×</button>
+        <button type="button" onClick={onClear} aria-label={t(`เอา${alt}ออก`, `Remove ${alt.toLowerCase()}`)}>×</button>
       </div>
     );
   }
@@ -910,7 +944,7 @@ function ImageSlot({
     <label className="rp-drop">
       <span className="rp-drop-ic" aria-hidden="true">↑</span>
       {hint}
-      <small>ลาก &amp; วาง หรือ Ctrl+V</small>
+      <small>{t("ลาก & วาง หรือ Ctrl+V", "Drag & drop or Ctrl+V")}</small>
       <input type="file" accept={accept} hidden onChange={onPick} />
     </label>
   );
@@ -945,8 +979,13 @@ const TAB_EN: Record<TabType, string> = {
 /** The modes in the order the orb lists them and the composer counts them. */
 const TAB_ORDER: TabType[] = ["image", "video", "edit", "lipsync", "audio", "speech"];
 
-const TAB_LABEL: Record<TabType, string> = {
-  image: "สร้างภาพ", video: "สร้างวิดีโอ", edit: "แก้ไขภาพ", lipsync: "ลิปซิงค์", audio: "สร้างเพลง", speech: "เสียงพูด",
+const TAB_LABEL: Record<TabType, Msg> = {
+  image: { th: "สร้างภาพ", en: "Create image" },
+  video: { th: "สร้างวิดีโอ", en: "Create video" },
+  edit: { th: "แก้ไขภาพ", en: "Edit image" },
+  lipsync: { th: "ลิปซิงค์", en: "Lip sync" },
+  audio: { th: "สร้างเพลง", en: "Create music" },
+  speech: { th: "เสียงพูด", en: "Speech" },
 };
 
 /**
@@ -956,13 +995,13 @@ const TAB_LABEL: Record<TabType, string> = {
  * name never reaches a browser that had the old one. Bump the suffix when the
  * art changes, and redraw the whole set or the new one stands out of it.
  */
-const PICKER_TITLE: Record<TabType, string> = {
-  image: "เลือกโมเดลสร้างภาพ",
-  video: "เลือกโมเดลสร้างวิดีโอ",
-  edit: "เลือกโมเดลแก้ภาพ",
-  lipsync: "เลือกโมเดลพากย์ทับคลิป",
-  audio: "เลือกโมเดลเพลง",
-  speech: "เลือกโมเดลเสียงพูด",
+const PICKER_TITLE: Record<TabType, Msg> = {
+  image: { th: "เลือกโมเดลสร้างภาพ", en: "Choose an image model" },
+  video: { th: "เลือกโมเดลสร้างวิดีโอ", en: "Choose a video model" },
+  edit: { th: "เลือกโมเดลแก้ภาพ", en: "Choose an editing model" },
+  lipsync: { th: "เลือกโมเดลพากย์ทับคลิป", en: "Choose a lip-sync model" },
+  audio: { th: "เลือกโมเดลเพลง", en: "Choose a music model" },
+  speech: { th: "เลือกโมเดลเสียงพูด", en: "Choose a speech model" },
 };
 
 const TAB_ICON: Record<TabType, string> = {
@@ -1138,13 +1177,14 @@ function ChipRow({
   label, options, value, onChange, max, disabled, hint,
 }: {
   label: string;
-  options: { id: string; label: string }[];
+  options: { id: string; label: Msg }[];
   value: string | string[] | undefined;
   onChange: (next: string | string[] | undefined) => void;
   max?: number;
   disabled?: boolean;
   hint?: string;
 }) {
+  const t = useT();
   const multi = Array.isArray(value) || typeof max === "number";
   const picked = Array.isArray(value) ? value : value ? [value] : [];
   const full = multi && typeof max === "number" && picked.length >= max;
@@ -1180,7 +1220,7 @@ function ChipRow({
                 color: on ? "#fff" : blocked ? "#475569" : "#94a3b8",
                 border: `1px solid ${on ? `hsla(${220 + HUE},70%,60%,0.55)` : "rgba(255,255,255,0.08)"}`,
               }}>
-              {o.label}
+              {t(o.label)}
             </button>
           );
         })}
@@ -1235,6 +1275,7 @@ const STUDIO_SAMPLES: Record<string, { src: string; label: string }[]> = {
 };
 
 function SampleFrame({ src, label, aspect, isVideo = false }: { src: string; label: string; aspect: string; isVideo?: boolean }) {
+  const t = useT();
   return (
     <div className="rp-studio-frame" style={{
       aspectRatio: ASPECT_RATIO_CSS[aspect] || "1/1",
@@ -1245,7 +1286,7 @@ function SampleFrame({ src, label, aspect, isVideo = false }: { src: string; lab
       <Image src={src} alt="" fill sizes="(max-width:900px) 50vw, 320px" style={{ objectFit: "cover", opacity: 0.62 }} />
       <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(3,6,18,0.35) 0%, rgba(3,6,18,0.2) 45%, rgba(3,6,18,0.9) 100%)" }} />
       <div style={{ position: "absolute", top: 10, left: 12, fontSize: 9, letterSpacing: "0.14em", textTransform: "uppercase", color: "rgba(255,255,255,0.72)", background: "rgba(3,6,18,0.55)", backdropFilter: "blur(6px)", padding: "3px 8px", borderRadius: 999 }}>
-        {isVideo ? "▶ ตัวอย่าง" : "ตัวอย่าง"}
+        {isVideo ? t("▶ ตัวอย่าง", "▶ Sample") : t("ตัวอย่าง", "Sample")}
       </div>
       <div style={{ position: "absolute", left: 12, bottom: 10, fontSize: 10, color: "rgba(255,255,255,0.6)", letterSpacing: "0.06em" }}>
         {label}
@@ -1265,32 +1306,59 @@ function useNow(intervalMs: number): number {
 }
 
 /** Rotating captions while a result is being made — flavour, not status. */
-const CREATING_TIPS: Record<string, string[]> = {
-  video: ["กำลังจัดแสงและมุมกล้อง…", "กำลังวาดเฟรมทีละภาพ…", "กำลังใส่เสียงประกอบ…", "กำลังเก็บรายละเอียดการเคลื่อนไหว…"],
-  image: ["กำลังเรียงองค์ประกอบภาพ…", "กำลังลงสีและแสงเงา…", "กำลังเก็บรายละเอียดให้คมชัด…"],
-  edit: ["กำลังอ่านภาพต้นฉบับ…", "กำลังแก้ไขตามที่สั่ง…", "กำลังเกลี่ยรอยต่อให้เนียน…"],
-  lipsync: ["กำลังฟังเสียงพูด…", "กำลังขยับปากให้ตรงจังหวะ…", "กำลังเก็บรายละเอียดใบหน้า…"],
-  audio: ["กำลังแต่งทำนอง…", "กำลังเรียบเรียงดนตรี…", "กำลังใส่เสียงร้อง…", "กำลังมิกซ์เสียง…"],
-  speech: ["กำลังอ่านข้อความ…", "กำลังใส่จังหวะและน้ำเสียง…", "กำลังเก็บเสียงให้ใส…"],
+const CREATING_TIPS: Record<string, Msg[]> = {
+  video: [
+    { th: "กำลังจัดแสงและมุมกล้อง…", en: "Setting up the lights and camera…" },
+    { th: "กำลังวาดเฟรมทีละภาพ…", en: "Drawing it frame by frame…" },
+    { th: "กำลังใส่เสียงประกอบ…", en: "Adding the sound…" },
+    { th: "กำลังเก็บรายละเอียดการเคลื่อนไหว…", en: "Polishing the motion…" },
+  ],
+  image: [
+    { th: "กำลังเรียงองค์ประกอบภาพ…", en: "Composing the picture…" },
+    { th: "กำลังลงสีและแสงเงา…", en: "Painting in color, light and shadow…" },
+    { th: "กำลังเก็บรายละเอียดให้คมชัด…", en: "Sharpening the details…" },
+  ],
+  edit: [
+    { th: "กำลังอ่านภาพต้นฉบับ…", en: "Reading your original…" },
+    { th: "กำลังแก้ไขตามที่สั่ง…", en: "Making your changes…" },
+    { th: "กำลังเกลี่ยรอยต่อให้เนียน…", en: "Blending the seams…" },
+  ],
+  lipsync: [
+    { th: "กำลังฟังเสียงพูด…", en: "Listening to the voice…" },
+    { th: "กำลังขยับปากให้ตรงจังหวะ…", en: "Matching the lips to the words…" },
+    { th: "กำลังเก็บรายละเอียดใบหน้า…", en: "Polishing the face…" },
+  ],
+  audio: [
+    { th: "กำลังแต่งทำนอง…", en: "Writing the melody…" },
+    { th: "กำลังเรียบเรียงดนตรี…", en: "Arranging the music…" },
+    { th: "กำลังใส่เสียงร้อง…", en: "Adding the vocals…" },
+    { th: "กำลังมิกซ์เสียง…", en: "Mixing…" },
+  ],
+  speech: [
+    { th: "กำลังอ่านข้อความ…", en: "Reading the text…" },
+    { th: "กำลังใส่จังหวะและน้ำเสียง…", en: "Adding pace and tone…" },
+    { th: "กำลังเก็บเสียงให้ใส…", en: "Cleaning up the audio…" },
+  ],
 };
 
 /**
  * ElevenLabs v3's audio tags: written into the text in square brackets and
  * performed, not read out (elevenlabs.io/docs, "Audio tags").
  */
-const SPEECH_TAGS = [
-  { tag: "[laughs]", th: "หัวเราะ" },
-  { tag: "[whispers]", th: "กระซิบ" },
-  { tag: "[sighs]", th: "ถอนหายใจ" },
-  { tag: "[excited]", th: "ตื่นเต้น" },
-  { tag: "[curious]", th: "สงสัย" },
-  { tag: "[sarcastic]", th: "ประชด" },
-  { tag: "[crying]", th: "ร้องไห้" },
-  { tag: "[exhales]", th: "ผ่อนลมหายใจ" },
+const SPEECH_TAGS: { tag: string; label: Msg }[] = [
+  { tag: "[laughs]", label: { th: "หัวเราะ", en: "Laugh" } },
+  { tag: "[whispers]", label: { th: "กระซิบ", en: "Whisper" } },
+  { tag: "[sighs]", label: { th: "ถอนหายใจ", en: "Sigh" } },
+  { tag: "[excited]", label: { th: "ตื่นเต้น", en: "Excited" } },
+  { tag: "[curious]", label: { th: "สงสัย", en: "Curious" } },
+  { tag: "[sarcastic]", label: { th: "ประชด", en: "Sarcastic" } },
+  { tag: "[crying]", label: { th: "ร้องไห้", en: "Crying" } },
+  { tag: "[exhales]", label: { th: "ผ่อนลมหายใจ", en: "Exhale" } },
 ];
 
 /** The animated centre of a frame while its result is being made. */
 function GeneratingOverlay({ progress }: { progress: QueueProgress | null }) {
+  const t = useT();
   const place = progress?.stage === "queued" ? progress.position ?? 0 : 0;
   const now = useNow(500);
   const fraction = progress?.stage === "rendering" ? shownFraction(progress, now) : null;
@@ -1322,20 +1390,20 @@ function GeneratingOverlay({ progress }: { progress: QueueProgress | null }) {
         <div style={{ position: "relative", textAlign: "center", color: "#fff" }}>
           {place > 0 ? (
             <>
-              <div style={{ fontSize: 10, letterSpacing: "0.18em", opacity: 0.75 }}>คิวที่</div>
+              <div style={{ fontSize: 10, letterSpacing: "0.18em", opacity: 0.75 }}>{t("คิวที่", "Queue")}</div>
               {/* Keyed on the number, so each step down replays the pop. */}
               <div key={place} className="xdr-motion" style={{ fontSize: 40, fontWeight: 700, lineHeight: 1.05, animation: "xdr-pop 450ms ease-out" }}>{place}</div>
             </>
           ) : fraction != null ? (
             <>
-              <div style={{ fontSize: 10, letterSpacing: "0.18em", opacity: 0.75 }}>กำลังสร้าง</div>
+              <div style={{ fontSize: 10, letterSpacing: "0.18em", opacity: 0.75 }}>{t("กำลังสร้าง", "Creating")}</div>
               <div style={{ fontSize: 34, fontWeight: 700, lineHeight: 1.1, fontVariantNumeric: "tabular-nums" }}>
                 {Math.floor(fraction * 100)}<span style={{ fontSize: 16, opacity: 0.8 }}>%</span>
               </div>
             </>
           ) : (
             <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: "0.04em" }}>
-              {progress?.paused ? "หยุดชั่วคราว" : "กำลังสร้าง"}
+              {progress?.paused ? t("หยุดชั่วคราว", "Paused") : t("กำลังสร้าง", "Creating")}
             </div>
           )}
         </div>
@@ -1346,6 +1414,7 @@ function GeneratingOverlay({ progress }: { progress: QueueProgress | null }) {
 
 /** Queue place, the honest ETA and a moving bar, under the frame(s). */
 function GeneratingStatus({ progress, tab, startedAt }: { progress: QueueProgress | null; tab: string; startedAt: number | null }) {
+  const t = useT();
   const [now, setNow] = useState(() => Date.now());
   const [tip, setTip] = useState(0);
   useEffect(() => {
@@ -1366,14 +1435,17 @@ function GeneratingStatus({ progress, tab, startedAt }: { progress: QueueProgres
   const fraction = render ?? (remaining != null ? Math.min(0.97, elapsed / Math.max(1, elapsed + remaining)) : null);
   const queued = progress?.stage === "queued";
 
+  const place = queued && (progress?.position ?? 0) > 1 ? t(` • คิวที่ ${progress?.position}`, ` • #${progress?.position} in queue`) : "";
   const headline = progress
-    ? `${progress.label}${queued && (progress.position ?? 0) > 1 ? ` • คิวที่ ${progress.position}` : ""}${render != null ? ` ${Math.floor(render * 100)}%` : ""}`
-    : "กำลังสร้างผลงานของคุณ";
-  const eta = progress?.etaLabel
-    ? `${progress.basis === "baseline" ? "คาดว่าใช้เวลา" : "เหลืออีก"} ${progress.etaLabel}`
-    : !progress
-      ? tab === "video" ? "วิดีโอมักใช้เวลา 30-120 วินาที" : "รอสักครู่"
-      : null;
+    ? `${progress.label}${place}${render != null ? ` ${Math.floor(render * 100)}%` : ""}`
+    : t("กำลังสร้างผลงานของคุณ", "Creating your work");
+  const waitLine = progress?.etaLabel
+    ? progress.basis === "baseline"
+      ? t(`คาดว่าใช้เวลา ${progress.etaLabel}`, `Expected to take about ${progress.etaLabel}`)
+      : t(`เหลืออีก ${progress.etaLabel}`, `About ${progress.etaLabel} left`)
+    : null;
+  const idleLine = tab === "video" ? t("วิดีโอมักใช้เวลา 30-120 วินาที", "Videos usually take 30–120 seconds") : t("รอสักครู่", "Just a moment");
+  const eta = waitLine ?? (!progress ? idleLine : null);
 
   return (
     <div style={{ maxWidth: 460, margin: "20px auto 0", textAlign: "center" }}>
@@ -1392,11 +1464,11 @@ function GeneratingStatus({ progress, tab, startedAt }: { progress: QueueProgres
         }} />
       </div>
       <div key={tip} className="xdr-motion" style={{ fontSize: 12, color: "rgba(165,243,252,0.75)", marginTop: 10, animation: "xdr-fade-in 500ms ease-out" }}>
-        {queued ? "ระบบจะเริ่มสร้างให้อัตโนมัติเมื่อถึงคิวของคุณ" : tips[tip % tips.length]}
+        {queued ? t("ระบบจะเริ่มสร้างให้อัตโนมัติเมื่อถึงคิวของคุณ", "It starts automatically when it's your turn") : t(tips[tip % tips.length])}
       </div>
       {progress && (
         <div style={{ fontSize: 11, color: "rgba(203,213,225,0.45)", marginTop: 6 }}>
-          ปิดหน้านี้ได้ ผลงานจะเข้าแกลเลอรีเมื่อเสร็จ
+          {t("ปิดหน้านี้ได้ ผลงานจะเข้าแกลเลอรีเมื่อเสร็จ", "You can close this page — your work goes to your gallery when it's done")}
         </div>
       )}
     </div>
@@ -1448,6 +1520,8 @@ export default function GeneratePage() {
   const { data: session } = useSession();
   const router = useRouter();
   const { toast } = useToast();
+  const t = useT();
+  const { locale } = useLocale();
   const {
     models, fetchModels, modelsLoaded,
     styles, fetchStyles, stylesLoaded,
@@ -1502,7 +1576,7 @@ export default function GeneratePage() {
   /** "✨ ปรับพรอมต์ด้วย AI": in flight, the prompt it replaced (for ↶), and where it came from. */
   const [enhancing, setEnhancing] = useState(false);
   const [promptBeforeEnhance, setPromptBeforeEnhance] = useState<string | null>(null);
-  const [enhanceNote, setEnhanceNote] = useState<string | null>(null);
+  const [enhanceNote, setEnhanceNote] = useState<Msg | null>(null);
   /**
    * Orders in the tray: the one on the canvas and any still rendering behind
    * it. A rented-GPU render can take minutes, and nobody should have to watch
@@ -1709,8 +1783,8 @@ export default function GeneratePage() {
     if (lostMusicMode) setMusicMode("create");
   }, [lostMusicMode]);
   /** The clip tools some connected video model offers — their modes appear only then. */
-  const videoTools = (["motion", "upscale"] as const).filter((t) =>
-    models.some((m) => m.category === "video" && videoToolOf(m.subcategory) === t),
+  const videoTools = (["motion", "upscale"] as const).filter((tool) =>
+    models.some((m) => m.category === "video" && videoToolOf(m.subcategory) === tool),
   );
   // A tool mode whose models went away (switched off, or a reopened order's
   // model since retired) falls back to text → video rather than an empty list.
@@ -1729,16 +1803,16 @@ export default function GeneratePage() {
   const model3dBlocked = !modelsLoaded
     ? null
     : model3dModels.length === 0
-      ? "ยังไม่มีโมเดลในหมวดนี้"
+      ? t("ยังไม่มีโมเดลในหมวดนี้", "No models in this category yet")
       : model3dModels.some((m) => m.canOrder !== false)
         ? null
-        : model3dModels[0].unavailableReason ?? model3dModels[0].tuningMessage ?? "ยังใช้งานไม่ได้ในขณะนี้";
+        : model3dModels[0].unavailableReason ?? model3dModels[0].tuningMessage ?? t("ยังใช้งานไม่ได้ในขณะนี้", "Not available right now");
   const tabBlockedReason = (key: TabType): string | null => {
     if (!modelsLoaded) return null;
     const inThisTab = models.filter((m) => inTab(m, key));
-    if (inThisTab.length === 0) return "ยังไม่มีโมเดลในหมวดนี้";
+    if (inThisTab.length === 0) return t("ยังไม่มีโมเดลในหมวดนี้", "No models in this category yet");
     if (inThisTab.some((m) => m.canOrder !== false)) return null;
-    return inThisTab[0].unavailableReason ?? inThisTab[0].tuningMessage ?? "ยังใช้งานไม่ได้ในขณะนี้";
+    return inThisTab[0].unavailableReason ?? inThisTab[0].tuningMessage ?? t("ยังใช้งานไม่ได้ในขณะนี้", "Not available right now");
   };
 
 
@@ -1768,7 +1842,7 @@ export default function GeneratePage() {
       ? "lipsync"
       : isSpeechModel(m)
         ? "speech"
-        : TAB_ORDER.find((t) => t === m.category);
+        : TAB_ORDER.find((k) => k === m.category);
     if (!home) return;
     setTab(home);
     if (home === "video") setVideoMode(videoToolOf(m.subcategory) ?? "t2v");
@@ -1794,11 +1868,11 @@ export default function GeneratePage() {
       }).catch(() => undefined);
     };
     ping();
-    const t = setInterval(ping, 30_000);
+    const timer = setInterval(ping, 30_000);
     // Coming back to the tab counts at once, not up to 30 s later.
     document.addEventListener("visibilitychange", ping);
     return () => {
-      clearInterval(t);
+      clearInterval(timer);
       document.removeEventListener("visibilitychange", ping);
     };
   }, [session, selectedModelId]);
@@ -1941,8 +2015,10 @@ export default function GeneratePage() {
   const missingToolText = !videoTool
     ? null
     : !sourceVideo
-      ? videoTool === "motion" ? "ต้องอัปโหลดคลิปท่าทางต้นแบบก่อน" : "ต้องอัปโหลดคลิปที่จะขยายก่อน"
-      : toolNeedsImage && !inputImage ? "ต้องอัปโหลดภาพตัวละครก่อน" : null;
+      ? videoTool === "motion"
+        ? t("ต้องอัปโหลดคลิปท่าทางต้นแบบก่อน", "Upload the clip whose moves to copy first")
+        : t("ต้องอัปโหลดคลิปที่จะขยายก่อน", "Upload the clip to upscale first")
+      : toolNeedsImage && !inputImage ? t("ต้องอัปโหลดภาพตัวละครก่อน", "Upload the character picture first") : null;
   /** The portrait in the slot, at its natural size, once it has drawn. */
   const portraitDims = imageDims && imageDims.src === inputImagePreview ? imageDims : null;
 
@@ -1968,10 +2044,10 @@ export default function GeneratePage() {
   const sunoTuned = suno.styleWeight !== undefined || suno.weirdness !== undefined || suno.audioWeight !== undefined;
   const sunoPicks = [
     suno.length ? clock(suno.length) : "",
-    suno.variety !== undefined ? SUNO_VARIETY[suno.variety] ?? "" : "",
-    sunoTuned ? "กำหนดเอง" : "",
+    suno.variety !== undefined && SUNO_VARIETY[suno.variety] ? t(SUNO_VARIETY[suno.variety]) : "",
+    sunoTuned ? t("กำหนดเอง", "Custom") : "",
   ].filter((x) => x).join(" · ");
-  const sunoSummary = sunoPicks === "" ? "อัตโนมัติ" : sunoPicks;
+  const sunoSummary = sunoPicks === "" ? t("อัตโนมัติ", "Auto") : sunoPicks;
   const setSunoField = <K extends keyof SunoChoices>(key: K, value: SunoChoices[K]) =>
     setSuno((c) => ({ ...c, [key]: value }));
 
@@ -2091,20 +2167,34 @@ export default function GeneratePage() {
     const pictures = files.filter((f) => f.type.startsWith("image/"));
     if (pictures.length === 0) return 0;
     if (refCap === 0) {
-      toast("error", "โมเดลนี้ไม่รับภาพอ้างอิง", "เลือกโมเดลที่มีป้าย “รับภาพอ้างอิงได้”");
+      toast(
+        "error",
+        t("โมเดลนี้ไม่รับภาพอ้างอิง", "This model doesn’t take reference pictures"),
+        t("เลือกโมเดลที่มีป้าย “รับภาพอ้างอิงได้”", "Pick a model tagged “Takes reference pictures”"),
+      );
       return 0;
     }
     const room = multiRef ? refCap - refs.length : 1;
     if (room <= 0) {
-      toast("error", "ภาพอ้างอิงครบแล้ว", `โมเดลนี้รับได้ ${refCap} ภาพ — เอาภาพเดิมออกก่อน`);
+      toast(
+        "error",
+        t("ภาพอ้างอิงครบแล้ว", "No room for more pictures"),
+        t(`โมเดลนี้รับได้ ${refCap} ภาพ — เอาภาพเดิมออกก่อน`, `This model takes ${refCap} ${refCap === 1 ? "picture" : "pictures"} — remove one first`),
+      );
       return 0;
     }
     if (pictures.length > room) {
-      toast("info", `ใส่ได้อีก ${room} ภาพ`, `โมเดลนี้รับภาพอ้างอิงได้ ${refCap} ภาพ ภาพที่เกินไม่ได้ใส่`);
+      toast(
+        "info",
+        t(`ใส่ได้อีก ${room} ภาพ`, `Room for ${room} more`),
+        t(`โมเดลนี้รับภาพอ้างอิงได้ ${refCap} ภาพ ภาพที่เกินไม่ได้ใส่`, `This model takes ${refCap} reference ${refCap === 1 ? "picture" : "pictures"} — the extra ones were left out`),
+      );
     }
     const taken = pictures.slice(0, room);
     const fits = taken.filter((f) => f.size <= MAX_BYTES.image);
-    if (fits.length < taken.length) toast("error", "ไฟล์ใหญ่เกินไป", "ภาพอ้างอิงต้องไม่เกิน 12 MB ต่อภาพ");
+    if (fits.length < taken.length) {
+      toast("error", t("ไฟล์ใหญ่เกินไป", "File too large"), t("ภาพอ้างอิงต้องไม่เกิน 12 MB ต่อภาพ", "Each reference picture must be 12 MB or less"));
+    }
     if (fits.length === 0) return 0;
     const start = multiRef ? refs.length : 0;
     const tiles = fits.map((file, i) => {
@@ -2112,9 +2202,9 @@ export default function GeneratePage() {
       const pic: RefPic = { id: refIdRef.current, url: null, role: defaultRole(start + i) };
       return { file, pic };
     });
-    setRefs((rs) => (multiRef ? [...rs, ...tiles.map((t) => t.pic)] : [tiles[0].pic]));
+    setRefs((rs) => (multiRef ? [...rs, ...tiles.map((tile) => tile.pic)] : [tiles[0].pic]));
     const done = await Promise.all(tiles.map(async ({ file, pic }) => {
-      const res = await uploadMedia(file, "image");
+      const res = await uploadMedia(file, "image", t);
       const url = res.url;
       if (url) {
         setRefs((rs) => rs.map((r) => (r.id === pic.id ? { ...r, url } : r)));
@@ -2125,7 +2215,11 @@ export default function GeneratePage() {
     }));
     const failed = done.filter((ok) => !ok).length;
     if (failed > 0) {
-      toast("error", "อัปโหลดภาพอ้างอิงไม่สำเร็จ", failed > 1 ? `${failed} ภาพ ลองอีกครั้ง` : "ลองอีกครั้ง");
+      toast(
+        "error",
+        t("อัปโหลดภาพอ้างอิงไม่สำเร็จ", "Couldn’t upload the reference pictures"),
+        failed > 1 ? t(`${failed} ภาพ ลองอีกครั้ง`, `${failed} pictures — try again`) : t("ลองอีกครั้ง", "Try again"),
+      );
     }
     return done.length - failed;
   };
@@ -2171,7 +2265,7 @@ export default function GeneratePage() {
     });
   };
   /** "ภาพ 2" into the prompt at the caret — the words that point the model at a picture. */
-  const insertRefToken = (n: number) => insertAtCaret(referenceToken(n));
+  const insertRefToken = (n: number) => insertAtCaret(referenceToken(n, locale));
 
   /** Forget the voice or song: the upload, the picked file and its selection. */
   const clearAudio = () => {
@@ -2223,15 +2317,19 @@ export default function GeneratePage() {
     if (seq !== trimSeqRef.current) return;
     if (!file) {
       setTrimFailed(key);
-      toast("error", "ตัดเสียงไม่สำเร็จ", "เบราว์เซอร์นี้ตัดไฟล์ไม่ได้ ลองตัดเสียงก่อนแล้วอัปโหลดใหม่");
+      toast(
+        "error",
+        t("ตัดเสียงไม่สำเร็จ", "Couldn’t cut the audio"),
+        t("เบราว์เซอร์นี้ตัดไฟล์ไม่ได้ ลองตัดเสียงก่อนแล้วอัปโหลดใหม่", "This browser can’t cut the file. Trim it yourself, then upload it again."),
+      );
       return;
     }
-    const res = await uploadMedia(file, "audio");
+    const res = await uploadMedia(file, "audio", t);
     if (seq !== trimSeqRef.current) return;
     const url = res.url;
     if (!url) {
       setTrimFailed(key);
-      toast("error", "อัปโหลดไม่สำเร็จ", res.error ?? "ลองใหม่อีกครั้ง");
+      toast("error", t("อัปโหลดไม่สำเร็จ", "Upload failed"), res.error ?? t("ลองใหม่อีกครั้ง", "Please try again"));
       return;
     }
     setInputAudio(url); setInputAudioName(src.file.name); setInputAudioFile(file);
@@ -2245,8 +2343,8 @@ export default function GeneratePage() {
   // The selection settles (no handle held for a moment) → upload that part.
   useEffect(() => {
     if (!trimWanted || trimDragging || trimTooLong || trimWanted === trimUploaded || trimWanted === trimFailed) return;
-    const t = setTimeout(() => void commitTrimRef.current(), 450);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => void commitTrimRef.current(), 450);
+    return () => clearTimeout(timer);
   }, [trimWanted, trimDragging, trimTooLong, trimUploaded, trimFailed]);
 
   /**
@@ -2294,17 +2392,20 @@ export default function GeneratePage() {
       setUploading(null);
       toast(
         "error",
-        "ไฟล์ยาวเกินไป",
-        `รองรับไม่เกิน ${maxSeconds} วินาที (ไฟล์นี้ ${seconds.toFixed(1)} วินาที) กรุณาตัดให้สั้นลงก่อน`,
+        t("ไฟล์ยาวเกินไป", "File too long"),
+        t(
+          `รองรับไม่เกิน ${maxSeconds} วินาที (ไฟล์นี้ ${seconds.toFixed(1)} วินาที) กรุณาตัดให้สั้นลงก่อน`,
+          `Up to ${maxSeconds} seconds (this file is ${seconds.toFixed(1)} seconds). Please trim it first.`,
+        ),
       );
       return;
     }
 
-    const result = await uploadMedia(file, kind);
+    const result = await uploadMedia(file, kind, t);
     setUploading(null);
 
     if (result.error) {
-      toast("error", "อัปโหลดไม่สำเร็จ", result.error);
+      toast("error", t("อัปโหลดไม่สำเร็จ", "Upload failed"), result.error);
       return;
     }
     if (kind === "audio") {
@@ -2330,10 +2431,10 @@ export default function GeneratePage() {
     e.target.value = "";
     if (!file) return;
     setUploading("image");
-    const result = await uploadMedia(file, "image");
+    const result = await uploadMedia(file, "image", t);
     setUploading(null);
     if (result.error) {
-      toast("error", "อัปโหลดไม่สำเร็จ", result.error);
+      toast("error", t("อัปโหลดไม่สำเร็จ", "Upload failed"), result.error);
       return;
     }
     setInputImageEnd(result.url!);
@@ -2358,13 +2459,16 @@ export default function GeneratePage() {
       fetchHistory();
       toast(
         "success",
-        onCanvas ? "สร้างสำเร็จ!" : "งานที่สั่งไว้เสร็จแล้ว",
-        `ใช้ ${outcome.creditsUsed} เครดิต${onCanvas ? "" : " · กดที่แถบงานเหนือแคนวาสเพื่อดู"}`,
+        onCanvas ? t("สร้างสำเร็จ!", "Done!") : t("งานที่สั่งไว้เสร็จแล้ว", "Your order is ready"),
+        t(
+          `ใช้ ${outcome.creditsUsed} เครดิต${onCanvas ? "" : " · กดที่แถบงานเหนือแคนวาสเพื่อดู"}`,
+          `Used ${formatCredits(outcome.creditsUsed, "en")}${onCanvas ? "" : " · tap it in the tray above the canvas to see it"}`,
+        ),
       );
     } else {
-      toast("error", "สร้างไม่สำเร็จ", outcome.error ? localizeOrderError(outcome.error) : "เกิดข้อผิดพลาด");
+      toast("error", t("สร้างไม่สำเร็จ", "Generation failed"), outcome.error ? localizeOrderError(outcome.error, t) : t("เกิดข้อผิดพลาด", "Something went wrong"));
     }
-  }, [setIsGenerating, fetchCredits, fetchHistory, toast]);
+  }, [setIsGenerating, fetchCredits, fetchHistory, toast, t]);
 
   const pollResult = useCallback(async (generationId: number, slowApi = false) => {
     // API-backed providers answer within a few minutes. GPU-backed ones rent a
@@ -2450,11 +2554,14 @@ export default function GeneratePage() {
     }
     toast(
       "info",
-      "ยังสร้างไม่เสร็จ",
-      "งานยังทำงานอยู่เบื้องหลัง ผลลัพธ์จะขึ้นในแกลเลอรีเมื่อเสร็จ ไม่ต้องสั่งสร้างใหม่",
+      t("ยังสร้างไม่เสร็จ", "Still working on it"),
+      t(
+        "งานยังทำงานอยู่เบื้องหลัง ผลลัพธ์จะขึ้นในแกลเลอรีเมื่อเสร็จ ไม่ต้องสั่งสร้างใหม่",
+        "It's still running in the background and will appear in your gallery when it's done. No need to order it again.",
+      ),
     );
     fetchHistory();
-  }, [setIsGenerating, fetchHistory, toast, settleJob]);
+  }, [setIsGenerating, fetchHistory, toast, settleJob, t]);
 
   /** Put one tray order on the canvas: its progress while it runs, its result once done. */
   const focusJob = (job: TrayJob) => {
@@ -2498,60 +2605,88 @@ export default function GeneratePage() {
     // …and so may a clip tool: an upscale has nothing to describe.
     if (tab !== "lipsync" && !videoTool && !promptOptional && !prompt.trim()) return;
     if (runningJobs >= MAX_PARALLEL_JOBS) {
-      toast("info", `กำลังสร้างอยู่ ${MAX_PARALLEL_JOBS} งานแล้ว`, "รอให้งานใดงานหนึ่งเสร็จก่อน แล้วค่อยสั่งเพิ่ม");
+      toast(
+        "info",
+        t(`กำลังสร้างอยู่ ${MAX_PARALLEL_JOBS} งานแล้ว`, `Already creating ${MAX_PARALLEL_JOBS} at once`),
+        t("รอให้งานใดงานหนึ่งเสร็จก่อน แล้วค่อยสั่งเพิ่ม", "Wait for one to finish, then order another."),
+      );
       return;
     }
     if (missingStartFrame) {
-      toast("error", "ยังไม่ได้เลือกภาพเริ่มต้น", "โหมดภาพ → วิดีโอ ต้องอัปโหลดภาพก่อน");
+      toast("error", t("ยังไม่ได้เลือกภาพเริ่มต้น", "No start frame yet"), t("โหมดภาพ → วิดีโอ ต้องอัปโหลดภาพก่อน", "Image → video needs a picture first."));
       return;
     }
     if (missingToolText) {
-      toast("error", "ยังใส่ไฟล์ไม่ครบ", missingToolText);
+      toast("error", t("ยังใส่ไฟล์ไม่ครบ", "Some files are missing"), missingToolText);
       return;
     }
     if (speechTooLong && speechRule) {
-      toast("error", "ข้อความยาวเกินไป", `โมเดลนี้อ่านได้ครั้งละไม่เกิน ${speechRule.maxChars.toLocaleString()} ตัวอักษร — ตัดให้สั้นลงหรือแบ่งเป็นหลายงาน`);
+      toast(
+        "error",
+        t("ข้อความยาวเกินไป", "Text too long"),
+        t(
+          `โมเดลนี้อ่านได้ครั้งละไม่เกิน ${formatNumber(speechRule.maxChars, locale)} ตัวอักษร — ตัดให้สั้นลงหรือแบ่งเป็นหลายงาน`,
+          `This model reads up to ${formatNumber(speechRule.maxChars, locale)} characters at a time — shorten it or split it into several orders.`,
+        ),
+      );
       return;
     }
     if (missingLipsyncInput) {
       toast(
         "error",
-        "ยังใส่ไฟล์ไม่ครบ",
+        t("ยังใส่ไฟล์ไม่ครบ", "Some files are missing"),
         !hasAudio
-          ? "ต้องอัปโหลดไฟล์เสียงที่จะให้พูด"
+          ? t("ต้องอัปโหลดไฟล์เสียงที่จะให้พูด", "Upload the audio to be spoken")
           : lipsyncNeeds === "image"
-            ? "ต้องอัปโหลดรูปหน้าคนที่จะให้พูด"
-            : "ต้องอัปโหลดคลิปต้นฉบับที่จะพากย์ทับ",
+            ? t("ต้องอัปโหลดรูปหน้าคนที่จะให้พูด", "Upload a photo of the face that will speak")
+            : t("ต้องอัปโหลดคลิปต้นฉบับที่จะพากย์ทับ", "Upload the clip to re-dub"),
       );
       return;
     }
     if (voiceLength && !voiceLength.ok) {
-      toast("error", "ใช้ไฟล์เสียงนี้ไม่ได้", voiceLength.message);
+      toast("error", t("ใช้ไฟล์เสียงนี้ไม่ได้", "Can't use this audio file"), t(voiceLength.msg));
       return;
     }
     if (clipCheck && !clipCheck.ok) {
-      toast("error", "ใช้คลิปนี้ไม่ได้", clipCheck.message);
+      toast("error", t("ใช้คลิปนี้ไม่ได้", "Can't use this clip"), t(clipCheck.msg));
       return;
     }
     if (clipVoiceCheck && !clipVoiceCheck.ok) {
-      toast("error", "ใช้ไฟล์เสียงนี้ไม่ได้", clipVoiceCheck.message);
+      toast("error", t("ใช้ไฟล์เสียงนี้ไม่ได้", "Can't use this audio file"), t(clipVoiceCheck.msg));
       return;
     }
     if (missingSourceSong) {
-      toast("error", "ยังไม่ได้อัปโหลดเพลง", sunoTool ? "โหมดนี้ทำงานกับเพลงที่อัปโหลด — ใส่ไฟล์ก่อนสั่ง" : "โหมดคัฟเวอร์ต้องมีเพลงให้ AI ถอดทำนองก่อน");
+      toast(
+        "error",
+        t("ยังไม่ได้อัปโหลดเพลง", "No song uploaded yet"),
+        sunoTool
+          ? t("โหมดนี้ทำงานกับเพลงที่อัปโหลด — ใส่ไฟล์ก่อนสั่ง", "This mode works on a song you upload — add the file before ordering.")
+          : t("โหมดคัฟเวอร์ต้องมีเพลงให้ AI ถอดทำนองก่อน", "A cover needs a song for the AI to take the tune from."),
+      );
       return;
     }
     if (tab === "image" && refsUploading) {
-      toast("info", "ภาพอ้างอิงยังอัปโหลดไม่เสร็จ", "รอสักครู่แล้วกดอีกครั้ง");
+      toast("info", t("ภาพอ้างอิงยังอัปโหลดไม่เสร็จ", "Reference pictures are still uploading"), t("รอสักครู่แล้วกดอีกครั้ง", "Wait a moment, then try again."));
       return;
     }
     if (tab === "image" && refsOver) {
-      toast("error", "ภาพอ้างอิงเกินจำนวน", `โมเดลนี้รับได้ ${refCap} ภาพ — เอาออกให้เหลือ ${refCap} ภาพก่อนสั่ง`);
+      toast(
+        "error",
+        t("ภาพอ้างอิงเกินจำนวน", "Too many reference pictures"),
+        t(`โมเดลนี้รับได้ ${refCap} ภาพ — เอาออกให้เหลือ ${refCap} ภาพก่อนสั่ง`, `This model takes ${refCap} — remove some before ordering.`),
+      );
       return;
     }
     if (audioStale && (tab === "lipsync" || musicOpts?.sourceSong === true)) {
-      if (trimTooLong) toast("error", "ช่วงเสียงยาวเกินไป", `โมเดลนี้รับไม่เกิน ${Math.floor(trimMax)} วินาที ลากขอบให้สั้นลง`);
-      else toast("info", "กำลังเตรียมช่วงเสียงที่เลือก", "รอสักครู่แล้วกดอีกครั้ง");
+      if (trimTooLong) {
+        toast(
+          "error",
+          t("ช่วงเสียงยาวเกินไป", "Selection too long"),
+          t(`โมเดลนี้รับไม่เกิน ${Math.floor(trimMax)} วินาที ลากขอบให้สั้นลง`, `This model takes up to ${Math.floor(trimMax)} seconds — drag the edges in.`),
+        );
+      } else {
+        toast("info", t("กำลังเตรียมช่วงเสียงที่เลือก", "Preparing your selection"), t("รอสักครู่แล้วกดอีกครั้ง", "Wait a moment, then try again."));
+      }
       return;
     }
     // Reference pictures travel as URLs. A model that composes several is told
@@ -2561,7 +2696,11 @@ export default function GeneratePage() {
     const multiSend = multiRef && sentPics.length > 0;
     const promptToSend = multiSend ? composeReferencePrompt(prompt, sentPics.map((r) => r.role)) : prompt.trim();
     if (promptToSend.length > 10_000) {
-      toast("error", "พรอมต์ยาวเกินไป", "รวมคำอธิบายภาพอ้างอิงแล้วเกิน 10,000 ตัวอักษร ตัดพรอมต์ให้สั้นลง");
+      toast(
+        "error",
+        t("พรอมต์ยาวเกินไป", "Prompt too long"),
+        t("รวมคำอธิบายภาพอ้างอิงแล้วเกิน 10,000 ตัวอักษร ตัดพรอมต์ให้สั้นลง", "With the reference descriptions it's over 10,000 characters. Shorten your prompt."),
+      );
       return;
     }
     // One click, one order. The page used to lock for the whole render, which
@@ -2612,7 +2751,7 @@ export default function GeneratePage() {
     // upscale outlasts the four minutes an API answer is otherwise given.
     const slowApi = Boolean(videoRule?.billing) || selectedModel?.asyncApi === true;
     // A stem split has no words of its own; its history line says what it was.
-    const splitTitle = promptHidden ? `แยกสเต็ม · ${activeQuality?.label ?? ""}${stemTier === "one" && activeStem ? ` (${activeStem.label})` : ""}` : null;
+    const splitTitle = promptHidden ? `${t("แยกสเต็ม", "Split stems")} · ${activeQuality?.label ?? ""}${stemTier === "one" && activeStem ? ` (${activeStem.label})` : ""}` : null;
     const sent = await postGeneration({
       modelId: selectedModelId,
       // Lip-sync has no generation type of its own on the server: what it
@@ -2674,7 +2813,7 @@ export default function GeneratePage() {
         voice: tab === "speech" ? activeVoice?.id : undefined,
         speechStyle: tab === "speech" && speechRule?.style ? speechStyle.trim() || undefined : undefined,
       },
-    });
+    }, t);
     if (sent.kind !== "ok") {
       setJobs((js) => js.filter((j) => j.id !== pendingId));
       if (focusRef.current === pendingId) {
@@ -2682,7 +2821,11 @@ export default function GeneratePage() {
         setFocusId(null);
         setIsGenerating(false);
       }
-      toast("error", "เกิดข้อผิดพลาด", sent.kind === "network" ? "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้" : localizeOrderError(sent.error));
+      toast(
+        "error",
+        t("เกิดข้อผิดพลาด", "Something went wrong"),
+        sent.kind === "network" ? t("ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้", "Couldn't reach the server") : localizeOrderError(sent.error, t),
+      );
       return;
     }
     const data = sent.data;
@@ -2714,20 +2857,20 @@ export default function GeneratePage() {
       aspectRatio: tab === "audio" ? undefined : aspectRatio,
       firstFrame: h3Frames ? inputImage ?? undefined : undefined,
       lastFrame: h3Frames ? inputImageEnd ?? undefined : undefined,
-    });
+    }, t);
     setEnhancing(false);
     if (!out.ok) {
-      toast("error", "ปรับพรอมต์ไม่สำเร็จ", out.error);
+      toast("error", t("ปรับพรอมต์ไม่สำเร็จ", "Couldn't improve the prompt"), out.error);
       return;
     }
     setPromptBeforeEnhance(text);
     setPrompt(out.prompt.slice(0, 10_000));
     setEnhanceNote(
       out.source === "context-ir"
-        ? "เรียบเรียงด้วย H3-Context-IR ของ MiniMax"
+        ? { th: "เรียบเรียงด้วย H3-Context-IR ของ MiniMax", en: "Rewritten with MiniMax's H3-Context-IR" }
         : out.source === "llm"
-          ? `เรียบเรียงด้วย AI${out.engine ? ` · ${out.engine}` : ""}`
-          : "ปรับแบบพื้นฐาน (ผู้ช่วย AI ยังไม่ได้เชื่อมต่อ)"
+          ? { th: `เรียบเรียงด้วย AI${out.engine ? ` · ${out.engine}` : ""}`, en: `Rewritten by AI${out.engine ? ` · ${out.engine}` : ""}` }
+          : { th: "ปรับแบบพื้นฐาน (ผู้ช่วย AI ยังไม่ได้เชื่อมต่อ)", en: "Basic rewrite (the AI assistant isn't connected yet)" }
     );
   };
 
@@ -2817,9 +2960,9 @@ export default function GeneratePage() {
     const audio = kind === "lipsync" || kind === "audio" ? inputs.inputAudio : null;
     trimSeqRef.current += 1;
     setTrimSrc(null); setTrimSel(null); setTrimUploaded(null); setTrimFailed(null);
-    setInputAudio(audio); setInputAudioName(audio ? "ไฟล์เสียงจากงานเดิม" : null); setInputAudioFile(null);
+    setInputAudio(audio); setInputAudioName(audio ? t("ไฟล์เสียงจากงานเดิม", "Audio from the earlier order") : null); setInputAudioFile(null);
     const video = kind === "lipsync" || tool ? inputs.inputVideo : null;
-    setSourceVideo(video); setSourceVideoName(video ? "คลิปจากงานเดิม" : null);
+    setSourceVideo(video); setSourceVideoName(video ? t("คลิปจากงานเดิม", "Clip from the earlier order") : null);
   };
 
   /**
@@ -2893,11 +3036,13 @@ export default function GeneratePage() {
     }
 
     const notes = [
-      !model ? "โมเดลเดิมไม่มีแล้ว — ใช้โมเดลที่เลือกอยู่แทน"
-        : model.canOrder === false ? `${model.name} ปิดให้บริการชั่วคราว — เลือกโมเดลอื่นในแท็บนี้แทน` : null,
-      keepsDraft ? "ร่างที่เขียนค้างไว้ยังเก็บอยู่ — กด ↶ ใต้ผลงานเพื่อกลับไป" : null,
+      !model ? t("โมเดลเดิมไม่มีแล้ว — ใช้โมเดลที่เลือกอยู่แทน", "That model is gone — using the one selected now")
+        : model.canOrder === false
+          ? t(`${model.name} ปิดให้บริการชั่วคราว — เลือกโมเดลอื่นในแท็บนี้แทน`, `${model.name} is temporarily unavailable — pick another model in this tab`)
+          : null,
+      keepsDraft ? t("ร่างที่เขียนค้างไว้ยังเก็บอยู่ — กด ↶ ใต้ผลงานเพื่อกลับไป", "Your draft is kept — tap ↶ under the result to go back to it") : null,
     ].filter(Boolean);
-    if (notes.length > 0) toast("info", "เปิดงานเดิมแล้ว", notes.join(" · "));
+    if (notes.length > 0) toast("info", t("เปิดงานเดิมแล้ว", "Earlier order opened"), notes.join(" · "));
     document.querySelector(".rp-studio-canvas")?.scrollTo({ top: 0, behavior: "smooth" });
     // Stacked, the canvas is below the composer: bring it into view.
     if (window.innerWidth < 1100) document.querySelector(".rp-stage")?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -2911,7 +3056,11 @@ export default function GeneratePage() {
     if (openSeqRef.current !== seq) return;
     setLoadingInputs(false);
     if (!inputs) {
-      toast("error", "โหลดไฟล์แนบของงานเดิมไม่สำเร็จ", "prompt และการตั้งค่าโหลดแล้ว — กดที่งานอีกครั้ง หรืออัปโหลดไฟล์ใหม่");
+      toast(
+        "error",
+        t("โหลดไฟล์แนบของงานเดิมไม่สำเร็จ", "Couldn't load the earlier order's files"),
+        t("prompt และการตั้งค่าโหลดแล้ว — กดที่งานอีกครั้ง หรืออัปโหลดไฟล์ใหม่", "The prompt and settings are loaded — tap the order again, or upload new files"),
+      );
       return;
     }
     setOpenedInputs(inputs);
@@ -2952,7 +3101,7 @@ export default function GeneratePage() {
     const restored = openedInputs && url !== null && Object.values(openedInputs).includes(url);
     if (!restored) return;
     clear();
-    toast("info", "ไฟล์แนบเดิมหมดอายุแล้ว", "กรุณาอัปโหลดไฟล์ใหม่ก่อนสร้าง");
+    toast("info", t("ไฟล์แนบเดิมหมดอายุแล้ว", "The earlier files have expired"), t("กรุณาอัปโหลดไฟล์ใหม่ก่อนสร้าง", "Please upload new files before creating."));
   };
 
   /** Carry a finished picture into the next step: animate it, edit it, or reference it. */
@@ -2961,7 +3110,11 @@ export default function GeneratePage() {
     // one joins them; any other model takes it as its one reference.
     const joins = target === "ref" && tab === "image" && multiRef;
     if (joins && refs.length >= refCap) {
-      toast("error", "ภาพอ้างอิงครบแล้ว", `โมเดลนี้รับได้ ${refCap} ภาพ — เอาภาพเดิมออกก่อน`);
+      toast(
+        "error",
+        t("ภาพอ้างอิงครบแล้ว", "No room for more pictures"),
+        t(`โมเดลนี้รับได้ ${refCap} ภาพ — เอาภาพเดิมออกก่อน`, `This model takes ${refCap} ${refCap === 1 ? "picture" : "pictures"} — remove one first`),
+      );
       return;
     }
     clearCanvas();
@@ -2971,12 +3124,12 @@ export default function GeneratePage() {
       setInputImage(url);
       setInputImagePreview(url);
       setInputImageEnd(null);
-      toast("info", "ใส่เป็นภาพเริ่มต้นของคลิปแล้ว", "อธิบายว่าอยากให้ภาพเคลื่อนไหวอย่างไร แล้วกดทอ");
+      toast("info", t("ใส่เป็นภาพเริ่มต้นของคลิปแล้ว", "Set as the clip's start frame"), t("อธิบายว่าอยากให้ภาพเคลื่อนไหวอย่างไร แล้วกดทอ", "Describe how it should move, then tap Weave"));
     } else if (target === "edit") {
       setTab("edit");
       setInputImage(url);
       setInputImagePreview(url);
-      toast("info", "ใส่เป็นภาพต้นฉบับแล้ว", "พิมพ์ว่าต้องการแก้อะไรในภาพ");
+      toast("info", t("ใส่เป็นภาพต้นฉบับแล้ว", "Set as the original"), t("พิมพ์ว่าต้องการแก้อะไรในภาพ", "Type what you want to change in it"));
     } else {
       setTab("image");
       refIdRef.current += 1;
@@ -2984,8 +3137,10 @@ export default function GeneratePage() {
       setRefs((rs) => (joins ? [...rs, pic] : [pic]));
       toast(
         "info",
-        "ใส่เป็นภาพอ้างอิงแล้ว",
-        joins ? `เป็นภาพ ${refs.length + 1} — กดป้ายใต้ภาพเพื่อบอกว่าเป็นตัวละคร ชุด หรือสถานที่` : "ปรับความเข้มได้ที่ช่องภาพอ้างอิง",
+        t("ใส่เป็นภาพอ้างอิงแล้ว", "Added as a reference picture"),
+        joins
+          ? t(`เป็นภาพ ${refs.length + 1} — กดป้ายใต้ภาพเพื่อบอกว่าเป็นตัวละคร ชุด หรือสถานที่`, `It's Image ${refs.length + 1} — tap the tag under it to say whether it's a character, an outfit or a place`)
+          : t("ปรับความเข้มได้ที่ช่องภาพอ้างอิง", "Set how strongly it's followed in the reference slot"),
       );
     }
   };
@@ -3000,7 +3155,7 @@ export default function GeneratePage() {
       models.find((m) => inTab(m, "audio") && m.music?.suno?.tool === tool && m.canOrder !== false) ??
       models.find((m) => inTab(m, "audio") && musicModeOf(m) === mode && m.canOrder !== false);
     if (!target) {
-      toast("error", "โหมดนี้ยังไม่เปิดให้บริการ");
+      toast("error", t("โหมดนี้ยังไม่เปิดให้บริการ", "This mode isn't available yet"));
       return;
     }
     clearCanvas();
@@ -3011,7 +3166,7 @@ export default function GeneratePage() {
     setTrimSrc(null); setTrimSel(null); setTrimUploaded(null); setTrimFailed(null); setTrimDragging(false);
     setInputAudio(url); setInputAudioName(label); setInputAudioFile(null); setCarriedAudio(url);
     setSunoField("continueAt", undefined);
-    toast("info", `ใส่ “${label}” แล้ว`, "ปรับตั้งค่าแล้วกดทอได้เลย");
+    toast("info", t(`ใส่ “${label}” แล้ว`, `Added “${label}”`), t("ปรับตั้งค่าแล้วกดทอได้เลย", "Adjust the settings, then tap Weave"));
   };
   /** Next steps a finished track may take: only tools some model here offers. */
   const songNext = SONG_NEXT.filter(([, tool]) => models.some((m) => inTab(m, "audio") && m.music?.suno?.tool === tool));
@@ -3030,45 +3185,47 @@ export default function GeneratePage() {
       if (kind === "video" && videoTool) return uploadMediaFile(file, "video", clipMaxSeconds);
       toast(
         "info",
-        "แท็บนี้ไม่ได้ใช้ไฟล์ชนิดนี้",
-        kind === "audio" ? "ไฟล์เสียงใช้ได้ที่แท็บลิปซิงค์ หรือโมเดลคัฟเวอร์เพลง" : "คลิปใช้ได้ที่แท็บลิปซิงค์ และโหมดเลียนท่าทาง / ขยายวิดีโอ",
+        t("แท็บนี้ไม่ได้ใช้ไฟล์ชนิดนี้", "This tab doesn't use this kind of file"),
+        kind === "audio"
+          ? t("ไฟล์เสียงใช้ได้ที่แท็บลิปซิงค์ หรือโมเดลคัฟเวอร์เพลง", "Audio files work in the Lip sync tab or with a cover model")
+          : t("คลิปใช้ได้ที่แท็บลิปซิงค์ และโหมดเลียนท่าทาง / ขยายวิดีโอ", "Clips work in the Lip sync tab and the Motion copy / Video upscale modes"),
       );
       return;
     }
     if (!file.type.startsWith("image/")) {
-      toast("error", "ไฟล์ชนิดนี้ใช้ไม่ได้", "รองรับภาพ เสียง และวิดีโอ");
+      toast("error", t("ไฟล์ชนิดนี้ใช้ไม่ได้", "Can't use this kind of file"), t("รองรับภาพ เสียง และวิดีโอ", "Pictures, audio and video are supported"));
       return;
     }
     // Reference pictures go up to R2 as they are added (addRefFiles).
     if (tab === "image") {
-      if ((await addRefFiles([file])) > 0) toast("success", "ใส่เป็นภาพอ้างอิงแล้ว");
+      if ((await addRefFiles([file])) > 0) toast("success", t("ใส่เป็นภาพอ้างอิงแล้ว", "Added as a reference picture"));
       return;
     }
     if (file.size > MAX_IMAGE_BYTES) {
-      toast("error", "ไฟล์ภาพใหญ่เกินไป", "รองรับไม่เกิน 12 MB");
+      toast("error", t("ไฟล์ภาพใหญ่เกินไป", "Picture too large"), t("รองรับไม่เกิน 12 MB", "Up to 12 MB"));
       return;
     }
     const url = await fileToDataUrl(file);
     if (!url) {
-      toast("error", "อ่านไฟล์ภาพไม่ได้");
+      toast("error", t("อ่านไฟล์ภาพไม่ได้", "Couldn't read the picture"));
       return;
     }
     if (tab === "edit") {
       setInputImage(url); setInputImagePreview(url);
-      toast("success", "ใส่เป็นภาพต้นฉบับแล้ว");
+      toast("success", t("ใส่เป็นภาพต้นฉบับแล้ว", "Set as the original"));
     } else if (tab === "video" && videoTool === "upscale") {
-      toast("info", "โหมดขยายวิดีโอใช้คลิป ไม่ใช้ภาพ");
+      toast("info", t("โหมดขยายวิดีโอใช้คลิป ไม่ใช้ภาพ", "Video upscale takes a clip, not a picture"));
     } else if (tab === "video" && videoTool === "motion") {
       setInputImage(url); setInputImagePreview(url);
-      toast("success", "ใส่เป็นภาพตัวละครแล้ว");
+      toast("success", t("ใส่เป็นภาพตัวละครแล้ว", "Set as the character"));
     } else if (tab === "video") {
       setVideoMode("i2v"); setInputImage(url); setInputImagePreview(url);
-      toast("success", "ใส่เป็นภาพเริ่มต้นของคลิปแล้ว");
+      toast("success", t("ใส่เป็นภาพเริ่มต้นของคลิปแล้ว", "Set as the clip's start frame"));
     } else if (tab === "lipsync" && lipsyncNeeds === "image") {
       setInputImage(url); setInputImagePreview(url);
-      toast("success", "ใส่เป็นรูปหน้าคนที่จะให้พูดแล้ว");
+      toast("success", t("ใส่เป็นรูปหน้าคนที่จะให้พูดแล้ว", "Set as the face that will speak"));
     } else {
-      toast("info", "แท็บนี้ไม่ได้ใช้ภาพ");
+      toast("info", t("แท็บนี้ไม่ได้ใช้ภาพ", "This tab doesn't use pictures"));
     }
   };
 
@@ -3093,8 +3250,8 @@ export default function GeneratePage() {
 
   // Keep what is being written across a reload (this browser only).
   useEffect(() => {
-    const t = setTimeout(() => writeDraft({ tab, prompt, negativePrompt, lyrics, aspectRatio }), 400);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => writeDraft({ tab, prompt, negativePrompt, lyrics, aspectRatio }), 400);
+    return () => clearTimeout(timer);
   }, [tab, prompt, negativePrompt, lyrics, aspectRatio]);
 
   const handleDownload = async (url?: string, label?: string, quiet = false) => {
@@ -3103,8 +3260,8 @@ export default function GeneratePage() {
     const named = label ? `-${label.replace(/[\\/:*?"<>|()\s]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "")}` : "";
     const filename = `xdreamer-${result.id}${named}.${extensionOf(downloadUrl, "webp")}`;
     const ok = await downloadGeneration(result.id, downloadUrl, filename, url ? result.resultUrls?.indexOf(url) ?? -1 : -1);
-    if (ok && !quiet) toast("success", "ดาวน์โหลดสำเร็จ");
-    else if (!ok) toast("error", "ดาวน์โหลดไม่สำเร็จ");
+    if (ok && !quiet) toast("success", t("ดาวน์โหลดสำเร็จ", "Downloaded"));
+    else if (!ok) toast("error", t("ดาวน์โหลดไม่สำเร็จ", "Download failed"));
     return ok;
   };
 
@@ -3116,26 +3273,28 @@ export default function GeneratePage() {
 
   const handleShare = async () => {
     if (!result?.resultUrl) return;
+    const shareTitle = t("ผลงานจาก X-DREAMER", "X-DREAMER creation");
     if (navigator.share) {
-      try { await navigator.share({ title: "X-DREAMER Generation", url: result.resultUrl }); } catch {}
+      try { await navigator.share({ title: shareTitle, url: result.resultUrl }); } catch {}
     } else {
       await navigator.clipboard.writeText(result.resultUrl);
-      toast("info", "คัดลอกลิงก์แล้ว");
+      toast("info", t("คัดลอกลิงก์แล้ว", "Link copied"));
     }
   };
 
   const handleUpscale = async () => {
     if (!result?.id) return;
     setIsUpscaling(true);
-    const outcome = await runUpscale(result.id);
+    const outcome = await runUpscale(result.id, t);
     if (outcome.kind === "done") {
       const upscaledUrl = outcome.resultUrl;
       setResult(prev => prev ? { ...prev, resultUrl: upscaledUrl } : prev);
-      fetchCredits(); toast("success", "Upscale สำเร็จ!", `ใช้ ${outcome.creditsUsed} เครดิต`);
+      fetchCredits();
+      toast("success", t("Upscale สำเร็จ!", "Upscaled!"), t(`ใช้ ${outcome.creditsUsed} เครดิต`, `Used ${formatCredits(outcome.creditsUsed, "en")}`));
     } else if (outcome.kind === "rejected" || outcome.kind === "failed") {
-      toast("error", "Upscale ไม่สำเร็จ", outcome.error);
+      toast("error", t("Upscale ไม่สำเร็จ", "Upscale failed"), outcome.error);
     } else if (outcome.kind === "network") {
-      toast("error", "Upscale ไม่สำเร็จ");
+      toast("error", t("Upscale ไม่สำเร็จ", "Upscale failed"));
     }
     setIsUpscaling(false);
   };
@@ -3166,7 +3325,7 @@ export default function GeneratePage() {
     resultIsAudio && result?.resultUrls && result.resultUrls.length > 1
       ? result.resultUrls.map((url, i, all) => ({
           url,
-          label: result.resultLabels?.length === all.length ? result.resultLabels[i] : `เวอร์ชัน ${i + 1}`,
+          label: result.resultLabels?.length === all.length ? stemLabelText(result.resultLabels[i], locale) : t(`เวอร์ชัน ${i + 1}`, `Version ${i + 1}`),
         }))
       : null;
   const resultIsVideo =
@@ -3195,23 +3354,27 @@ export default function GeneratePage() {
   /** The text is read out (speech) or optional (clip tools): no prompt assistant, builder or templates. */
   const plainPrompt = tab === "speech" || videoTool !== null;
   const settingsAt = inputsAt + (showInputs ? 1 : 0);
+  const promptWords = prompt.trim() ? prompt.trim().split(/\s+/).length : 0;
   const inputsLabel =
-    tab === "image" ? "ภาพอ้างอิง"
-      : tab === "video" ? (videoTool === "motion" ? "ตัวละครและท่าทาง" : videoTool === "upscale" ? "คลิปที่จะขยาย" : "เริ่มจาก")
-        : tab === "edit" ? "ภาพต้นฉบับ"
-          : tab === "lipsync" ? "ไฟล์ที่ใช้"
-            : sunoTool === "extend" ? "เพลงที่จะต่อ"
-              : sunoTool === "add-vocals" ? "ดนตรีบรรเลงที่จะใส่เสียงร้อง"
-                : sunoTool === "add-instrumental" ? "เสียงร้องที่จะใส่ดนตรี"
-                  : sunoTool === "stems" ? "เพลงที่จะแยกสเต็ม"
-                    : "เพลงต้นฉบับที่จะคัฟเวอร์";
+    tab === "image" ? t("ภาพอ้างอิง", "Reference pictures")
+      : tab === "video"
+        ? (videoTool === "motion"
+          ? t("ตัวละครและท่าทาง", "Character and moves")
+          : videoTool === "upscale" ? t("คลิปที่จะขยาย", "Clip to upscale") : t("เริ่มจาก", "Start from"))
+        : tab === "edit" ? t("ภาพต้นฉบับ", "Original picture")
+          : tab === "lipsync" ? t("ไฟล์ที่ใช้", "Your files")
+            : sunoTool === "extend" ? t("เพลงที่จะต่อ", "Song to extend")
+              : sunoTool === "add-vocals" ? t("ดนตรีบรรเลงที่จะใส่เสียงร้อง", "Instrumental to add vocals to")
+                : sunoTool === "add-instrumental" ? t("เสียงร้องที่จะใส่ดนตรี", "Vocal to add music to")
+                  : sunoTool === "stems" ? t("เพลงที่จะแยกสเต็ม", "Song to split")
+                    : t("เพลงต้นฉบับที่จะคัฟเวอร์", "Original song to cover");
   /** The first order still rendering, for the phone's bar above the composer. */
   const runningJob = jobs.find((j) => j.status === "running") ?? null;
   const runningFraction =
     runningJob?.progress?.stage === "rendering" ? shownFraction(runningJob.progress, runningJob.progress.at) : null;
-  const canvasState = isGenerating ? "กำลังสร้าง"
-    : result?.status === "completed" ? (viewing ? "งานเดิม" : "เสร็จแล้ว")
-      : result?.status === "failed" ? "ไม่สำเร็จ" : "พร้อมสร้าง";
+  const canvasState = isGenerating ? t("กำลังสร้าง", "Creating")
+    : result?.status === "completed" ? (viewing ? t("งานเดิม", "Earlier order") : t("เสร็จแล้ว", "Done"))
+      : result?.status === "failed" ? t("ไม่สำเร็จ", "Failed") : t("พร้อมสร้าง", "Ready");
   /**
    * The model card's reference line, in reference-caps.ts referenceLabel's
    * words — that module reads the server catalogue, so it is not imported
@@ -3220,29 +3383,45 @@ export default function GeneratePage() {
    */
   const caps = selectedModel?.references ?? null;
   const refText = !caps ? null
-    : tab === "image" ? (caps.images > 0 ? `รับภาพอ้างอิงได้ ${caps.images} ภาพ` : "ไม่รับภาพอ้างอิง")
-      : tab === "video" && caps.firstFrame ? (caps.lastFrame ? "รับภาพเฟรมแรกและเฟรมสุดท้าย" : "รับภาพเฟรมแรก 1 ภาพ")
+    : tab === "image"
+      ? (caps.images > 0
+        ? t(`รับภาพอ้างอิงได้ ${caps.images} ภาพ`, `Takes up to ${caps.images} reference ${caps.images === 1 ? "picture" : "pictures"}`)
+        : t("ไม่รับภาพอ้างอิง", "Takes no reference pictures"))
+      : tab === "video" && caps.firstFrame
+        ? (caps.lastFrame ? t("รับภาพเฟรมแรกและเฟรมสุดท้าย", "Takes first and last frames") : t("รับภาพเฟรมแรก 1 ภาพ", "Takes a first frame"))
         : null;
   const trimTooLongNote = trimTooLong && trimSel ? (
     <span style={{ color: "#fbbf24" }}>
-      ช่วงที่เลือกยาว {(trimSel.end - trimSel.start).toFixed(1)} วินาที — โมเดลนี้รับไม่เกิน {Math.floor(trimMax)} วินาที ลากขอบให้สั้นลง
+      {t(
+        `ช่วงที่เลือกยาว ${(trimSel.end - trimSel.start).toFixed(1)} วินาที — โมเดลนี้รับไม่เกิน ${Math.floor(trimMax)} วินาที ลากขอบให้สั้นลง`,
+        `The selection is ${(trimSel.end - trimSel.start).toFixed(1)} seconds — this model takes up to ${Math.floor(trimMax)}. Drag the edges in.`,
+      )}
     </span>
   ) : null;
   /** Under the voice: the clip is as long as the voice, and so is the price. */
   const voiceNote = trimTooLongNote ?? (voiceRule ? (
     voiceLength?.ok === false ? (
-      <span style={{ color: "#fbbf24" }}>{voiceLength.message}</span>
+      <span style={{ color: "#fbbf24" }}>{t(voiceLength.msg)}</span>
     ) : hasAudio
-      ? `ความยาวคลิป = ความยาวเสียง${voiceLength ? ` ${voiceLength.seconds.toFixed(1)} วินาที` : ""} · ✦ ${totalCredits} เครดิต`
+      ? t(
+          `ความยาวคลิป = ความยาวเสียง${voiceLength ? ` ${voiceLength.seconds.toFixed(1)} วินาที` : ""} · ✦ ${totalCredits} เครดิต`,
+          `Clip length = audio length${voiceLength ? ` (${voiceLength.seconds.toFixed(1)} s)` : ""} · ✦ ${formatCredits(totalCredits, "en")}`,
+        )
       : priceTable?.perSecond
-        ? `คิดเครดิตตามความยาวเสียง: ✦ ${creditsFor(1)} ต่อวินาที (สูงสุด ${lipsyncAudioMax} วิ = ✦ ${creditsFor(lipsyncAudioMax)})`
-        : `คิดเครดิตตามความยาวเสียง: ✦ ${creditsFor(null)} (ไม่เกิน 5 วิ) ถึง ✦ ${creditsFor(lipsyncAudioMax)} (${lipsyncAudioMax} วิ)`
+        ? t(
+            `คิดเครดิตตามความยาวเสียง: ✦ ${creditsFor(1)} ต่อวินาที (สูงสุด ${lipsyncAudioMax} วิ = ✦ ${creditsFor(lipsyncAudioMax)})`,
+            `Billed by audio length: ✦ ${creditsFor(1)} per second (up to ${lipsyncAudioMax} s = ✦ ${creditsFor(lipsyncAudioMax)})`,
+          )
+        : t(
+            `คิดเครดิตตามความยาวเสียง: ✦ ${creditsFor(null)} (ไม่เกิน 5 วิ) ถึง ✦ ${creditsFor(lipsyncAudioMax)} (${lipsyncAudioMax} วิ)`,
+            `Billed by audio length: ✦ ${creditsFor(null)} (up to 5 s) to ✦ ${creditsFor(lipsyncAudioMax)} (${lipsyncAudioMax} s)`,
+          )
   ) : null);
   const orbModes: OrbItem[] = TAB_ORDER.map((key) => {
     const blocked = tabBlockedReason(key);
     return {
       key,
-      label: TAB_LABEL[key],
+      label: t(TAB_LABEL[key]),
       icon: TAB_ICON[key],
       active: tab === key,
       // The tab in use stays reachable even when its models went away under it.
@@ -3253,8 +3432,8 @@ export default function GeneratePage() {
   const orbLinks: OrbItem[] = [
     // Picture to 3D model has a studio of its own — nothing on this canvas
     // fits a scene you turn around.
-    { key: "model3d", label: "สร้างโมเดล 3D", icon: MODEL3D_ICON, href: "/generate/3d", blocked: model3dBlocked },
-    { key: "gallery", label: "แกลเลอรี", icon: GALLERY_ICON, href: "/gallery" },
+    { key: "model3d", label: t("สร้างโมเดล 3D", "Create 3D model"), icon: MODEL3D_ICON, href: "/generate/3d", blocked: model3dBlocked },
+    { key: "gallery", label: t("แกลเลอรี", "Gallery"), icon: GALLERY_ICON, href: "/gallery" },
   ];
 
   return (
@@ -3291,11 +3470,12 @@ export default function GeneratePage() {
         <div className="rp-drop-hint" aria-hidden="true">
           <div>
             <div style={{ fontSize: 34, marginBottom: 6 }}>⤓</div>
-            {tab === "image" ? (refCap === 0 ? "โมเดลนี้ไม่รับภาพอ้างอิง" : "วางภาพเพื่อใช้เป็นภาพอ้างอิง")
-              : tab === "edit" ? "วางภาพที่ต้องการแก้ไข"
-                : tab === "video" ? "วางภาพเพื่อเริ่มคลิปจากภาพนี้"
-                  : tab === "lipsync" ? "วางไฟล์เสียง คลิป หรือรูปหน้าคน"
-                    : "วางเพลงต้นฉบับ (โหมดคัฟเวอร์)"}
+            {tab === "image"
+              ? (refCap === 0 ? t("โมเดลนี้ไม่รับภาพอ้างอิง", "This model doesn’t take reference pictures") : t("วางภาพเพื่อใช้เป็นภาพอ้างอิง", "Drop a picture to use as a reference"))
+              : tab === "edit" ? t("วางภาพที่ต้องการแก้ไข", "Drop the picture to edit")
+                : tab === "video" ? t("วางภาพเพื่อเริ่มคลิปจากภาพนี้", "Drop a picture to start the clip from")
+                  : tab === "lipsync" ? t("วางไฟล์เสียง คลิป หรือรูปหน้าคน", "Drop audio, a clip or a face photo")
+                    : t("วางเพลงต้นฉบับ (โหมดคัฟเวอร์)", "Drop the original song (cover mode)")}
           </div>
         </div>
       )}
@@ -3306,8 +3486,8 @@ export default function GeneratePage() {
         <button type="button" className="rp-jobbar"
           onClick={() => document.querySelector(".rp-stage")?.scrollIntoView({ behavior: "smooth", block: "start" })}>
           <span className="rp-spin" aria-hidden="true" />
-          <span>กำลังสร้าง {runningJobs} งาน{runningFraction != null ? ` · ${Math.floor(runningFraction * 100)}%` : ""}</span>
-          <b>ดูผลงาน ↓</b>
+          <span>{t(`กำลังสร้าง ${runningJobs} งาน`, `Creating ${runningJobs}`)}{runningFraction != null ? ` · ${Math.floor(runningFraction * 100)}%` : ""}</span>
+          <b>{t("ดูผลงาน ↓", "View ↓")}</b>
         </button>
       )}
 
@@ -3315,36 +3495,42 @@ export default function GeneratePage() {
           The glass is a layer of its own beside the content, not around it:
           backdrop-filter makes an element the containing block of whatever is
           fixed inside it, and on a phone the order bar is fixed to the screen. */}
-      <section ref={composerRef} className="rp-composer" aria-label="ตั้งค่างาน">
+      <section ref={composerRef} className="rp-composer" aria-label={t("ตั้งค่างาน", "Order settings")}>
         <div className="rp-hud rp-composer-glass" aria-hidden="true"><span className="rp-led"><i /></span></div>
         <div className="rp-cscroll rp-scroll">
           <div className="rp-chead">
             <div style={{ minWidth: 0 }}>
               <div className="rp-crumb">
                 <span className="rp-dot" data-run={runningJobs > 0 ? "true" : "false"} aria-hidden="true" />
-                <span className="rp-mono">{sectionNo(tabNo)} / {sectionNo(TAB_ORDER.length)}</span> สตูดิโอ
+                <span className="rp-mono">{sectionNo(tabNo)} / {sectionNo(TAB_ORDER.length)}</span> {t("สตูดิโอ", "Studio")}
               </div>
-              <h1 className="rp-title">{TAB_LABEL[tab]}</h1>
+              <h1 className="rp-title">{t(TAB_LABEL[tab])}</h1>
             </div>
             {/* Reference material, not controls. */}
-            <Popover id="tips" open={openPanel} onToggle={setOpenPanel} label="? คำแนะนำ" width={320} align="right" variant="tool">
+            <Popover id="tips" open={openPanel} onToggle={setOpenPanel} label={t("? คำแนะนำ", "? Tips")} width={320} align="right" variant="tool">
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {(tab === "audio" ? [
-                  "บอกแนวเพลง อารมณ์ และเครื่องดนตรี เช่น 'ลูกทุ่งอีสานสนุกๆ แคน พิณ เสียงร้องชาย'",
-                  "ใส่จังหวะช่วยได้มาก เช่น 90 BPM (ช้าๆ) หรือ 128 BPM (เต้นได้)",
-                  "เนื้อเพลงแบ่งท่อนด้วย [verse] [chorus] [bridge] — ประโยคสั้นร้องชัดกว่า",
-                  "เว้นเนื้อเพลงว่างไว้ = เพลงบรรเลง เหมาะกับดนตรีประกอบคลิป",
+                  t("บอกแนวเพลง อารมณ์ และเครื่องดนตรี เช่น 'ลูกทุ่งอีสานสนุกๆ แคน พิณ เสียงร้องชาย'", "Name a genre, a mood and instruments, e.g. 'fun Isan luk thung, khaen, phin, male vocal'"),
+                  t("ใส่จังหวะช่วยได้มาก เช่น 90 BPM (ช้าๆ) หรือ 128 BPM (เต้นได้)", "A tempo helps a lot, e.g. 90 BPM (slow) or 128 BPM (danceable)"),
+                  t("เนื้อเพลงแบ่งท่อนด้วย [verse] [chorus] [bridge] — ประโยคสั้นร้องชัดกว่า", "Split lyrics into sections with [verse] [chorus] [bridge] — short lines are sung more clearly"),
+                  t("เว้นเนื้อเพลงว่างไว้ = เพลงบรรเลง เหมาะกับดนตรีประกอบคลิป", "Leave the lyrics empty for an instrumental — good as music for a clip"),
                 ] : [
-                  "พิมพ์ไอเดียสั้น ๆ แล้วกด ✨ ปรับพรอมต์ด้วย AI — ระบบเรียบเรียงให้ตรงรูปแบบที่โมเดลนั้นเข้าใจดีที่สุด แก้ต่อได้ก่อนสั่ง",
+                  t(
+                    "พิมพ์ไอเดียสั้น ๆ แล้วกด ✨ ปรับพรอมต์ด้วย AI — ระบบเรียบเรียงให้ตรงรูปแบบที่โมเดลนั้นเข้าใจดีที่สุด แก้ต่อได้ก่อนสั่ง",
+                    "Type a short idea and tap ✨ Improve with AI — it's rewritten in the form that model understands best, and you can edit it before ordering",
+                  ),
                   tab === "video"
-                    ? "ปุ่ม 🎥 กล้องและฉาก เติมการเคลื่อนกล้อง ขนาดภาพ และแสงเป็นประโยคที่โมเดลวิดีโออ่านเข้าใจ"
-                    : "ปุ่ม ✦ ตัวช่วยพรอมต์ เติมคำศัพท์ช่างภาพ: สไตล์ แสง เลนส์ สี",
-                  "โมเดลที่รับภาพอ้างอิงหลายภาพ: ใส่ภาพตัวละคร ชุด สิ่งของ สถานที่ แล้วพิมพ์ ภาพ 1, ภาพ 2 ในพรอมต์",
-                  "วางภาพ (Ctrl+V) หรือลากไฟล์มาวางตรงไหนก็ได้ ระบบใส่ให้ในช่องที่แท็บนี้ใช้",
-                  "สั่งต่อกันได้ถึง 3 งานพร้อมกัน ดูทุกงานที่แถบเหนือแคนวาส · Ctrl/⌘+Enter = ทอ",
-                  "ได้ภาพที่ชอบแล้ว กด ▶ ทำเป็นวิดีโอ เพื่อใช้เป็นเฟรมแรกของคลิปได้ทันที",
-                  "img2img: ความเข้ม 0.5–0.7 = balance, > 0.8 = ตามภาพอ้างอิงมาก",
-                ]).concat("ลูกแก้วมุมจอ: ชี้หรือแตะเพื่อเปลี่ยนโหมด ลากไปวางตรงไหนก็ได้").map((tip, i) => (
+                    ? t("ปุ่ม 🎥 กล้องและฉาก เติมการเคลื่อนกล้อง ขนาดภาพ และแสงเป็นประโยคที่โมเดลวิดีโออ่านเข้าใจ", "🎥 Camera & scene adds camera moves, shot sizes and light as sentences video models understand")
+                    : t("ปุ่ม ✦ ตัวช่วยพรอมต์ เติมคำศัพท์ช่างภาพ: สไตล์ แสง เลนส์ สี", "✦ Prompt helper adds photographers' words: style, light, lens, color"),
+                  t(
+                    "โมเดลที่รับภาพอ้างอิงหลายภาพ: ใส่ภาพตัวละคร ชุด สิ่งของ สถานที่ แล้วพิมพ์ ภาพ 1, ภาพ 2 ในพรอมต์",
+                    "Models that take several reference pictures: add a character, an outfit, objects or a place, then type Image 1, Image 2 in your prompt",
+                  ),
+                  t("วางภาพ (Ctrl+V) หรือลากไฟล์มาวางตรงไหนก็ได้ ระบบใส่ให้ในช่องที่แท็บนี้ใช้", "Paste a picture (Ctrl+V) or drop a file anywhere — it goes into the slot this tab uses"),
+                  t("สั่งต่อกันได้ถึง 3 งานพร้อมกัน ดูทุกงานที่แถบเหนือแคนวาส · Ctrl/⌘+Enter = ทอ", "Run up to 3 orders at once and see them all in the tray above the canvas · Ctrl/⌘+Enter = Weave"),
+                  t("ได้ภาพที่ชอบแล้ว กด ▶ ทำเป็นวิดีโอ เพื่อใช้เป็นเฟรมแรกของคลิปได้ทันที", "Like a picture? Tap ▶ Make a video to use it as a clip's first frame right away"),
+                  t("img2img: ความเข้ม 0.5–0.7 = balance, > 0.8 = ตามภาพอ้างอิงมาก", "img2img: strength 0.5–0.7 = balanced, > 0.8 = follows the reference closely"),
+                ]).concat(t("ลูกแก้วมุมจอ: ชี้หรือแตะเพื่อเปลี่ยนโหมด ลากไปวางตรงไหนก็ได้", "The corner orb: point at it or tap it to switch modes, drag it anywhere")).map((tip, i) => (
                   <div key={i} style={{ display: "flex", gap: 8 }}>
                     <span style={{ color: `hsl(${(160 + i * 30 + HUE) % 360},70%,70%)`, flexShrink: 0 }}>✦</span>
                     <span style={{ fontSize: 12, color: "rgba(203,213,225,0.78)", lineHeight: 1.5 }}>{tip}</span>
@@ -3355,15 +3541,15 @@ export default function GeneratePage() {
           </div>
 
           {/* ── 01 Model ── */}
-          <Field no="01" label="โมเดล">
+          <Field no="01" label={t("โมเดล", "Model")}>
             {/* The music tab's modes: a song from scratch, or a tool that works on a track. */}
             {tab === "audio" && musicModes.length > 1 && (
-              <div className="rp-seg rp-well rp-mseg" style={{ marginBottom: 10 }} role="tablist" aria-label="โหมดเพลง">
+              <div className="rp-seg rp-well rp-mseg" style={{ marginBottom: 10 }} role="tablist" aria-label={t("โหมดเพลง", "Music mode")}>
                 {musicModes.map((m) => (
                   <button key={m.key} type="button" role="tab" aria-selected={musicMode === m.key}
                     data-on={musicMode === m.key ? "true" : "false"} onClick={() => setMusicMode(m.key)}>
-                    <b>{m.label}</b>
-                    <span>{m.hint}</span>
+                    <b>{t(m.label)}</b>
+                    <span>{t(m.hint)}</span>
                   </button>
                 ))}
               </div>
@@ -3375,11 +3561,13 @@ export default function GeneratePage() {
                 <img key={selectedModel?.id ?? "none"} className="rp-mlogo" data-photo={selectedModel?.preview ? "true" : undefined}
                   src={selectedModel?.preview?.src || TAB_ICON[tab]} alt="" width={44} height={44} onError={previewFallback(TAB_ICON[tab])} />
                 <span className="rp-mbody">
-                  <span className="rp-mname">{selectedModel ? selectedModel.name : modelsLoaded ? "เลือกโมเดล..." : "กำลังโหลดโมเดล…"}</span>
+                  <span className="rp-mname">{selectedModel ? selectedModel.name : modelsLoaded ? t("เลือกโมเดล...", "Choose a model...") : t("กำลังโหลดโมเดล…", "Loading models…")}</span>
                   {selectedModel && (
                     <span className="rp-mmeta">
                       <span className="rp-tag" data-tone={selectedModel.canOrder === false ? "warn" : "ok"}>
-                        {selectedModel.canOrder === false ? (selectedModel.status === "tuning" ? "กำลังปรับแต่ง" : "ยังใช้ไม่ได้") : "พร้อมใช้"}
+                        {selectedModel.canOrder === false
+                          ? (selectedModel.status === "tuning" ? t("กำลังปรับแต่ง", "Being tuned") : t("ยังใช้ไม่ได้", "Unavailable"))
+                          : t("พร้อมใช้", "Ready")}
                       </span>
                       {refText && <span className="rp-tag" data-tone="ref">{refText}</span>}
                     </span>
@@ -3387,53 +3575,59 @@ export default function GeneratePage() {
                 </span>
                 <span className="rp-mprice">
                   {selectedModel && <b>✦ {selectedModel.creditsPerUnit}</b>}
-                  <span>เปลี่ยนโมเดล {showModelDropdown ? "▴" : "▾"}</span>
+                  <span>{t("เปลี่ยนโมเดล", "Change model")} {showModelDropdown ? "▴" : "▾"}</span>
                 </span>
               </button>
               {/* Every model floats up over the stage as a balloon playing its showcase. */}
               {showModelDropdown && (
                 <ModelBalloons models={pickerOrder(filteredModels)} selectedId={selectedModelId} art={TAB_ICON[tab]}
-                  title={PICKER_TITLE[tab]} keepClear={composerRef} onPick={pickModel} onClose={closeModelPicker} />
+                  title={t(PICKER_TITLE[tab])} keepClear={composerRef} onPick={pickModel} onClose={closeModelPicker} />
               )}
             </div>
           </Field>
 
           {/* ── 02 Prompt (the text to read, on speech; none on an upscale) ── */}
           <Field no="02" hidden={videoTool === "upscale" || promptHidden}
-            label={tab === "lipsync" || videoTool === "motion" ? "Prompt (ไม่บังคับ)"
-              : tab === "audio" ? (sunoTool === "sounds" ? "เสียงที่ต้องการ" : promptOptional ? "สไตล์เพลง (ไม่บังคับ)" : "สไตล์เพลง")
-                : tab === "speech" ? "ข้อความที่จะให้อ่าน" : "Prompt"}
+            label={tab === "lipsync" || videoTool === "motion" ? t("Prompt (ไม่บังคับ)", "Prompt (optional)")
+              : tab === "audio"
+                ? (sunoTool === "sounds"
+                  ? t("เสียงที่ต้องการ", "The sound you want")
+                  : promptOptional ? t("สไตล์เพลง (ไม่บังคับ)", "Song style (optional)") : t("สไตล์เพลง", "Song style"))
+                : tab === "speech" ? t("ข้อความที่จะให้อ่าน", "Text to read") : "Prompt"}
             aside={speechRule
-              ? `${speechLength.toLocaleString()} / ${speechRule.maxChars.toLocaleString()} ตัวอักษร`
-              : `${prompt.trim() ? `${prompt.trim().split(/\s+/).length} คำ · ` : ""}${prompt.length.toLocaleString()} / 10,000`}>
+              ? `${formatNumber(speechLength, locale)} / ${formatNumber(speechRule.maxChars, locale)} ${t("ตัวอักษร", "characters")}`
+              : `${promptWords > 0 ? t(`${promptWords} คำ · `, `${promptWords} ${promptWords === 1 ? "word" : "words"} · `) : ""}${formatNumber(prompt.length, locale)} / ${formatNumber(10_000, locale)}`}>
             <div className="rp-prompt rp-well">
               {/* Read-only while ✨ works: its answer replaces the box, and would
                   silently drop anything typed in the meantime (Context-IR can
                   take a minute). */}
               <textarea ref={promptRef} value={prompt} onChange={(e) => setPrompt(e.target.value)} onKeyDown={onSubmitKey}
-                readOnly={enhancing} aria-busy={enhancing} aria-label={tab === "speech" ? "ข้อความที่จะให้อ่าน" : "Prompt"}
+                readOnly={enhancing} aria-busy={enhancing} aria-label={tab === "speech" ? t("ข้อความที่จะให้อ่าน", "Text to read") : "Prompt"}
                 placeholder={
                   tab === "lipsync"
                     ? lipsyncNeeds === "image"
-                      ? "อธิบายท่าทาง/บรรยากาศเพิ่มได้ เช่น พิธีกรยิ้มแย้ม พูดกับกล้อง..."
-                      : "ไม่ต้องใส่ก็ได้ — เสียงที่อัปโหลดเป็นตัวกำหนดผลลัพธ์"
+                      ? t("อธิบายท่าทาง/บรรยากาศเพิ่มได้ เช่น พิธีกรยิ้มแย้ม พูดกับกล้อง...", "Optionally describe gestures or mood, e.g. a smiling host talking to the camera...")
+                      : t("ไม่ต้องใส่ก็ได้ — เสียงที่อัปโหลดเป็นตัวกำหนดผลลัพธ์", "Optional — the uploaded audio drives the result")
                     : tab === "video"
                       ? videoTool === "motion"
-                        ? "ไม่ใส่ก็ได้ — ท่าทางมาจากคลิป · อธิบายฉากหลัง แสง หรือรายละเอียดเพิ่มได้"
-                        : "อธิบายวิดีโอที่ต้องการ..."
+                        ? t("ไม่ใส่ก็ได้ — ท่าทางมาจากคลิป · อธิบายฉากหลัง แสง หรือรายละเอียดเพิ่มได้", "Optional — the moves come from the clip · you can describe the background, light or details")
+                        : t("อธิบายวิดีโอที่ต้องการ...", "Describe the video you want...")
                       : tab === "speech"
-                        ? "พิมพ์ข้อความที่ต้องการให้อ่านออกเสียง เช่น สวัสดีค่ะ ยินดีต้อนรับสู่ร้านของเรา วันนี้มีโปรโมชันพิเศษสำหรับลูกค้าทุกท่าน"
+                        ? t(
+                            "พิมพ์ข้อความที่ต้องการให้อ่านออกเสียง เช่น สวัสดีค่ะ ยินดีต้อนรับสู่ร้านของเรา วันนี้มีโปรโมชันพิเศษสำหรับลูกค้าทุกท่าน",
+                            "Type the text to read aloud, e.g. Hello and welcome to our shop! Today we have a special offer for every customer.",
+                          )
                       : tab === "audio" && sunoTool === "sounds"
-                        ? "อธิบายเสียง เช่น ฝนตกบนหลังคาสังกะสี ฟ้าร้องไกล ๆ หรือ บีตฮิปฮอปช้า ๆ กลองหนัก"
+                        ? t("อธิบายเสียง เช่น ฝนตกบนหลังคาสังกะสี ฟ้าร้องไกล ๆ หรือ บีตฮิปฮอปช้า ๆ กลองหนัก", "Describe the sound, e.g. rain on a tin roof with distant thunder, or a slow hip-hop beat with heavy drums")
                       : tab === "audio" && promptOptional
                         ? sunoTool === "add-instrumental"
-                          ? "แนวดนตรีที่อยากได้ เช่น วงอะคูสติก กีตาร์โปร่ง เปียโน อบอุ่น"
-                          : "แนวใหม่ที่อยากได้ (เว้นว่างได้) เช่น ร็อกหนัก ๆ กลองแน่น เสียงร้องหญิง"
+                          ? t("แนวดนตรีที่อยากได้ เช่น วงอะคูสติก กีตาร์โปร่ง เปียโน อบอุ่น", "The music you want, e.g. an acoustic band, acoustic guitar, piano, warm")
+                          : t("แนวใหม่ที่อยากได้ (เว้นว่างได้) เช่น ร็อกหนัก ๆ กลองแน่น เสียงร้องหญิง", "A new style (optional), e.g. heavy rock, tight drums, female vocal")
                       : tab === "audio"
-                        ? "แนวเพลง อารมณ์ เครื่องดนตรี เสียงร้อง เช่น ป๊อปไทยสดใส เสียงร้องหญิง กีตาร์โปร่ง จังหวะเร็ว"
+                        ? t("แนวเพลง อารมณ์ เครื่องดนตรี เสียงร้อง เช่น ป๊อปไทยสดใส เสียงร้องหญิง กีตาร์โปร่ง จังหวะเร็ว", "Genre, mood, instruments, vocals, e.g. bright Thai pop, female vocal, acoustic guitar, fast tempo")
                         : multiRef && refs.length > 1
-                          ? "เช่น ผู้หญิงจาก ภาพ 1 สวมชุดจาก ภาพ 2 ยืนหน้าร้านใน ภาพ 3 แสงเย็นอ่อน ๆ"
-                          : "อธิบายภาพที่ต้องการ..."
+                          ? t("เช่น ผู้หญิงจาก ภาพ 1 สวมชุดจาก ภาพ 2 ยืนหน้าร้านใน ภาพ 3 แสงเย็นอ่อน ๆ", "e.g. the woman from Image 1 wearing the outfit from Image 2, standing outside the shop in Image 3, soft evening light")
+                          : t("อธิบายภาพที่ต้องการ...", "Describe the picture you want...")
                 }
                 style={{ minHeight: tab === "audio" ? 72 : tab === "speech" ? 150 : 104, opacity: enhancing ? 0.6 : 1 }} />
               {/* How much of what one order may read is used. */}
@@ -3448,80 +3642,85 @@ export default function GeneratePage() {
               <div className="rp-ptools">
                 {/* Emotion tags, put in the text where they should be performed. */}
                 {speechRule?.tags && (
-                  <Popover id="speechtags" open={openPanel} onToggle={setOpenPanel} variant="tool" width={320} label="🎭 แท็กอารมณ์">
+                  <Popover id="speechtags" open={openPanel} onToggle={setOpenPanel} variant="tool" width={320} label={t("🎭 แท็กอารมณ์", "🎭 Emotion tags")}>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                      {SPEECH_TAGS.map((t) => (
-                        <button key={t.tag} type="button" title={`แทรก ${t.tag} ตรงตำแหน่งเคอร์เซอร์`}
-                          onClick={() => { insertAtCaret(t.tag); setOpenPanel(null); }}
+                      {SPEECH_TAGS.map((st) => (
+                        <button key={st.tag} type="button" title={t(`แทรก ${st.tag} ตรงตำแหน่งเคอร์เซอร์`, `Insert ${st.tag} at the cursor`)}
+                          onClick={() => { insertAtCaret(st.tag); setOpenPanel(null); }}
                           style={{
                             padding: "5px 10px", borderRadius: 999, fontSize: 11, cursor: "pointer", fontFamily: "inherit",
                             background: "rgba(255,255,255,0.05)", color: "#cbd5e1", border: "1px solid rgba(255,255,255,0.1)",
                           }}>
-                          {t.th} <span style={{ color: "#a5f3fc", fontFamily: "ui-monospace,monospace", fontSize: 10.5 }}>{t.tag}</span>
+                          {t(st.label)} <span style={{ color: "#a5f3fc", fontFamily: "ui-monospace,monospace", fontSize: 10.5 }}>{st.tag}</span>
                         </button>
                       ))}
                     </div>
                     <div style={{ fontSize: 10.5, color: "#64748b", lineHeight: 1.5, marginTop: 10 }}>
-                      วางแท็กไว้หน้าคำหรือประโยคที่ต้องการ — โมเดลจะพูดด้วยอารมณ์นั้น ไม่ได้อ่านแท็กออกเสียง
+                      {t(
+                        "วางแท็กไว้หน้าคำหรือประโยคที่ต้องการ — โมเดลจะพูดด้วยอารมณ์นั้น ไม่ได้อ่านแท็กออกเสียง",
+                        "Put a tag before the word or sentence — the model speaks it with that emotion and doesn't read the tag aloud",
+                      )}
                     </div>
                   </Popover>
                 )}
                 {!plainPrompt && (<>
                 <button type="button" className="rp-tool rp-tool-ai" onClick={handleEnhance} disabled={enhancing || !prompt.trim()}
                   title={tab === "video" && selectedModel?.modelId === "minimax-h3"
-                    ? "เรียบเรียงเป็นโครงช็อต กล้อง และเสียง ตามรูปแบบที่ MiniMax H3 ถูกฝึกมา"
-                    : "ให้ AI ขยายไอเดียสั้น ๆ เป็นพรอมต์ที่โมเดลเข้าใจดีที่สุด"}>
+                    ? t("เรียบเรียงเป็นโครงช็อต กล้อง และเสียง ตามรูปแบบที่ MiniMax H3 ถูกฝึกมา", "Lays it out as shots, camera and sound, in the form MiniMax H3 was trained on")
+                    : t("ให้ AI ขยายไอเดียสั้น ๆ เป็นพรอมต์ที่โมเดลเข้าใจดีที่สุด", "Let AI grow a short idea into the prompt the model understands best")}>
                   <span className={enhancing ? "xdr-motion" : undefined} style={enhancing ? { display: "inline-block", animation: "spin 1.2s linear infinite" } : undefined}>✨</span>
                   {enhancing
-                    ? (tab === "video" && selectedModel?.modelId === "minimax-h3" ? "กำลังเรียบเรียงฉาก… (อาจถึง 1 นาที)" : "กำลังเรียบเรียง…")
-                    : tab === "audio" ? "ช่วยเขียนสไตล์เพลง" : "ปรับพรอมต์ด้วย AI"}
+                    ? (tab === "video" && selectedModel?.modelId === "minimax-h3"
+                      ? t("กำลังเรียบเรียงฉาก… (อาจถึง 1 นาที)", "Writing the scene… (up to a minute)")
+                      : t("กำลังเรียบเรียง…", "Rewriting…"))
+                    : tab === "audio" ? t("ช่วยเขียนสไตล์เพลง", "Help write the style") : t("ปรับพรอมต์ด้วย AI", "Improve with AI")}
                 </button>
                 {promptBeforeEnhance !== null && !enhancing && (
-                  <button type="button" className="rp-tool rp-raised" onClick={undoEnhance}>↶ ใช้ข้อความเดิม</button>
+                  <button type="button" className="rp-tool rp-raised" onClick={undoEnhance}>{t("↶ ใช้ข้อความเดิม", "↶ Use my text")}</button>
                 )}
                 {/* Prompt builder. Pictures get their vocabulary as comma-joined
                     phrases; clips get camera and shot direction as sentences
                     (the form video models read it in); songs keep their tag chips. */}
                 <Popover id="tags" open={openPanel} onToggle={setOpenPanel} variant="tool"
                   width={tab === "audio" ? 320 : 480} maxHeight={tab === "audio" ? 360 : 560}
-                  label={tab === "audio" ? "+ แท็ก" : tab === "video" || tab === "lipsync" ? "🎥 กล้องและฉาก" : "✦ ตัวช่วยพรอมต์"}>
+                  label={tab === "audio" ? t("+ แท็ก", "+ Tags") : tab === "video" || tab === "lipsync" ? t("🎥 กล้องและฉาก", "🎥 Camera & scene") : t("✦ ตัวช่วยพรอมต์", "✦ Prompt helper")}>
                   {tab === "audio" ? (
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                      {MUSIC_TAG_CHIPS.map((t) => {
-                        const already = prompt.toLowerCase().includes(t.toLowerCase());
+                      {MUSIC_TAG_CHIPS.map((chip) => {
+                        const already = prompt.toLowerCase().includes(chip.toLowerCase());
                         return (
-                          <button key={t} type="button" onClick={() => addPromptTag(t)}
+                          <button key={chip} type="button" onClick={() => addPromptTag(chip)}
                             style={{
                               padding: "5px 10px", borderRadius: 999, fontSize: 11, cursor: "pointer", fontFamily: "inherit",
                               background: already ? `hsla(${220 + HUE},60%,50%,0.18)` : "rgba(255,255,255,0.05)",
                               color: already ? "#a5f3fc" : "#94a3b8",
                               border: already ? `1px solid hsla(${220 + HUE},70%,60%,0.4)` : "1px solid rgba(255,255,255,0.1)",
-                            }}>+ {t}</button>
+                            }}>+ {chip}</button>
                         );
                       })}
                     </div>
                   ) : (
                     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                       {(tab === "video" || tab === "lipsync" ? VIDEO_BUILDER : IMAGE_BUILDER).map((group) => (
-                        <div key={group.label}>
-                          <div style={{ fontSize: 10.5, letterSpacing: "0.08em", color: "#a5f3fc", marginBottom: 6 }}>{group.label}</div>
+                        <div key={group.label.en}>
+                          <div style={{ fontSize: 10.5, letterSpacing: "0.08em", color: "#a5f3fc", marginBottom: 6 }}>{t(group.label)}</div>
                           {group.items.some((item) => item.shot) ? (
                             // Camera options: each plays what that camera does, on the same little scene.
                             <div className="rp-camgrid">
                               {group.items.map((item) => {
-                                const already = prompt.toLowerCase().includes(item.en.toLowerCase());
+                                const already = prompt.toLowerCase().includes(item.prompt.toLowerCase());
                                 const sentence = tab === "video" || tab === "lipsync";
                                 return (
-                                  <button key={item.en} type="button" className="rp-camtile" data-on={already ? "true" : "false"}
-                                    title={item.en} aria-pressed={already}
-                                    onClick={() => (sentence ? addPromptSentence(item.en) : addPromptTag(item.en))}>
+                                  <button key={item.prompt} type="button" className="rp-camtile" data-on={already ? "true" : "false"}
+                                    title={item.prompt} aria-pressed={already}
+                                    onClick={() => (sentence ? addPromptSentence(item.prompt) : addPromptTag(item.prompt))}>
                                     <span className="rp-camview">
                                       {item.shot && <CameraPreview shot={item.shot} />}
                                       {already && <span className="rp-camcheck" aria-hidden="true">✓</span>}
                                     </span>
                                     <span className="rp-camcap">
-                                      <b>{item.th}</b>
-                                      {item.shot && <small>{shotHint(item.shot)}</small>}
+                                      <b>{t(item.label)}</b>
+                                      {item.shot && <small>{shotHint(item.shot, locale)}</small>}
                                     </span>
                                   </button>
                                 );
@@ -3530,17 +3729,17 @@ export default function GeneratePage() {
                           ) : (
                           <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
                             {group.items.map((item) => {
-                              const already = prompt.toLowerCase().includes(item.en.toLowerCase());
+                              const already = prompt.toLowerCase().includes(item.prompt.toLowerCase());
                               const sentence = tab === "video" || tab === "lipsync";
                               return (
-                                <button key={item.en} type="button" title={item.en}
-                                  onClick={() => (sentence ? addPromptSentence(item.en) : addPromptTag(item.en))}
+                                <button key={item.prompt} type="button" title={item.prompt}
+                                  onClick={() => (sentence ? addPromptSentence(item.prompt) : addPromptTag(item.prompt))}
                                   style={{
                                     padding: "5px 9px", borderRadius: 999, fontSize: 11, cursor: "pointer", fontFamily: "inherit",
                                     background: already ? `hsla(${220 + HUE},60%,50%,0.18)` : "rgba(255,255,255,0.05)",
                                     color: already ? "#a5f3fc" : "#cbd5e1",
                                     border: already ? `1px solid hsla(${220 + HUE},70%,60%,0.4)` : "1px solid rgba(255,255,255,0.1)",
-                                  }}>{already ? "✓ " : "+ "}{item.th}</button>
+                                  }}>{already ? "✓ " : "+ "}{t(item.label)}</button>
                               );
                             })}
                           </div>
@@ -3548,7 +3747,10 @@ export default function GeneratePage() {
                         </div>
                       ))}
                       <div style={{ fontSize: 10.5, color: "#64748b", lineHeight: 1.5 }}>
-                        ชี้ที่ปุ่มเพื่อดูข้อความภาษาอังกฤษที่จะเติมลงพรอมต์ · โมเดลส่วนใหญ่อ่านคำศัพท์ภาพยนตร์/ถ่ายภาพภาษาอังกฤษได้แม่นที่สุด
+                        {t(
+                          "ชี้ที่ปุ่มเพื่อดูข้อความภาษาอังกฤษที่จะเติมลงพรอมต์ · โมเดลส่วนใหญ่อ่านคำศัพท์ภาพยนตร์/ถ่ายภาพภาษาอังกฤษได้แม่นที่สุด",
+                          "Hover a chip to see the exact English it adds · most models read film and photo terms best in English",
+                        )}
                       </div>
                     </div>
                   )}
@@ -3556,45 +3758,52 @@ export default function GeneratePage() {
                 </>)}
                 {/* Templates are about pictures — none of them reaches a music model. */}
                 {templates.length > 0 && !plainPrompt && tab !== "edit" && tab !== "audio" && (
-                  <Popover id="templates" open={openPanel} onToggle={setOpenPanel} label="เทมเพลต" variant="tool" width={300}>
+                  <Popover id="templates" open={openPanel} onToggle={setOpenPanel} label={t("เทมเพลต", "Templates")} variant="tool" width={300}>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                      {templates.slice(0, 10).map(t => (
-                        <button key={t.id} type="button" title={t.description || t.prompt}
-                          onClick={() => { setPrompt(t.prompt); setNegativePrompt(t.negativePrompt || ""); setOpenPanel(null); }}
+                      {templates.slice(0, 10).map(tpl => (
+                        <button key={tpl.id} type="button" title={tpl.description || tpl.prompt}
+                          onClick={() => { setPrompt(tpl.prompt); setNegativePrompt(tpl.negativePrompt || ""); setOpenPanel(null); }}
                           style={{
                             padding: "6px 11px", borderRadius: 999, fontSize: 11, cursor: "pointer", fontFamily: "inherit",
                             background: "rgba(255,255,255,0.05)", color: "#cbd5e1",
                             border: "1px solid rgba(255,255,255,0.1)",
                           }}>
-                          {t.isFeatured ? "★ " : ""}{t.name}
+                          {tpl.isFeatured ? "★ " : ""}{tpl.name}
                         </button>
                       ))}
                     </div>
                   </Popover>
                 )}
-                <span className="rp-kbd rp-mono" title="สั่งสร้างจากช่องพิมพ์ได้เลย">Ctrl/⌘ + Enter = ทอ</span>
+                <span className="rp-kbd rp-mono" title={t("สั่งสร้างจากช่องพิมพ์ได้เลย", "Order straight from the text box")}>{t("Ctrl/⌘ + Enter = ทอ", "Ctrl/⌘ + Enter = Weave")}</span>
               </div>
             </div>
             {/* The free model does not understand Thai — it renders an unrelated
                 image instead of failing, so warn before credits are spent. */}
             {selectedModel?.latinPromptOnly && THAI_CHARS.test(prompt) && (
               <div className="rp-warn" style={{ marginTop: 8 }}>
-                โมเดลฟรีอ่านภาษาไทยไม่ออก — จะได้ภาพที่ไม่ตรงกับที่พิมพ์ กรุณาพิมพ์ prompt เป็นภาษาอังกฤษ หรือเลือกโมเดลแบบเสียเครดิต
+                {t(
+                  "โมเดลฟรีอ่านภาษาไทยไม่ออก — จะได้ภาพที่ไม่ตรงกับที่พิมพ์ กรุณาพิมพ์ prompt เป็นภาษาอังกฤษ หรือเลือกโมเดลแบบเสียเครดิต",
+                  "The free model can't read Thai — you'd get a picture that doesn't match. Write the prompt in English, or pick a paid model.",
+                )}
               </div>
             )}
             {enhanceNote && (
-              <div style={{ fontSize: 10.5, color: "#a78bfa", marginTop: 6 }}>✦ {enhanceNote} — แก้ต่อได้ตามใจ</div>
+              <div style={{ fontSize: 10.5, color: "#a78bfa", marginTop: 6 }}>✦ {t(enhanceNote)} — {t("แก้ต่อได้ตามใจ", "edit it as you like")}</div>
             )}
             {speechRule && (
               <div className="rp-note">
-                {THAI_CHARS.test(prompt) ? "อ่านภาษาไทยได้ · " : ""}ใส่ตัวเลข วันที่ และชื่อเฉพาะเป็นคำอ่านจะออกเสียงได้แม่นกว่า เช่น “สองร้อยบาท”
+                {THAI_CHARS.test(prompt) ? t("อ่านภาษาไทยได้ · ", "Reads Thai · ") : ""}
+                {t(
+                  "ใส่ตัวเลข วันที่ และชื่อเฉพาะเป็นคำอ่านจะออกเสียงได้แม่นกว่า เช่น “สองร้อยบาท”",
+                  "Numbers, dates and names come out more accurately when written as words, e.g. “two hundred baht”",
+                )}
               </div>
             )}
           </Field>
 
           {/* ── Lyrics (music) ── */}
           {showLyrics && (
-            <Field no={sectionNo(3)} label="เนื้อเพลง" aside={`${lyrics.length.toLocaleString()} / 3,000`}>
+            <Field no={sectionNo(3)} label={t("เนื้อเพลง", "Lyrics")} aside={`${formatNumber(lyrics.length, locale)} / ${formatNumber(3000, locale)}`}>
               <div className="rp-lyrics-tools">
                 {SECTION_TAGS.map((tag) => (
                   <button key={tag} type="button" className="rp-sectag rp-mono" disabled={instrumentalOn}
@@ -3605,21 +3814,23 @@ export default function GeneratePage() {
                 {sunoOpts?.instrumental !== false && (
                   <label className="rp-check">
                     <input type="checkbox" checked={instrumental} onChange={(e) => setInstrumental(e.target.checked)} />
-                    เพลงบรรเลง (ไม่มีเสียงร้อง)
+                    {t("เพลงบรรเลง (ไม่มีเสียงร้อง)", "Instrumental (no vocals)")}
                   </label>
                 )}
               </div>
               <div className="rp-prompt rp-well" style={{ marginTop: 8 }}>
                 <textarea value={lyrics} onChange={(e) => setLyrics(e.target.value.slice(0, 3000))} onKeyDown={onSubmitKey}
-                  disabled={instrumentalOn} aria-label="เนื้อเพลง"
-                  placeholder={"[Verse]\nเขียนเนื้อร้องที่นี่\n\n[Chorus]\nท่อนฮุกที่อยากให้ติดหู"}
+                  disabled={instrumentalOn} aria-label={t("เนื้อเพลง", "Lyrics")}
+                  placeholder={t("[Verse]\nเขียนเนื้อร้องที่นี่\n\n[Chorus]\nท่อนฮุกที่อยากให้ติดหู", "[Verse]\nWrite your lyrics here\n\n[Chorus]\nThe hook you want stuck in people's heads")}
                   style={{ minHeight: 220, opacity: instrumentalOn ? 0.45 : 1 }} />
               </div>
               <div className="rp-note">
-                {instrumentalOn ? "โหมดบรรเลง — เนื้อร้องที่พิมพ์ไว้จะถูกเก็บไว้เฉย ๆ"
-                  : sunoTool === "add-vocals" ? "เว้นว่างได้ — AI แต่งเนื้อให้เข้ากับดนตรี · วงเล็บเหลี่ยมบอกว่าเป็นท่อนอะไร"
-                    : sunoTool === "cover" || sunoTool === "extend" ? "เว้นว่างได้ · ใส่เนื้อใหม่เพื่อให้ร้องตามนี้ · วงเล็บเหลี่ยมบอกว่าเป็นท่อนอะไร"
-                      : "วงเล็บเหลี่ยมบอกโมเดลว่าเป็นท่อนอะไร"}
+                {instrumentalOn ? t("โหมดบรรเลง — เนื้อร้องที่พิมพ์ไว้จะถูกเก็บไว้เฉย ๆ", "Instrumental — the lyrics you typed are kept, but not sung")
+                  : sunoTool === "add-vocals"
+                    ? t("เว้นว่างได้ — AI แต่งเนื้อให้เข้ากับดนตรี · วงเล็บเหลี่ยมบอกว่าเป็นท่อนอะไร", "Optional — the AI writes lyrics to fit the music · square brackets mark each section")
+                    : sunoTool === "cover" || sunoTool === "extend"
+                      ? t("เว้นว่างได้ · ใส่เนื้อใหม่เพื่อให้ร้องตามนี้ · วงเล็บเหลี่ยมบอกว่าเป็นท่อนอะไร", "Optional · add new lyrics to have them sung · square brackets mark each section")
+                      : t("วงเล็บเหลี่ยมบอกโมเดลว่าเป็นท่อนอะไร", "Square brackets tell the model which section is which")}
               </div>
               {/* Exactly what the model will be told, composed by the same
                   function the server uses. Shown because chips whose effect
@@ -3627,7 +3838,7 @@ export default function GeneratePage() {
               {styleSummary && (
                 <div className="rp-well" style={{ marginTop: 10, padding: "9px 11px", borderRadius: 10 }}>
                   <div style={{ fontSize: 10, letterSpacing: "0.1em", color: "#a5f3fc", marginBottom: 5, textTransform: "uppercase" }}>
-                    สไตล์ที่ส่งให้ AI
+                    {t("สไตล์ที่ส่งให้ AI", "Style sent to the AI")}
                   </div>
                   <div style={{ fontSize: 11, color: "#cbd5e1", lineHeight: 1.55, wordBreak: "break-word" }}>
                     {styleSummary}
@@ -3640,15 +3851,18 @@ export default function GeneratePage() {
           {/* ── 03 The files this mode takes ── */}
           {showInputs && (
             <Field no={sectionNo(inputsAt)} label={inputsLabel}
-              aside={tab === "image" && multiRef ? `${refs.length} / ${refCap} ภาพ` : undefined}>
+              aside={tab === "image" && multiRef ? `${refs.length} / ${refCap} ${t("ภาพ", refCap === 1 ? "picture" : "pictures")}` : undefined}>
 
               {/* Reference pictures. Several, each with what it is, for a model
                   that composes from several; one with its strength for img2img;
                   none — said rather than offered — for a model that takes none. */}
               {tab === "image" && (refCap === 0 ? (
                 <div className="rp-note" style={{ marginTop: 0 }}>
-                  โมเดลนี้ไม่รับภาพอ้างอิง — ถ้าอยากให้ภาพออกมาตามรูปของคุณ เลือกโมเดลที่มีป้าย “รับภาพอ้างอิงได้”
-                  {refs.length > 0 ? " · ภาพที่ใส่ไว้จะไม่ถูกส่งไปกับงานนี้" : ""}
+                  {t(
+                    "โมเดลนี้ไม่รับภาพอ้างอิง — ถ้าอยากให้ภาพออกมาตามรูปของคุณ เลือกโมเดลที่มีป้าย “รับภาพอ้างอิงได้”",
+                    "This model doesn’t take reference pictures — to work from your own pictures, pick a model tagged “Takes reference pictures”",
+                  )}
+                  {refs.length > 0 ? t(" · ภาพที่ใส่ไว้จะไม่ถูกส่งไปกับงานนี้", " · the pictures added won't be sent with this order") : ""}
                 </div>
               ) : (
                 <div className="rp-refbox rp-well">
@@ -3662,24 +3876,24 @@ export default function GeneratePage() {
                       <div key={r.id} className="rp-rtile" data-main={multiRef && i === 0 ? "true" : undefined}>
                         {r.url ? (
                           // eslint-disable-next-line @next/next/no-img-element
-                          <img src={r.url} alt={`ภาพอ้างอิง ${i + 1}`} loading="lazy"
+                          <img src={r.url} alt={t(`ภาพอ้างอิง ${i + 1}`, `Reference picture ${i + 1}`)} loading="lazy"
                             onError={() => dropExpiredInput(r.url, () => removeRef(r.id))} />
                         ) : (
-                          <span className="rp-spin" role="status" aria-label="กำลังอัปโหลด" />
+                          <span className="rp-spin" role="status" aria-label={t("กำลังอัปโหลด", "Uploading")} />
                         )}
                         {multiRef && <span className="rp-rno rp-mono">{i + 1}</span>}
-                        <button type="button" className="rp-rx" onClick={() => removeRef(r.id)} aria-label={`เอาภาพ ${i + 1} ออก`}>×</button>
+                        <button type="button" className="rp-rx" onClick={() => removeRef(r.id)} aria-label={t(`เอาภาพ ${i + 1} ออก`, `Remove image ${i + 1}`)}>×</button>
                         {multiRef && refs.length > 1 && (
                           <span className="rp-rmove">
                             <button type="button" disabled={i === 0} onClick={() => moveRef(r.id, -1)}
-                              aria-label={`เลื่อนภาพ ${i + 1} ไปก่อนหน้า`} title="เลื่อนไปก่อนหน้า">‹</button>
+                              aria-label={t(`เลื่อนภาพ ${i + 1} ไปก่อนหน้า`, `Move image ${i + 1} earlier`)} title={t("เลื่อนไปก่อนหน้า", "Move earlier")}>‹</button>
                             <button type="button" disabled={i === refs.length - 1} onClick={() => moveRef(r.id, 1)}
-                              aria-label={`เลื่อนภาพ ${i + 1} ไปถัดไป`} title="เลื่อนไปถัดไป">›</button>
+                              aria-label={t(`เลื่อนภาพ ${i + 1} ไปถัดไป`, `Move image ${i + 1} later`)} title={t("เลื่อนไปถัดไป", "Move later")}>›</button>
                           </span>
                         )}
                         {multiRef && (
-                          <button type="button" className="rp-rrole" onClick={() => cycleRole(r.id)} title="กดเพื่อเปลี่ยนว่าภาพนี้คืออะไร">
-                            {roleLabel(r.role)} ▾
+                          <button type="button" className="rp-rrole" onClick={() => cycleRole(r.id)} title={t("กดเพื่อเปลี่ยนว่าภาพนี้คืออะไร", "Tap to change what this picture is")}>
+                            {t(roleLabel(r.role))} ▾
                           </button>
                         )}
                       </div>
@@ -3687,8 +3901,12 @@ export default function GeneratePage() {
                     {refs.length < refCap && (
                       <label className="rp-radd">
                         <span aria-hidden="true" style={{ fontSize: 18, lineHeight: 1 }}>＋</span>
-                        {multiRef ? "เพิ่มภาพ" : "อัปโหลดภาพอ้างอิง"}
-                        <small>{multiRef ? `อีก ${refCap - refs.length} ภาพ · เลือกหลายภาพได้` : "ลาก & วาง หรือ Ctrl+V"}</small>
+                        {multiRef ? t("เพิ่มภาพ", "Add pictures") : t("อัปโหลดภาพอ้างอิง", "Upload a reference")}
+                        <small>
+                          {multiRef
+                            ? t(`อีก ${refCap - refs.length} ภาพ · เลือกหลายภาพได้`, `${refCap - refs.length} more · pick several at once`)
+                            : t("ลาก & วาง หรือ Ctrl+V", "Drag & drop or Ctrl+V")}
+                        </small>
                         <input type="file" accept="image/png,image/jpeg,image/webp" multiple={multiRef} hidden
                           onChange={(e) => { const files = Array.from(e.target.files ?? []); e.target.value = ""; void addRefFiles(files); }} />
                       </label>
@@ -3697,27 +3915,33 @@ export default function GeneratePage() {
                   {multiRef ? (
                     <>
                       <div className="rp-rhint">
-                        พิมพ์ <b>ภาพ 1</b>, <b>ภาพ 2</b> … ในพรอมต์เพื่อบอกว่าใช้ภาพไหนตรงไหน · กดป้ายใต้ภาพเพื่อบอกว่าเป็นตัวละคร ชุด สิ่งของ หรือสถานที่
+                        {t(
+                          <>พิมพ์ <b>ภาพ 1</b>, <b>ภาพ 2</b> … ในพรอมต์เพื่อบอกว่าใช้ภาพไหนตรงไหน · กดป้ายใต้ภาพเพื่อบอกว่าเป็นตัวละคร ชุด สิ่งของ หรือสถานที่</>,
+                          <>Type <b>Image 1</b>, <b>Image 2</b> … in your prompt to say which picture goes where · tap the tag under a picture to say whether it&apos;s a character, an outfit, an object or a place</>,
+                        )}
                       </div>
                       {refs.length > 0 && (
                         <div className="rp-rins">
-                          <span>แทรกในพรอมต์:</span>
+                          <span>{t("แทรกในพรอมต์:", "Insert into prompt:")}</span>
                           {refs.map((r, i) => (
-                            <button key={r.id} type="button" className="rp-raised" onClick={() => insertRefToken(i + 1)}>{referenceToken(i + 1)}</button>
+                            <button key={r.id} type="button" className="rp-raised" onClick={() => insertRefToken(i + 1)}>{referenceToken(i + 1, locale)}</button>
                           ))}
                         </div>
                       )}
                     </>
                   ) : refs.length > 0 && (
                     <div className="rp-slider">
-                      <div><span>ความเข้มอ้างอิง</span><b className="rp-mono">{Math.round(strength * 100)}%</b></div>
+                      <div><span>{t("ความเข้มอ้างอิง", "Reference strength")}</span><b className="rp-mono">{Math.round(strength * 100)}%</b></div>
                       <input type="range" min={0} max={1} step={0.05} value={strength} onChange={(e) => setStrength(+e.target.value)}
-                        aria-label="ความเข้มอ้างอิง" />
+                        aria-label={t("ความเข้มอ้างอิง", "Reference strength")} />
                     </div>
                   )}
                   {refsOver && (
                     <div className="rp-warn" style={{ marginTop: 10 }}>
-                      โมเดลนี้รับภาพอ้างอิงได้ {refCap} ภาพ — เอาออกให้เหลือ {refCap} ภาพก่อนสั่ง
+                      {t(
+                        `โมเดลนี้รับภาพอ้างอิงได้ ${refCap} ภาพ — เอาออกให้เหลือ ${refCap} ภาพก่อนสั่ง`,
+                        `This model takes ${refCap} reference ${refCap === 1 ? "picture" : "pictures"} — remove some before ordering`,
+                      )}
                     </div>
                   )}
                 </div>
@@ -3730,11 +3954,15 @@ export default function GeneratePage() {
                 <>
                   <div className="rp-seg rp-well">
                     {([
-                      { key: "t2v", label: "ข้อความ → วิดีโอ", hint: "เริ่มจากคำอธิบายล้วน" },
-                      { key: "i2v", label: "ภาพ → วิดีโอ", hint: "ทำให้ภาพที่มีอยู่เคลื่อนไหว" },
+                      { key: "t2v", label: t("ข้อความ → วิดีโอ", "Text → video"), hint: t("เริ่มจากคำอธิบายล้วน", "From a description alone") },
+                      { key: "i2v", label: t("ภาพ → วิดีโอ", "Image → video"), hint: t("ทำให้ภาพที่มีอยู่เคลื่อนไหว", "Bring a picture to life") },
                       // KIE's clip tools, offered only where such a model is connected.
-                      ...(videoTools.includes("motion") ? [{ key: "motion", label: "เลียนท่าทาง", hint: "ตัวละครขยับตามคลิปต้นแบบ" }] : []),
-                      ...(videoTools.includes("upscale") ? [{ key: "upscale", label: "ขยายวิดีโอ", hint: "เพิ่มความคมชัดให้คลิปเดิม" }] : []),
+                      ...(videoTools.includes("motion")
+                        ? [{ key: "motion", label: t("เลียนท่าทาง", "Motion copy"), hint: t("ตัวละครขยับตามคลิปต้นแบบ", "A character moves like a clip") }]
+                        : []),
+                      ...(videoTools.includes("upscale")
+                        ? [{ key: "upscale", label: t("ขยายวิดีโอ", "Video upscale"), hint: t("เพิ่มความคมชัดให้คลิปเดิม", "Sharpen an existing clip") }]
+                        : []),
                     ] as { key: VideoMode; label: string; hint: string }[]).map((m) => (
                       <button key={m.key} type="button" data-on={videoMode === m.key ? "true" : "false"} onClick={() => setVideoMode(m.key)}>
                         <b>{m.label}</b>
@@ -3746,20 +3974,25 @@ export default function GeneratePage() {
                     <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12 }}>
                       {toolNeedsImage && (
                         <div>
-                          <div className="rp-sub">ภาพตัวละคร</div>
-                          <ImageSlot src={inputImagePreview} alt="ภาพตัวละคร" hint="อัปโหลดภาพตัวละคร" accept="image/png,image/jpeg,image/webp"
+                          <div className="rp-sub">{t("ภาพตัวละคร", "Character picture")}</div>
+                          <ImageSlot src={inputImagePreview} alt={t("ภาพตัวละคร", "Character picture")} hint={t("อัปโหลดภาพตัวละคร", "Upload the character")} accept="image/png,image/jpeg,image/webp"
                             onPick={handleImageUpload} onClear={clearInputImage} onLoad={onInputImageLoad}
                             onError={() => dropExpiredInput(inputImagePreview, clearInputImage)} />
-                          <div className="rp-note">เห็นตัวละครชัดทั้งตัว ไม่ถูกบัง — ท่าในภาพใกล้กับท่าแรกของคลิปจะได้ผลเนียนที่สุด</div>
+                          <div className="rp-note">
+                            {t(
+                              "เห็นตัวละครชัดทั้งตัว ไม่ถูกบัง — ท่าในภาพใกล้กับท่าแรกของคลิปจะได้ผลเนียนที่สุด",
+                              "Show the whole character, nothing in the way — a pose close to the clip's first move gives the smoothest result",
+                            )}
+                          </div>
                         </div>
                       )}
                       <div>
-                        <div className="rp-sub">{videoTool === "motion" ? "คลิปท่าทางต้นแบบ" : "คลิปที่จะขยาย"}</div>
+                        <div className="rp-sub">{videoTool === "motion" ? t("คลิปท่าทางต้นแบบ", "Clip with the moves") : t("คลิปที่จะขยาย", "Clip to upscale")}</div>
                         <FilePick
                           value={sourceVideoName}
                           busy={uploading === "video"}
                           accept="video/mp4,video/quicktime"
-                          hint="อัปโหลดคลิป (MP4 / MOV)"
+                          hint={t("อัปโหลดคลิป (MP4 / MOV)", "Upload a clip (MP4 / MOV)")}
                           onPick={(e) => handleMediaUpload(e, "video", clipMaxSeconds)}
                           onClear={() => { setSourceVideo(null); setSourceVideoName(null); }}
                         />
@@ -3781,14 +4014,16 @@ export default function GeneratePage() {
                         )}
                         {sourceClip && (
                           <div style={{ marginTop: 8, fontSize: 11.5, lineHeight: 1.5, color: "#a5f3fc" }}>
-                            คลิป {sourceClip.seconds.toFixed(1)} วินาที · {sourceClip.width}×{sourceClip.height}
-                            {toolSeconds !== null && clipCheck?.ok !== false ? ` · คิด ${toolSeconds} วินาที = ✦ ${totalCredits} เครดิต` : ""}
+                            {t(`คลิป ${sourceClip.seconds.toFixed(1)} วินาที`, `Clip ${sourceClip.seconds.toFixed(1)} s`)} · {sourceClip.width}×{sourceClip.height}
+                            {toolSeconds !== null && clipCheck?.ok !== false
+                              ? t(` · คิด ${toolSeconds} วินาที = ✦ ${totalCredits} เครดิต`, ` · billed ${toolSeconds} s = ✦ ${formatCredits(totalCredits, "en")}`)
+                              : ""}
                           </div>
                         )}
-                        {clipCheck?.ok === false && <div className="rp-warn" style={{ marginTop: 8 }}>{clipCheck.message}</div>}
+                        {clipCheck?.ok === false && <div className="rp-warn" style={{ marginTop: 8 }}>{t(clipCheck.msg)}</div>}
                         <div className="rp-note">
-                          {clipRuleHint(clipRule ?? undefined, null)} · คิดเครดิตตามความยาวคลิป ✦ {creditsFor(1)} ต่อวินาที
-                          {videoTool === "motion" ? " · คนในคลิปเห็นชัดทั้งตัว ท่าไม่เร็วเกินไป" : ""}
+                          {clipRuleHint(clipRule ?? undefined, null, t)} · {t(`คิดเครดิตตามความยาวคลิป ✦ ${creditsFor(1)} ต่อวินาที`, `billed by clip length, ✦ ${creditsFor(1)} per second`)}
+                          {videoTool === "motion" ? t(" · คนในคลิปเห็นชัดทั้งตัว ท่าไม่เร็วเกินไป", " · the whole person visible, moves not too fast") : ""}
                         </div>
                       </div>
                     </div>
@@ -3797,14 +4032,14 @@ export default function GeneratePage() {
                     // simply be absent with nothing saying why. Offer it, one click.
                     <button type="button" className="rp-drop" style={{ marginTop: 10 }} onClick={() => setVideoMode("i2v")}>
                       <span className="rp-drop-ic" aria-hidden="true">↑</span>
-                      อยากให้คลิปเริ่มจากภาพของคุณ?
-                      <small>กดที่นี่เพื่อสลับเป็นโหมด “ภาพ → วิดีโอ”</small>
+                      {t("อยากให้คลิปเริ่มจากภาพของคุณ?", "Want the clip to start from your picture?")}
+                      <small>{t("กดที่นี่เพื่อสลับเป็นโหมด “ภาพ → วิดีโอ”", "Tap here to switch to “Image → video”")}</small>
                     </button>
                   ) : (
                     <div className="rp-frames" data-two={offersLastFrame ? "true" : undefined}>
                       <div>
-                        <div className="rp-sub">ภาพเริ่มต้น</div>
-                        <ImageSlot src={inputImagePreview} alt="ภาพเริ่มต้น" hint="อัปโหลดภาพ" accept="image/*"
+                        <div className="rp-sub">{t("ภาพเริ่มต้น", "Start frame")}</div>
+                        <ImageSlot src={inputImagePreview} alt={t("ภาพเริ่มต้น", "Start frame")} hint={t("อัปโหลดภาพ", "Upload a picture")} accept="image/*"
                           onPick={handleImageUpload} onClear={clearInputImage} onLoad={onInputImageLoad}
                           onError={() => dropExpiredInput(inputImagePreview, clearInputImage)} />
                       </div>
@@ -3812,8 +4047,8 @@ export default function GeneratePage() {
                           models only. Optional: without it the model decides. */}
                       {offersLastFrame && (
                         <div>
-                          <div className="rp-sub">ภาพสุดท้าย (ไม่บังคับ)</div>
-                          <ImageSlot src={inputImageEnd} alt="ภาพสุดท้าย" hint="ภาพที่ต้องการให้คลิปจบ" accept="image/png,image/jpeg,image/webp"
+                          <div className="rp-sub">{t("ภาพสุดท้าย (ไม่บังคับ)", "End frame (optional)")}</div>
+                          <ImageSlot src={inputImageEnd} alt={t("ภาพสุดท้าย", "End frame")} hint={t("ภาพที่ต้องการให้คลิปจบ", "The picture the clip should end on")} accept="image/png,image/jpeg,image/webp"
                             busy={uploading === "image"} onPick={handleEndFrameUpload} onClear={() => setInputImageEnd(null)}
                             onError={() => dropExpiredInput(inputImageEnd, () => setInputImageEnd(null))} />
                         </div>
@@ -3824,14 +4059,17 @@ export default function GeneratePage() {
                       vanishes, which reads as a missing feature, not a model limit. */}
                   {videoMode === "i2v" && selectedModel?.video?.lastFrame !== true && (
                     <div className="rp-note">
-                      โมเดลนี้กำหนด<span style={{ color: "#94a3b8" }}>ภาพสุดท้าย</span>ของคลิปไม่ได้ — ถ้าต้องการ ให้เลือกโมเดลที่รองรับ first-and-last-frame
+                      {t(
+                        <>โมเดลนี้กำหนด<span style={{ color: "#94a3b8" }}>ภาพสุดท้าย</span>ของคลิปไม่ได้ — ถ้าต้องการ ให้เลือกโมเดลที่รองรับ first-and-last-frame</>,
+                        <>This model can&apos;t set the clip&apos;s <span style={{ color: "#94a3b8" }}>end frame</span> — for that, pick a model with first-and-last-frame</>,
+                      )}
                     </div>
                   )}
                 </>
               )}
 
               {tab === "edit" && (
-                <ImageSlot src={inputImagePreview} alt="ภาพต้นฉบับ" hint="อัปโหลดภาพที่ต้องการแก้ไข" accept="image/*"
+                <ImageSlot src={inputImagePreview} alt={t("ภาพต้นฉบับ", "Original picture")} hint={t("อัปโหลดภาพที่ต้องการแก้ไข", "Upload the picture to edit")} accept="image/*"
                   onPick={handleImageUpload} onClear={clearInputImage} onLoad={onInputImageLoad}
                   onError={() => dropExpiredInput(inputImagePreview, clearInputImage)} />
               )}
@@ -3842,22 +4080,27 @@ export default function GeneratePage() {
                 <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                   {lipsyncNeeds === "image" ? (
                     <div>
-                      <div className="rp-sub">รูปหน้าคนที่จะให้พูด</div>
+                      <div className="rp-sub">{t("รูปหน้าคนที่จะให้พูด", "The face that will speak")}</div>
                       {/* What the rented worker can read (frame-input.ts) — a GIF
                           or HEIC portrait would only be refused at the order. */}
-                      <ImageSlot src={inputImagePreview} alt="รูปหน้าคน" hint="อัปโหลดรูปหน้าคน" accept="image/png,image/jpeg,image/webp"
+                      <ImageSlot src={inputImagePreview} alt={t("รูปหน้าคน", "Face photo")} hint={t("อัปโหลดรูปหน้าคน", "Upload a face photo")} accept="image/png,image/jpeg,image/webp"
                         onPick={handleImageUpload} onClear={clearInputImage} onLoad={onInputImageLoad}
                         onError={() => dropExpiredInput(inputImagePreview, clearInputImage)} />
-                      <div className="rp-note">ใช้รูปที่เห็นหน้าชัด หันเข้ากล้อง ปากไม่ถูกบัง — คลิปจะออกมาตามสัดส่วนของรูป</div>
+                      <div className="rp-note">
+                        {t(
+                          "ใช้รูปที่เห็นหน้าชัด หันเข้ากล้อง ปากไม่ถูกบัง — คลิปจะออกมาตามสัดส่วนของรูป",
+                          "Use a clear photo facing the camera with the mouth visible — the clip keeps the photo's shape",
+                        )}
+                      </div>
                     </div>
                   ) : (
                     <div>
-                      <div className="rp-sub">คลิปต้นฉบับที่จะพากย์ทับ</div>
+                      <div className="rp-sub">{t("คลิปต้นฉบับที่จะพากย์ทับ", "Clip to re-dub")}</div>
                       <FilePick
                         value={sourceVideoName}
                         busy={uploading === "video"}
                         accept="video/mp4,video/webm,video/quicktime"
-                        hint="อัปโหลดคลิป (MP4 / WebM)"
+                        hint={t("อัปโหลดคลิป (MP4 / WebM)", "Upload a clip (MP4 / WebM)")}
                         onPick={(e) => handleMediaUpload(e, "video", clipMaxSeconds)}
                         onClear={() => { setSourceVideo(null); setSourceVideoName(null); }}
                       />
@@ -3870,19 +4113,21 @@ export default function GeneratePage() {
                       )}
                       {sourceClip && (
                         <div style={{ marginTop: 8, fontSize: 11.5, lineHeight: 1.5, color: "#a5f3fc" }}>
-                          คลิป {sourceClip.seconds.toFixed(1)} วินาที · {sourceClip.width}×{sourceClip.height}
-                          {videoRule?.billing?.kind === "clipBlocks" && clipCheck?.ok !== false ? ` · ✦ ${totalCredits} เครดิต` : ""}
+                          {t(`คลิป ${sourceClip.seconds.toFixed(1)} วินาที`, `Clip ${sourceClip.seconds.toFixed(1)} s`)} · {sourceClip.width}×{sourceClip.height}
+                          {videoRule?.billing?.kind === "clipBlocks" && clipCheck?.ok !== false
+                            ? ` · ✦ ${t(`${totalCredits} เครดิต`, formatCredits(totalCredits, "en"))}`
+                            : ""}
                         </div>
                       )}
-                      {clipCheck?.ok === false && <div className="rp-warn" style={{ marginTop: 8 }}>{clipCheck.message}</div>}
+                      {clipCheck?.ok === false && <div className="rp-warn" style={{ marginTop: 8 }}>{t(clipCheck.msg)}</div>}
                       <div className="rp-note">
-                        {clipRuleHint(videoRule?.clip, videoRule?.billing ?? null)} · เห็นหน้าชัด · เสียงเดิมในคลิปจะถูกแทนที่ทั้งหมด
+                        {clipRuleHint(videoRule?.clip, videoRule?.billing ?? null, t)} · {t("เห็นหน้าชัด · เสียงเดิมในคลิปจะถูกแทนที่ทั้งหมด", "face clearly visible · the clip's own sound is replaced entirely")}
                       </div>
                     </div>
                   )}
 
                   <div>
-                    <div className="rp-sub">ไฟล์เสียงที่จะให้พูด</div>
+                    <div className="rp-sub">{t("ไฟล์เสียงที่จะให้พูด", "Audio to be spoken")}</div>
                     {/* Hear it, and keep only the part to be spoken, before paying for it. */}
                     {trimSrc && trimSel ? (
                       <AudioTrimmer file={trimSrc.file} buffer={trimSrc.buffer} range={trimSel} maxSeconds={lipsyncAudioMax}
@@ -3895,7 +4140,9 @@ export default function GeneratePage() {
                           value={inputAudioName}
                           busy={uploading === "audio"}
                           accept={AUDIO_ACCEPT}
-                          hint={voiceRule ? `อัปโหลดเสียงพูด (MP3 / WAV / M4A) ใช้ได้ไม่เกิน ${lipsyncAudioMax} วินาที` : "อัปโหลดเสียง (MP3 / WAV / M4A)"}
+                          hint={voiceRule
+                            ? t(`อัปโหลดเสียงพูด (MP3 / WAV / M4A) ใช้ได้ไม่เกิน ${lipsyncAudioMax} วินาที`, `Upload speech (MP3 / WAV / M4A), up to ${lipsyncAudioMax} seconds`)
+                            : t("อัปโหลดเสียง (MP3 / WAV / M4A)", "Upload audio (MP3 / WAV / M4A)")}
                           onPick={(e) => handleMediaUpload(e, "audio", lipsyncAudioMax)}
                           onClear={clearAudio}
                         />
@@ -3913,8 +4160,13 @@ export default function GeneratePage() {
                         {voiceNote && <div className="rp-note" style={{ color: "#a5f3fc" }}>{voiceNote}</div>}
                       </>
                     )}
-                    {clipVoiceCheck?.ok === false && <div className="rp-warn" style={{ marginTop: 8 }}>{clipVoiceCheck.message}</div>}
-                    <div className="rp-note">พูดภาษาอะไรก็ได้รวมถึงไทย — โมเดลอ่านคลื่นเสียงเป็นรูปปาก ไม่ได้อ่านภาษา</div>
+                    {clipVoiceCheck?.ok === false && <div className="rp-warn" style={{ marginTop: 8 }}>{t(clipVoiceCheck.msg)}</div>}
+                    <div className="rp-note">
+                      {t(
+                        "พูดภาษาอะไรก็ได้รวมถึงไทย — โมเดลอ่านคลื่นเสียงเป็นรูปปาก ไม่ได้อ่านภาษา",
+                        "Any language works, Thai included — the model turns the sound into mouth shapes, it doesn't read the language",
+                      )}
+                    </div>
                   </div>
                 </div>
               )}
@@ -3938,9 +4190,14 @@ export default function GeneratePage() {
                         value={inputAudioName}
                         busy={uploading === "audio"}
                         accept={AUDIO_ACCEPT}
-                        hint={sunoTool === "add-vocals" ? `อัปโหลดดนตรีบรรเลง MP3 / WAV — ไม่เกิน ${Math.floor(coverSourceSeconds / 60)} นาที`
-                          : sunoTool === "add-instrumental" ? `อัปโหลดเสียงร้องเปล่า MP3 / WAV — ไม่เกิน ${Math.floor(coverSourceSeconds / 60)} นาที`
-                            : `อัปโหลดเพลง MP3 / WAV — ใช้ได้ไม่เกิน ${Math.floor(coverSourceSeconds / 60)} นาที เลือกช่วงได้หลังอัปโหลด`}
+                        hint={sunoTool === "add-vocals"
+                          ? t(`อัปโหลดดนตรีบรรเลง MP3 / WAV — ไม่เกิน ${Math.floor(coverSourceSeconds / 60)} นาที`, `Upload an instrumental, MP3 / WAV — up to ${Math.floor(coverSourceSeconds / 60)} min`)
+                          : sunoTool === "add-instrumental"
+                            ? t(`อัปโหลดเสียงร้องเปล่า MP3 / WAV — ไม่เกิน ${Math.floor(coverSourceSeconds / 60)} นาที`, `Upload a bare vocal, MP3 / WAV — up to ${Math.floor(coverSourceSeconds / 60)} min`)
+                            : t(
+                                `อัปโหลดเพลง MP3 / WAV — ใช้ได้ไม่เกิน ${Math.floor(coverSourceSeconds / 60)} นาที เลือกช่วงได้หลังอัปโหลด`,
+                                `Upload a song, MP3 / WAV — up to ${Math.floor(coverSourceSeconds / 60)} min; pick the part after uploading`,
+                              )}
                         onPick={(e) => handleMediaUpload(e, "audio", coverSourceSeconds)}
                         onClear={clearAudio}
                       />
@@ -3962,32 +4219,53 @@ export default function GeneratePage() {
                   {sunoTool === "extend" && inputAudioSeconds !== null && inputAudioSeconds >= 2 && (
                     <div className="rp-slider" style={{ marginTop: 12 }}>
                       <div>
-                        <span>ต่อจากวินาทีที่</span>
+                        <span>{t("ต่อจากวินาทีที่", "Continue from")}</span>
                         <b className="rp-mono">
-                          {suno.continueAt !== undefined && suno.continueAt < inputAudioSeconds ? clock(suno.continueAt) : `${clock(Math.max(1, Math.floor(inputAudioSeconds) - 1))} (ท้ายเพลง)`}
+                          {suno.continueAt !== undefined && suno.continueAt < inputAudioSeconds ? clock(suno.continueAt) : `${clock(Math.max(1, Math.floor(inputAudioSeconds) - 1))} ${t("(ท้ายเพลง)", "(the end)")}`}
                         </b>
                       </div>
                       <input type="range" min={1} max={Math.max(1, Math.floor(inputAudioSeconds) - 1)} step={1}
                         value={suno.continueAt !== undefined && suno.continueAt < inputAudioSeconds ? suno.continueAt : Math.max(1, Math.floor(inputAudioSeconds) - 1)}
-                        onChange={(e) => setSunoField("continueAt", +e.target.value)} aria-label="ต่อจากวินาทีที่" />
+                        onChange={(e) => setSunoField("continueAt", +e.target.value)} aria-label={t("ต่อจากวินาทีที่", "Continue from")} />
                     </div>
                   )}
                   <div className="rp-note">
                     {sunoTool === "cover" ? (
-                      <>คงทำนองเดิมไว้แล้วเรียบเรียงใหม่ตามสไตล์ที่พิมพ์ ได้ 2 เวอร์ชัน · เว้นเนื้อเพลงว่าง = ร้องตามเนื้อเดิม · ไฟล์ใหญ่เกิน 12 MB ระบบแปลงช่วงที่เลือกเป็น MP3 ให้เอง</>
+                      t(
+                        "คงทำนองเดิมไว้แล้วเรียบเรียงใหม่ตามสไตล์ที่พิมพ์ ได้ 2 เวอร์ชัน · เว้นเนื้อเพลงว่าง = ร้องตามเนื้อเดิม · ไฟล์ใหญ่เกิน 12 MB ระบบแปลงช่วงที่เลือกเป็น MP3 ให้เอง",
+                        "Keeps the tune and rearranges it in the style you typed; you get 2 versions · empty lyrics = sung with the original words · files over 12 MB: the selected part is converted to MP3 for you",
+                      )
                     ) : sunoTool === "extend" ? (
-                      <>เพลงต่อจากจุดที่เลือกด้วยสไตล์เดิม ได้ 2 เวอร์ชัน · ใส่เนื้อท่อนใหม่ในช่องเนื้อเพลงได้ · ใช้รุ่นเดียวกับที่ทำเพลงเดิมจะต่อได้เนียนที่สุด</>
+                      t(
+                        "เพลงต่อจากจุดที่เลือกด้วยสไตล์เดิม ได้ 2 เวอร์ชัน · ใส่เนื้อท่อนใหม่ในช่องเนื้อเพลงได้ · ใช้รุ่นเดียวกับที่ทำเพลงเดิมจะต่อได้เนียนที่สุด",
+                        "The song carries on from the point you pick in the same style; you get 2 versions · add new lyrics in the lyrics box · the same model version as the original joins most smoothly",
+                      )
                     ) : sunoTool === "add-vocals" ? (
-                      <>ใช้ดนตรีที่ไม่มีเสียงร้อง (เช่น ไฟล์ “ดนตรี” จากการแยกสเต็ม) · บอกแนวการร้องในช่องสไตล์ เลือกเสียงชาย/หญิงได้ที่ “เสียงร้อง”</>
+                      t(
+                        "ใช้ดนตรีที่ไม่มีเสียงร้อง (เช่น ไฟล์ “ดนตรี” จากการแยกสเต็ม) · บอกแนวการร้องในช่องสไตล์ เลือกเสียงชาย/หญิงได้ที่ “เสียงร้อง”",
+                        "Use music with no vocals (e.g. the “music” file from a stem split) · describe the singing in the style box; pick a male or female voice under “Vocals”",
+                      )
                     ) : sunoTool === "add-instrumental" ? (
-                      <>ใช้เสียงร้องเปล่าที่ไม่มีดนตรี (เช่น ไฟล์ “เสียงร้อง” จากการแยกสเต็ม) · บอกแนวดนตรีในช่องสไตล์</>
+                      t(
+                        "ใช้เสียงร้องเปล่าที่ไม่มีดนตรี (เช่น ไฟล์ “เสียงร้อง” จากการแยกสเต็ม) · บอกแนวดนตรีในช่องสไตล์",
+                        "Use a bare vocal with no music (e.g. the “vocals” file from a stem split) · describe the music in the style box",
+                      )
                     ) : sunoTool === "stems" ? (
-                      <>เพลงที่มิกซ์ชัด ๆ แยกได้สะอาดที่สุด · ได้ไฟล์ MP3 ตามรูปแบบที่เลือก เลือกโหลดเฉพาะไฟล์ที่ต้องการได้ · ทุกครั้งที่สั่งคิดเครดิตใหม่</>
+                      t(
+                        "เพลงที่มิกซ์ชัด ๆ แยกได้สะอาดที่สุด · ได้ไฟล์ MP3 ตามรูปแบบที่เลือก เลือกโหลดเฉพาะไฟล์ที่ต้องการได้ · ทุกครั้งที่สั่งคิดเครดิตใหม่",
+                        "A clean mix splits most cleanly · you get MP3 files in the split you chose and can download just the ones you want · every order is charged again",
+                      )
                     ) : (
-                      <>
-                        AI ถอดเฉพาะ<strong style={{ color: "#94a3b8" }}>ทำนอง</strong>ออกมาแล้วร้องใหม่ทั้งเพลง — เสียงร้องเดิมไม่ได้ถูกนำมาใช้
-                        ถ้าอยากได้คำร้องเดิม ให้พิมพ์ลงช่องเนื้อเพลง · ไฟล์ใหญ่เกิน 12 MB ระบบแปลงช่วงที่เลือกเป็น MP3 ให้เอง
-                      </>
+                      t(
+                        <>
+                          AI ถอดเฉพาะ<strong style={{ color: "#94a3b8" }}>ทำนอง</strong>ออกมาแล้วร้องใหม่ทั้งเพลง — เสียงร้องเดิมไม่ได้ถูกนำมาใช้
+                          ถ้าอยากได้คำร้องเดิม ให้พิมพ์ลงช่องเนื้อเพลง · ไฟล์ใหญ่เกิน 12 MB ระบบแปลงช่วงที่เลือกเป็น MP3 ให้เอง
+                        </>,
+                        <>
+                          The AI takes only the <strong style={{ color: "#94a3b8" }}>tune</strong> and sings the whole song again — the original vocals aren&apos;t used.
+                          For the original words, type them in the lyrics box · files over 12 MB: the selected part is converted to MP3 for you
+                        </>,
+                      )
                     )}
                   </div>
                 </>
@@ -3996,13 +4274,15 @@ export default function GeneratePage() {
           )}
 
           {/* ── Settings: the knobs, as chips where a glance should tell ── */}
-          <Field no={sectionNo(settingsAt)} label={tab === "speech" ? "เสียงผู้พูด" : "ตั้งค่า"}>
+          <Field no={sectionNo(settingsAt)} label={tab === "speech" ? t("เสียงผู้พูด", "Voice") : t("ตั้งค่า", "Settings")}>
             <div className="rp-sets">
               {/* The voices as cards: who speaks, in a word or two how. */}
               {speechRule && (
                 <div>
-                  <div className="rp-sub">เลือกเสียง · {speechRule.voices.length} เสียง</div>
-                  <div className="rp-voices rp-scroll" role="radiogroup" aria-label="เสียงผู้พูด">
+                  <div className="rp-sub">
+                    {t(`เลือกเสียง · ${speechRule.voices.length} เสียง`, `Choose a voice · ${speechRule.voices.length} ${speechRule.voices.length === 1 ? "voice" : "voices"}`)}
+                  </div>
+                  <div className="rp-voices rp-scroll" role="radiogroup" aria-label={t("เสียงผู้พูด", "Voice")}>
                     {speechRule.voices.map((v) => {
                       const [name, ...about] = v.label.split(" — ");
                       const on = activeVoice?.id === v.id;
@@ -4022,21 +4302,25 @@ export default function GeneratePage() {
               )}
               {speechRule?.style && (
                 <div>
-                  <div className="rp-sub">สไตล์การพูด (ไม่บังคับ)</div>
+                  <div className="rp-sub">{t("สไตล์การพูด (ไม่บังคับ)", "Speaking style (optional)")}</div>
                   <input className="rp-input rp-well" value={speechStyle} maxLength={300} onChange={(e) => setSpeechStyle(e.target.value)}
-                    aria-label="สไตล์การพูด" placeholder="เช่น พูดช้า ๆ น้ำเสียงอบอุ่น เหมือนเล่านิทานก่อนนอน" />
+                    aria-label={t("สไตล์การพูด", "Speaking style")}
+                    placeholder={t("เช่น พูดช้า ๆ น้ำเสียงอบอุ่น เหมือนเล่านิทานก่อนนอน", "e.g. slow and warm, like a bedtime story")} />
                 </div>
               )}
               {speechRule && priceTable && (
                 <div className="rp-note" style={{ marginTop: 0 }}>
-                  คิดเครดิตตามความยาวข้อความ · ✦ {kieQuote(priceTable, { chars: 1000 })} ต่อ 1,000 ตัวอักษร — ประโยคสั้นคิดตามจริง ขั้นต่ำ ✦ 1
+                  {t(
+                    `คิดเครดิตตามความยาวข้อความ · ✦ ${kieQuote(priceTable, { chars: 1000 })} ต่อ 1,000 ตัวอักษร — ประโยคสั้นคิดตามจริง ขั้นต่ำ ✦ 1`,
+                    `Billed by text length · ✦ ${kieQuote(priceTable, { chars: 1000 })} per 1,000 characters — short text is billed as it is, at least ✦ 1`,
+                  )}
                 </div>
               )}
               {/* Lip-sync has no aspect to choose: the result keeps the shape
                   of the clip or the portrait it was given. */}
               {tab !== "edit" && tab !== "lipsync" && tab !== "audio" && tab !== "speech" && !videoTool && (
                 <div>
-                  <div className="rp-sub">สัดส่วน</div>
+                  <div className="rp-sub">{t("สัดส่วน", "Aspect ratio")}</div>
                   <div className="rp-chips">
                     {aspectRatios
                       .filter(ar => tab !== "video" || VIDEO_ASPECTS.includes(ar.value))
@@ -4061,11 +4345,11 @@ export default function GeneratePage() {
                   was never a length anyone received, only where the song got cut. */}
               {((tab === "video" && !videoTool) || (tab === "audio" && !musicOpts?.autoLength)) && (
                 <div>
-                  <div className="rp-sub">ความยาว</div>
+                  <div className="rp-sub">{t("ความยาว", "Length")}</div>
                   <div className="rp-chips">
                     {durationChoices.map(d => (
                       <button key={d} type="button" className="rp-chip rp-raised" data-on={duration === d ? "true" : "false"} onClick={() => setDuration(d)}>
-                        {tab === "audio" && d >= 60 && d % 60 === 0 ? `${d / 60} นาที` : `${d}s`}
+                        {tab === "audio" && d >= 60 && d % 60 === 0 ? t(`${d / 60} นาที`, `${d / 60} min`) : `${d}s`}
                         {/* Priced by length: say so before the order, not on the receipt. */}
                         {(selectedModel?.durationCurve || priceTable?.durations) && <small>✦ {creditsFor(d)}</small>}
                       </button>
@@ -4078,7 +4362,7 @@ export default function GeneratePage() {
                   would take payment for images it never renders. */}
               {tab === "image" && selectedModel?.maxOutputs !== 1 && (
                 <div>
-                  <div className="rp-sub">จำนวน</div>
+                  <div className="rp-sub">{t("จำนวน", "How many")}</div>
                   <div className="rp-chips">
                     {[1, 2, 3, 4].map(n => (
                       <button key={n} type="button" className="rp-chip rp-raised" data-on={numOutputs === n ? "true" : "false"}
@@ -4092,7 +4376,7 @@ export default function GeneratePage() {
                   for this aspect ratio (H3: 768p / 720p / 544p on 16:9). */}
               {resolutionChoices.length > 1 && (
                 <div>
-                  <div className="rp-sub">ความละเอียด</div>
+                  <div className="rp-sub">{t("ความละเอียด", "Resolution")}</div>
                   <div className="rp-chips">
                     {resolutionChoices.map(r => (
                       <button key={r.id} type="button" className="rp-chip rp-raised" data-on={activeResolution?.id === r.id ? "true" : "false"}
@@ -4101,7 +4385,7 @@ export default function GeneratePage() {
                         {priceTable && (
                           <small>
                             ✦ {videoTool
-                              ? toolSeconds !== null ? creditsFor(toolSeconds, r.id) : `${creditsFor(1, r.id)}/วินาที`
+                              ? toolSeconds !== null ? creditsFor(toolSeconds, r.id) : `${creditsFor(1, r.id)}/${t("วินาที", "s")}`
                               : creditsFor(duration, r.id)}
                           </small>
                         )}
@@ -4116,16 +4400,16 @@ export default function GeneratePage() {
                   multiplier, and the button's total already includes it. */}
               {qualityModes && qualityModes.length > 1 && (
                 <div>
-                  <div className="rp-sub">{sunoTool === "stems" ? "รูปแบบการแยก" : sunoTool ? "รุ่นโมเดล" : "คุณภาพ"}</div>
+                  <div className="rp-sub">{sunoTool === "stems" ? t("รูปแบบการแยก", "Split") : sunoTool ? t("รุ่นโมเดล", "Model version") : t("คุณภาพ", "Quality")}</div>
                   <div className="rp-chips">
                     {qualityModes.map((m) => (
                       <button key={m.id} type="button" className="rp-chip rp-raised" data-on={activeQuality?.id === m.id ? "true" : "false"}
                         title={m.description} onClick={() => setQualityId(m.id)}>
-                        {m.label}{m.adminOnly ? " · ทดลอง (เห็นเฉพาะแอดมิน)" : ""}
+                        {m.label}{m.adminOnly ? t(" · ทดลอง (เห็นเฉพาะแอดมิน)", " · trial (admins only)") : ""}
                         <small>
                           {priceTable
                             ? `✦ ${creditsFor(tab === "video" ? duration : null, m.id)}`
-                            : m.creditsMultiplier === 1 ? "ราคาปกติ" : `×${m.creditsMultiplier} เครดิต`}
+                            : m.creditsMultiplier === 1 ? t("ราคาปกติ", "Standard price") : t(`×${m.creditsMultiplier} เครดิต`, `×${m.creditsMultiplier} credits`)}
                         </small>
                       </button>
                     ))}
@@ -4137,7 +4421,7 @@ export default function GeneratePage() {
               {/* "ดึงชิ้นเดียว": which instrument comes out (and the song without it). */}
               {stemTier === "one" && sunoOpts?.stems && (
                 <div>
-                  <div className="rp-sub">ดึงชิ้นไหน · ได้ไฟล์ชิ้นนั้นล้วน และเพลงที่ไม่มีชิ้นนั้น</div>
+                  <div className="rp-sub">{t("ดึงชิ้นไหน · ได้ไฟล์ชิ้นนั้นล้วน และเพลงที่ไม่มีชิ้นนั้น", "Which part · you get that part alone, and the song without it")}</div>
                   <div className="rp-chips rp-scroll" style={{ maxHeight: 132, overflowY: "auto" }}>
                     {sunoOpts.stems.map((x) => (
                       <button key={x.id} type="button" className="rp-chip rp-raised" data-on={activeStem?.id === x.id ? "true" : "false"}
@@ -4152,27 +4436,27 @@ export default function GeneratePage() {
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                   <label className="rp-check" style={{ fontSize: 12 }}>
                     <input type="checkbox" checked={suno.loop === true} onChange={(e) => setSunoField("loop", e.target.checked || undefined)} />
-                    วนลูปไร้รอยต่อ (ต่อหัวต่อท้ายได้พอดี)
+                    {t("วนลูปไร้รอยต่อ (ต่อหัวต่อท้ายได้พอดี)", "Seamless loop (the end joins the start)")}
                   </label>
                   <div>
                     <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 11, color: "#94a3b8", marginBottom: 6, cursor: "pointer" }}>
                       <input type="checkbox" checked={suno.tempo !== undefined}
                         onChange={(e) => setSunoField("tempo", e.target.checked ? 100 : undefined)} />
-                      กำหนดจังหวะเอง {suno.tempo === undefined && <span style={{ color: "#64748b" }}>(ปล่อยให้ AI เลือก)</span>}
+                      {t("กำหนดจังหวะเอง", "Set the tempo")} {suno.tempo === undefined && <span style={{ color: "#64748b" }}>{t("(ปล่อยให้ AI เลือก)", "(AI picks)")}</span>}
                     </label>
                     {suno.tempo !== undefined && (
-                      <StyleSlider label="จังหวะ" value={suno.tempo} min={40} max={220} step={1}
+                      <StyleSlider label={t("จังหวะ", "Tempo")} value={suno.tempo} min={40} max={220} step={1}
                         format={(v) => `${v} BPM`} onChange={(v) => setSunoField("tempo", v)} />
                     )}
                   </div>
                   {sunoOpts?.keys && (
                     <div>
-                      <div className="rp-sub">คีย์</div>
+                      <div className="rp-sub">{t("คีย์", "Key")}</div>
                       <div className="rp-chips rp-scroll" style={{ maxHeight: 96, overflowY: "auto" }}>
                         {sunoOpts.keys.map((k) => (
                           <button key={k} type="button" className="rp-chip rp-raised rp-mono"
                             data-on={(suno.key ?? "Any") === k ? "true" : "false"}
-                            onClick={() => setSunoField("key", k === "Any" ? undefined : k)}>{k === "Any" ? "อัตโนมัติ" : k}</button>
+                            onClick={() => setSunoField("key", k === "Any" ? undefined : k)}>{k === "Any" ? t("อัตโนมัติ", "Auto") : k}</button>
                         ))}
                       </div>
                     </div>
@@ -4185,7 +4469,7 @@ export default function GeneratePage() {
               <div className="rp-poprow">
                 {/* The image styles are about pictures — none reaches a music model. */}
                 {stylesLoaded && styles.length > 0 && tab !== "edit" && tab !== "audio" && (
-                  <Popover id="style" open={openPanel} onToggle={setOpenPanel} label="สไตล์"
+                  <Popover id="style" open={openPanel} onToggle={setOpenPanel} label={t("สไตล์", "Style")}
                     value={selectedStyle ? (styles.find(s => s.id === selectedStyle)?.name ?? "") : "—"} width={300}>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6 }}>
                       {styles.slice(0, 12).map(s => (
@@ -4208,96 +4492,99 @@ export default function GeneratePage() {
                     different moments. Every chip ends up in the model's `[Tags]`
                     line; the two sliders do not, they are real node inputs. */}
                 {musicOpts?.controls && (
-                  <Popover id="genre" open={openPanel} onToggle={setOpenPanel} label="แนวเพลง"
-                    value={MUSIC_GENRES.find((g) => g.id === musicStyle.genre)?.label ?? "อิสระ"} width={320}>
+                  <Popover id="genre" open={openPanel} onToggle={setOpenPanel} label={t("แนวเพลง", "Genre")}
+                    value={t(MUSIC_GENRES.find((g) => g.id === musicStyle.genre)?.label ?? ANY)} width={320}>
                     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                      <ChipRow label="แนวเพลง" options={MUSIC_GENRES} value={musicStyle.genre}
+                      <ChipRow label={t("แนวเพลง", "Genre")} options={MUSIC_GENRES} value={musicStyle.genre}
                         onChange={(v) => setMusicField("genre", v as string | undefined)}
-                        hint="กดซ้ำเพื่อยกเลิก" />
-                      <ChipRow label="ภาษาที่ร้อง" options={MUSIC_LANGUAGES} value={musicStyle.language}
+                        hint={t("กดซ้ำเพื่อยกเลิก", "Tap again to clear")} />
+                      <ChipRow label={t("ภาษาที่ร้อง", "Sung in")} options={MUSIC_LANGUAGES} value={musicStyle.language}
                         disabled={instrumental}
                         onChange={(v) => setMusicField("language", v as string | undefined)} />
-                      <ChipRow label="อารมณ์" options={MUSIC_MOODS} value={musicStyle.moods ?? []} max={3}
+                      <ChipRow label={t("อารมณ์", "Mood")} options={MUSIC_MOODS} value={musicStyle.moods ?? []} max={3}
                         onChange={(v) => setMusicField("moods", v as string[] | undefined)}
-                        hint={`เลือกได้ ${musicStyle.moods?.length ?? 0}/3`} />
+                        hint={t(`เลือกได้ ${musicStyle.moods?.length ?? 0}/3`, `${musicStyle.moods?.length ?? 0}/3 picked`)} />
                     </div>
                   </Popover>
                 )}
 
                 {musicOpts?.controls && (
-                  <Popover id="voice" open={openPanel} onToggle={setOpenPanel} label="เสียงร้อง"
-                    value={instrumental ? "บรรเลง" : MUSIC_VOCALS.find((v) => v.id === musicStyle.vocal)?.label ?? "อิสระ"}
+                  <Popover id="voice" open={openPanel} onToggle={setOpenPanel} label={t("เสียงร้อง", "Vocals")}
+                    value={instrumental ? t("บรรเลง", "Instrumental") : t(MUSIC_VOCALS.find((v) => v.id === musicStyle.vocal)?.label ?? ANY)}
                     width={300}>
                     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                       {instrumental && (
                         <div style={{ fontSize: 11, color: "#fbbf24", lineHeight: 1.5 }}>
-                          เปิดโหมดเพลงบรรเลงอยู่ — ตัวเลือกเสียงร้องถูกปิดไว้ ปลดได้ที่ช่องเนื้อเพลง
+                          {t("เปิดโหมดเพลงบรรเลงอยู่ — ตัวเลือกเสียงร้องถูกปิดไว้ ปลดได้ที่ช่องเนื้อเพลง", "Instrumental is on — vocal options are off. Turn it off in the lyrics box.")}
                         </div>
                       )}
-                      <ChipRow label="ผู้ร้อง" options={MUSIC_VOCALS} value={musicStyle.vocal} disabled={instrumental}
+                      <ChipRow label={t("ผู้ร้อง", "Singer")} options={MUSIC_VOCALS} value={musicStyle.vocal} disabled={instrumental}
                         onChange={(v) => setMusicField("vocal", v as string | undefined)} />
-                      <ChipRow label="ช่วงวัย" options={MUSIC_AGES} value={musicStyle.age} disabled={instrumental}
+                      <ChipRow label={t("ช่วงวัย", "Age")} options={MUSIC_AGES} value={musicStyle.age} disabled={instrumental}
                         onChange={(v) => setMusicField("age", v as string | undefined)} />
-                      <ChipRow label="ลักษณะเสียง" options={MUSIC_TIMBRES} value={musicStyle.timbre} disabled={instrumental}
+                      <ChipRow label={t("ลักษณะเสียง", "Voice quality")} options={MUSIC_TIMBRES} value={musicStyle.timbre} disabled={instrumental}
                         onChange={(v) => setMusicField("timbre", v as string | undefined)} />
                     </div>
                   </Popover>
                 )}
 
                 {sunoTool && sunoTool !== "stems" && sunoTool !== "sounds" && (
-                  <Popover id="suno" open={openPanel} onToggle={setOpenPanel} label="ปรับละเอียด"
+                  <Popover id="suno" open={openPanel} onToggle={setOpenPanel} label={t("ปรับละเอียด", "Fine-tune")}
                     value={sunoSummary}
                     width={330} align="right">
                     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                       {sunoTool === "song" && !instrumentalOn && !lyrics.trim() && (
                         <div style={{ fontSize: 11, color: "#fbbf24", lineHeight: 1.5 }}>
-                          ตอนนี้ AI แต่งเนื้อให้เอง — ความยาว น้ำหนัก และความหลากหลายใช้ได้เมื่อใส่เนื้อเพลงเองหรือเลือกเพลงบรรเลง
+                          {t(
+                            "ตอนนี้ AI แต่งเนื้อให้เอง — ความยาว น้ำหนัก และความหลากหลายใช้ได้เมื่อใส่เนื้อเพลงเองหรือเลือกเพลงบรรเลง",
+                            "The AI is writing the lyrics — length, weights and variety apply once you add your own lyrics or choose instrumental",
+                          )}
                         </div>
                       )}
                       <div>
-                        <div className="rp-sub">ชื่อเพลง</div>
+                        <div className="rp-sub">{t("ชื่อเพลง", "Song title")}</div>
                         <input className="rp-input rp-well" value={suno.title ?? ""} maxLength={80}
                           onChange={(e) => setSunoField("title", e.target.value || undefined)}
-                          placeholder="เว้นว่าง = ใช้คำแรกของสไตล์เพลง" aria-label="ชื่อเพลง" />
+                          placeholder={t("เว้นว่าง = ใช้คำแรกของสไตล์เพลง", "Empty = the first words of the style")} aria-label={t("ชื่อเพลง", "Song title")} />
                       </div>
                       <div>
-                        <div className="rp-sub">ไม่เอาแนว / เสียงแบบนี้</div>
+                        <div className="rp-sub">{t("ไม่เอาแนว / เสียงแบบนี้", "Avoid these styles / sounds")}</div>
                         <input className="rp-input rp-well" value={suno.exclude ?? ""} maxLength={500}
                           onChange={(e) => setSunoField("exclude", e.target.value || undefined)}
-                          placeholder="เช่น heavy metal, autotune, เสียงแหลม" aria-label="ไม่เอาแนว" />
+                          placeholder={t("เช่น heavy metal, autotune, เสียงแหลม", "e.g. heavy metal, autotune, shrill vocals")} aria-label={t("ไม่เอาแนว", "Avoid")} />
                       </div>
                       {sunoTool === "song" && (
                         <div>
-                          <div className="rp-sub">ความยาวเพลง</div>
+                          <div className="rp-sub">{t("ความยาวเพลง", "Song length")}</div>
                           <div className="rp-chips">
                             <button type="button" className="rp-chip rp-raised" data-on={suno.length === undefined ? "true" : "false"}
-                              onClick={() => setSunoField("length", undefined)}>อัตโนมัติ</button>
+                              onClick={() => setSunoField("length", undefined)}>{t("อัตโนมัติ", "Auto")}</button>
                             {SUNO_LENGTHS.map((sec) => (
                               <button key={sec} type="button" className="rp-chip rp-raised" data-on={suno.length === sec ? "true" : "false"}
-                                onClick={() => setSunoField("length", sec)}>{sec < 60 ? `${sec} วิ` : `${sec / 60} นาที`}</button>
+                                onClick={() => setSunoField("length", sec)}>{sec < 60 ? t(`${sec} วิ`, `${sec} s`) : t(`${sec / 60} นาที`, `${sec / 60} min`)}</button>
                             ))}
                           </div>
                         </div>
                       )}
                       <div>
-                        <div className="rp-sub">ความหลากหลายของ 2 เวอร์ชัน</div>
+                        <div className="rp-sub">{t("ความหลากหลายของ 2 เวอร์ชัน", "How different the 2 versions are")}</div>
                         <div className="rp-chips">
                           {SUNO_VARIETY.map((label, i) => (
-                            <button key={label} type="button" className="rp-chip rp-raised"
+                            <button key={label.en} type="button" className="rp-chip rp-raised"
                               data-on={(suno.variety ?? 1) === i ? "true" : "false"}
-                              onClick={() => setSunoField("variety", i === 1 ? undefined : i)}>{label}</button>
+                              onClick={() => setSunoField("variety", i === 1 ? undefined : i)}>{t(label)}</button>
                           ))}
                         </div>
                       </div>
-                      <StyleSlider label="ยึดตามสไตล์ที่พิมพ์" value={suno.styleWeight ?? 0.5} min={0} max={1} step={0.05}
-                        format={(v) => (suno.styleWeight === undefined ? "อัตโนมัติ" : `${Math.round(v * 100)}%`)}
+                      <StyleSlider label={t("ยึดตามสไตล์ที่พิมพ์", "Follow the typed style")} value={suno.styleWeight ?? 0.5} min={0} max={1} step={0.05}
+                        format={(v) => (suno.styleWeight === undefined ? t("อัตโนมัติ", "Auto") : `${Math.round(v * 100)}%`)}
                         onChange={(v) => setSunoField("styleWeight", v)} />
-                      <StyleSlider label="ความแหวกแนว" value={suno.weirdness ?? 0.5} min={0} max={1} step={0.05}
-                        format={(v) => (suno.weirdness === undefined ? "อัตโนมัติ" : `${Math.round(v * 100)}%`)}
+                      <StyleSlider label={t("ความแหวกแนว", "Weirdness")} value={suno.weirdness ?? 0.5} min={0} max={1} step={0.05}
+                        format={(v) => (suno.weirdness === undefined ? t("อัตโนมัติ", "Auto") : `${Math.round(v * 100)}%`)}
                         onChange={(v) => setSunoField("weirdness", v)} />
                       {!instrumentalOn && sunoTool !== "song" && (
-                        <StyleSlider label="ยึดตามเสียงต้นฉบับ" value={suno.audioWeight ?? 0.5} min={0} max={1} step={0.05}
-                          format={(v) => (suno.audioWeight === undefined ? "อัตโนมัติ" : `${Math.round(v * 100)}%`)}
+                        <StyleSlider label={t("ยึดตามเสียงต้นฉบับ", "Follow the original audio")} value={suno.audioWeight ?? 0.5} min={0} max={1} step={0.05}
+                          format={(v) => (suno.audioWeight === undefined ? t("อัตโนมัติ", "Auto") : `${Math.round(v * 100)}%`)}
                           onChange={(v) => setSunoField("audioWeight", v)} />
                       )}
                       <button type="button" onClick={() => setSuno((c) => ({ continueAt: c.continueAt, stem: c.stem }))}
@@ -4305,19 +4592,19 @@ export default function GeneratePage() {
                           padding: "7px 0", borderRadius: 8, fontSize: 11.5, fontFamily: "inherit", cursor: "pointer",
                           background: "rgba(255,255,255,0.04)", color: "#94a3b8", border: "1px solid rgba(255,255,255,0.08)",
                         }}>
-                        กลับเป็นอัตโนมัติทั้งหมด
+                        {t("กลับเป็นอัตโนมัติทั้งหมด", "Reset all to auto")}
                       </button>
                     </div>
                   </Popover>
                 )}
 
                 {musicOpts?.controls && (
-                  <Popover id="arrange" open={openPanel} onToggle={setOpenPanel} label="ดนตรี"
-                    value={musicComplexity(musicStyle.complexity).label} width={320} align="right">
+                  <Popover id="arrange" open={openPanel} onToggle={setOpenPanel} label={t("ดนตรี", "Music")}
+                    value={t(musicComplexity(musicStyle.complexity).label)} width={320} align="right">
                     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                      <ChipRow label="เครื่องดนตรี" options={MUSIC_INSTRUMENTS} value={musicStyle.instruments ?? []} max={6}
+                      <ChipRow label={t("เครื่องดนตรี", "Instruments")} options={MUSIC_INSTRUMENTS} value={musicStyle.instruments ?? []} max={6}
                         onChange={(v) => setMusicField("instruments", v as string[] | undefined)}
-                        hint={`เลือกได้ ${musicStyle.instruments?.length ?? 0}/6`} />
+                        hint={t(`เลือกได้ ${musicStyle.instruments?.length ?? 0}/6`, `${musicStyle.instruments?.length ?? 0}/6 picked`)} />
 
                       {/* Tempo is off by default: an unasked-for BPM is a
                           constraint the model did not need, and a wrong one
@@ -4326,10 +4613,10 @@ export default function GeneratePage() {
                         <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 11, color: "#94a3b8", marginBottom: 6, cursor: "pointer" }}>
                           <input type="checkbox" checked={musicStyle.bpm !== undefined}
                             onChange={(e) => setMusicField("bpm", e.target.checked ? 100 : undefined)} />
-                          กำหนดจังหวะเอง {musicStyle.bpm === undefined && <span style={{ color: "#64748b" }}>(ปล่อยให้ AI เลือก)</span>}
+                          {t("กำหนดจังหวะเอง", "Set the tempo")} {musicStyle.bpm === undefined && <span style={{ color: "#64748b" }}>{t("(ปล่อยให้ AI เลือก)", "(AI picks)")}</span>}
                         </label>
                         {musicStyle.bpm !== undefined && (
-                          <StyleSlider label="จังหวะ" value={musicStyle.bpm} min={MUSIC_BPM_MIN} max={MUSIC_BPM_MAX} step={2}
+                          <StyleSlider label={t("จังหวะ", "Tempo")} value={musicStyle.bpm} min={MUSIC_BPM_MIN} max={MUSIC_BPM_MAX} step={2}
                             format={(v) => `${v} BPM`} onChange={(v) => setMusicField("bpm", v)} />
                         )}
                       </div>
@@ -4337,14 +4624,14 @@ export default function GeneratePage() {
                       {/* Real node inputs, not tags: density picks YuE2's `mode`
                           (chord-annotated score vs melody only) and variety is
                           its sampling temperature. */}
-                      <StyleSlider label="ความซับซ้อนของดนตรี" value={musicStyle.complexity ?? MUSIC_COMPLEXITY_DEFAULT}
+                      <StyleSlider label={t("ความซับซ้อนของดนตรี", "Arrangement density")} value={musicStyle.complexity ?? MUSIC_COMPLEXITY_DEFAULT}
                         min={1} max={5} step={1}
-                        format={(v) => musicComplexity(v).label}
+                        format={(v) => t(musicComplexity(v).label)}
                         onChange={(v) => setMusicField("complexity", v)} />
 
-                      {!sunoTool && <StyleSlider label="ความแปลกใหม่" value={musicStyle.variance ?? MUSIC_VARIANCE_DEFAULT}
+                      {!sunoTool && <StyleSlider label={t("ความแปลกใหม่", "Variety")} value={musicStyle.variance ?? MUSIC_VARIANCE_DEFAULT}
                         min={MUSIC_VARIANCE_MIN} max={MUSIC_VARIANCE_MAX} step={0.05}
-                        format={(v) => (v < 0.85 ? `ปลอดภัย ${v.toFixed(2)}` : v > 1.15 ? `กล้าเสี่ยง ${v.toFixed(2)}` : `สมดุล ${v.toFixed(2)}`)}
+                        format={(v) => `${v < 0.85 ? t("ปลอดภัย", "Safe") : v > 1.15 ? t("กล้าเสี่ยง", "Daring") : t("สมดุล", "Balanced")} ${v.toFixed(2)}`}
                         onChange={(v) => setMusicField("variance", v)} />}
 
                       <button type="button"
@@ -4353,7 +4640,7 @@ export default function GeneratePage() {
                           padding: "7px 0", borderRadius: 8, fontSize: 11.5, fontFamily: "inherit", cursor: "pointer",
                           background: "rgba(255,255,255,0.04)", color: "#94a3b8", border: "1px solid rgba(255,255,255,0.08)",
                         }}>
-                        ล้างตัวเลือกทั้งหมด
+                        {t("ล้างตัวเลือกทั้งหมด", "Clear all choices")}
                       </button>
                     </div>
                   </Popover>
@@ -4362,7 +4649,7 @@ export default function GeneratePage() {
                 {/* Video keeps this panel too — steps and guidance mean nothing
                     to a video endpoint, but seed does, and locking the whole
                     panel away took reproducible clips with it. */}
-                <Popover id="advanced" open={openPanel} onToggle={setOpenPanel} label="⚙ ขั้นสูง" width={300} align="right">
+                <Popover id="advanced" open={openPanel} onToggle={setOpenPanel} label={t("⚙ ขั้นสูง", "⚙ Advanced")} width={300} align="right">
                   <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
                     {/* The music model is a distilled turbo: its step count is
                         fixed server-side, and more steps only slow it and smear it. */}
@@ -4390,7 +4677,7 @@ export default function GeneratePage() {
                       <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 6 }}>Seed</div>
                       <div style={{ display: "flex", gap: 6 }}>
                         <input type="number" value={seed ?? ""} onChange={(e) => setSeed(e.target.value ? +e.target.value : null)}
-                          placeholder="auto" style={{ ...xdrInputStyle, flex: 1, padding: 10, fontFamily: "ui-monospace,monospace" }} />
+                          placeholder={t("อัตโนมัติ", "auto")} style={{ ...xdrInputStyle, flex: 1, padding: 10, fontFamily: "ui-monospace,monospace" }} />
                         <button type="button" onClick={() => setSeed(Math.floor(Math.random() * 99999))}
                           style={{ padding: "0 12px", borderRadius: 10, background: "rgba(255,255,255,0.05)", color: "#94a3b8", border: "1px solid rgba(255,255,255,0.1)", cursor: "pointer" }}>↻</button>
                       </div>
@@ -4412,24 +4699,27 @@ export default function GeneratePage() {
               rather than letting it look broken. */}
           {selectedModel?.canOrder === false && (
             <div className="rp-warn">
-              {selectedModel.unavailableReason ?? selectedModel.tuningMessage ?? "โมเดลนี้ยังใช้งานไม่ได้ในขณะนี้ กรุณาลองใหม่ภายหลัง"}
+              {selectedModel.unavailableReason ?? selectedModel.tuningMessage ?? t("โมเดลนี้ยังใช้งานไม่ได้ในขณะนี้ กรุณาลองใหม่ภายหลัง", "This model isn't available right now. Please try again later.")}
             </div>
           )}
-          {loadingInputs && <div className="rp-info">กำลังโหลดไฟล์แนบของงานเดิม…</div>}
-          {missingStartFrame && !loadingInputs && <div className="rp-warn">โหมด “ภาพ → วิดีโอ” ต้องอัปโหลดภาพเริ่มต้นก่อน</div>}
+          {loadingInputs && <div className="rp-info">{t("กำลังโหลดไฟล์แนบของงานเดิม…", "Loading the earlier order's files…")}</div>}
+          {missingStartFrame && !loadingInputs && <div className="rp-warn">{t("โหมด “ภาพ → วิดีโอ” ต้องอัปโหลดภาพเริ่มต้นก่อน", "“Image → video” needs a start frame first")}</div>}
           {missingToolText && !loadingInputs && uploading !== "video" && <div className="rp-warn">{missingToolText}</div>}
           {speechTooLong && speechRule && (
             <div className="rp-warn">
-              ข้อความยาว {speechLength.toLocaleString()} ตัวอักษร — โมเดลนี้อ่านได้ครั้งละไม่เกิน {speechRule.maxChars.toLocaleString()} ตัวอักษร ตัดให้สั้นลงหรือแบ่งเป็นหลายงาน
+              {t(
+                `ข้อความยาว ${formatNumber(speechLength, locale)} ตัวอักษร — โมเดลนี้อ่านได้ครั้งละไม่เกิน ${formatNumber(speechRule.maxChars, locale)} ตัวอักษร ตัดให้สั้นลงหรือแบ่งเป็นหลายงาน`,
+                `The text is ${formatNumber(speechLength, locale)} characters — this model reads up to ${formatNumber(speechRule.maxChars, locale)} at a time. Shorten it or split it into several orders.`,
+              )}
             </div>
           )}
           {missingLipsyncInput && !loadingInputs && (
             <div className="rp-warn">
               {!hasAudio
-                ? "ต้องอัปโหลดไฟล์เสียงที่จะให้พูดก่อน"
+                ? t("ต้องอัปโหลดไฟล์เสียงที่จะให้พูดก่อน", "Upload the audio to be spoken first")
                 : lipsyncNeeds === "image"
-                  ? "ต้องอัปโหลดรูปหน้าคนที่จะให้พูดก่อน"
-                  : "ต้องอัปโหลดคลิปต้นฉบับที่จะพากย์ทับก่อน"}
+                  ? t("ต้องอัปโหลดรูปหน้าคนที่จะให้พูดก่อน", "Upload a photo of the face that will speak first")
+                  : t("ต้องอัปโหลดคลิปต้นฉบับที่จะพากย์ทับก่อน", "Upload the clip to re-dub first")}
             </div>
           )}
         </div>
@@ -4443,30 +4733,45 @@ export default function GeneratePage() {
               read fresh there — so the button is not locked by this. */}
           {shortOfCredits && (
             <div className="rp-short">
-              เครดิตไม่พอสำหรับงานนี้ — ต้องใช้ {totalCredits.toLocaleString()} มีอยู่ {creditBalance.toLocaleString()}{" "}
-              <a href="/pricing">เติมเครดิต →</a>
+              {t(
+                `เครดิตไม่พอสำหรับงานนี้ — ต้องใช้ ${formatNumber(totalCredits, locale)} มีอยู่ ${formatNumber(creditBalance, locale)}`,
+                `Not enough credits for this — it needs ${formatNumber(totalCredits, locale)} and you have ${formatNumber(creditBalance, locale)}`,
+              )}{" "}
+              <a href="/pricing">{t("เติมเครดิต →", "Top up →")}</a>
             </div>
           )}
           <div className="rp-osum">
-            <span>คงเหลือ <b>{creditBalance.toLocaleString()}</b> เครดิต</span>
-            <a href="/pricing">+ เติมเครดิต</a>
+            <span>
+              {t(
+                <>คงเหลือ <b>{formatNumber(creditBalance, locale)}</b> เครดิต</>,
+                <><b>{formatNumber(creditBalance, locale)}</b> {creditBalance === 1 ? "credit" : "credits"} left</>,
+              )}
+            </span>
+            <a href="/pricing">{t("+ เติมเครดิต", "+ Top up")}</a>
           </div>
           <button type="button" className="rp-go" onClick={() => handleGenerate()} disabled={cannotSubmit}>
             {runningJobs >= MAX_PARALLEL_JOBS ? (
-              <span className="rp-go-label" style={{ fontSize: 14 }}>⟳ กำลังสร้าง {runningJobs} งาน — รอให้เสร็จก่อน</span>
+              <span className="rp-go-label" style={{ fontSize: 14 }}>
+                {t(`⟳ กำลังสร้าง ${runningJobs} งาน — รอให้เสร็จก่อน`, `⟳ Creating ${runningJobs} — wait for one to finish`)}
+              </span>
             ) : (
               <>
-                <span className="rp-go-label">ทอ</span>
-                <span className="rp-gop">✦ {outputs > 1 ? `${outputs} ภาพ · ` : ""}{totalCredits || "—"} เครดิต</span>
+                <span className="rp-go-label">{t("ทอ", "Weave")}</span>
+                <span className="rp-gop">
+                  ✦ {outputs > 1 ? t(`${outputs} ภาพ · `, `${outputs} images · `) : ""}{totalCredits || "—"} {t("เครดิต", totalCredits === 1 ? "credit" : "credits")}
+                </span>
               </>
             )}
           </button>
           <div className="rp-onote">
             {runningJobs >= MAX_PARALLEL_JOBS
-              ? "รอให้งานใดงานหนึ่งเสร็จก่อน แล้วค่อยสั่งเพิ่ม"
+              ? t("รอให้งานใดงานหนึ่งเสร็จก่อน แล้วค่อยสั่งเพิ่ม", "Wait for one to finish, then order another")
               : runningJobs > 0
-                ? `กำลังสร้างอยู่ ${runningJobs} งาน · สั่งเพิ่มได้อีก ${MAX_PARALLEL_JOBS - runningJobs} งาน`
-                : `ทำพร้อมกันได้ ${MAX_PARALLEL_JOBS} งาน · Ctrl/⌘ + Enter = ทอ`}
+                ? t(
+                    `กำลังสร้างอยู่ ${runningJobs} งาน · สั่งเพิ่มได้อีก ${MAX_PARALLEL_JOBS - runningJobs} งาน`,
+                    `Creating ${runningJobs} · room for ${MAX_PARALLEL_JOBS - runningJobs} more`,
+                  )
+                : t(`ทำพร้อมกันได้ ${MAX_PARALLEL_JOBS} งาน · Ctrl/⌘ + Enter = ทอ`, `Up to ${MAX_PARALLEL_JOBS} at once · Ctrl/⌘ + Enter = Weave`)}
           </div>
         </div>
       </section>
@@ -4477,7 +4782,7 @@ export default function GeneratePage() {
             Orders render side by side (up to MAX_PARALLEL_JOBS); the canvas
             shows the one picked here. */}
         {jobs.length > 0 && (
-          <div className="rp-tray rp-scroll" role="list" aria-label="งานที่สั่ง">
+          <div className="rp-tray rp-scroll" role="list" aria-label={t("งานที่สั่ง", "Your orders")}>
             {jobs.map((j) => {
               const on = j.id === focusId;
               const fraction = j.status === "running" && j.progress?.stage === "rendering" ? shownFraction(j.progress, j.progress.at) : null;
@@ -4485,7 +4790,7 @@ export default function GeneratePage() {
               const isAudio = j.tab === "audio" || j.tab === "speech" || AUDIO_EXT.test(thumb ?? "");
               const isVideoThumb = !isAudio && (j.tab === "video" || j.tab === "lipsync" || /\.(mp4|webm|mov)(\?|$)/i.test(thumb ?? ""));
               return (
-                <button key={j.id} type="button" role="listitem" onClick={() => focusJob(j)} title={j.prompt || "งานลิปซิงค์"}
+                <button key={j.id} type="button" role="listitem" onClick={() => focusJob(j)} title={j.prompt || t("งานลิปซิงค์", "Lip-sync order")}
                   className="rp-tray-item" data-active={on ? "true" : "false"} data-status={j.status}>
                   <span className="rp-tray-thumb">
                     {j.status === "completed" && thumb && !isAudio ? (
@@ -4504,13 +4809,14 @@ export default function GeneratePage() {
                     )}
                   </span>
                   <span className="rp-tray-text">
-                    <span className="rp-tray-prompt">{j.prompt || "ลิปซิงค์"}</span>
+                    <span className="rp-tray-prompt">{j.prompt || t("ลิปซิงค์", "Lip sync")}</span>
                     <span className="rp-tray-state">
-                      {j.status === "completed" ? "เสร็จแล้ว"
-                        : j.status === "failed" ? "ไม่สำเร็จ · คืนเครดิต"
-                          : j.id < 0 ? "กำลังส่ง…"
-                            : j.progress?.stage === "queued" && (j.progress.position ?? 0) > 0 ? `รอคิว ${j.progress.position}`
-                              : fraction != null ? `กำลังสร้าง ${Math.floor(fraction * 100)}%` : "กำลังสร้าง…"}
+                      {j.status === "completed" ? t("เสร็จแล้ว", "Done")
+                        : j.status === "failed" ? t("ไม่สำเร็จ · คืนเครดิต", "Failed · refunded")
+                          : j.id < 0 ? t("กำลังส่ง…", "Sending…")
+                            : j.progress?.stage === "queued" && (j.progress.position ?? 0) > 0
+                              ? t(`รอคิว ${j.progress.position}`, `Queued #${j.progress.position}`)
+                              : fraction != null ? t(`กำลังสร้าง ${Math.floor(fraction * 100)}%`, `Creating ${Math.floor(fraction * 100)}%`) : t("กำลังสร้าง…", "Creating…")}
                     </span>
                   </span>
                 </button>
@@ -4519,7 +4825,7 @@ export default function GeneratePage() {
             {jobs.some((j) => j.status !== "running") && (
               <button type="button" className="rp-tray-clear"
                 onClick={() => setJobs((js) => js.filter((j) => j.status === "running" || j.id === focusId))}>
-                ล้างที่เสร็จแล้ว
+                {t("ล้างที่เสร็จแล้ว", "Clear finished")}
               </button>
             )}
           </div>
@@ -4529,19 +4835,23 @@ export default function GeneratePage() {
           <span className="rp-led" aria-hidden="true"><i /></span>
           <div className="rp-cbar">
             <span className="rp-dot" data-run={isGenerating ? "true" : "false"} aria-hidden="true" />
-            <span className="rp-mono">{TAB_LABEL[canvasTab]}{canvasTab === "audio" || canvasTab === "speech" ? "" : ` · ${canvasAspect}`}</span>
+            <span className="rp-mono">{t(TAB_LABEL[canvasTab])}{canvasTab === "audio" || canvasTab === "speech" ? "" : ` · ${canvasAspect}`}</span>
             <span>{canvasState}</span>
             <span className="rp-cbar-r">
               {/* Variations is just another order, so it follows the button's rule. */}
               <Pill disabled={cannotSubmit}
-                title={cannotSubmit && selectedModel?.canOrder === false ? (selectedModel.unavailableReason ?? undefined) : "สั่งอีกรอบด้วย seed ใหม่"}
-                onClick={() => { if (cannotSubmit) return; handleGenerate({ seed: Math.floor(Math.random() * 2_147_483_647) }); }}>Variations</Pill>
+                title={cannotSubmit && selectedModel?.canOrder === false ? (selectedModel.unavailableReason ?? undefined) : t("สั่งอีกรอบด้วย seed ใหม่", "Order again with a new seed")}
+                onClick={() => { if (cannotSubmit) return; handleGenerate({ seed: Math.floor(Math.random() * 2_147_483_647) }); }}>
+                {t("สร้างแบบอื่น", "Variations")}
+              </Pill>
               {tab === "image" && (
                 <Pill disabled={!upscaleAvailable}
-                  title={upscaleAvailable ? undefined : "Upscale ยังไม่เปิดให้บริการ"}
-                  onClick={() => upscaleAvailable && result?.id && handleUpscale()}>{isUpscaling ? "⟳ Upscale" : "Upscale"}</Pill>
+                  title={upscaleAvailable ? undefined : t("Upscale ยังไม่เปิดให้บริการ", "Upscale isn't available yet")}
+                  onClick={() => upscaleAvailable && result?.id && handleUpscale()}>
+                  {isUpscaling ? t("⟳ กำลังขยาย", "⟳ Upscaling") : t("ขยายภาพ", "Upscale")}
+                </Pill>
               )}
-              <Pill onClick={() => { window.location.href = "/gallery"; }}>History</Pill>
+              <Pill onClick={() => { window.location.href = "/gallery"; }}>{t("ประวัติ", "History")}</Pill>
             </span>
           </div>
 
@@ -4567,7 +4877,7 @@ export default function GeneratePage() {
                 <GeneratingStatus progress={progress} tab={canvasTab} startedAt={genStartedAt} />
                 {runningJobs < MAX_PARALLEL_JOBS && (
                   <div style={{ textAlign: "center", fontSize: 11, color: "rgba(165,243,252,0.6)", marginTop: 8 }}>
-                    สั่งงานถัดไปต่อได้เลย — ระบบทำพร้อมกันได้ {MAX_PARALLEL_JOBS} งาน
+                    {t(`สั่งงานถัดไปต่อได้เลย — ระบบทำพร้อมกันได้ ${MAX_PARALLEL_JOBS} งาน`, `Go ahead and order the next one — up to ${MAX_PARALLEL_JOBS} run at once`)}
                   </div>
                 )}
               </div>
@@ -4578,8 +4888,8 @@ export default function GeneratePage() {
                     {result.resultUrls.map((url, i) => (
                       <div key={i} style={{ position: "relative", borderRadius: 12, overflow: "hidden", border: "1px solid rgba(255,255,255,0.06)" }}>
                         {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={url} alt={`Result ${i + 1}`} style={{ width: "100%", display: "block", objectFit: "contain" }} />
-                        <button type="button" onClick={() => handleDownload(url)} aria-label={`ดาวน์โหลดภาพที่ ${i + 1}`}
+                        <img src={url} alt={t(`ผลลัพธ์ ${i + 1}`, `Result ${i + 1}`)} style={{ width: "100%", display: "block", objectFit: "contain" }} />
+                        <button type="button" onClick={() => handleDownload(url)} aria-label={t(`ดาวน์โหลดภาพที่ ${i + 1}`, `Download image ${i + 1}`)}
                           style={{ position: "absolute", top: 8, right: 8, width: 32, height: 32, borderRadius: 8, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", color: "#fff", border: "1px solid rgba(255,255,255,0.15)", cursor: "pointer", fontSize: 13 }}>↓</button>
                       </div>
                     ))}
@@ -4589,12 +4899,12 @@ export default function GeneratePage() {
                     {originalImage ? (
                       <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12 }}>
                         <div style={{ position: "relative" }}>
-                          <span style={{ position: "absolute", top: 8, left: 8, zIndex: 2, padding: "3px 8px", borderRadius: 999, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", fontSize: 10, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>ต้นฉบับ</span>
+                          <span style={{ position: "absolute", top: 8, left: 8, zIndex: 2, padding: "3px 8px", borderRadius: 999, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", fontSize: 10, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>{t("ต้นฉบับ", "Original")}</span>
                           {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={originalImage} alt="Original" style={{ width: "100%", borderRadius: 12, opacity: 0.7, objectFit: "contain" }} />
+                          <img src={originalImage} alt={t("ต้นฉบับ", "Original")} style={{ width: "100%", borderRadius: 12, opacity: 0.7, objectFit: "contain" }} />
                         </div>
                         <div style={{ position: "relative" }}>
-                          <span style={{ position: "absolute", top: 8, left: 8, zIndex: 2, padding: "3px 8px", borderRadius: 999, background: `hsla(${160 + HUE},70%,50%,0.3)`, backdropFilter: "blur(8px)", fontSize: 10, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>ผลลัพธ์</span>
+                          <span style={{ position: "absolute", top: 8, left: 8, zIndex: 2, padding: "3px 8px", borderRadius: 999, background: `hsla(${160 + HUE},70%,50%,0.3)`, backdropFilter: "blur(8px)", fontSize: 10, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>{t("ผลลัพธ์", "Result")}</span>
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img src={result.resultUrl} alt={prompt} style={{ width: "100%", borderRadius: 12, objectFit: "contain" }} />
                         </div>
@@ -4603,18 +4913,18 @@ export default function GeneratePage() {
                       <AudioTracks
                         key={result.id}
                         kind={result.resultLabels?.length === resultTracks.length ? "stems" : "versions"}
-                        title={viewing?.prompt || songTitle || "เพลงของคุณ"}
+                        title={viewing?.prompt || songTitle || t("เพลงของคุณ", "Your song")}
                         tracks={resultTracks}
-                        onDownload={(t) => handleDownload(t.url, t.label, true)}
-                        actions={songNext.map(([, tool, label]) => ({ id: tool, label }))}
-                        onAction={(id, t) => {
+                        onDownload={(track) => handleDownload(track.url, track.label, true)}
+                        actions={songNext.map(([, tool, label]) => ({ id: tool, label: t(label) }))}
+                        onAction={(id, track) => {
                           const next = SONG_NEXT.find(([, tool]) => tool === id);
-                          if (next) carrySongTo(next[0], next[1], t.url, t.label);
+                          if (next) carrySongTo(next[0], next[1], track.url, track.label);
                         }}
                       />
                     ) : resultIsAudio ? (
                       <AudioResult src={result.resultUrl} genId={result.id} chords={canvasTab !== "speech"}
-                        title={viewing?.prompt || (canvasTab === "speech" ? focusedJob?.prompt || "เสียงพูด" : songTitle || "เพลงของคุณ")} />
+                        title={viewing?.prompt || (canvasTab === "speech" ? focusedJob?.prompt || t("เสียงพูด", "Speech") : songTitle || t("เพลงของคุณ", "Your song"))} />
                     ) : resultIsVideo ? (
                       <video src={result.resultUrl} controls autoPlay loop style={{ width: "100%", borderRadius: 12, maxHeight: 600, margin: "0 auto", display: "block" }} />
                     ) : (
@@ -4632,27 +4942,30 @@ export default function GeneratePage() {
                 {/* Action toolbar */}
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <Pill onClick={() => handleDownload()}>↓ ดาวน์โหลด</Pill>
-                    <Pill active={isFavorited} onClick={handleFavorite}>{isFavorited ? "♥ บันทึกแล้ว" : "♡ บันทึก"}</Pill>
-                    <Pill onClick={handleShare}>⎋ แชร์</Pill>
+                    <Pill onClick={() => handleDownload()}>{t("↓ ดาวน์โหลด", "↓ Download")}</Pill>
+                    <Pill active={isFavorited} onClick={handleFavorite}>{isFavorited ? t("♥ บันทึกแล้ว", "♥ Saved") : t("♡ บันทึก", "♡ Save")}</Pill>
+                    <Pill onClick={handleShare}>{t("⎋ แชร์", "⎋ Share")}</Pill>
                     {resultIsImage && (
-                      <Pill onClick={handleUpscale}>{isUpscaling ? "⟳ Upscaling..." : "⤢ Upscale"}</Pill>
+                      <Pill onClick={handleUpscale}>{isUpscaling ? t("⟳ กำลังขยาย…", "⟳ Upscaling…") : t("⤢ ขยายภาพ", "⤢ Upscale")}</Pill>
                     )}
                   </div>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     {viewing && formBeforeOpen && (
-                      <Pill onClick={restoreDraft} title="คืน prompt การตั้งค่า และไฟล์แนบที่เขียนค้างไว้ก่อนเปิดงานนี้">↶ กลับไปร่างเดิม</Pill>
+                      <Pill onClick={restoreDraft}
+                        title={t("คืน prompt การตั้งค่า และไฟล์แนบที่เขียนค้างไว้ก่อนเปิดงานนี้", "Bring back the prompt, settings and files you had before opening this")}>
+                        {t("↶ กลับไปร่างเดิม", "↶ Back to my draft")}
+                      </Pill>
                     )}
-                    <Pill onClick={clearCanvas}>↻ สร้างใหม่</Pill>
+                    <Pill onClick={clearCanvas}>{t("↻ สร้างใหม่", "↻ Start over")}</Pill>
                   </div>
                 </div>
 
                 {/* The next step for a finished track: split it, cover it, carry it on. */}
                 {resultIsAudio && canvasTab === "audio" && songNext.length > 0 && !resultTracks && (
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
-                    <span style={{ fontSize: 11, color: "#64748b", alignSelf: "center" }}>ใช้เพลงนี้ต่อ:</span>
+                    <span style={{ fontSize: 11, color: "#64748b", alignSelf: "center" }}>{t("ใช้เพลงนี้ต่อ:", "Use this song:")}</span>
                     {songNext.map(([mode, tool, label]) => (
-                      <Pill key={tool} onClick={() => carrySongTo(mode, tool, result.resultUrl as string, songTitle || "เพลงจากงานนี้")}>{label}</Pill>
+                      <Pill key={tool} onClick={() => carrySongTo(mode, tool, result.resultUrl as string, songTitle || t("เพลงจากงานนี้", "Song from this order"))}>{t(label)}</Pill>
                     ))}
                   </div>
                 )}
@@ -4662,12 +4975,20 @@ export default function GeneratePage() {
                     reference for the next still. */}
                 {resultIsImage && (
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
-                    <span style={{ fontSize: 11, color: "#64748b", alignSelf: "center" }}>ใช้ภาพนี้ต่อ:</span>
+                    <span style={{ fontSize: 11, color: "#64748b", alignSelf: "center" }}>{t("ใช้ภาพนี้ต่อ:", "Use this picture:")}</span>
                     <Pill onClick={() => carryResultTo("video", result.resultUrl as string)}
-                      disabled={tabBlockedReason("video") !== null} title={tabBlockedReason("video") ?? "เปิดแท็บวิดีโอ ใส่ภาพนี้เป็นเฟรมแรก"}>▶ ทำเป็นวิดีโอ</Pill>
+                      disabled={tabBlockedReason("video") !== null}
+                      title={tabBlockedReason("video") ?? t("เปิดแท็บวิดีโอ ใส่ภาพนี้เป็นเฟรมแรก", "Opens the video tab with this as the first frame")}>
+                      {t("▶ ทำเป็นวิดีโอ", "▶ Make a video")}
+                    </Pill>
                     <Pill onClick={() => carryResultTo("edit", result.resultUrl as string)}
-                      disabled={tabBlockedReason("edit") !== null} title={tabBlockedReason("edit") ?? "เปิดแท็บแก้ไขภาพ"}>✦ แก้ไขภาพนี้</Pill>
-                    <Pill onClick={() => carryResultTo("ref", result.resultUrl as string)} title="สร้างภาพใหม่โดยอ้างอิงภาพนี้">⎘ ใช้เป็นภาพอ้างอิง</Pill>
+                      disabled={tabBlockedReason("edit") !== null} title={tabBlockedReason("edit") ?? t("เปิดแท็บแก้ไขภาพ", "Opens the edit tab")}>
+                      {t("✦ แก้ไขภาพนี้", "✦ Edit this picture")}
+                    </Pill>
+                    <Pill onClick={() => carryResultTo("ref", result.resultUrl as string)}
+                      title={t("สร้างภาพใหม่โดยอ้างอิงภาพนี้", "Make a new picture based on this one")}>
+                      {t("⎘ ใช้เป็นภาพอ้างอิง", "⎘ Use as reference")}
+                    </Pill>
                   </div>
                 )}
 
@@ -4683,12 +5004,16 @@ export default function GeneratePage() {
                   }}>
                     <span>
                       {result.daysLeft <= 0
-                        ? "ไฟล์นี้หมดอายุแล้ว"
-                        : `เก็บไฟล์ไว้อีก ${result.daysLeft} วัน — กรุณาดาวน์โหลดเก็บไว้`}
+                        ? t("ไฟล์นี้หมดอายุแล้ว", "This file has expired")
+                        : t(
+                            `เก็บไฟล์ไว้อีก ${result.daysLeft} วัน — กรุณาดาวน์โหลดเก็บไว้`,
+                            `Kept for ${result.daysLeft} more ${result.daysLeft === 1 ? "day" : "days"} — please download it`,
+                          )}
                     </span>
                     {result.expiresAt && (
                       <span style={{ opacity: 0.7 }}>
-                        (ถึง {new Date(result.expiresAt).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" })})
+                        {t("(ถึง ", "(until ")}
+                        {formatDate(result.expiresAt, locale, { day: "numeric", month: "short", year: locale === "th" ? "2-digit" : "numeric" })})
                       </span>
                     )}
                   </div>
@@ -4696,19 +5021,19 @@ export default function GeneratePage() {
 
                 {/* Generation info */}
                 <div style={{ display: "flex", alignItems: "center", gap: 16, marginTop: 14, fontSize: 11, color: "#64748b" }}>
-                  {result.creditsUsed > 0 && <span>✦ {result.creditsUsed} เครดิต</span>}
+                  {result.creditsUsed > 0 && <span>✦ {formatCredits(result.creditsUsed, locale)}</span>}
                   {result.processingMs && <span>⌚ {(result.processingMs / 1000).toFixed(1)}s</span>}
-                  <span style={{ color: "#34d399" }}>✓ สำเร็จ</span>
+                  <span style={{ color: "#34d399" }}>✓ {t("สำเร็จ", "Done")}</span>
                 </div>
               </div>
             ) : result?.status === "failed" ? (
               <div style={{ textAlign: "center" }}>
                 <div style={{ width: 80, height: 80, borderRadius: 20, background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)", display: "grid", placeItems: "center", margin: "0 auto 18px", fontSize: 36, color: "#fca5a5" }}>!</div>
-                <h3 style={{ fontSize: 22, fontWeight: 300, margin: "0 0 8px", color: "#fff" }}>สร้างไม่สำเร็จ</h3>
-                <p style={{ fontSize: 13, color: "rgba(203,213,225,0.7)", marginBottom: 18 }}>{result.error ? localizeOrderError(result.error) : "เกิดข้อผิดพลาด"}</p>
+                <h3 style={{ fontSize: 22, fontWeight: 300, margin: "0 0 8px", color: "#fff" }}>{t("สร้างไม่สำเร็จ", "Generation failed")}</h3>
+                <p style={{ fontSize: 13, color: "rgba(203,213,225,0.7)", marginBottom: 18 }}>{result.error ? localizeOrderError(result.error, t) : t("เกิดข้อผิดพลาด", "Something went wrong")}</p>
                 <button type="button" onClick={clearCanvas}
                   style={{ padding: "10px 22px", borderRadius: 10, background: `linear-gradient(135deg, hsl(${160 + HUE},70%,50%), hsl(${280 + HUE},70%,55%))`, color: "#fff", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 500 }}>
-                  ลองอีกครั้ง
+                  {t("ลองอีกครั้ง", "Try again")}
                 </button>
               </div>
             ) : (
@@ -4718,14 +5043,17 @@ export default function GeneratePage() {
                   // one tap to put a description in the prompt.
                   <div style={{ maxWidth: 560, margin: "0 auto", textAlign: "center" }}>
                     <div style={{ fontSize: 44, marginBottom: 8, color: "#c4b5fd" }}>♫</div>
-                    <h3 style={{ fontSize: 22, fontWeight: 300, color: "#fff", margin: "0 0 6px" }}>สร้างเพลงของคุณเอง</h3>
+                    <h3 style={{ fontSize: 22, fontWeight: 300, color: "#fff", margin: "0 0 6px" }}>{t("สร้างเพลงของคุณเอง", "Make your own song")}</h3>
                     <p style={{ fontSize: 13, color: "rgba(203,213,225,0.7)", margin: "0 0 18px" }}>
-                      บอกแนวเพลงกับอารมณ์ ใส่เนื้อเพลงเองได้ หรือเว้นว่างไว้เป็นเพลงบรรเลง
+                      {t(
+                        "บอกแนวเพลงกับอารมณ์ ใส่เนื้อเพลงเองได้ หรือเว้นว่างไว้เป็นเพลงบรรเลง",
+                        "Describe the style and mood. Add your own lyrics, or leave them empty for an instrumental.",
+                      )}
                     </p>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
                       {MUSIC_STARTERS.map((s) => (
-                        <button key={s} type="button" className="rp-chip rp-raised" onClick={() => setPrompt(s)}>
-                          {s}
+                        <button key={s.th} type="button" className="rp-chip rp-raised" onClick={() => setPrompt(t(s))}>
+                          {t(s)}
                         </button>
                       ))}
                     </div>
@@ -4744,7 +5072,10 @@ export default function GeneratePage() {
                   </div>
                 )}
                 <p style={{ fontSize: 13, color: "rgba(203,213,225,0.55)", marginTop: 20, textAlign: "center" }}>
-                  {tab === "audio" ? "" : "ตัวอย่างผลงานที่สร้างบนแพลตฟอร์มนี้ — "}เลือกโมเดล พิมพ์ prompt แล้วกด <span style={{ color: "#a5f3fc" }}>ทอ</span> เพื่อเริ่มสร้าง{tab === "video" ? "วิดีโอ" : tab === "edit" ? "การแก้ไข" : tab === "audio" ? "เพลง" : "ภาพ"}ของคุณเอง
+                  {t(
+                    <>{tab === "audio" ? "" : "ตัวอย่างผลงานที่สร้างบนแพลตฟอร์มนี้ — "}เลือกโมเดล พิมพ์ prompt แล้วกด <span style={{ color: "#a5f3fc" }}>ทอ</span> เพื่อเริ่มสร้าง{tab === "video" ? "วิดีโอ" : tab === "edit" ? "การแก้ไข" : tab === "audio" ? "เพลง" : "ภาพ"}ของคุณเอง</>,
+                    <>{tab === "audio" ? "" : "Samples made on this platform — "}pick a model, type a prompt and press <span style={{ color: "#a5f3fc" }}>Weave</span> to make your own {tab === "video" ? "video" : tab === "edit" ? "edit" : tab === "audio" ? "song" : "picture"}</>,
+                  )}
                 </p>
               </div>
             )}
@@ -4756,7 +5087,7 @@ export default function GeneratePage() {
             left (container query), so the queue animation still fits. */}
         {history.length > 0 && (
           <div className="rp-recent">
-            <span className="rp-rl">ล่าสุด · <a href="/gallery">ดูทั้งหมด →</a></span>
+            <span className="rp-rl">{t("ล่าสุด", "Latest")} · <a href="/gallery">{t("ดูทั้งหมด →", "See all →")}</a></span>
             <div className="rp-recent-row rp-scroll">
               {history.slice(0, 16).map((g) => {
                 const src = g.thumbnailUrl || g.resultUrl;
@@ -4766,7 +5097,7 @@ export default function GeneratePage() {
                 // A song has nothing to draw; it gets a note on its own colour.
                 const isAudio = g.type === "audio" || AUDIO_EXT.test(src ?? "");
                 return (
-                  <button key={g.id} type="button" className="rp-thumb" title={`${g.prompt}\n— กดเพื่อเปิดงานนี้ พร้อม prompt การตั้งค่า และไฟล์แนบเดิม`}
+                  <button key={g.id} type="button" className="rp-thumb" title={`${g.prompt}\n— ${t("กดเพื่อเปิดงานนี้ พร้อม prompt การตั้งค่า และไฟล์แนบเดิม", "Open this piece with its prompt, settings and attachments")}`}
                     // Opens the piece on the canvas and puts the whole order
                     // back on its own tab (openHistory).
                     onClick={() => void openHistory(g)}
@@ -4794,7 +5125,7 @@ export default function GeneratePage() {
         )}
       </main>
 
-      <ModeOrb modes={orbModes} links={orbLinks} title={TAB_LABEL[tab]} glyph={TAB_GLYPH[tab]} />
+      <ModeOrb modes={orbModes} links={orbLinks} title={t(TAB_LABEL[tab])} glyph={TAB_GLYPH[tab]} />
 
       <style jsx global>{`
         @property --rp-a { syntax: "<angle>"; initial-value: 0deg; inherits: false; }

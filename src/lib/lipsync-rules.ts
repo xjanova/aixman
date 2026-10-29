@@ -11,6 +11,7 @@
  * self-hosted catalogue entry's `sourceVideo` clip rule.
  */
 
+import type { Msg } from '@/lib/i18n/locale';
 import type { VideoProbe } from './video-probe';
 
 export interface ClipRule {
@@ -95,34 +96,60 @@ export interface ClipFacts extends VideoProbe {
   ext: string;
 }
 
-export type RuleCheck = { ok: true } | { ok: false; code: string; message: string };
+/**
+ * A refusal in both languages: `msg` for the visitor's language, `message`
+ * its Thai (what server callers, logs and the admin fallback reasons read).
+ */
+export type RuleCheck = { ok: true } | { ok: false; code: string; message: string; msg: Msg };
 
 const secs = (n: number) => (Math.round(n * 10) / 10).toLocaleString('en-US');
 const mb = (n: number) => `${Math.round(n / MB)} MB`;
+/** "1 second" / "2.5 seconds" — English needs the plural, Thai does not. */
+const secondsEn = (n: number) => `${secs(n)} ${n === 1 ? 'second' : 'seconds'}`;
 
-/** Whether a stored clip fits, in Thai a customer can act on. */
+function refuse(code: string, msg: Msg): RuleCheck {
+  return { ok: false, code, message: msg.th, msg };
+}
+
+/** Whether a stored clip fits, in words a customer can act on. */
 export function checkClip(rule: ClipRule, clip: ClipFacts): RuleCheck {
   if (rule.containers && !rule.containers.includes(clip.ext)) {
-    return { ok: false, code: 'clip-container', message: 'โมเดลนี้รับคลิปเฉพาะไฟล์ MP4 หรือ MOV กรุณาแปลงไฟล์แล้วอัปโหลดใหม่' };
+    return refuse('clip-container', {
+      th: 'โมเดลนี้รับคลิปเฉพาะไฟล์ MP4 หรือ MOV กรุณาแปลงไฟล์แล้วอัปโหลดใหม่',
+      en: 'This model only takes MP4 or MOV clips. Convert the file and upload it again.',
+    });
   }
   if (rule.maxBytes && clip.bytes > rule.maxBytes) {
-    return { ok: false, code: 'clip-bytes', message: `ไฟล์คลิปใหญ่เกินไป (${mb(clip.bytes)}) — โมเดลนี้รับได้ไม่เกิน ${mb(rule.maxBytes)}` };
+    return refuse('clip-bytes', {
+      th: `ไฟล์คลิปใหญ่เกินไป (${mb(clip.bytes)}) — โมเดลนี้รับได้ไม่เกิน ${mb(rule.maxBytes)}`,
+      en: `The clip file is too large (${mb(clip.bytes)}) — this model takes up to ${mb(rule.maxBytes)}.`,
+    });
   }
   if (rule.minSeconds && clip.seconds < rule.minSeconds) {
-    return { ok: false, code: 'clip-short', message: `คลิปสั้นเกินไป (${secs(clip.seconds)} วินาที) — โมเดลนี้ต้องการคลิปอย่างน้อย ${rule.minSeconds} วินาที` };
+    return refuse('clip-short', {
+      th: `คลิปสั้นเกินไป (${secs(clip.seconds)} วินาที) — โมเดลนี้ต้องการคลิปอย่างน้อย ${rule.minSeconds} วินาที`,
+      en: `The clip is too short (${secondsEn(clip.seconds)}) — this model needs at least ${secondsEn(rule.minSeconds)}.`,
+    });
   }
   if (clip.seconds > rule.maxSeconds + 0.05) {
-    return {
-      ok: false,
-      code: 'clip-long',
-      message: `คลิปยาวเกินไป (${secs(clip.seconds)} วินาที) — โมเดลนี้รับได้สูงสุด ${rule.maxSeconds} วินาที ตัดคลิปให้สั้นลงแล้วอัปโหลดใหม่`,
-    };
+    return refuse('clip-long', {
+      th: `คลิปยาวเกินไป (${secs(clip.seconds)} วินาที) — โมเดลนี้รับได้สูงสุด ${rule.maxSeconds} วินาที ตัดคลิปให้สั้นลงแล้วอัปโหลดใหม่`,
+      en: `The clip is too long (${secondsEn(clip.seconds)}) — this model takes up to ${secondsEn(rule.maxSeconds)}. Trim it and upload it again.`,
+    });
   }
   const small = Math.min(clip.width, clip.height);
   const large = Math.max(clip.width, clip.height);
   if ((rule.minSide && small < rule.minSide) || (rule.maxSide && large > rule.maxSide)) {
-    const range = rule.minSide && rule.maxSide ? `ด้านละ ${rule.minSide}–${rule.maxSide} พิกเซล` : rule.maxSide ? `ไม่เกิน ${rule.maxSide} พิกเซล` : `อย่างน้อย ${rule.minSide} พิกเซล`;
-    return { ok: false, code: 'clip-size', message: `ความละเอียดคลิป ${clip.width}×${clip.height} ไม่ตรงกับที่โมเดลรับ (${range})` };
+    const range: Msg =
+      rule.minSide && rule.maxSide
+        ? { th: `ด้านละ ${rule.minSide}–${rule.maxSide} พิกเซล`, en: `${rule.minSide}–${rule.maxSide} px per side` }
+        : rule.maxSide
+          ? { th: `ไม่เกิน ${rule.maxSide} พิกเซล`, en: `up to ${rule.maxSide} px` }
+          : { th: `อย่างน้อย ${rule.minSide} พิกเซล`, en: `at least ${rule.minSide} px` };
+    return refuse('clip-size', {
+      th: `ความละเอียดคลิป ${clip.width}×${clip.height} ไม่ตรงกับที่โมเดลรับ (${range.th})`,
+      en: `The clip's resolution, ${clip.width}×${clip.height}, isn't one this model takes (${range.en}).`,
+    });
   }
   return { ok: true };
 }
@@ -130,20 +157,28 @@ export function checkClip(rule: ClipRule, clip: ClipFacts): RuleCheck {
 /** Whether a voice track fits beside its clip. */
 export function checkVoice(rule: VoiceRule, voice: { seconds: number; bytes: number }, clipSeconds: number): RuleCheck {
   if (rule.maxBytes && voice.bytes > rule.maxBytes) {
-    return { ok: false, code: 'voice-bytes', message: `ไฟล์เสียงใหญ่เกินไป (${mb(voice.bytes)}) — โมเดลนี้รับได้ไม่เกิน ${mb(rule.maxBytes)}` };
+    return refuse('voice-bytes', {
+      th: `ไฟล์เสียงใหญ่เกินไป (${mb(voice.bytes)}) — โมเดลนี้รับได้ไม่เกิน ${mb(rule.maxBytes)}`,
+      en: `The audio file is too large (${mb(voice.bytes)}) — this model takes up to ${mb(rule.maxBytes)}.`,
+    });
   }
   if (rule.minSeconds && voice.seconds < rule.minSeconds) {
-    return { ok: false, code: 'voice-short', message: `เสียงสั้นเกินไป (${secs(voice.seconds)} วินาที) — ต้องยาวอย่างน้อย ${rule.minSeconds} วินาที` };
+    return refuse('voice-short', {
+      th: `เสียงสั้นเกินไป (${secs(voice.seconds)} วินาที) — ต้องยาวอย่างน้อย ${rule.minSeconds} วินาที`,
+      en: `The audio is too short (${secondsEn(voice.seconds)}) — it must be at least ${secondsEn(rule.minSeconds)}.`,
+    });
   }
   if (voice.seconds > rule.maxSeconds + 0.05) {
-    return { ok: false, code: 'voice-long', message: `เสียงยาวเกินไป (${secs(voice.seconds)} วินาที) — โมเดลนี้รับได้สูงสุด ${rule.maxSeconds} วินาที` };
+    return refuse('voice-long', {
+      th: `เสียงยาวเกินไป (${secs(voice.seconds)} วินาที) — โมเดลนี้รับได้สูงสุด ${rule.maxSeconds} วินาที`,
+      en: `The audio is too long (${secondsEn(voice.seconds)}) — this model takes up to ${secondsEn(rule.maxSeconds)}.`,
+    });
   }
   if (rule.notLongerThanClip && voice.seconds > clipSeconds + 0.25) {
-    return {
-      ok: false,
-      code: 'voice-past-clip',
-      message: `เสียงยาวกว่าคลิป (${secs(voice.seconds)} กับ ${secs(clipSeconds)} วินาที) — โมเดลนี้ทำได้แค่ความยาวของคลิป คำพูดส่วนเกินจะหายไป ใช้คลิปที่ยาวกว่าหรือตัดเสียงให้สั้นลง`,
-    };
+    return refuse('voice-past-clip', {
+      th: `เสียงยาวกว่าคลิป (${secs(voice.seconds)} กับ ${secs(clipSeconds)} วินาที) — โมเดลนี้ทำได้แค่ความยาวของคลิป คำพูดส่วนเกินจะหายไป ใช้คลิปที่ยาวกว่าหรือตัดเสียงให้สั้นลง`,
+      en: `The audio is longer than the clip (${secs(voice.seconds)} vs ${secondsEn(clipSeconds)}) — this model only covers the clip's length, so the extra speech would be lost. Use a longer clip or trim the audio.`,
+    });
   }
   return { ok: true };
 }

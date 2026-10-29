@@ -145,6 +145,27 @@ test('every Thai refusal GenerationService throws as a literal has an English', 
   assert.deepEqual(missing, [], 'add these to src/lib/i18n/refusal-en.ts, or throw a { th, en } pair');
 });
 
+test('every refusal the Suno tools give before charging has an English', async () => {
+  const { hasRefusalEn } = await import('@/lib/i18n/refusal-en');
+  const { checkSunoSource, sunoMissingSource } = await import('@/lib/providers/kie-suno');
+  const tools = ['song', 'cover', 'extend', 'add-vocals', 'add-instrumental', 'stems', 'sounds'] as const;
+  const shapes = [
+    { seconds: 0, bytes: 1 }, // unreadable
+    { seconds: 60, bytes: 30 * 1024 * 1024 }, // too large to split
+    { seconds: 9 * 60 + 5, bytes: 1 }, // too long
+    { seconds: 1, bytes: 1 }, // too short to extend
+  ];
+  const missing: string[] = [];
+  for (const tool of tools) {
+    if (!hasRefusalEn(sunoMissingSource(tool))) missing.push(sunoMissingSource(tool));
+    for (const facts of shapes) {
+      const check = checkSunoSource(tool, facts, {});
+      if (!check.ok && !hasRefusalEn(check.message)) missing.push(check.message);
+    }
+  }
+  assert.deepEqual(missing, [], 'add these to src/lib/i18n/refusal-en.ts');
+});
+
 test('a Thai refusal answers in English by its text, its figures, else its code', () => {
   const en = (message: string, code: string) => messageFor(new OrderRefusedError(message, code, 422), 'en');
   assert.equal(en('ต้องอัปโหลดภาพที่จะแก้ก่อน', 'missing-image'), 'Upload the picture to edit first.');

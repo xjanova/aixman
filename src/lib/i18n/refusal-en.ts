@@ -38,6 +38,7 @@ const EXACT: Record<string, string> = {
   'ต้องอัปโหลดเสียงร้องที่จะใส่ดนตรีก่อน': 'Upload the vocals to add music to first.',
   'ต้องอัปโหลดเพลงที่จะแยกสเต็มก่อน': 'Upload the song to split into stems first.',
   'ต้องอัปโหลดเพลงก่อน': 'Upload the song first.',
+  'ไฟล์เพลงใหญ่เกิน 20 MB — แปลงเป็น MP3 หรือเลือกช่วงให้สั้นลงก่อน': 'The song file is over 20 MB. Convert it to MP3 or pick a shorter part first.',
 };
 
 const PATTERNS: [RegExp, (m: RegExpMatchArray) => string][] = [
@@ -46,6 +47,12 @@ const PATTERNS: [RegExp, (m: RegExpMatchArray) => string][] = [
     (m) => `The text is too long (${m[1]} characters) — this model reads at most ${m[2]} characters at a time.`,
   ],
   [/^โมเดลนี้รับภาพอ้างอิงได้สูงสุด (\d+) ภาพ$/, (m) => `This model takes at most ${m[1]} reference ${m[1] === '1' ? 'picture' : 'pictures'}.`],
+  // kie-suno.ts checkSunoSource — the length is m:ss
+  [/^เพลงยาว (\d+:\d{2}) นาที — แยกสเต็มได้ครั้งละไม่เกิน 8 นาที$/, (m) => `The song runs ${m[1]}. Stems can be split from up to 8 minutes at a time.`],
+  [
+    /^เพลงต้นฉบับยาว (\d+:\d{2}) นาที — ใช้ได้ไม่เกิน 8 นาที เลือกช่วงให้สั้นลงก่อน$/,
+    (m) => `The original song runs ${m[1]}. It can be up to 8 minutes — pick a shorter part first.`,
+  ],
 ];
 
 /** By refusal code, when the Thai is one this file has not met. */

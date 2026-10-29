@@ -20,6 +20,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useT } from "@/lib/i18n/client";
 
 /** Peaks are stored as min/max pairs per column so quiet passages still read. */
 type Peaks = { min: Float32Array; max: Float32Array };
@@ -212,6 +213,7 @@ export function AudioWave({
   autoPlay = false,
   onPlayingChange,
 }: AudioWaveProps) {
+  const t = useT();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -372,20 +374,20 @@ export function AudioWave({
     // a progress label frozen at some percentage forever.
     try {
       if (kind === "wav") {
-        setBusy("กำลังแปลงเป็น WAV…");
+        setBusy(t("กำลังแปลงเป็น WAV…", "Converting to WAV…"));
         // Yield first: toWav blocks, and without this the label never paints.
         await new Promise((r) => setTimeout(r, 30));
         saveBlob(toWav(buffer), `${base}.wav`);
       } else {
-        setBusy("กำลังแปลงเป็น MP3… 0%");
+        setBusy(t("กำลังแปลงเป็น MP3… 0%", "Converting to MP3… 0%"));
         saveBlob(
-          await toMp3(buffer, (f) => setBusy(`กำลังแปลงเป็น MP3… ${Math.round(f * 100)}%`)),
+          await toMp3(buffer, (f) => setBusy(t(`กำลังแปลงเป็น MP3… ${Math.round(f * 100)}%`, `Converting to MP3… ${Math.round(f * 100)}%`))),
           `${base}.mp3`
         );
       }
       setBusy(null);
     } catch {
-      setBusy("แปลงไฟล์ไม่สำเร็จ — ลองดาวน์โหลดต้นฉบับแทน");
+      setBusy(t("แปลงไฟล์ไม่สำเร็จ — ลองดาวน์โหลดต้นฉบับแทน", "Conversion failed — try downloading the original instead"));
       setTimeout(() => setBusy(null), 5000);
     }
   };
@@ -407,7 +409,7 @@ export function AudioWave({
           // Gated on having something to play, not on the decode. The samples
           // are only needed to draw and to convert; the sound is ready first.
           disabled={!canPlay}
-          aria-label={playing ? "หยุด" : "เล่น"}
+          aria-label={playing ? t("หยุด", "Pause") : t("เล่น", "Play")}
           style={{
             flexShrink: 0, width: 40, height: 40, borderRadius: "50%", cursor: canPlay ? "pointer" : "default",
             border: "1px solid hsla(265,70%,65%,0.45)", background: "hsla(265,70%,60%,0.18)",
@@ -441,7 +443,7 @@ export function AudioWave({
               position: "absolute", inset: 0, display: "grid", placeItems: "center",
               fontSize: 11.5, color: status === "error" ? "#fca5a5" : "#64748b",
             }}>
-              {status === "error" ? "อ่านไฟล์เสียงไม่ได้" : "กำลังอ่านคลื่นเสียง…"}
+              {status === "error" ? t("อ่านไฟล์เสียงไม่ได้", "Couldn't read the audio file") : t("กำลังอ่านคลื่นเสียง…", "Reading the waveform…")}
             </div>
           )}
           {status === "ready" && duration > 0 && (
@@ -470,7 +472,7 @@ export function AudioWave({
                 border: "1px solid rgba(255,255,255,0.12)", opacity: canConvert && !busy ? 1 : 0.5,
               }}
             >
-              ↓ ดาวน์โหลด ▾
+              ↓ {t("ดาวน์โหลด", "Download")} ▾
             </button>
             {menu && (
               <div style={{
@@ -480,9 +482,9 @@ export function AudioWave({
                 boxShadow: "0 24px 48px -12px rgba(0,0,0,0.7)",
               }}>
                 {([
-                  ["original", `ต้นฉบับ (.${originalExt || "flac"})`, "ไม่แปลง คุณภาพเดิม"],
-                  ["wav", "WAV", "ไม่สูญเสียคุณภาพ ไฟล์ใหญ่"],
-                  ["mp3", "MP3", "192 kbps ไฟล์เล็ก"],
+                  ["original", t(`ต้นฉบับ (.${originalExt || "flac"})`, `Original (.${originalExt || "flac"})`), t("ไม่แปลง คุณภาพเดิม", "Unconverted, original quality")],
+                  ["wav", "WAV", t("ไม่สูญเสียคุณภาพ ไฟล์ใหญ่", "Lossless, large file")],
+                  ["mp3", "MP3", t("192 kbps ไฟล์เล็ก", "192 kbps, small file")],
                 ] as const).map(([kind, label, hint]) => (
                   <button
                     key={kind}

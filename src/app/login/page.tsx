@@ -17,6 +17,7 @@ import Image from "next/image";
 import { XdreamerMark } from "@/components/xdreamer/logo";
 import { safeCallbackPath } from "@/lib/safe-callback";
 import { useT } from "@/lib/i18n/client";
+import { LocaleSwitch } from "@/components/layout/locale-switch";
 import type { Msg } from "@/lib/i18n/locale";
 
 const HUE = 70;
@@ -128,6 +129,10 @@ export default function LoginPage() {
         backdropFilter: "blur(18px)",
         boxShadow: "0 40px 80px -20px rgba(0,0,0,0.7)",
       }}>
+        {/* No navbar here, so the language switch sits on the card. */}
+        <div style={{ display: "flex", justifyContent: "flex-end", margin: "-16px -16px 8px 0" }}>
+          <LocaleSwitch />
+        </div>
         {/* Logo */}
         <div style={{ textAlign: "center", marginBottom: 32 }}>
           <Link href="/" style={{ display: "inline-block" }}>

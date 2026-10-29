@@ -24,10 +24,12 @@
  * client component without dragging the server in.
  */
 
+import type { Msg } from '@/lib/i18n/locale';
+
 export interface MusicOption {
   id: string;
-  /** What the customer sees. */
-  label: string;
+  /** What the customer sees, in both languages. Never sent to the model. */
+  label: Msg;
   /** What the model reads. Empty means "say nothing about this". */
   tag: string;
 }
@@ -42,30 +44,30 @@ export interface MusicOption {
  * performer.
  */
 export const MUSIC_VOCALS: MusicOption[] = [
-  { id: 'male', label: 'ชาย', tag: 'male vocal' },
-  { id: 'female', label: 'หญิง', tag: 'female vocal' },
-  { id: 'duet', label: 'ดูโอ้ ชาย–หญิง', tag: 'male and female duet vocals' },
-  { id: 'group', label: 'กลุ่ม/ประสานเสียง', tag: 'layered group harmony vocals' },
-  { id: 'choir', label: 'คอรัสหมู่', tag: 'full choir vocals' },
+  { id: 'male', label: { th: 'ชาย', en: 'Male' }, tag: 'male vocal' },
+  { id: 'female', label: { th: 'หญิง', en: 'Female' }, tag: 'female vocal' },
+  { id: 'duet', label: { th: 'ดูโอ้ ชาย–หญิง', en: 'Male–female duet' }, tag: 'male and female duet vocals' },
+  { id: 'group', label: { th: 'กลุ่ม/ประสานเสียง', en: 'Group harmony' }, tag: 'layered group harmony vocals' },
+  { id: 'choir', label: { th: 'คอรัสหมู่', en: 'Choir' }, tag: 'full choir vocals' },
 ];
 
 /** Roughly how old the voice should sound. An adjective — see `MUSIC_VOCALS`. */
 export const MUSIC_AGES: MusicOption[] = [
-  { id: 'child', label: 'เด็ก', tag: "child's" },
-  { id: 'teen', label: 'วัยรุ่น', tag: 'youthful teenage' },
-  { id: 'young', label: 'หนุ่มสาว', tag: 'young adult' },
-  { id: 'adult', label: 'กลางคน', tag: 'mature adult' },
-  { id: 'senior', label: 'สูงวัย', tag: 'older weathered' },
+  { id: 'child', label: { th: 'เด็ก', en: 'Child' }, tag: "child's" },
+  { id: 'teen', label: { th: 'วัยรุ่น', en: 'Teen' }, tag: 'youthful teenage' },
+  { id: 'young', label: { th: 'หนุ่มสาว', en: 'Young adult' }, tag: 'young adult' },
+  { id: 'adult', label: { th: 'กลางคน', en: 'Middle-aged' }, tag: 'mature adult' },
+  { id: 'senior', label: { th: 'สูงวัย', en: 'Older' }, tag: 'older weathered' },
 ];
 
 /** The colour of the voice. An adjective — see `MUSIC_VOCALS`. */
 export const MUSIC_TIMBRES: MusicOption[] = [
-  { id: 'clear', label: 'ใส', tag: 'clear bright' },
-  { id: 'warm', label: 'นุ่มอบอุ่น', tag: 'warm rounded' },
-  { id: 'raspy', label: 'แหบเสน่ห์', tag: 'raspy husky' },
-  { id: 'breathy', label: 'ลมหายใจ', tag: 'breathy intimate' },
-  { id: 'powerful', label: 'ทรงพลัง', tag: 'powerful belting' },
-  { id: 'deep', label: 'ทุ้มลึก', tag: 'deep-toned' },
+  { id: 'clear', label: { th: 'ใส', en: 'Clear' }, tag: 'clear bright' },
+  { id: 'warm', label: { th: 'นุ่มอบอุ่น', en: 'Warm' }, tag: 'warm rounded' },
+  { id: 'raspy', label: { th: 'แหบเสน่ห์', en: 'Raspy' }, tag: 'raspy husky' },
+  { id: 'breathy', label: { th: 'ลมหายใจ', en: 'Breathy' }, tag: 'breathy intimate' },
+  { id: 'powerful', label: { th: 'ทรงพลัง', en: 'Powerful' }, tag: 'powerful belting' },
+  { id: 'deep', label: { th: 'ทุ้มลึก', en: 'Deep' }, tag: 'deep-toned' },
 ];
 
 /**
@@ -76,71 +78,71 @@ export const MUSIC_TIMBRES: MusicOption[] = [
  * rather than transliterated, which the model can actually act on.
  */
 export const MUSIC_GENRES: MusicOption[] = [
-  { id: 'luktung', label: 'ลูกทุ่ง', tag: 'Thai luk thung country ballad, khaen and phin accents, expressive vibrato' },
-  { id: 'morlam', label: 'หมอลำ/อีสาน', tag: 'Isan mor lam, driving phin and khaen, fast syncopated groove' },
-  { id: 'lukkrung', label: 'ลูกกรุง', tag: 'classic Thai luk krung, lush orchestral ballad, 1960s crooner' },
-  { id: 'string', label: 'สตริงไทย', tag: 'Thai pop rock, clean guitars, radio ballad' },
-  { id: 'pop', label: 'ป็อป', tag: 'modern pop' },
-  { id: 'rock', label: 'ร็อก', tag: 'rock band, distorted guitars' },
-  { id: 'ballad', label: 'บัลลาด', tag: 'slow emotional ballad' },
-  { id: 'acoustic', label: 'อะคูสติก', tag: 'acoustic singer-songwriter, sparse arrangement' },
-  { id: 'rnb', label: 'R&B / โซล', tag: 'soulful R&B, smooth groove' },
-  { id: 'hiphop', label: 'ฮิปฮอป', tag: 'hip-hop, hard drums, rhythmic delivery' },
-  { id: 'edm', label: 'EDM / เต้น', tag: 'EDM dance production, synth leads, four-on-the-floor' },
-  { id: 'citypop', label: 'ซิตี้ป็อป', tag: '80s city pop, glossy synths, funky bass' },
-  { id: 'kpop', label: 'เค-ป็อป', tag: 'K-pop production, punchy mix, layered hooks' },
-  { id: 'jazz', label: 'แจ๊ส', tag: 'jazz combo, swung feel, extended harmony' },
-  { id: 'country', label: 'คันทรี', tag: 'country, acoustic guitar and pedal steel' },
-  { id: 'reggae', label: 'เร้กเก้/สกา', tag: 'reggae skank, offbeat guitar, deep bass' },
-  { id: 'metal', label: 'เมทัล', tag: 'metal, heavy riffs, double kick' },
-  { id: 'lofi', label: 'โลไฟ', tag: 'lo-fi chillhop, dusty drums, mellow keys' },
-  { id: 'cinematic', label: 'ซาวด์แทร็ก', tag: 'cinematic orchestral score' },
-  { id: 'folk', label: 'โฟล์ก', tag: 'folk, acoustic storytelling' },
+  { id: 'luktung', label: { th: 'ลูกทุ่ง', en: 'Luk thung' }, tag: 'Thai luk thung country ballad, khaen and phin accents, expressive vibrato' },
+  { id: 'morlam', label: { th: 'หมอลำ/อีสาน', en: 'Mor lam / Isan' }, tag: 'Isan mor lam, driving phin and khaen, fast syncopated groove' },
+  { id: 'lukkrung', label: { th: 'ลูกกรุง', en: 'Luk krung' }, tag: 'classic Thai luk krung, lush orchestral ballad, 1960s crooner' },
+  { id: 'string', label: { th: 'สตริงไทย', en: 'Thai pop rock' }, tag: 'Thai pop rock, clean guitars, radio ballad' },
+  { id: 'pop', label: { th: 'ป็อป', en: 'Pop' }, tag: 'modern pop' },
+  { id: 'rock', label: { th: 'ร็อก', en: 'Rock' }, tag: 'rock band, distorted guitars' },
+  { id: 'ballad', label: { th: 'บัลลาด', en: 'Ballad' }, tag: 'slow emotional ballad' },
+  { id: 'acoustic', label: { th: 'อะคูสติก', en: 'Acoustic' }, tag: 'acoustic singer-songwriter, sparse arrangement' },
+  { id: 'rnb', label: { th: 'R&B / โซล', en: 'R&B / soul' }, tag: 'soulful R&B, smooth groove' },
+  { id: 'hiphop', label: { th: 'ฮิปฮอป', en: 'Hip-hop' }, tag: 'hip-hop, hard drums, rhythmic delivery' },
+  { id: 'edm', label: { th: 'EDM / เต้น', en: 'EDM / dance' }, tag: 'EDM dance production, synth leads, four-on-the-floor' },
+  { id: 'citypop', label: { th: 'ซิตี้ป็อป', en: 'City pop' }, tag: '80s city pop, glossy synths, funky bass' },
+  { id: 'kpop', label: { th: 'เค-ป็อป', en: 'K-pop' }, tag: 'K-pop production, punchy mix, layered hooks' },
+  { id: 'jazz', label: { th: 'แจ๊ส', en: 'Jazz' }, tag: 'jazz combo, swung feel, extended harmony' },
+  { id: 'country', label: { th: 'คันทรี', en: 'Country' }, tag: 'country, acoustic guitar and pedal steel' },
+  { id: 'reggae', label: { th: 'เร้กเก้/สกา', en: 'Reggae / ska' }, tag: 'reggae skank, offbeat guitar, deep bass' },
+  { id: 'metal', label: { th: 'เมทัล', en: 'Metal' }, tag: 'metal, heavy riffs, double kick' },
+  { id: 'lofi', label: { th: 'โลไฟ', en: 'Lo-fi' }, tag: 'lo-fi chillhop, dusty drums, mellow keys' },
+  { id: 'cinematic', label: { th: 'ซาวด์แทร็ก', en: 'Soundtrack' }, tag: 'cinematic orchestral score' },
+  { id: 'folk', label: { th: 'โฟล์ก', en: 'Folk' }, tag: 'folk, acoustic storytelling' },
 ];
 
 /** The feeling. Several may be picked. */
 export const MUSIC_MOODS: MusicOption[] = [
-  { id: 'happy', label: 'สนุกสดใส', tag: 'upbeat and joyful' },
-  { id: 'sad', label: 'เศร้า', tag: 'sad and melancholic' },
-  { id: 'romantic', label: 'โรแมนติก', tag: 'romantic and tender' },
-  { id: 'epic', label: 'ฮึกเหิม', tag: 'epic and triumphant' },
-  { id: 'calm', label: 'ผ่อนคลาย', tag: 'calm and soothing' },
-  { id: 'dark', label: 'มืดหม่น', tag: 'dark and brooding' },
-  { id: 'nostalgic', label: 'คิดถึงอดีต', tag: 'nostalgic and wistful' },
-  { id: 'hopeful', label: 'มีความหวัง', tag: 'hopeful and uplifting' },
-  { id: 'angry', label: 'ดุดัน', tag: 'angry and defiant' },
-  { id: 'dreamy', label: 'ล่องลอย', tag: 'dreamy and atmospheric' },
+  { id: 'happy', label: { th: 'สนุกสดใส', en: 'Upbeat' }, tag: 'upbeat and joyful' },
+  { id: 'sad', label: { th: 'เศร้า', en: 'Sad' }, tag: 'sad and melancholic' },
+  { id: 'romantic', label: { th: 'โรแมนติก', en: 'Romantic' }, tag: 'romantic and tender' },
+  { id: 'epic', label: { th: 'ฮึกเหิม', en: 'Epic' }, tag: 'epic and triumphant' },
+  { id: 'calm', label: { th: 'ผ่อนคลาย', en: 'Calm' }, tag: 'calm and soothing' },
+  { id: 'dark', label: { th: 'มืดหม่น', en: 'Dark' }, tag: 'dark and brooding' },
+  { id: 'nostalgic', label: { th: 'คิดถึงอดีต', en: 'Nostalgic' }, tag: 'nostalgic and wistful' },
+  { id: 'hopeful', label: { th: 'มีความหวัง', en: 'Hopeful' }, tag: 'hopeful and uplifting' },
+  { id: 'angry', label: { th: 'ดุดัน', en: 'Fierce' }, tag: 'angry and defiant' },
+  { id: 'dreamy', label: { th: 'ล่องลอย', en: 'Dreamy' }, tag: 'dreamy and atmospheric' },
 ];
 
 /** Instruments to put in the arrangement. Several may be picked. */
 export const MUSIC_INSTRUMENTS: MusicOption[] = [
-  { id: 'acoustic_guitar', label: 'กีตาร์โปร่ง', tag: 'acoustic guitar' },
-  { id: 'electric_guitar', label: 'กีตาร์ไฟฟ้า', tag: 'electric guitar' },
-  { id: 'piano', label: 'เปียโน', tag: 'piano' },
-  { id: 'synth', label: 'ซินธ์', tag: 'synthesizer pads and leads' },
-  { id: 'strings', label: 'เครื่องสาย', tag: 'string section' },
-  { id: 'brass', label: 'เครื่องเป่าทองเหลือง', tag: 'brass section' },
-  { id: 'sax', label: 'แซกโซโฟน', tag: 'saxophone' },
-  { id: 'flute', label: 'ขลุ่ย/ฟลูต', tag: 'flute' },
-  { id: 'drums', label: 'กลองชุด', tag: 'drum kit' },
-  { id: 'percussion', label: 'เพอร์คัสชัน', tag: 'hand percussion' },
-  { id: 'bass', label: 'เบส', tag: 'bass guitar' },
-  { id: 'organ', label: 'ออร์แกน', tag: 'Hammond organ' },
-  { id: 'phin', label: 'พิณ', tag: 'Thai phin lute' },
-  { id: 'khaen', label: 'แคน', tag: 'Thai khaen mouth organ' },
-  { id: 'ranad', label: 'ระนาด', tag: 'Thai ranat xylophone' },
-  { id: 'erhu', label: 'ซอ', tag: 'bowed Thai so / erhu' },
+  { id: 'acoustic_guitar', label: { th: 'กีตาร์โปร่ง', en: 'Acoustic guitar' }, tag: 'acoustic guitar' },
+  { id: 'electric_guitar', label: { th: 'กีตาร์ไฟฟ้า', en: 'Electric guitar' }, tag: 'electric guitar' },
+  { id: 'piano', label: { th: 'เปียโน', en: 'Piano' }, tag: 'piano' },
+  { id: 'synth', label: { th: 'ซินธ์', en: 'Synth' }, tag: 'synthesizer pads and leads' },
+  { id: 'strings', label: { th: 'เครื่องสาย', en: 'Strings' }, tag: 'string section' },
+  { id: 'brass', label: { th: 'เครื่องเป่าทองเหลือง', en: 'Brass' }, tag: 'brass section' },
+  { id: 'sax', label: { th: 'แซกโซโฟน', en: 'Saxophone' }, tag: 'saxophone' },
+  { id: 'flute', label: { th: 'ขลุ่ย/ฟลูต', en: 'Flute' }, tag: 'flute' },
+  { id: 'drums', label: { th: 'กลองชุด', en: 'Drum kit' }, tag: 'drum kit' },
+  { id: 'percussion', label: { th: 'เพอร์คัสชัน', en: 'Percussion' }, tag: 'hand percussion' },
+  { id: 'bass', label: { th: 'เบส', en: 'Bass' }, tag: 'bass guitar' },
+  { id: 'organ', label: { th: 'ออร์แกน', en: 'Organ' }, tag: 'Hammond organ' },
+  { id: 'phin', label: { th: 'พิณ', en: 'Phin' }, tag: 'Thai phin lute' },
+  { id: 'khaen', label: { th: 'แคน', en: 'Khaen' }, tag: 'Thai khaen mouth organ' },
+  { id: 'ranad', label: { th: 'ระนาด', en: 'Ranat' }, tag: 'Thai ranat xylophone' },
+  { id: 'erhu', label: { th: 'ซอ', en: 'Thai fiddle' }, tag: 'bowed Thai so / erhu' },
 ];
 
 /** What language the vocal is sung in. */
 export const MUSIC_LANGUAGES: MusicOption[] = [
-  { id: 'th', label: 'ไทย', tag: 'sung in Thai' },
-  { id: 'en', label: 'อังกฤษ', tag: 'sung in English' },
-  { id: 'th_en', label: 'ไทย + อังกฤษ', tag: 'sung in Thai with English hooks' },
-  { id: 'ja', label: 'ญี่ปุ่น', tag: 'sung in Japanese' },
-  { id: 'ko', label: 'เกาหลี', tag: 'sung in Korean' },
-  { id: 'zh', label: 'จีน', tag: 'sung in Mandarin' },
-  { id: 'lo', label: 'ลาว', tag: 'sung in Lao' },
+  { id: 'th', label: { th: 'ไทย', en: 'Thai' }, tag: 'sung in Thai' },
+  { id: 'en', label: { th: 'อังกฤษ', en: 'English' }, tag: 'sung in English' },
+  { id: 'th_en', label: { th: 'ไทย + อังกฤษ', en: 'Thai + English' }, tag: 'sung in Thai with English hooks' },
+  { id: 'ja', label: { th: 'ญี่ปุ่น', en: 'Japanese' }, tag: 'sung in Japanese' },
+  { id: 'ko', label: { th: 'เกาหลี', en: 'Korean' }, tag: 'sung in Korean' },
+  { id: 'zh', label: { th: 'จีน', en: 'Chinese' }, tag: 'sung in Mandarin' },
+  { id: 'lo', label: { th: 'ลาว', en: 'Lao' }, tag: 'sung in Lao' },
 ];
 
 /**
@@ -158,17 +160,17 @@ export const MUSIC_LANGUAGES: MusicOption[] = [
  */
 export interface MusicComplexityLevel {
   value: number;
-  label: string;
+  label: Msg;
   tag: string;
   mode: 'full' | 'melody';
 }
 
 export const MUSIC_COMPLEXITY: MusicComplexityLevel[] = [
-  { value: 1, label: 'เรียบง่าย', tag: 'sparse minimal arrangement, one or two instruments, lots of space', mode: 'melody' },
-  { value: 2, label: 'โปร่ง', tag: 'light arrangement, restrained backing', mode: 'melody' },
-  { value: 3, label: 'มาตรฐาน', tag: 'balanced full-band arrangement', mode: 'full' },
-  { value: 4, label: 'แน่น', tag: 'rich layered arrangement, countermelodies and backing vocals', mode: 'full' },
-  { value: 5, label: 'ซับซ้อน', tag: 'complex arrangement, dense harmony, instrumental solos, dynamic section changes', mode: 'full' },
+  { value: 1, label: { th: 'เรียบง่าย', en: 'Minimal' }, tag: 'sparse minimal arrangement, one or two instruments, lots of space', mode: 'melody' },
+  { value: 2, label: { th: 'โปร่ง', en: 'Light' }, tag: 'light arrangement, restrained backing', mode: 'melody' },
+  { value: 3, label: { th: 'มาตรฐาน', en: 'Balanced' }, tag: 'balanced full-band arrangement', mode: 'full' },
+  { value: 4, label: { th: 'แน่น', en: 'Rich' }, tag: 'rich layered arrangement, countermelodies and backing vocals', mode: 'full' },
+  { value: 5, label: { th: 'ซับซ้อน', en: 'Complex' }, tag: 'complex arrangement, dense harmony, instrumental solos, dynamic section changes', mode: 'full' },
 ];
 
 export const MUSIC_COMPLEXITY_DEFAULT = 3;

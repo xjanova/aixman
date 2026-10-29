@@ -13,6 +13,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { useT } from "@/lib/i18n/client";
 
 export interface OrbItem {
   key: string;
@@ -83,6 +84,7 @@ export function ModeOrb({ modes, links, title, glyph }: {
   /** The mode's line icon, drawn on the orb. */
   glyph: React.ReactNode;
 }) {
+  const t = useT();
   const [vp, setVp] = useState(() => (typeof window === "undefined" ? { w: 1440, h: 900 } : viewport()));
   const [saved, setSaved] = useState<Saved | null>(() => (typeof window === "undefined" ? null : readSaved()));
   const [dragAt, setDragAt] = useState<{ x: number; y: number } | null>(null);
@@ -99,8 +101,8 @@ export function ModeOrb({ modes, links, title, glyph }: {
 
   useEffect(() => {
     if (!hint) return;
-    const t = setTimeout(() => setHint(false), 9000);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => setHint(false), 9000);
+    return () => clearTimeout(timer);
   }, [hint]);
 
   const used = () => {
@@ -266,7 +268,7 @@ export function ModeOrb({ modes, links, title, glyph }: {
         onPointerMove={onHover}
         onPointerLeave={onLeave}
         role="group"
-        aria-label="เมนูโหมด ลากย้ายได้"
+        aria-label={t("เมนูโหมด ลากย้ายได้", "Mode menu (draggable)")}
       >
         {!narrow && (
           <>
@@ -313,7 +315,7 @@ export function ModeOrb({ modes, links, title, glyph }: {
         )}
 
         {narrow && (
-          <div className="menu" role="menu" aria-label="เลือกสิ่งที่จะสร้าง" data-right={listRight ? "true" : "false"}>
+          <div className="menu" role="menu" aria-label={t("เลือกสิ่งที่จะสร้าง", "Choose what to create")} data-right={listRight ? "true" : "false"}>
             {[...all].reverse().map((item, n) => {
               const i = all.length - 1 - n;
               const style: React.CSSProperties = {
@@ -348,14 +350,14 @@ export function ModeOrb({ modes, links, title, glyph }: {
         <button type="button" className="orb"
           onPointerDown={onOrbDown} onPointerMove={onOrbMove} onPointerUp={onOrbUp} onPointerCancel={onOrbUp}
           onClick={onOrbClick}
-          aria-label={`เมนูโหมด (ตอนนี้: ${title}) — แตะเพื่อเปิด ลากเพื่อย้าย`} aria-expanded={shown}>
+          aria-label={t(`เมนูโหมด (ตอนนี้: ${title}) — แตะเพื่อเปิด ลากเพื่อย้าย`, `Mode menu (now: ${title}) — tap to open, drag to move`)} aria-expanded={shown}>
           <span className="ball" /><span className="spec" /><span className="track" /><span className="run"><i /></span>
           <span className="gl">{glyph}</span>
         </button>
         {!narrow && (
           <span className="hint" aria-hidden="true" data-side={hintRight ? "right" : "left"} style={{ opacity: hint && !shown && !dragging ? 1 : 0 }}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 9l-3 3 3 3" /><path d="M9 5l3-3 3 3" /><path d="M15 19l-3 3-3-3" /><path d="M19 9l3 3-3 3" /><path d="M2 12h20" /><path d="M12 2v20" /></svg>
-            {title} · ชี้เพื่อเปลี่ยน ลากเพื่อย้าย
+            {title} · {t("ชี้เพื่อเปลี่ยน ลากเพื่อย้าย", "point to switch, drag to move")}
           </span>
         )}
       </div>

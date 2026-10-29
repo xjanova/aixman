@@ -14,15 +14,18 @@
  * Both directions live here, next to each other, for that reason.
  */
 
+import type { Locale, Msg } from '@/lib/i18n/locale';
+
 export type ReferenceRole = 'character' | 'outfit' | 'object' | 'place' | 'style' | 'other';
 
-export const REFERENCE_ROLES: { id: ReferenceRole; th: string; line: string }[] = [
-  { id: 'character', th: 'ตัวละคร', line: 'is the person: keep exactly this face, hair and body.' },
-  { id: 'outfit', th: 'ชุด', line: 'is the outfit: dress the person in exactly these clothes.' },
-  { id: 'object', th: 'สิ่งของ', line: 'is an object: keep its exact shape, design and colours.' },
-  { id: 'place', th: 'สถานที่', line: 'is the place: keep its architecture, layout and colours.' },
-  { id: 'style', th: 'สไตล์', line: 'is the style: match its look, colours and lighting.' },
-  { id: 'other', th: 'อื่น ๆ', line: 'is a reference.' },
+/** `label` is what the customer reads (both languages); `line` is prompt text the model reads — never translated. */
+export const REFERENCE_ROLES: { id: ReferenceRole; label: Msg; line: string }[] = [
+  { id: 'character', label: { th: 'ตัวละคร', en: 'Character' }, line: 'is the person: keep exactly this face, hair and body.' },
+  { id: 'outfit', label: { th: 'ชุด', en: 'Outfit' }, line: 'is the outfit: dress the person in exactly these clothes.' },
+  { id: 'object', label: { th: 'สิ่งของ', en: 'Object' }, line: 'is an object: keep its exact shape, design and colours.' },
+  { id: 'place', label: { th: 'สถานที่', en: 'Place' }, line: 'is the place: keep its architecture, layout and colours.' },
+  { id: 'style', label: { th: 'สไตล์', en: 'Style' }, line: 'is the style: match its look, colours and lighting.' },
+  { id: 'other', label: { th: 'อื่น ๆ', en: 'Other' }, line: 'is a reference.' },
 ];
 
 /** The role a new picture starts with: the first is usually who is in it. */
@@ -36,13 +39,19 @@ export function nextRole(role: ReferenceRole): ReferenceRole {
   return REFERENCE_ROLES[(i + 1) % REFERENCE_ROLES.length].id;
 }
 
-export function roleLabel(role: ReferenceRole): string {
-  return REFERENCE_ROLES.find((r) => r.id === role)?.th ?? 'อื่น ๆ';
+/** A role's label in both languages (render it with `t()`). */
+export function roleLabel(role: ReferenceRole): Msg {
+  return (REFERENCE_ROLES.find((r) => r.id === role) ?? REFERENCE_ROLES[REFERENCE_ROLES.length - 1]).label;
 }
 
-/** The token the customer types (or inserts) to point at picture `n` (1-based). */
-export function referenceToken(n: number): string {
-  return `ภาพ ${n}`;
+/**
+ * The token the customer types (or inserts) to point at picture `n` (1-based),
+ * in their language. Both forms point at the same picture: the block below
+ * names each one as "Image N (ภาพ N)". The block itself always uses the Thai
+ * default, so stored prompts keep parsing.
+ */
+export function referenceToken(n: number, locale: Locale = 'th'): string {
+  return locale === 'en' ? `Image ${n}` : `ภาพ ${n}`;
 }
 
 const HEADER = 'References:';

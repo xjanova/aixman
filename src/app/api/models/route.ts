@@ -21,7 +21,8 @@ import { fallbackRefsFor, whyNotFallback } from '@/lib/providers/kie-fallback';
 import { sunoStudioOptions } from '@/lib/providers/kie-suno';
 import { loadFallbackSettings } from '@/lib/services/kie-route';
 import { pick, requestLocale, type Locale, type Msg } from '@/lib/i18n/locale';
-import { qualityModeText, tierLabel, voiceLabel } from '@/lib/i18n/model-text';
+import { qualityModeText, tierDescription, tierLabel, voiceLabel } from '@/lib/i18n/model-text';
+import { stemOptions } from '@/lib/i18n/suno-text';
 
 /**
  * Public model list for the studio and the mobile app.
@@ -116,6 +117,12 @@ function qualityOptions(
   }));
 }
 
+/** A Suno tool's music panel, its stem picker in the visitor's language. */
+function sunoMusicOptions(tool: Parameters<typeof sunoStudioOptions>[0], locale: Locale) {
+  const options = sunoStudioOptions(tool);
+  return { ...options, suno: { ...options.suno, stems: stemOptions(options.suno.stems, locale) } };
+}
+
 /**
  * What the studio draws for a KIE.ai row, from its catalogue entry and the
  * credits table its sync wrote: tiers as the quality or resolution chips the
@@ -142,7 +149,7 @@ function kieOptions(entry: KieEntry, table: KiePriceTable, locale: Locale) {
             id: t.id,
             label: tierLabel(t.label, locale),
             // Suno's versions and splits say what each is; other tiers are their label.
-            description: entry.tiers.find((x) => x.id === t.id)?.description ?? '',
+            description: tierDescription(entry.tiers.find((x) => x.id === t.id)?.description ?? '', locale),
             // Display only: the studio prices KIE rows from `priceTable`.
             creditsMultiplier: Math.round((kieQuote(table, { tier: t.id }) / base) * 100) / 100,
             isDefault: t.isDefault === true,
@@ -151,7 +158,7 @@ function kieOptions(entry: KieEntry, table: KiePriceTable, locale: Locale) {
         : null,
     // A Suno tool draws its own mode of the music tab (kie-suno.ts).
     music: entry.suno
-      ? sunoStudioOptions(entry.suno)
+      ? sunoMusicOptions(entry.suno, locale)
       : entry.music
       ? { lyrics: true, sourceSong: false, maxDuration: null, autoLength: true, maxSourceSeconds: null, controls: true }
       : null,

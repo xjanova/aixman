@@ -13,6 +13,7 @@
 
 import { useRef, useState } from "react";
 import { AudioCover } from "./audio";
+import { useT } from "@/lib/i18n/client";
 
 export interface AudioTrack {
   url: string;
@@ -38,6 +39,8 @@ export function AudioTracks({ tracks, title, kind, onDownload, actions, onAction
   actions?: TrackAction[];
   onAction?: (actionId: string, track: AudioTrack) => void;
 }) {
+  // `t` is a track below.
+  const tr = useT();
   const players = useRef<(HTMLAudioElement | null)[]>([]);
   const [playing, setPlaying] = useState<number | null>(null);
   const [picked, setPicked] = useState<Set<number>>(() => new Set());
@@ -78,12 +81,14 @@ export function AudioTracks({ tracks, title, kind, onDownload, actions, onAction
         <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 10, padding: "12px 16px", background: "linear-gradient(180deg, transparent 30%, rgba(2,6,23,0.75))" }}>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 10.5, letterSpacing: "0.16em", color: "rgba(255,255,255,0.8)", textTransform: "uppercase" }}>
-              {stems ? "♫ แยกสเต็ม" : "♫ X-DREAMER MUSIC"}
+              {stems ? tr("♫ แยกสเต็ม", "♫ STEMS") : "♫ X-DREAMER MUSIC"}
             </div>
             <div style={{ fontSize: 14.5, color: "#f8fafc", fontWeight: 600, lineHeight: 1.4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</div>
           </div>
           <span style={{ flexShrink: 0, padding: "4px 10px", borderRadius: 999, fontSize: 11, color: "#e0f2fe", background: "rgba(14,165,233,0.22)", border: "1px solid rgba(125,211,252,0.35)", backdropFilter: "blur(8px)" }}>
-            {stems ? `${tracks.length} ไฟล์` : `${tracks.length} เวอร์ชัน`}
+            {stems
+              ? tr(`${tracks.length} ไฟล์`, `${tracks.length} ${tracks.length === 1 ? "file" : "files"}`)
+              : tr(`${tracks.length} เวอร์ชัน`, `${tracks.length} ${tracks.length === 1 ? "version" : "versions"}`)}
           </span>
         </div>
       </div>
@@ -101,7 +106,7 @@ export function AudioTracks({ tracks, title, kind, onDownload, actions, onAction
               transition: "background .2s, border-color .2s",
             }}>
               {stems && (
-                <input type="checkbox" checked={picked.has(i)} onChange={() => toggle(i)} aria-label={`เลือก ${t.label}`}
+                <input type="checkbox" checked={picked.has(i)} onChange={() => toggle(i)} aria-label={tr(`เลือก ${t.label}`, `Select ${t.label}`)}
                   style={{ width: 16, height: 16, accentColor: `hsl(${hue},80%,60%)`, cursor: "pointer" }} />
               )}
               <span aria-hidden="true" style={{
@@ -113,21 +118,21 @@ export function AudioTracks({ tracks, title, kind, onDownload, actions, onAction
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <b style={{ fontSize: 13, color: "#f1f5f9", fontWeight: 600, marginRight: "auto" }}>{t.label}</b>
                   {actions && actions.length > 0 && onAction && (
-                    <select value="" aria-label={`ใช้ ${t.label} ต่อ`}
+                    <select value="" aria-label={tr(`ใช้ ${t.label} ต่อ`, `Use ${t.label} in…`)}
                       onChange={(e) => { const id = e.target.value; e.target.value = ""; if (id) onAction(id, t); }}
                       style={{
                         height: 28, padding: "0 8px", borderRadius: 8, fontSize: 11.5, fontFamily: "inherit", cursor: "pointer",
                         color: "#cbd5e1", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.12)",
                       }}>
-                      <option value="">ใช้ต่อ…</option>
+                      <option value="">{tr("ใช้ต่อ…", "Use in…")}</option>
                       {actions.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
                     </select>
                   )}
-                  <button type="button" onClick={() => void onDownload(t, i)} aria-label={`ดาวน์โหลด ${t.label}`} title="ดาวน์โหลดไฟล์นี้"
+                  <button type="button" onClick={() => void onDownload(t, i)} aria-label={tr(`ดาวน์โหลด ${t.label}`, `Download ${t.label}`)} title={tr("ดาวน์โหลดไฟล์นี้", "Download this file")}
                     style={{
                       height: 28, padding: "0 10px", borderRadius: 8, fontSize: 11.5, fontFamily: "inherit", cursor: "pointer",
                       color: "#e0f2fe", background: `hsla(${hue},70%,50%,0.16)`, border: `1px solid hsla(${hue},80%,65%,0.32)`,
-                    }}>↓ โหลด</button>
+                    }}>{tr("↓ โหลด", "↓ Save")}</button>
                 </div>
                 <audio ref={(el) => { players.current[i] = el; }} src={t.url} controls preload="none"
                   onPlay={() => onPlay(i)} onPause={() => setPlaying((p) => (p === i ? null : p))} onEnded={() => setPlaying((p) => (p === i ? null : p))}
@@ -142,7 +147,7 @@ export function AudioTracks({ tracks, title, kind, onDownload, actions, onAction
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "4px 16px 14px" }}>
           <button type="button" onClick={() => setPicked(allPicked ? new Set() : new Set(tracks.map((_, i) => i)))}
             style={{ background: "none", border: "none", padding: 0, fontSize: 12, color: "#a5f3fc", cursor: "pointer", fontFamily: "inherit" }}>
-            {allPicked ? "ยกเลิกที่เลือก" : "เลือกทั้งหมด"}
+            {allPicked ? tr("ยกเลิกที่เลือก", "Clear selection") : tr("เลือกทั้งหมด", "Select all")}
           </button>
           <button type="button" disabled={picked.size === 0 || fetching} onClick={() => void downloadPicked()}
             style={{
@@ -151,7 +156,7 @@ export function AudioTracks({ tracks, title, kind, onDownload, actions, onAction
               color: "#04111d", background: "linear-gradient(135deg,#67e8f9,#a78bfa)", border: "none",
               boxShadow: picked.size > 0 ? "0 6px 18px rgba(103,232,249,0.25)" : "none",
             }}>
-            {fetching ? "กำลังดาวน์โหลด…" : `↓ ดาวน์โหลดที่เลือก (${picked.size})`}
+            {fetching ? tr("กำลังดาวน์โหลด…", "Downloading…") : tr(`↓ ดาวน์โหลดที่เลือก (${picked.size})`, `↓ Download selected (${picked.size})`)}
           </button>
         </div>
       )}
