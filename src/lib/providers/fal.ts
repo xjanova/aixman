@@ -65,42 +65,82 @@ export class FalProvider extends BaseProvider {
       const statusUrl = falUrl(queueData.status_url) ?? `${base}/status`;
       const responseUrl = falUrl(queueData.response_url) ?? base;
 
-      return await this.pollForResult(async () => {
-        const statusRes = await this.request(statusUrl, { headers: auth });
-        if (!statusRes.ok) {
-          // A blip on the status read is not the job failing — fal is still
-          // rendering it, and billing us for it. Give up only when fal says
-          // the request is gone or the key is refused.
-          if (statusRes.status === 429 || statusRes.status >= 500) return { done: false };
-          return { done: true, result: { success: false, error: `fal.ai status ${statusRes.status}: ${await errorText(statusRes)}` } };
-        }
-        const statusData = await statusRes.json();
+      try {
+        // The result URL is what a restart needs to collect it (requestStatus).
+        await params.onTaskCreated?.(responseUrl);
+      } catch (error) {
+        console.error(`[fal] request ${requestId} not recorded on its order:`, (error as Error).message);
+      }
 
-        if (statusData.status === 'COMPLETED') {
-          // fal has no FAILED status: a request that failed *completes*, with
-          // `error` set. Reading it as success stored a finished generation
-          // with no file and never refunded the customer.
-          if (statusData.error) {
-            const kind = typeof statusData.error_type === 'string' ? ` (${statusData.error_type})` : '';
-            return { done: true, result: { success: false, error: `fal.ai error${kind}: ${describe(statusData.error)}` } };
-          }
-          const resultRes = await this.request(responseUrl, { headers: auth });
-          if (!resultRes.ok) {
-            return { done: true, result: { success: false, error: `fal.ai result ${resultRes.status}: ${await errorText(resultRes)}` } };
-          }
-          return { done: true, result: delivered(await resultRes.json(), requestId, startTime) };
-        }
-
-        // Not in fal's documented set; kept in case an endpoint reports it.
-        if (statusData.status === 'FAILED') {
-          return { done: true, result: { success: false, error: describe(statusData.error) || 'Generation failed' } };
-        }
-
-        return { done: false };
-      }, pollAttempts(params.maxWaitSeconds, this.pollIntervalMs), this.pollIntervalMs);
+      return await this.pollForResult(
+        () => this.readRequest(statusUrl, responseUrl, auth, requestId, startTime, params.onState),
+        pollAttempts(params.maxWaitSeconds, this.pollIntervalMs),
+        this.pollIntervalMs
+      );
     } catch (error) {
       return { success: false, error: `fal.ai request failed: ${(error as Error).message}` };
     }
+  }
+
+  /**
+   * One status read of a request this process is no longer waiting on — an
+   * order whose wait a deploy or crash cut off (ApiOrderSweep). `responseUrl`
+   * is fal's own, as stored when the request was queued.
+   */
+  async requestStatus(apiKey: string, responseUrl: string, started: number): Promise<{ done: boolean; result?: ProviderResponse }> {
+    const url = falUrl(responseUrl);
+    if (!url) return { done: true, result: { success: false, error: 'fal.ai request URL not recognised' } };
+    const requestId = /\/requests\/([^/?#]+)/.exec(url)?.[1];
+    try {
+      return await this.readRequest(`${url}/status`, url, { Authorization: `Key ${apiKey}` }, requestId, started);
+    } catch {
+      // Unreachable for now: read again on the next sweep.
+      return { done: false };
+    }
+  }
+
+  private async readRequest(
+    statusUrl: string,
+    responseUrl: string,
+    auth: Record<string, string>,
+    requestId: string | undefined,
+    startTime: number,
+    onState?: (state: string) => void
+  ): Promise<{ done: boolean; result?: ProviderResponse }> {
+    const statusRes = await this.request(statusUrl, { headers: auth });
+    if (!statusRes.ok) {
+      // A blip on the status read is not the job failing — fal is still
+      // rendering it, and billing us for it. Give up only when fal says
+      // the request is gone or the key is refused.
+      if (statusRes.status === 429 || statusRes.status >= 500) return { done: false };
+      return { done: true, result: { success: false, error: `fal.ai status ${statusRes.status}: ${await errorText(statusRes)}` } };
+    }
+    const statusData = await statusRes.json();
+    // fal's queue stages, in the words the studio's queue reads (api-queue.ts).
+    if (statusData.status === 'IN_QUEUE') onState?.('queuing');
+    if (statusData.status === 'IN_PROGRESS') onState?.('generating');
+
+    if (statusData.status === 'COMPLETED') {
+      // fal has no FAILED status: a request that failed *completes*, with
+      // `error` set. Reading it as success stored a finished generation
+      // with no file and never refunded the customer.
+      if (statusData.error) {
+        const kind = typeof statusData.error_type === 'string' ? ` (${statusData.error_type})` : '';
+        return { done: true, result: { success: false, error: `fal.ai error${kind}: ${describe(statusData.error)}` } };
+      }
+      const resultRes = await this.request(responseUrl, { headers: auth });
+      if (!resultRes.ok) {
+        return { done: true, result: { success: false, error: `fal.ai result ${resultRes.status}: ${await errorText(resultRes)}` } };
+      }
+      return { done: true, result: delivered(await resultRes.json(), requestId, startTime) };
+    }
+
+    // Not in fal's documented set; kept in case an endpoint reports it.
+    if (statusData.status === 'FAILED') {
+      return { done: true, result: { success: false, error: describe(statusData.error) || 'Generation failed' } };
+    }
+
+    return { done: false };
   }
 
   /** The generic text/image body every non-audio fal endpoint has taken so far. */

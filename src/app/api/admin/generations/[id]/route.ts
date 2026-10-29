@@ -96,7 +96,7 @@ export async function POST(
     });
     if (claimed.count === 0) return NextResponse.json({ error: 'งานนี้กำลังถูกกู้อยู่แล้ว' }, { status: 409 });
 
-    const outcome = await GenerationService.resumeKieOrder(genId);
+    const outcome = await GenerationService.resumeApiOrder(genId);
     if (outcome === 'completed') {
       // Its time ran from the original order to now: not a render time to learn ETAs from.
       await prisma.aiGeneration.update({ where: { id: genId }, data: { processingMs: null } });

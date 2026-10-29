@@ -149,6 +149,20 @@ jobs:
             echo "Building production..."
             npm run build
 
+            # Let orders a restart would lose finish first (/api/cron/in-flight):
+            # a restart cut a customer's paid clip off mid-render on 2026-10-29.
+            # KIE and fal jobs are collected after a restart and are not waited
+            # for. Three minutes at most, then restart anyway; an app without
+            # the endpoint (or not answering) is restarted at once.
+            CRON_SECRET_VALUE=$(grep -E '^CRON_SECRET=' .env | head -1 | cut -d= -f2- | sed -E 's/^"//; s/"$//')
+            for i in $(seq 1 18); do
+              LEFT=$(curl -s --max-time 5 -H "Authorization: Bearer ${CRON_SECRET_VALUE}" http://127.0.0.1:3001/api/cron/in-flight | sed -nE 's/.*"unrecoverable":([0-9]+).*/\1/p')
+              if [ -z "$LEFT" ]; then echo "In-flight check unavailable — restarting now"; break; fi
+              if [ "$LEFT" = "0" ]; then echo "No running order would be lost — restarting"; break; fi
+              echo "Waiting for ${LEFT} running order(s) to finish before restart ($i/18)"
+              sleep 10
+            done
+
             # Restart with PM2
             echo "Restarting application..."
             if pm2 describe aixman > /dev/null 2>&1; then

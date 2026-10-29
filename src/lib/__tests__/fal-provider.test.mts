@@ -117,6 +117,60 @@ test('a finished clip is delivered, after waiting out the queue and a status bli
   assert.equal(calls.filter((c) => c.url.endsWith('/status')).length, 4);
 });
 
+test('the result URL reaches the order before the wait, and the queue stages reach the studio', async () => {
+  const seen: string[] = [];
+  const stages: string[] = [];
+  const statuses = [json({ status: 'IN_QUEUE', queue_position: 2 }), json({ status: 'IN_PROGRESS' }), json({ status: 'COMPLETED' })];
+  stubFetch([
+    [/\/status$/, () => {
+      // Stored before the first status read, not after the clip arrives.
+      assert.deepEqual(seen, [QUEUE]);
+      return statuses.shift() ?? json({ status: 'COMPLETED' });
+    }],
+    [/requests\/req-1$/, () => json({ video: { url: 'https://fal.media/files/talk.mp4' } })],
+    [/queue\.fal\.run\/fal-ai\/infinitalk$/, submitted],
+  ]);
+  const out = await new FastFal().generateVideo({
+    ...portrait,
+    onTaskCreated: async (url) => {
+      seen.push(url);
+    },
+    onState: (s) => stages.push(s),
+  });
+  assert.equal(out.success, true, out.error);
+  assert.deepEqual(stages, ['queuing', 'generating']);
+});
+
+test('a request cut off by a restart is read back from its stored URL', async () => {
+  const fal = new FastFal();
+  stubFetch([[/\/status$/, () => json({ status: 'IN_PROGRESS' })]]);
+  assert.deepEqual(await fal.requestStatus('k', QUEUE, Date.now()), { done: false });
+
+  const calls = stubFetch([
+    [/\/status$/, () => json({ status: 'COMPLETED' })],
+    [/requests\/req-1$/, () => json({ video: { url: 'https://fal.media/files/talk.mp4' } })],
+  ]);
+  const done = await fal.requestStatus('k', QUEUE, Date.now() - 1000);
+  assert.equal(done.done, true);
+  assert.equal(done.result?.success, true);
+  assert.equal(done.result?.resultUrl, 'https://fal.media/files/talk.mp4');
+  assert.equal(done.result?.jobId, 'req-1');
+  assert.equal(calls[0].url, `${QUEUE}/status`);
+  assert.equal(calls[0].auth, 'Key k');
+
+  stubFetch([[/\/status$/, () => json({ status: 'COMPLETED', error: 'Face not detected' })]]);
+  const failed = await fal.requestStatus('k', QUEUE, Date.now());
+  assert.equal(failed.result?.success, false);
+});
+
+test('a stored URL that does not point at fal is never followed with the key', async () => {
+  const calls = stubFetch([]);
+  const out = await new FastFal().requestStatus('k', 'https://evil.example/requests/req-1', Date.now());
+  assert.equal(out.done, true);
+  assert.equal(out.result?.success, false);
+  assert.equal(calls.length, 0);
+});
+
 test('nothing a caller sends can change what fal bills: no resolution, no acceleration, frames ours', async () => {
   const calls = stubFetch([
     [/\/status$/, () => json({ status: 'COMPLETED' })],

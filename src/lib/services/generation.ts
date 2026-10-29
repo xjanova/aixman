@@ -3,6 +3,7 @@ import prisma, { SLOW_DB_TX } from '@/lib/db';
 import { Prisma } from '@/generated/prisma/client';
 import { getProvider } from '@/lib/providers';
 import { KieProvider } from '@/lib/providers/kie';
+import { FalProvider } from '@/lib/providers/fal';
 import { decrypt } from '@/lib/utils/encryption';
 import { getGpuProvider } from '@/lib/gpu';
 import { AccountPoolManager } from './account-pool';
@@ -48,8 +49,14 @@ import { kieUnavailable, loadFallbackSettings, pickFallback, type ModelWithProvi
  */
 export const TYPE_MISMATCH_MESSAGE = 'โมเดลนี้ไม่รองรับงานประเภทนี้';
 
-/** Orders this process is waiting on right now (runApiOrder). */
-const runningOrders = new Set<number>();
+/**
+ * Orders this process is waiting on right now (runApiOrder), and whether a
+ * restart could still collect each one (its vendor job is stored).
+ */
+const runningOrders = new Map<number, { resumable: boolean }>();
+
+/** Vendors whose jobs can be read back after a restart (resumeApiOrder). */
+export const RESUMABLE_PROVIDERS = new Set(['kie', 'fal']);
 
 /** An API order already charged, handed to the call that runs it. */
 interface ApiOrderRun {
@@ -674,7 +681,7 @@ export class GenerationService {
    */
   private static async runApiOrder(run: ApiOrderRun): Promise<GenerationResult> {
     // While this process waits on it, ApiOrderSweep leaves the order alone.
-    runningOrders.add(run.generationId);
+    runningOrders.set(run.generationId, { resumable: false });
     try {
       return await this.executeApiOrder(run);
     } finally {
@@ -836,7 +843,7 @@ export class GenerationService {
   /**
    * Store what the provider answered on an order already charged: the files
    * to R2 and the order completed, or the order failed and refunded. Shared by
-   * `runApiOrder` and `resumeKieOrder`.
+   * `runApiOrder` and `resumeApiOrder`.
    */
   private static async storeResult(o: {
     userId: number;
@@ -973,26 +980,46 @@ export class GenerationService {
   }
 
   /**
-   * Collect a KIE order whose wait a deploy or crash cut off. KIE kept
-   * rendering it — and billed us for it — so the task id stored when KIE took
-   * the order (onTaskCreated) is read once: the clip is stored and the order
-   * completed, a failed task refunded, a task still rendering left for the
-   * next sweep. Returns what it did.
+   * Orders this process is waiting on that a restart would lose: the vendor
+   * has not named the job yet, or the vendor's jobs cannot be read back later
+   * (only KIE's and fal's can, resumeApiOrder). The deploy waits for these to
+   * reach zero before it restarts the app (/api/cron/in-flight).
    */
-  static async resumeKieOrder(generationId: number): Promise<'completed' | 'failed' | 'waiting' | 'skipped'> {
+  static unrecoverableInFlight(): number {
+    let count = 0;
+    for (const order of runningOrders.values()) if (!order.resumable) count += 1;
+    return count;
+  }
+
+  /**
+   * Collect an order whose wait a deploy or crash cut off. The vendor kept
+   * rendering it — and billed us for it — so the job stored when the vendor
+   * took the order (onTaskCreated) is read once: the file is stored and the
+   * order completed, a failed job refunded, a job still rendering left for
+   * the next sweep. Returns what it did.
+   *
+   * Which vendor to ask is the key's, not the model's: a KIE order a fallback
+   * row ran on fal holds fal's job.
+   */
+  static async resumeApiOrder(generationId: number): Promise<'completed' | 'failed' | 'waiting' | 'skipped'> {
     if (runningOrders.has(generationId)) return 'skipped';
     const order = await prisma.aiGeneration.findUnique({
       where: { id: generationId },
       include: { model: { include: { provider: true } } },
     });
     if (!order || order.status !== 'processing' || !order.providerJobId || !order.accountPoolId) return 'skipped';
-    if (order.model.provider.slug !== 'kie') return 'skipped';
-    const pool = await prisma.aiAccountPool.findUnique({ where: { id: order.accountPoolId } });
-    const provider = getProvider('kie');
-    if (!pool || !(provider instanceof KieProvider)) return 'skipped';
-
+    const pool = await prisma.aiAccountPool.findUnique({
+      where: { id: order.accountPoolId },
+      include: { provider: { select: { slug: true } } },
+    });
+    if (!pool) return 'skipped';
+    const vendor = getProvider(pool.provider.slug as ProviderSlug);
+    const apiKey = decrypt(pool.apiKey);
     const started = (order.startedAt ?? order.createdAt).getTime();
-    const read = await provider.taskStatus(decrypt(pool.apiKey), order.model.modelId, order.providerJobId, started);
+    let read: { done: boolean; result?: ProviderResponse };
+    if (vendor instanceof KieProvider) read = await vendor.taskStatus(apiKey, order.model.modelId, order.providerJobId, started);
+    else if (vendor instanceof FalProvider) read = await vendor.requestStatus(apiKey, order.providerJobId, started);
+    else return 'skipped';
     if (!read.done || !read.result) return 'waiting';
     const result = read.result;
 
@@ -1005,7 +1032,7 @@ export class GenerationService {
         costUsd: result.success ? result.costUsd ?? Number(order.model.costPerUnit) : 0,
         responseMs: result.processingMs,
         errorMessage: result.error,
-        metadata: { generationId, route: 'kie', kieModel: order.model.modelId, resumed: true },
+        metadata: { generationId, route: pool.provider.slug, model: order.model.modelId, resumed: true },
       },
     });
     const stored = await this.storeResult({
@@ -1017,7 +1044,7 @@ export class GenerationService {
       served: { model: order.model, account: { id: pool.id } },
       route: null,
     });
-    console.log(`[generation] #${generationId} resumed from KIE task ${order.providerJobId}: ${stored.status}`);
+    console.log(`[generation] #${generationId} resumed from ${pool.provider.slug}: ${stored.status}`);
     return stored.status === 'completed' ? 'completed' : 'failed';
   }
 
@@ -1059,17 +1086,19 @@ export class GenerationService {
       apiEndpoint: account.apiEndpoint,
       extraParams: (viaFallback ? fallbackParams(request.params) : request.params) as Record<string, unknown>,
       maxWaitSeconds: viaFallback ? apiVideoLipsyncRule(target.modelId)?.maxWaitSeconds : run.maxWaitSeconds,
-      // KIE's task id on the order the moment KIE takes it: a deploy that cuts
-      // the wait off then leaves something resumeKieOrder can collect.
-      onTaskCreated:
-        target.provider.slug === 'kie'
-          ? async (taskId: string) => {
-              await prisma.aiGeneration.updateMany({
-                where: { id: run.generationId, status: 'processing' },
-                data: { providerJobId: taskId, accountPoolId: account.id },
-              });
-            }
-          : undefined,
+      // The vendor's job on the order the moment the vendor takes it (KIE's
+      // task id, fal's result URL): a deploy that cuts the wait off then
+      // leaves something resumeApiOrder can collect.
+      onTaskCreated: RESUMABLE_PROVIDERS.has(target.provider.slug)
+        ? async (jobId: string) => {
+            await prisma.aiGeneration.updateMany({
+              where: { id: run.generationId, status: 'processing' },
+              data: { providerJobId: jobId, accountPoolId: account.id },
+            });
+            const running = runningOrders.get(run.generationId);
+            if (running) running.resumable = true;
+          }
+        : undefined,
       // The vendor's queue and render stages, for the studio's queue and percentage.
       onState: (state: string) => ApiProgress.report(run.generationId, state),
     };
