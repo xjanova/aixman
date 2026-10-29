@@ -63,6 +63,17 @@ export function kieCredits(usd: number, basis: KieBasis = DEFAULT_KIE_BASIS): nu
   return Math.max(1, Math.ceil((usd * basis.usdToThb * basis.markup) / perCredit - 1e-9));
 }
 
+/**
+ * What credits bring in, in USD, at the cheapest rate a customer buys them —
+ * the least an order charged that many can have paid us.
+ */
+export function creditsUsd(credits: number, basis: KieBasis = DEFAULT_KIE_BASIS): number {
+  if (!Number.isFinite(credits) || credits <= 0) return 0;
+  const perCredit = basis.thbPerCredit > 0 ? basis.thbPerCredit : DEFAULT_KIE_BASIS.thbPerCredit;
+  const usdToThb = basis.usdToThb > 0 ? basis.usdToThb : DEFAULT_KIE_BASIS.usdToThb;
+  return (credits * perCredit) / usdToThb;
+}
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }

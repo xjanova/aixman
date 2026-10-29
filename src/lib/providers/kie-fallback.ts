@@ -1,7 +1,8 @@
 import type { ProviderResponse } from '@/types';
 import { KIE_FALLBACKS, getKieEntry } from './kie-catalog';
 import { referenceCaps } from '@/lib/reference-caps';
-import { apiVideoLipsyncRule, checkClip, checkVoice, type ClipFacts } from '@/lib/lipsync-rules';
+import { apiVideoLipsyncRule, checkClip, checkVoice, lipsyncCredits, type ClipFacts } from '@/lib/lipsync-rules';
+import { creditsUsd, type KieBasis } from './kie-pricing';
 
 /**
  * KIE is the primary provider; the account pool is its fallback.
@@ -17,7 +18,9 @@ import { apiVideoLipsyncRule, checkClip, checkVoice, type ClipFacts } from '@/li
  *
  * The customer pays what they were quoted for the KIE model whichever route
  * serves it; GenerationService charges once, settles once, and records the
- * route on the order (`params.route`) and on the usage log.
+ * route on the order (`params.route`) and on the usage log. A row that would
+ * cost us more than that is not used (`fallbackLoss`): refunding beats
+ * delivering at a loss.
  *
  * Everything here is pure except `routeKieOrder`, which only calls what it
  * is given — the tests run it against a mocked fetch.
@@ -117,6 +120,8 @@ export interface FallbackRow {
   isActive: boolean;
   readiness: string;
   maxDuration: number | null;
+  /** The row's list cost in USD, what the books record for one of its orders. */
+  costPerUnit: number;
   defaultParams?: unknown;
 }
 
@@ -156,6 +161,49 @@ export function whyNotFallback(order: FallbackOrder, row: FallbackRow): string |
     if (!voice.ok) return voice.message;
   }
   return null;
+}
+
+/**
+ * The seconds a pool video row's list cost is for: the studio's default
+ * order (GenerationService bounds a length it is not given to 5).
+ */
+const POOL_VIDEO_SECONDS = 5;
+
+/**
+ * What running this order on the row costs us, in USD, from the row's list
+ * cost: one output; a re-dub row by its own billing blocks of the clip; a
+ * video row pro rata past the 5 seconds its list cost is for — the fallback
+ * renders the length the customer ordered.
+ */
+export function fallbackCostUsd(
+  row: Pick<FallbackRow, 'modelId' | 'category' | 'costPerUnit'>,
+  order: Pick<FallbackOrder, 'seconds' | 'clip'>
+): number {
+  const cost = Number.isFinite(row.costPerUnit) && row.costPerUnit > 0 ? row.costPerUnit : 0;
+  const lipsync = apiVideoLipsyncRule(row.modelId);
+  if (lipsync) return order.clip ? lipsyncCredits(lipsync.billing, cost, order.clip.seconds) : cost;
+  if (row.category === 'video' && order.seconds && order.seconds > POOL_VIDEO_SECONDS) {
+    return cost * (order.seconds / POOL_VIDEO_SECONDS);
+  }
+  return cost;
+}
+
+/**
+ * Why the row would serve this order at a loss, in Thai; null when what the
+ * customer paid (`paidCredits` at the cheapest rate a credit sells for)
+ * covers its cost.
+ */
+export function fallbackLoss(
+  row: Pick<FallbackRow, 'modelId' | 'category' | 'costPerUnit'>,
+  order: Pick<FallbackOrder, 'seconds' | 'clip'>,
+  paidCredits: number,
+  basis: KieBasis
+): string | null {
+  const cost = fallbackCostUsd(row, order);
+  const paid = creditsUsd(paidCredits, basis);
+  // A hair of float noise is not a loss.
+  if (cost <= paid + 1e-9) return null;
+  return `ขาดทุน: ต้นทุน $${cost.toFixed(2)} มากกว่าที่ลูกค้าจ่าย $${paid.toFixed(2)}`;
 }
 
 /**

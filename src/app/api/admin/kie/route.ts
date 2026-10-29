@@ -9,6 +9,7 @@ import {
   FALLBACK_ENABLED_KEY,
   FALLBACK_MAP_KEY,
   cleanRefs,
+  fallbackLoss,
   fallbackRefsFor,
   parseFallbackRef,
   readFallbackMap,
@@ -16,6 +17,7 @@ import {
   type FallbackOrder,
 } from '@/lib/providers/kie-fallback';
 import { fallbackRowOf, loadFallbackSettings, type ModelWithProvider } from '@/lib/services/kie-route';
+import { kieBasis } from '@/lib/providers/kie-sync';
 import { accountBlock } from '@/lib/services/account-pool';
 import { periodStarts } from '@/lib/llm/key-limits';
 
@@ -65,12 +67,21 @@ function plainOrder(key: string): FallbackOrder {
   return { kieKey: key, references: 0, firstFrame: false, lastFrame: false, seconds: null, clip: null, voice: null };
 }
 
-/** The cheapest credits a row's table asks, for the list ("from N"). */
-function priceFrom(defaultParams: unknown, creditsPerUnit: number): number {
+/**
+ * The cheapest order a row's table sells and its length: the list's "from N",
+ * and the order each fallback's cost is checked against (the one most likely
+ * to lose money on a row that bills per order).
+ */
+function cheapestOrder(defaultParams: unknown, creditsPerUnit: number): { credits: number; seconds: number | null } {
   const table = readKiePriceTable(defaultParams);
-  if (!table) return creditsPerUnit;
-  const all = Object.values(table.credits).flatMap((row) => Object.values(row)).filter((n) => Number.isFinite(n) && n > 0);
-  return all.length ? Math.min(...all) : creditsPerUnit;
+  let best: { credits: number; seconds: number | null } | null = null;
+  for (const row of Object.values(table?.credits ?? {})) {
+    for (const [length, credits] of Object.entries(row)) {
+      if (!Number.isFinite(credits) || credits <= 0 || (best && credits >= best.credits)) continue;
+      best = { credits, seconds: table?.durations ? Number(length) : table?.perSecond ? 1 : null };
+    }
+  }
+  return best ?? { credits: creditsPerUnit, seconds: null };
 }
 
 interface Tally {
@@ -196,9 +207,12 @@ export async function GET() {
     };
   });
 
+  // What a credit sells for now — what each fallback's cost is weighed against.
+  const basis = await kieBasis();
   const models = rows.map((r) => {
     const entry = getKieEntry(r.modelId);
     const refs = fallbackRefsFor(r.modelId, settings.map);
+    const cheapest = cheapestOrder(r.defaultParams, r.creditsPerUnit);
     return {
       id: r.id,
       modelId: r.modelId,
@@ -209,7 +223,7 @@ export async function GET() {
       isActive: r.isActive,
       readiness: r.readiness,
       inCatalog: !!entry,
-      priceFrom: priceFrom(r.defaultParams, r.creditsPerUnit),
+      priceFrom: cheapest.credits,
       unit: entry?.perChars ? `ต่อ ${entry.perChars.toLocaleString('en-US')} ตัวอักษร` : entry?.perSecond || entry?.sourceClip ? 'ต่อวินาที' : 'ต่องาน',
       today: today.get(r.id) ?? emptyTally(),
       month: thisMonth.get(r.id) ?? emptyTally(),
@@ -218,12 +232,17 @@ export async function GET() {
         refs: refs.map((ref) => {
           const row = byRef.get(ref);
           const why = !entry ? 'ไม่อยู่ในแคตตาล็อก' : !row ? 'ไม่มีโมเดลนี้ในระบบ' : whyNotFallback(plainOrder(r.modelId), fallbackRowOf(row));
+          // Orders it would lose money on are refunded instead (pickFallback).
+          const loss = row && why === null
+            ? fallbackLoss(fallbackRowOf(row), { seconds: cheapest.seconds, clip: null }, cheapest.credits, basis)
+            : null;
           return {
             ref,
             name: row?.name ?? null,
             provider: row?.provider.name ?? parseFallbackRef(ref)?.provider ?? ref,
             costPerUnit: row ? Number(row.costPerUnit) : null,
             usable: why === null && !!row && providerHasKey.has(row.providerId),
+            loss,
             why: why ?? (row && !providerHasKey.has(row.providerId) ? 'ผู้ให้บริการยังไม่มีคีย์ที่ใช้ได้' : null),
           };
         }),

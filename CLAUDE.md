@@ -166,7 +166,13 @@ against the free `/api/v1/chat/credit` → encrypted pool row, daily quota 0 →
   `whyNotFallback` (same category and shaped subcategory, active, `ready`,
   references/frames/length/lip-sync rules, an account in its pool) — speech,
   music and the clip tools have none. With no usable KIE key the order is routed
-  *before* charging; otherwise after KIE refused. The customer pays the KIE quote
+  *before* charging; otherwise after KIE refused. **Never at a loss**
+  (`fallbackLoss`): a row whose cost for the order (`fallbackCostUsd`: its
+  `costPerUnit`, pro rata past 5 s for video, per billing block for a re-dub)
+  exceeds what the customer paid (`creditsUsd` at the cheapest credit rate,
+  `kieBasis`) is passed over, and with none left the order is refunded and
+  `kie-fallback` (key `<model>:none`) lists why. The guard is only as true as
+  each pool row's `costPerUnit`. The customer pays the KIE quote
   either way, one settle; `fallbackParams` strips KIE-only params (fal copies
   `extraParams` into its body). The serving route is stored in `params.route`
   (never sent to customers), the usage log carries `metadata.route`, and the

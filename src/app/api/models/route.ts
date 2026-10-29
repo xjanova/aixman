@@ -271,6 +271,7 @@ export async function GET() {
           isActive: row.isActive,
           readiness: row.readiness,
           maxDuration: row.maxDuration,
+          costPerUnit: Number(row.costPerUnit),
           defaultParams: row.defaultParams,
         }
       );

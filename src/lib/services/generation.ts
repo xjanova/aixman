@@ -28,7 +28,7 @@ import { OrderRefusedError } from './order-refusal';
 import { LLM_CATEGORY } from '@/lib/llm/pricing';
 import { getKieEntry, kieImageCount, kiePriceTable } from '@/lib/providers/kie-catalog';
 import { kieQuote, pickKieDuration, pickKieTier, readKiePriceTable, speechChars } from '@/lib/providers/kie-pricing';
-import { fallbackParams, routeKieOrder, type FallbackOrder } from '@/lib/providers/kie-fallback';
+import { fallbackParams, kieRefusalReason, routeKieOrder, type FallbackOrder } from '@/lib/providers/kie-fallback';
 import { kieUnavailable, loadFallbackSettings, pickFallback, type ModelWithProvider, type PoolAccount } from './kie-route';
 
 /**
@@ -448,9 +448,13 @@ export class GenerationService {
     // No KIE key can take it now (switched off, cooling down after errors):
     // straight to KIE's fallback, before anything is charged, at KIE's price.
     let preRouted: { model: ModelWithProvider; reason: string } | null = null;
+    // Rows passed over (cannot do it, would lose money, no key), for the alert.
+    const skippedFallbacks: string[] = [];
     if (kieOrder && needsAccount && !account) {
       const settings = await loadFallbackSettings();
-      const picked = settings.enabled ? await pickFallback(model.modelId, kieOrder, settings.map) : null;
+      const picked = settings.enabled
+        ? await pickFallback(model.modelId, kieOrder, settings.map, requiredCredits, skippedFallbacks)
+        : null;
       if (picked) {
         account = picked.account;
         preRouted = { model: picked.model, reason: await kieUnavailable(model.providerId) };
@@ -468,6 +472,7 @@ export class GenerationService {
           kie
             ? 'คีย์ KIE ถูกปิด ติดลิมิต หรือถูกพัก และไม่มีโมเดลสำรองที่รับงานนี้ได้ — ตรวจที่หน้า KIE.ai'
             : 'คีย์ทุกอันถูกปิด ติดลิมิต หรือถูกพักจากข้อผิดพลาด — ตรวจที่หน้าคลังคีย์ (Pools)',
+          ...skippedFallbacks.slice(0, 5).map((s) => `สำรอง ${s}`),
         ],
         path: kie ? '/admin/kie' : '/admin/pools',
       });
@@ -700,6 +705,7 @@ export class GenerationService {
         // KIE first; its fallback only when KIE never took the order (kie-fallback.ts).
         const kie = run.kie;
         const settings = kie.preRouted ? null : await loadFallbackSettings();
+        const skippedFallbacks: string[] = [];
         const outcome = await routeKieOrder<ModelWithProvider>({
           kie: kie.preRouted ? null : () => attempt(model, run.account, false),
           unavailable: kie.preRouted?.reason,
@@ -707,11 +713,26 @@ export class GenerationService {
           pick: async () => {
             const picked = kie.preRouted
               ? { model: kie.preRouted.model, account: run.account }
-              : await pickFallback(model.modelId, kie.order, settings?.map ?? {});
+              : await pickFallback(model.modelId, kie.order, settings?.map ?? {}, requiredCredits, skippedFallbacks);
             return picked ? { target: picked.model, run: () => attempt(picked.model, picked.account, true) } : null;
           },
         });
         result = outcome.result;
+        if (outcome.via === 'kie' && outcome.skipped === 'none' && skippedFallbacks.length > 0) {
+          // KIE refused, and every row it falls back to was passed over: the
+          // order is refunded — the admin should see why none could take it.
+          raiseAlert({
+            type: 'kie-fallback',
+            key: `${model.modelId}:none`,
+            level: 'warning',
+            title: 'KIE.ai รับงานไม่ได้ และไม่มีโมเดลสำรองที่รับได้ — คืนเครดิตลูกค้าแล้ว',
+            lines: [
+              `${model.name}: ${kieRefusalReason(outcome.result)}`,
+              ...skippedFallbacks.slice(0, 5).map((s) => `สำรอง ${s}`),
+            ],
+            path: '/admin/kie',
+          });
+        }
         if (outcome.via === 'fallback') {
           route = orderRoute(outcome.target, outcome.reason);
           raiseAlert({

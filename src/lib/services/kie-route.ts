@@ -1,9 +1,12 @@
 import prisma from '@/lib/db';
 import type { Prisma } from '@/generated/prisma/client';
 import { AccountPoolManager, accountBlock } from './account-pool';
+import { kieBasis } from '@/lib/providers/kie-sync';
+import type { KieBasis } from '@/lib/providers/kie-pricing';
 import {
   FALLBACK_ENABLED_KEY,
   FALLBACK_MAP_KEY,
+  fallbackLoss,
   fallbackRefsFor,
   kieUnavailableReason,
   parseFallbackRef,
@@ -48,16 +51,26 @@ export function fallbackRowOf(row: ModelWithProvider): FallbackRow {
     isActive: row.isActive,
     readiness: row.readiness,
     maxDuration: row.maxDuration,
+    costPerUnit: Number(row.costPerUnit),
     defaultParams: row.defaultParams,
   };
 }
 
-/** The first row of the model's fallback list that can do this order and has a key free now. */
+/**
+ * The first row of the model's fallback list that can do this order, serves
+ * it without a loss on the `paidCredits` the customer was charged, and has a
+ * key free now. Each row passed over is noted in `skipped` (ref + Thai
+ * reason) for the alert and the admin.
+ */
 export async function pickFallback(
   kieKey: string,
   order: FallbackOrder,
-  map: Record<string, string[]>
+  map: Record<string, string[]>,
+  paidCredits: number,
+  skipped: string[] = []
 ): Promise<{ model: ModelWithProvider; account: PoolAccount } | null> {
+  // Read only when some row can do the job: what a credit sells for now.
+  let basis: KieBasis | null = null;
   for (const ref of fallbackRefsFor(kieKey, map)) {
     const parsed = parseFallbackRef(ref);
     if (!parsed) continue;
@@ -65,9 +78,24 @@ export async function pickFallback(
       where: { modelId: parsed.modelId, provider: { slug: parsed.provider } },
       include: { provider: true },
     });
-    if (!row || whyNotFallback(order, fallbackRowOf(row)) !== null) continue;
+    if (!row) {
+      skipped.push(`${ref}: ไม่มีโมเดลนี้ในระบบ`);
+      continue;
+    }
+    const fallback = fallbackRowOf(row);
+    let why = whyNotFallback(order, fallback);
+    if (why === null) {
+      // Unreadable prices are no licence to guess: the row is passed over.
+      basis ??= await kieBasis().catch(() => null);
+      why = basis ? fallbackLoss(fallback, order, paidCredits, basis) : 'อ่านราคาเครดิตไม่ได้ — ไม่เสี่ยงขาดทุน';
+    }
+    if (why !== null) {
+      skipped.push(`${ref}: ${why}`);
+      continue;
+    }
     const account = await AccountPoolManager.selectAccount(row.providerId);
     if (account) return { model: row, account };
+    skipped.push(`${ref}: ไม่มีคีย์ที่ใช้ได้ตอนนี้`);
   }
   return null;
 }

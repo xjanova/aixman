@@ -16,6 +16,8 @@ import { FalProvider } from '@/lib/providers/fal';
 import { KIE_CATALOG, KIE_FALLBACKS, getKieEntry } from '@/lib/providers/kie-catalog';
 import {
   cleanRefs,
+  fallbackCostUsd,
+  fallbackLoss,
   fallbackParams,
   fallbackRefsFor,
   kieRefusalReason,
@@ -28,6 +30,7 @@ import {
   type FallbackOrder,
   type FallbackRow,
 } from '@/lib/providers/kie-fallback';
+import { creditsUsd, type KieBasis } from '@/lib/providers/kie-pricing';
 import type { ProviderGenerateParams, ProviderResponse } from '@/types';
 
 class FastKie extends KieProvider {
@@ -241,6 +244,7 @@ const row = (over: Partial<FallbackRow> = {}): FallbackRow => ({
   isActive: true,
   readiness: 'ready',
   maxDuration: null,
+  costPerUnit: 0.05,
   ...over,
 });
 const picture = (over: Partial<FallbackOrder> = {}): FallbackOrder => ({
@@ -289,6 +293,69 @@ test('whyNotFallback: a lip-sync row checks the order\'s clip and voice by its o
   assert.equal(whyNotFallback({ ...dub, clip: facts, voice: { seconds: 6, bytes: 200_000 } }, kling), null);
   // Kling takes 2–10 s of clip.
   assert.notEqual(whyNotFallback({ ...dub, clip: { ...facts, seconds: 14 }, voice: { seconds: 6, bytes: 200_000 } }, kling), null);
+});
+
+// ---------------------------------------------------------------------------
+// Never at a loss
+// ---------------------------------------------------------------------------
+
+/** A credit sold at ฿0.50 with ฿36 to the dollar: 36 credits bring in $0.50. */
+const basis: KieBasis = { usdToThb: 36, thbPerCredit: 0.5, markup: 2 };
+
+test('creditsUsd: credits at the cheapest rate they sell for, in dollars', () => {
+  assert.equal(creditsUsd(36, basis), 0.5);
+  assert.equal(creditsUsd(0, basis), 0);
+  assert.equal(creditsUsd(Number.NaN, basis), 0);
+  // A basis with no rate falls back to the seed's (฿2,499 for 6,500 credits, ฿36/$).
+  assert.ok(Math.abs(creditsUsd(6500, { usdToThb: 0, thbPerCredit: 0, markup: 2 }) - 2499 / 36) < 1e-9);
+});
+
+test('fallbackCostUsd: one output; a video pro rata past 5 s; a re-dub by its own billing blocks', () => {
+  assert.equal(fallbackCostUsd(row(), picture()), 0.05);
+  const sora = row({ modelId: 'sora-2', category: 'video', costPerUnit: 0.5 });
+  assert.equal(fallbackCostUsd(sora, { seconds: null, clip: null }), 0.5);
+  assert.equal(fallbackCostUsd(sora, { seconds: 4, clip: null }), 0.5);
+  assert.ok(Math.abs(fallbackCostUsd(sora, { seconds: 8, clip: null }) - 0.8) < 1e-9);
+  // Kling's re-dub bills every started 5 s of clip.
+  const kling = row({ modelId: 'fal-ai/kling-video/lipsync/audio-to-video', category: 'video', costPerUnit: 0.2 });
+  const facts = { seconds: 8, width: 1280, height: 720, bytes: 4_000_000, ext: 'mp4' };
+  assert.ok(Math.abs(fallbackCostUsd(kling, { seconds: 8, clip: facts }) - 0.4) < 1e-9);
+  // A row with no cost set costs nothing in the books, so nothing here.
+  assert.equal(fallbackCostUsd(row({ costPerUnit: Number.NaN }), picture()), 0);
+});
+
+test('fallbackLoss: used when what the customer paid covers it, refused when it does not', () => {
+  const sora = row({ modelId: 'sora-2', category: 'video', costPerUnit: 0.5 });
+  assert.equal(fallbackLoss(sora, { seconds: 5, clip: null }, 36, basis), null, 'break-even is not a loss');
+  assert.equal(fallbackLoss(sora, { seconds: 5, clip: null }, 100, basis), null);
+  assert.equal(
+    fallbackLoss(sora, { seconds: 8, clip: null }, 36, basis),
+    'ขาดทุน: ต้นทุน $0.80 มากกว่าที่ลูกค้าจ่าย $0.50'
+  );
+  assert.notEqual(fallbackLoss(row({ costPerUnit: 0.06 }), picture(), 4, basis), null);
+});
+
+test('KIE 402 and the only fallback would lose money: refunded on KIE, fal never called', async () => {
+  const calls = stubFetch([[CREATE, kieRefuses(402, 'Credits insufficient')], [FAL, falDelivers]]);
+  const skipped: string[] = [];
+  const outcome = await routeKieOrder<string>({
+    kie: () => new FastKie().generateImage(order),
+    enabled: true,
+    // What pickFallback does with the row it found: the loss check first.
+    pick: async () => {
+      const loss = fallbackLoss(row({ costPerUnit: 0.5 }), picture(), 4, basis);
+      if (loss) {
+        skipped.push(`fal:fal-ai/flux-pro/v1.1: ${loss}`);
+        return null;
+      }
+      return { target: 'fal', run: () => new FastFal().generateImage({ ...order, modelId: 'fal-ai/flux-pro/v1.1', apiKey: 'fal-key' }) };
+    },
+  });
+  assert.equal(outcome.via, 'kie');
+  assert.equal(outcome.via === 'kie' && outcome.skipped, 'none');
+  assert.equal(outcome.result.success, false);
+  assert.match(skipped[0], /ขาดทุน/);
+  assert.ok(!calls.some((u) => FAL.test(u)), 'fal never called');
 });
 
 test('fallbackParams: KIE\'s own keys never reach another provider', () => {

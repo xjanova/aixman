@@ -23,7 +23,11 @@ interface KeyView {
   lastUsedAt: string | null; usageToday: number; usageThisMonth: number; totalCostUsd: number;
   out402: boolean; alert402At: string | null;
 }
-interface RefView { ref: string; name: string | null; provider: string; costPerUnit: number | null; usable: boolean; why: string | null }
+interface RefView {
+  ref: string; name: string | null; provider: string; costPerUnit: number | null; usable: boolean; why: string | null;
+  /** Set when it would lose money on the model's cheapest order. */
+  loss: string | null;
+}
 interface ModelView {
   id: number; modelId: string; name: string; family: string; category: string; subcategory: string | null;
   isActive: boolean; readiness: string; inCatalog: boolean; priceFrom: number; unit: string;
@@ -186,6 +190,7 @@ export default function KiePage() {
             <span className="kp-knob" />{data?.fallback.enabled ? "เปิด" : "ปิด"}
           </button>
           <div className="kp-small">สลับวันนี้ {spend?.today.fallback ?? 0} · เดือนนี้ {spend?.month.fallback ?? 0} ออร์เดอร์</div>
+          <div className="kp-small">กันขาดทุน: ไม่ส่งงานไปตัวสำรองที่ต้นทุนสูงกว่าที่ลูกค้าจ่าย — คืนเครดิตแทน</div>
         </div>
         {(["today", "month"] as const).map((p) => (
           <div className="kp-card kp-tile" key={p}>
@@ -283,8 +288,9 @@ export default function KiePage() {
                     <span className="kp-small">สำรอง{m.fallback.custom ? " (แก้แล้ว)" : ""}:</span>
                     {m.fallback.refs.length === 0 && <span className="kp-small">ไม่มี — KIE รับไม่ได้ = คืนเครดิต</span>}
                     {m.fallback.refs.map((r) => (
-                      <span key={r.ref} className={`kp-chip ${r.usable ? "ok" : "warn"}`} title={r.why ?? "พร้อมรับงานแทน"}>
-                        {r.name ?? r.ref} · {r.provider}{r.usable ? "" : ` — ${r.why}`}
+                      <span key={r.ref} className={`kp-chip ${r.usable && !r.loss ? "ok" : "warn"}`}
+                        title={r.usable && r.loss ? `${r.loss} ที่งานราคาต่ำสุด — งานนั้นคืนเครดิตแทน งานราคาสูงกว่ายังใช้ตัวนี้ได้` : r.why ?? "พร้อมรับงานแทน"}>
+                        {r.name ?? r.ref} · {r.provider}{!r.usable ? ` — ${r.why}` : r.loss ? " — ขาดทุนที่ราคาต่ำสุด" : ""}
                       </span>
                     ))}
                   </div>
