@@ -112,6 +112,12 @@ const EXACT: Record<string, string> = {
   'kie/elevenlabs-v3': 'elevenlabs-v3',
   'kie/gemini-3-8-flash-tts': 'gemini-tts',
   'kie/suno-v6': 'suno',
+  'kie/suno-cover': 'suno',
+  'kie/suno-extend': 'suno',
+  'kie/suno-add-vocals': 'suno',
+  'kie/suno-add-instrumental': 'suno',
+  'kie/suno-stems': 'suno',
+  'kie/suno-sounds': 'suno',
 };
 
 const PATTERNS: [RegExp, string][] = [

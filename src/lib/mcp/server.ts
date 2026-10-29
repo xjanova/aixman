@@ -62,6 +62,8 @@ const KINDS: Kind[] = ['image', 'video', 'audio', 'speech'];
 function kindOf(row: { category: string; subcategory: string | null }): Kind | null {
   const sub = row.subcategory ?? '';
   if (sub.startsWith('lipsync') || sub === 'motion' || sub === 'video-upscale') return null;
+  // Suno's cover, extension, added vocals/band and stems start from a track no tool here uploads.
+  if (['music-cover', 'music-extend', 'music-add', 'music-stems'].includes(sub)) return null;
   if (row.category === 'audio') return sub === 'speech' ? 'speech' : 'audio';
   return row.category === 'image' || row.category === 'video' ? row.category : null;
 }

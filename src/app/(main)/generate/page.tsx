@@ -44,6 +44,7 @@ import {
 import { downloadGeneration, extensionOf, saveFavorite } from "@/lib/client-actions";
 import { nextQueueProgress, shownFraction, type QueueProgress, type QueueReading } from "@/lib/queue-progress";
 import { AUDIO_EXT, AudioCover, AudioResult } from "@/components/xdreamer/audio";
+import { AudioTracks, type AudioTrack } from "@/components/xdreamer/audio-tracks";
 import { loadAudio } from "@/components/xdreamer/audio-wave";
 import { AudioTrimmer, coversWhole, cutAudio, initialTrim, trimKey, type TrimRange } from "@/components/xdreamer/audio-trim";
 import { ModeOrb, type OrbItem } from "@/components/xdreamer/mode-orb";
@@ -76,6 +77,74 @@ type VideoMode = "t2v" | "i2v" | "motion" | "upscale";
 type VideoTool = "motion" | "upscale";
 const videoToolOf = (subcategory?: string | null): VideoTool | null =>
   subcategory === "motion" ? "motion" : subcategory === "video-upscale" ? "upscale" : null;
+
+/**
+ * The music tab's modes. Writing a song is the first; the rest work on a
+ * track the customer brings (Suno's tools, kie-suno.ts, and the in-house
+ * cover) or make short sounds. Each lists only its own models.
+ */
+type MusicMode = "create" | "cover" | "extend" | "add" | "stems" | "sounds";
+const MUSIC_MODES: { key: MusicMode; label: string; hint: string }[] = [
+  { key: "create", label: "แต่งเพลง", hint: "จากแนวเพลงและเนื้อร้อง" },
+  { key: "cover", label: "คัฟเวอร์", hint: "ทำนองเดิม แนวใหม่" },
+  { key: "extend", label: "ต่อเพลง", hint: "ยาวขึ้นจากจุดที่เลือก" },
+  { key: "add", label: "เติมเสียง", hint: "ใส่เสียงร้อง หรือใส่ดนตรี" },
+  { key: "stems", label: "แยกสเต็ม", hint: "เสียงร้อง กลอง เบส …" },
+  { key: "sounds", label: "เสียงประกอบ", hint: "ลูป บีต เอฟเฟกต์" },
+];
+const musicModeOf = (m: { subcategory?: string | null; music?: { sourceSong: boolean } | null }): MusicMode => {
+  switch (m.subcategory) {
+    case "music-cover": return "cover";
+    case "music-extend": return "extend";
+    case "music-add": return "add";
+    case "music-stems": return "stems";
+    case "music-sounds": return "sounds";
+  }
+  // The in-house cover is a song model that starts from an upload.
+  return m.music?.sourceSong ? "cover" : "create";
+};
+type SunoTool = "song" | "cover" | "extend" | "add-vocals" | "add-instrumental" | "stems" | "sounds";
+/** The customer's Suno fine-tuning (kie-suno.ts SunoParams); absent = the model's own choice. */
+interface SunoChoices {
+  title?: string;
+  exclude?: string;
+  styleWeight?: number;
+  weirdness?: number;
+  audioWeight?: number;
+  variety?: number;
+  length?: number;
+  continueAt?: number;
+  stem?: string;
+  loop?: boolean;
+  tempo?: number;
+  key?: string;
+}
+/** Only what this tool reads goes with the order. */
+function sunoParamsFor(tool: SunoTool, c: SunoChoices, tier: string | undefined): SunoChoices | undefined {
+  if (tool === "stems") return tier === "one" && c.stem ? { stem: c.stem } : undefined;
+  if (tool === "sounds") return { loop: c.loop || undefined, tempo: c.tempo, key: c.key };
+  return {
+    title: c.title?.trim() || undefined,
+    exclude: c.exclude?.trim() || undefined,
+    styleWeight: c.styleWeight,
+    weirdness: c.weirdness,
+    audioWeight: c.audioWeight,
+    variety: c.variety,
+    length: tool === "song" ? c.length : undefined,
+    continueAt: tool === "extend" ? c.continueAt : undefined,
+  };
+}
+const SUNO_VARIETY = ["ตรงสไตล์", "ปกติ", "หลากหลาย", "กล้าลอง", "สุดทาง"];
+const SUNO_LENGTHS = [30, 60, 120, 180, 240, 360];
+/** A track this order made, carried on to the next tool: [mode, Suno tool, menu label]. */
+const SONG_NEXT: [MusicMode, SunoTool, string][] = [
+  ["stems", "stems", "✂ แยกสเต็ม"],
+  ["cover", "cover", "↻ คัฟเวอร์เป็นแนวใหม่"],
+  ["extend", "extend", "⏩ ต่อเพลงให้ยาวขึ้น"],
+  ["add", "add-vocals", "🎤 ใส่เสียงร้อง (ดนตรีบรรเลง)"],
+  ["add", "add-instrumental", "🎸 ใส่ดนตรี (เสียงร้องเปล่า)"],
+];
+const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
 /** Text-to-speech rows are 'audio' on the server, like songs; the subcategory gives them their own tab. */
 const isSpeechModel = (m: { category: string; subcategory: string | null }) =>
@@ -382,6 +451,8 @@ interface GenerationResult {
   status: string;
   resultUrl?: string;
   resultUrls?: string[];
+  /** A name per file (a stem split's "เสียงร้อง", "กลอง" …). */
+  resultLabels?: string[];
   thumbnailUrl?: string;
   creditsUsed: number;
   processingMs?: number;
@@ -414,6 +485,8 @@ interface HistoryItem {
     speechStyle?: string;
   } | null;
   resultUrl?: string;
+  resultUrls?: unknown;
+  resultLabels?: string[] | null;
   thumbnailUrl?: string;
   model?: { name?: string; subcategory?: string | null };
   createdAt: string;
@@ -460,6 +533,8 @@ interface FormSnapshot {
   musicStyle: MusicStyleParams;
   instrumental: boolean;
   videoMode: VideoMode;
+  musicMode: MusicMode;
+  suno: SunoChoices;
   voiceId: string | null;
   speechStyle: string;
   refs: RefPic[];
@@ -482,6 +557,7 @@ interface GenerationStatus {
   status: string;
   resultUrl?: string;
   resultUrls?: string[] | string | null;
+  resultLabels?: string[] | null;
   thumbnailUrl?: string;
   creditsUsed: number;
   processingMs?: number;
@@ -1485,6 +1561,10 @@ export default function GeneratePage() {
    * which one they wanted.
    */
   const [videoMode, setVideoMode] = useState<VideoMode>("t2v");
+  const [musicMode, setMusicMode] = useState<MusicMode>("create");
+  const [suno, setSuno] = useState<SunoChoices>({});
+  /** A finished track carried on to the next tool: played in the slot, as an upload has no player. */
+  const [carriedAudio, setCarriedAudio] = useState<string | null>(null);
   /** Speech tab: the voice picked (null = the model's default) and, for a model that takes one, how to speak. */
   const [voiceId, setVoiceId] = useState<string | null>(null);
   const [speechStyle, setSpeechStyle] = useState("");
@@ -1612,7 +1692,17 @@ export default function GeneratePage() {
   const videoTool: VideoTool | null = tab === "video" && (videoMode === "motion" || videoMode === "upscale") ? videoMode : null;
   // A video mode lists only its own models: a motion copy offered on text →
   // video would get no clip, a text model on "upscale" no description.
-  const filteredModels = models.filter((m) => inTab(m, tab) && (tab !== "video" || videoToolOf(m.subcategory) === videoTool));
+  const filteredModels = models.filter((m) =>
+    inTab(m, tab) &&
+    (tab !== "video" || videoToolOf(m.subcategory) === videoTool) &&
+    (tab !== "audio" || musicModeOf(m) === musicMode));
+  /** The music modes some model offers — the switch appears only with more than one. */
+  const musicModes = MUSIC_MODES.filter((mode) => models.some((m) => inTab(m, "audio") && musicModeOf(m) === mode.key));
+  const lostMusicMode = modelsLoaded && musicMode !== "create" && !musicModes.some((m) => m.key === musicMode);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (lostMusicMode) setMusicMode("create");
+  }, [lostMusicMode]);
   /** The clip tools some connected video model offers — their modes appear only then. */
   const videoTools = (["motion", "upscale"] as const).filter((t) =>
     models.some((m) => m.category === "video" && videoToolOf(m.subcategory) === t),
@@ -1677,6 +1767,7 @@ export default function GeneratePage() {
     if (!home) return;
     setTab(home);
     if (home === "video") setVideoMode(videoToolOf(m.subcategory) ?? "t2v");
+    if (home === "audio") setMusicMode(musicModeOf(m));
     setSelectedModelId(m.id);
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [modelsLoaded, linkedModel, models]);
@@ -1856,6 +1947,28 @@ export default function GeneratePage() {
   const missingSourceSong = musicOpts?.sourceSong === true && !hasAudio;
   /** Longest source track a cover accepts — the upload cap, not the model's. */
   const coverSourceSeconds = musicOpts?.maxSourceSeconds ?? musicOpts?.maxDuration ?? 240;
+  /** A Suno tool's own options, or null for every other model. */
+  const sunoOpts = musicOpts?.suno ?? null;
+  const sunoTool: SunoTool | null = sunoOpts?.tool ?? null;
+  /** A stem split has nothing to describe: its prompt box is not drawn. */
+  const promptHidden = sunoTool === "stems";
+  /** A tool that works on a track may go without words: the track is the instruction. */
+  const promptOptional = sunoTool !== null && sunoTool !== "song" && sunoTool !== "sounds";
+  /** "เพลงบรรเลง" only where it means something — not when vocals or a band are what is added. */
+  const instrumentalOn = instrumental && sunoOpts?.instrumental !== false;
+  /** The split chosen on a stems model ("ดึงชิ้นเดียว" asks which stem). */
+  const stemTier = sunoTool === "stems" ? activeQuality?.id ?? null : null;
+  const activeStem = sunoOpts?.stems?.find((x) => x.id === suno.stem) ?? sunoOpts?.stems?.[0] ?? null;
+  // What the fine-tuning panel's button says it holds.
+  const sunoTuned = suno.styleWeight !== undefined || suno.weirdness !== undefined || suno.audioWeight !== undefined;
+  const sunoPicks = [
+    suno.length ? clock(suno.length) : "",
+    suno.variety !== undefined ? SUNO_VARIETY[suno.variety] ?? "" : "",
+    sunoTuned ? "กำหนดเอง" : "",
+  ].filter((x) => x).join(" · ");
+  const sunoSummary = sunoPicks === "" ? "อัตโนมัติ" : sunoPicks;
+  const setSunoField = <K extends keyof SunoChoices>(key: K, value: SunoChoices[K]) =>
+    setSuno((c) => ({ ...c, [key]: value }));
 
   /** Longest part of a picked track this tab may keep. */
   const trimMax = tab === "lipsync" ? lipsyncAudioMax : coverSourceSeconds;
@@ -1888,7 +2001,7 @@ export default function GeneratePage() {
    */
   const styleSummary =
     musicOpts?.controls && prompt.trim()
-      ? composeMusicTags(prompt, { ...musicStyle, instrumental })
+      ? composeMusicTags(prompt, { ...musicStyle, instrumental: instrumentalOn })
       : "";
 
   /**
@@ -1902,7 +2015,7 @@ export default function GeneratePage() {
     runningJobs >= MAX_PARALLEL_JOBS ||
     !selectedModelId ||
     selectedModel?.canOrder === false ||
-    (tab !== "lipsync" && !videoTool && !prompt.trim()) ||
+    (tab !== "lipsync" && !videoTool && !promptOptional && !prompt.trim()) ||
     missingStartFrame ||
     missingToolText !== null ||
     speechTooLong ||
@@ -2306,6 +2419,7 @@ export default function GeneratePage() {
           resultUrls: data.resultUrls
             ? (Array.isArray(data.resultUrls) ? data.resultUrls : [data.resultUrl as string])
             : [data.resultUrl as string],
+          resultLabels: Array.isArray(data.resultLabels) ? data.resultLabels : undefined,
           thumbnailUrl: data.thumbnailUrl,
           creditsUsed: data.creditsUsed, processingMs: data.processingMs,
           expiresAt: data.expiresAt, daysLeft: data.daysLeft,
@@ -2376,7 +2490,7 @@ export default function GeneratePage() {
     // mode that may legitimately run with an empty prompt.
     if (!selectedModelId) return;
     // …and so may a clip tool: an upscale has nothing to describe.
-    if (tab !== "lipsync" && !videoTool && !prompt.trim()) return;
+    if (tab !== "lipsync" && !videoTool && !promptOptional && !prompt.trim()) return;
     if (runningJobs >= MAX_PARALLEL_JOBS) {
       toast("info", `กำลังสร้างอยู่ ${MAX_PARALLEL_JOBS} งานแล้ว`, "รอให้งานใดงานหนึ่งเสร็จก่อน แล้วค่อยสั่งเพิ่ม");
       return;
@@ -2418,7 +2532,7 @@ export default function GeneratePage() {
       return;
     }
     if (missingSourceSong) {
-      toast("error", "ยังไม่ได้อัปโหลดเพลงต้นฉบับ", "โหมดคัฟเวอร์ต้องมีเพลงให้ AI ถอดทำนองก่อน");
+      toast("error", "ยังไม่ได้อัปโหลดเพลง", sunoTool ? "โหมดนี้ทำงานกับเพลงที่อัปโหลด — ใส่ไฟล์ก่อนสั่ง" : "โหมดคัฟเวอร์ต้องมีเพลงให้ AI ถอดทำนองก่อน");
       return;
     }
     if (tab === "image" && refsUploading) {
@@ -2491,6 +2605,8 @@ export default function GeneratePage() {
     // background, and so is every KIE order (after() + poll): a Veo clip or an
     // upscale outlasts the four minutes an API answer is otherwise given.
     const slowApi = Boolean(videoRule?.billing) || selectedModel?.asyncApi === true;
+    // A stem split has no words of its own; its history line says what it was.
+    const splitTitle = promptHidden ? `แยกสเต็ม · ${activeQuality?.label ?? ""}${stemTier === "one" && activeStem ? ` (${activeStem.label})` : ""}` : null;
     const sent = await postGeneration({
       modelId: selectedModelId,
       // Lip-sync has no generation type of its own on the server: what it
@@ -2498,7 +2614,7 @@ export default function GeneratePage() {
       // controls here.
       // Speech is an 'audio' order, like a song.
       type: tab === "lipsync" ? "video" : tab === "speech" ? "audio" : tab,
-      prompt: promptToSend,
+      prompt: splitTitle ?? promptToSend,
       // Checked against the model's cap and our bucket again on the server.
       referenceImages: multiSend ? sentPics.map((r) => r.url) : undefined,
       negativePrompt: noPictureKnobs ? undefined : negativePrompt.trim() || undefined,
@@ -2542,10 +2658,12 @@ export default function GeneratePage() {
         // Instrumental wins over whatever is in the box, and is expressed by
         // sending no lyrics at all — which is exactly what the models read as
         // "no vocal".
-        lyrics: music && !instrumental ? lyrics.trim() || undefined : undefined,
+        lyrics: music && !instrumentalOn && musicOpts?.lyrics !== false ? lyrics.trim() || undefined : undefined,
         // The choices, not the prompt they compose into: the server builds the
         // `[Tags]` line so every client builds the same one.
-        music: musicOpts?.controls ? { ...musicStyle, instrumental } : undefined,
+        music: musicOpts?.controls ? { ...musicStyle, instrumental: instrumentalOn } : undefined,
+        // Suno's fine-tuning, only the fields this tool reads (kie-suno.ts checks them again).
+        suno: sunoTool ? sunoParamsFor(sunoTool, suno, activeQuality?.id) : undefined,
         // One of the model's own voices; the server falls back to its default.
         voice: tab === "speech" ? activeVoice?.id : undefined,
         speechStyle: tab === "speech" && speechRule?.style ? speechStyle.trim() || undefined : undefined,
@@ -2643,7 +2761,7 @@ export default function GeneratePage() {
 
   const captureForm = (): FormSnapshot => ({
     tab, modelId: selectedModelId, prompt, negativePrompt, lyrics, aspectRatio, duration, resolution,
-    qualityId, numOutputs, strength, steps, guidance, musicStyle, instrumental, videoMode, voiceId, speechStyle,
+    qualityId, numOutputs, strength, steps, guidance, musicStyle, instrumental, videoMode, musicMode, suno, voiceId, speechStyle,
     refs: refs.filter((r) => r.url !== null), trimSrc, trimSel, trimUploaded,
     inputImage, inputImagePreview, inputImageEnd,
     inputAudio, inputAudioName, inputAudioFile, sourceVideo, sourceVideoName,
@@ -2656,6 +2774,7 @@ export default function GeneratePage() {
     setQualityId(f.qualityId); setNumOutputs(f.numOutputs);
     setStrength(f.strength); setSteps(f.steps); setGuidance(f.guidance);
     setMusicStyle(f.musicStyle); setInstrumental(f.instrumental); setVideoMode(f.videoMode);
+    setMusicMode(f.musicMode); setSuno(f.suno);
     setVoiceId(f.voiceId); setSpeechStyle(f.speechStyle);
     setRefs(f.refs);
     trimSeqRef.current += 1;
@@ -2728,7 +2847,11 @@ export default function GeneratePage() {
       id: g.id,
       status: "completed",
       resultUrl: g.resultUrl ?? g.thumbnailUrl,
-      resultUrls: g.resultUrl ? [g.resultUrl] : undefined,
+      // A song's versions or a split's stems come back whole; a picture keeps its one.
+      resultUrls: kind === "audio" && Array.isArray(g.resultUrls) && g.resultUrls.length > 1
+        ? g.resultUrls.filter((u): u is string => typeof u === "string")
+        : g.resultUrl ? [g.resultUrl] : undefined,
+      resultLabels: kind === "audio" && Array.isArray(g.resultLabels) ? g.resultLabels : undefined,
       thumbnailUrl: g.thumbnailUrl,
       creditsUsed: 0,
     });
@@ -2751,6 +2874,8 @@ export default function GeneratePage() {
     if (typeof r.steps === "number") setSteps(Math.min(80, Math.max(10, Math.round(r.steps))));
     if (typeof r.cfgScale === "number") setGuidance(Math.min(20, Math.max(1, r.cfgScale)));
     if (kind === "audio") {
+      // Its own mode, or its model would not be listed.
+      setMusicMode(musicModeOf({ subcategory: g.model?.subcategory ?? model?.subcategory, music: model?.music }));
       setLyrics(typeof r.lyrics === "string" ? r.lyrics.slice(0, 3000) : "");
       setMusicStyle({ complexity: MUSIC_COMPLEXITY_DEFAULT, variance: MUSIC_VARIANCE_DEFAULT, ...(r.music ?? {}) });
       setInstrumental(r.music?.instrumental === true);
@@ -2859,6 +2984,32 @@ export default function GeneratePage() {
   };
 
   /**
+   * A track this studio made, into the slot of the tool that works on it next
+   * (stems, a cover, an extension, vocals or a band added) — no download and
+   * upload in between. The file is ours on R2, which is what the server takes.
+   */
+  const carrySongTo = (mode: MusicMode, tool: SunoTool, url: string, label: string) => {
+    const target =
+      models.find((m) => inTab(m, "audio") && m.music?.suno?.tool === tool && m.canOrder !== false) ??
+      models.find((m) => inTab(m, "audio") && musicModeOf(m) === mode && m.canOrder !== false);
+    if (!target) {
+      toast("error", "โหมดนี้ยังไม่เปิดให้บริการ");
+      return;
+    }
+    clearCanvas();
+    setTab("audio");
+    setMusicMode(mode);
+    setSelectedModelId(target.id);
+    trimSeqRef.current += 1;
+    setTrimSrc(null); setTrimSel(null); setTrimUploaded(null); setTrimFailed(null); setTrimDragging(false);
+    setInputAudio(url); setInputAudioName(label); setInputAudioFile(null); setCarriedAudio(url);
+    setSunoField("continueAt", undefined);
+    toast("info", `ใส่ “${label}” แล้ว`, "ปรับตั้งค่าแล้วกดทอได้เลย");
+  };
+  /** Next steps a finished track may take: only tools some model here offers. */
+  const songNext = SONG_NEXT.filter(([, tool]) => models.some((m) => inTab(m, "audio") && m.music?.suno?.tool === tool));
+
+  /**
    * A file pasted or dropped anywhere on the studio goes where this tab takes
    * one: a picture into the tab's image slot, a voice or a song into its
    * upload (with the same length checks as the pickers).
@@ -2939,13 +3090,15 @@ export default function GeneratePage() {
     return () => clearTimeout(t);
   }, [tab, prompt, negativePrompt, lyrics, aspectRatio]);
 
-  const handleDownload = async (url?: string) => {
+  const handleDownload = async (url?: string, label?: string, quiet = false) => {
     const downloadUrl = url || result?.resultUrl;
-    if (!downloadUrl || !result?.id) return;
-    const filename = `xdreamer-${result.id}.${extensionOf(downloadUrl, "webp")}`;
+    if (!downloadUrl || !result?.id) return false;
+    const named = label ? `-${label.replace(/[\\/:*?"<>|()\s]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "")}` : "";
+    const filename = `xdreamer-${result.id}${named}.${extensionOf(downloadUrl, "webp")}`;
     const ok = await downloadGeneration(result.id, downloadUrl, filename, url ? result.resultUrls?.indexOf(url) ?? -1 : -1);
-    if (ok) toast("success", "ดาวน์โหลดสำเร็จ");
-    else toast("error", "ดาวน์โหลดไม่สำเร็จ");
+    if (ok && !quiet) toast("success", "ดาวน์โหลดสำเร็จ");
+    else if (!ok) toast("error", "ดาวน์โหลดไม่สำเร็จ");
+    return ok;
   };
 
   const handleFavorite = async () => {
@@ -3001,6 +3154,14 @@ export default function GeneratePage() {
   const resultKind = viewing?.type ?? canvasTab;
   // Songs and voices are always sound, whatever their file is called.
   const resultIsAudio = AUDIO_EXT.test(resultUrl) || resultKind === "audio" || resultKind === "speech";
+  /** A song's versions or a split's stems, each with its name — null for a single file. */
+  const resultTracks: AudioTrack[] | null =
+    resultIsAudio && result?.resultUrls && result.resultUrls.length > 1
+      ? result.resultUrls.map((url, i, all) => ({
+          url,
+          label: result.resultLabels?.length === all.length ? result.resultLabels[i] : `เวอร์ชัน ${i + 1}`,
+        }))
+      : null;
   const resultIsVideo =
     !resultIsAudio && (resultKind === "video" || resultKind === "lipsync" || /\.(mp4|webm|mov)(\?|$)/i.test(resultUrl));
   const resultIsImage = !!resultUrl && !resultIsAudio && !resultIsVideo;
@@ -3018,11 +3179,12 @@ export default function GeneratePage() {
   // Sections are numbered as they are drawn: the music tab adds lyrics, and
   // only a cover takes a file.
   const tabNo = TAB_ORDER.indexOf(tab) + 1;
-  const showLyrics = tab === "audio";
+  // Not on a split, a sound, or a voice that already sings.
+  const showLyrics = tab === "audio" && musicOpts?.lyrics !== false;
   // Speech takes no file; a song only when it is a cover.
   const showInputs = (tab !== "audio" && tab !== "speech") || musicOpts?.sourceSong === true;
   // An upscale has no prompt, so its clip is section 02.
-  const inputsAt = showLyrics ? 4 : videoTool === "upscale" ? 2 : 3;
+  const inputsAt = showLyrics ? 4 : videoTool === "upscale" || promptHidden ? 2 : 3;
   /** The text is read out (speech) or optional (clip tools): no prompt assistant, builder or templates. */
   const plainPrompt = tab === "speech" || videoTool !== null;
   const settingsAt = inputsAt + (showInputs ? 1 : 0);
@@ -3031,7 +3193,11 @@ export default function GeneratePage() {
       : tab === "video" ? (videoTool === "motion" ? "ตัวละครและท่าทาง" : videoTool === "upscale" ? "คลิปที่จะขยาย" : "เริ่มจาก")
         : tab === "edit" ? "ภาพต้นฉบับ"
           : tab === "lipsync" ? "ไฟล์ที่ใช้"
-            : "เพลงต้นฉบับที่จะคัฟเวอร์";
+            : sunoTool === "extend" ? "เพลงที่จะต่อ"
+              : sunoTool === "add-vocals" ? "ดนตรีบรรเลงที่จะใส่เสียงร้อง"
+                : sunoTool === "add-instrumental" ? "เสียงร้องที่จะใส่ดนตรี"
+                  : sunoTool === "stems" ? "เพลงที่จะแยกสเต็ม"
+                    : "เพลงต้นฉบับที่จะคัฟเวอร์";
   /** The first order still rendering, for the phone's bar above the composer. */
   const runningJob = jobs.find((j) => j.status === "running") ?? null;
   const runningFraction =
@@ -3183,6 +3349,18 @@ export default function GeneratePage() {
 
           {/* ── 01 Model ── */}
           <Field no="01" label="โมเดล">
+            {/* The music tab's modes: a song from scratch, or a tool that works on a track. */}
+            {tab === "audio" && musicModes.length > 1 && (
+              <div className="rp-seg rp-well rp-mseg" style={{ marginBottom: 10 }} role="tablist" aria-label="โหมดเพลง">
+                {musicModes.map((m) => (
+                  <button key={m.key} type="button" role="tab" aria-selected={musicMode === m.key}
+                    data-on={musicMode === m.key ? "true" : "false"} onClick={() => setMusicMode(m.key)}>
+                    <b>{m.label}</b>
+                    <span>{m.hint}</span>
+                  </button>
+                ))}
+              </div>
+            )}
             <div>
               <button type="button" className="rp-model rp-raised" aria-expanded={showModelDropdown} aria-haspopup="dialog"
                 onClick={() => setShowModelDropdown(!showModelDropdown)}>
@@ -3214,8 +3392,10 @@ export default function GeneratePage() {
           </Field>
 
           {/* ── 02 Prompt (the text to read, on speech; none on an upscale) ── */}
-          <Field no="02" hidden={videoTool === "upscale"}
-            label={tab === "lipsync" || videoTool === "motion" ? "Prompt (ไม่บังคับ)" : tab === "audio" ? "สไตล์เพลง" : tab === "speech" ? "ข้อความที่จะให้อ่าน" : "Prompt"}
+          <Field no="02" hidden={videoTool === "upscale" || promptHidden}
+            label={tab === "lipsync" || videoTool === "motion" ? "Prompt (ไม่บังคับ)"
+              : tab === "audio" ? (sunoTool === "sounds" ? "เสียงที่ต้องการ" : promptOptional ? "สไตล์เพลง (ไม่บังคับ)" : "สไตล์เพลง")
+                : tab === "speech" ? "ข้อความที่จะให้อ่าน" : "Prompt"}
             aside={speechRule
               ? `${speechLength.toLocaleString()} / ${speechRule.maxChars.toLocaleString()} ตัวอักษร`
               : `${prompt.trim() ? `${prompt.trim().split(/\s+/).length} คำ · ` : ""}${prompt.length.toLocaleString()} / 10,000`}>
@@ -3236,6 +3416,12 @@ export default function GeneratePage() {
                         : "อธิบายวิดีโอที่ต้องการ..."
                       : tab === "speech"
                         ? "พิมพ์ข้อความที่ต้องการให้อ่านออกเสียง เช่น สวัสดีค่ะ ยินดีต้อนรับสู่ร้านของเรา วันนี้มีโปรโมชันพิเศษสำหรับลูกค้าทุกท่าน"
+                      : tab === "audio" && sunoTool === "sounds"
+                        ? "อธิบายเสียง เช่น ฝนตกบนหลังคาสังกะสี ฟ้าร้องไกล ๆ หรือ บีตฮิปฮอปช้า ๆ กลองหนัก"
+                      : tab === "audio" && promptOptional
+                        ? sunoTool === "add-instrumental"
+                          ? "แนวดนตรีที่อยากได้ เช่น วงอะคูสติก กีตาร์โปร่ง เปียโน อบอุ่น"
+                          : "แนวใหม่ที่อยากได้ (เว้นว่างได้) เช่น ร็อกหนัก ๆ กลองแน่น เสียงร้องหญิง"
                       : tab === "audio"
                         ? "แนวเพลง อารมณ์ เครื่องดนตรี เสียงร้อง เช่น ป๊อปไทยสดใส เสียงร้องหญิง กีตาร์โปร่ง จังหวะเร็ว"
                         : multiRef && refs.length > 1
@@ -3404,24 +3590,29 @@ export default function GeneratePage() {
             <Field no={sectionNo(3)} label="เนื้อเพลง" aside={`${lyrics.length.toLocaleString()} / 3,000`}>
               <div className="rp-lyrics-tools">
                 {SECTION_TAGS.map((tag) => (
-                  <button key={tag} type="button" className="rp-sectag rp-mono" disabled={instrumental}
+                  <button key={tag} type="button" className="rp-sectag rp-mono" disabled={instrumentalOn}
                     onClick={() => setLyrics((l) => `${l.replace(/\s*$/, "")}${l.trim() ? "\n\n" : ""}${tag}\n`.slice(0, 3000))}>
                     {tag}
                   </button>
                 ))}
-                <label className="rp-check">
-                  <input type="checkbox" checked={instrumental} onChange={(e) => setInstrumental(e.target.checked)} />
-                  เพลงบรรเลง (ไม่มีเสียงร้อง)
-                </label>
+                {sunoOpts?.instrumental !== false && (
+                  <label className="rp-check">
+                    <input type="checkbox" checked={instrumental} onChange={(e) => setInstrumental(e.target.checked)} />
+                    เพลงบรรเลง (ไม่มีเสียงร้อง)
+                  </label>
+                )}
               </div>
               <div className="rp-prompt rp-well" style={{ marginTop: 8 }}>
                 <textarea value={lyrics} onChange={(e) => setLyrics(e.target.value.slice(0, 3000))} onKeyDown={onSubmitKey}
-                  disabled={instrumental} aria-label="เนื้อเพลง"
+                  disabled={instrumentalOn} aria-label="เนื้อเพลง"
                   placeholder={"[Verse]\nเขียนเนื้อร้องที่นี่\n\n[Chorus]\nท่อนฮุกที่อยากให้ติดหู"}
-                  style={{ minHeight: 220, opacity: instrumental ? 0.45 : 1 }} />
+                  style={{ minHeight: 220, opacity: instrumentalOn ? 0.45 : 1 }} />
               </div>
               <div className="rp-note">
-                {instrumental ? "โหมดบรรเลง — เนื้อร้องที่พิมพ์ไว้จะถูกเก็บไว้เฉย ๆ" : "วงเล็บเหลี่ยมบอกโมเดลว่าเป็นท่อนอะไร"}
+                {instrumentalOn ? "โหมดบรรเลง — เนื้อร้องที่พิมพ์ไว้จะถูกเก็บไว้เฉย ๆ"
+                  : sunoTool === "add-vocals" ? "เว้นว่างได้ — AI แต่งเนื้อให้เข้ากับดนตรี · วงเล็บเหลี่ยมบอกว่าเป็นท่อนอะไร"
+                    : sunoTool === "cover" || sunoTool === "extend" ? "เว้นว่างได้ · ใส่เนื้อใหม่เพื่อให้ร้องตามนี้ · วงเล็บเหลี่ยมบอกว่าเป็นท่อนอะไร"
+                      : "วงเล็บเหลี่ยมบอกโมเดลว่าเป็นท่อนอะไร"}
               </div>
               {/* Exactly what the model will be told, composed by the same
                   function the server uses. Shown because chips whose effect
@@ -3740,22 +3931,57 @@ export default function GeneratePage() {
                         value={inputAudioName}
                         busy={uploading === "audio"}
                         accept={AUDIO_ACCEPT}
-                        hint={`อัปโหลดเพลง MP3 / WAV — ใช้ได้ไม่เกิน ${Math.floor(coverSourceSeconds / 60)} นาที เลือกช่วงได้หลังอัปโหลด`}
+                        hint={sunoTool === "add-vocals" ? `อัปโหลดดนตรีบรรเลง MP3 / WAV — ไม่เกิน ${Math.floor(coverSourceSeconds / 60)} นาที`
+                          : sunoTool === "add-instrumental" ? `อัปโหลดเสียงร้องเปล่า MP3 / WAV — ไม่เกิน ${Math.floor(coverSourceSeconds / 60)} นาที`
+                            : `อัปโหลดเพลง MP3 / WAV — ใช้ได้ไม่เกิน ${Math.floor(coverSourceSeconds / 60)} นาที เลือกช่วงได้หลังอัปโหลด`}
                         onPick={(e) => handleMediaUpload(e, "audio", coverSourceSeconds)}
                         onClear={clearAudio}
                       />
                       {/* The song of a reopened cover. No waveform: R2 sends no
                           CORS header, so the browser can play it but not read it. */}
-                      {inputAudio && inputAudio === openedInputs?.inputAudio && (
+                      {inputAudio && (inputAudio === openedInputs?.inputAudio || inputAudio === carriedAudio) && (
                         <audio src={inputAudio} controls preload="metadata"
+                          // Its length, for an extension's start and the checks below.
+                          onLoadedMetadata={(e) => {
+                            const d = e.currentTarget.duration;
+                            if (Number.isFinite(d) && d > 0) setAudioLengths((m) => (inputAudio in m ? m : { ...m, [inputAudio]: d }));
+                          }}
                           onError={() => dropExpiredInput(inputAudio, clearAudio)}
                           style={{ width: "100%", height: 36, marginTop: 10 }} />
                       )}
                     </>
                   )}
+                  {/* Where an extension picks up: a second inside the track, the end by default. */}
+                  {sunoTool === "extend" && inputAudioSeconds !== null && inputAudioSeconds >= 2 && (
+                    <div className="rp-slider" style={{ marginTop: 12 }}>
+                      <div>
+                        <span>ต่อจากวินาทีที่</span>
+                        <b className="rp-mono">
+                          {suno.continueAt !== undefined && suno.continueAt < inputAudioSeconds ? clock(suno.continueAt) : `${clock(Math.max(1, Math.floor(inputAudioSeconds) - 1))} (ท้ายเพลง)`}
+                        </b>
+                      </div>
+                      <input type="range" min={1} max={Math.max(1, Math.floor(inputAudioSeconds) - 1)} step={1}
+                        value={suno.continueAt !== undefined && suno.continueAt < inputAudioSeconds ? suno.continueAt : Math.max(1, Math.floor(inputAudioSeconds) - 1)}
+                        onChange={(e) => setSunoField("continueAt", +e.target.value)} aria-label="ต่อจากวินาทีที่" />
+                    </div>
+                  )}
                   <div className="rp-note">
-                    AI ถอดเฉพาะ<strong style={{ color: "#94a3b8" }}>ทำนอง</strong>ออกมาแล้วร้องใหม่ทั้งเพลง — เสียงร้องเดิมไม่ได้ถูกนำมาใช้
-                    ถ้าอยากได้คำร้องเดิม ให้พิมพ์ลงช่องเนื้อเพลง · ไฟล์ใหญ่เกิน 12 MB ระบบแปลงช่วงที่เลือกเป็น MP3 ให้เอง
+                    {sunoTool === "cover" ? (
+                      <>คงทำนองเดิมไว้แล้วเรียบเรียงใหม่ตามสไตล์ที่พิมพ์ ได้ 2 เวอร์ชัน · เว้นเนื้อเพลงว่าง = ร้องตามเนื้อเดิม · ไฟล์ใหญ่เกิน 12 MB ระบบแปลงช่วงที่เลือกเป็น MP3 ให้เอง</>
+                    ) : sunoTool === "extend" ? (
+                      <>เพลงต่อจากจุดที่เลือกด้วยสไตล์เดิม ได้ 2 เวอร์ชัน · ใส่เนื้อท่อนใหม่ในช่องเนื้อเพลงได้ · ใช้รุ่นเดียวกับที่ทำเพลงเดิมจะต่อได้เนียนที่สุด</>
+                    ) : sunoTool === "add-vocals" ? (
+                      <>ใช้ดนตรีที่ไม่มีเสียงร้อง (เช่น ไฟล์ “ดนตรี” จากการแยกสเต็ม) · บอกแนวการร้องในช่องสไตล์ เลือกเสียงชาย/หญิงได้ที่ “เสียงร้อง”</>
+                    ) : sunoTool === "add-instrumental" ? (
+                      <>ใช้เสียงร้องเปล่าที่ไม่มีดนตรี (เช่น ไฟล์ “เสียงร้อง” จากการแยกสเต็ม) · บอกแนวดนตรีในช่องสไตล์</>
+                    ) : sunoTool === "stems" ? (
+                      <>เพลงที่มิกซ์ชัด ๆ แยกได้สะอาดที่สุด · ได้ไฟล์ MP3 ตามรูปแบบที่เลือก เลือกโหลดเฉพาะไฟล์ที่ต้องการได้ · ทุกครั้งที่สั่งคิดเครดิตใหม่</>
+                    ) : (
+                      <>
+                        AI ถอดเฉพาะ<strong style={{ color: "#94a3b8" }}>ทำนอง</strong>ออกมาแล้วร้องใหม่ทั้งเพลง — เสียงร้องเดิมไม่ได้ถูกนำมาใช้
+                        ถ้าอยากได้คำร้องเดิม ให้พิมพ์ลงช่องเนื้อเพลง · ไฟล์ใหญ่เกิน 12 MB ระบบแปลงช่วงที่เลือกเป็น MP3 ให้เอง
+                      </>
+                    )}
                   </div>
                 </>
               )}
@@ -3883,7 +4109,7 @@ export default function GeneratePage() {
                   multiplier, and the button's total already includes it. */}
               {qualityModes && qualityModes.length > 1 && (
                 <div>
-                  <div className="rp-sub">คุณภาพ</div>
+                  <div className="rp-sub">{sunoTool === "stems" ? "รูปแบบการแยก" : sunoTool ? "รุ่นโมเดล" : "คุณภาพ"}</div>
                   <div className="rp-chips">
                     {qualityModes.map((m) => (
                       <button key={m.id} type="button" className="rp-chip rp-raised" data-on={activeQuality?.id === m.id ? "true" : "false"}
@@ -3898,6 +4124,52 @@ export default function GeneratePage() {
                     ))}
                   </div>
                   {activeQuality?.description && <div className="rp-note">{activeQuality.description}</div>}
+                </div>
+              )}
+
+              {/* "ดึงชิ้นเดียว": which instrument comes out (and the song without it). */}
+              {stemTier === "one" && sunoOpts?.stems && (
+                <div>
+                  <div className="rp-sub">ดึงชิ้นไหน · ได้ไฟล์ชิ้นนั้นล้วน และเพลงที่ไม่มีชิ้นนั้น</div>
+                  <div className="rp-chips rp-scroll" style={{ maxHeight: 132, overflowY: "auto" }}>
+                    {sunoOpts.stems.map((x) => (
+                      <button key={x.id} type="button" className="rp-chip rp-raised" data-on={activeStem?.id === x.id ? "true" : "false"}
+                        onClick={() => setSunoField("stem", x.id)}>{x.label}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* A sound: whether it loops, its tempo and its key. */}
+              {sunoTool === "sounds" && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  <label className="rp-check" style={{ fontSize: 12 }}>
+                    <input type="checkbox" checked={suno.loop === true} onChange={(e) => setSunoField("loop", e.target.checked || undefined)} />
+                    วนลูปไร้รอยต่อ (ต่อหัวต่อท้ายได้พอดี)
+                  </label>
+                  <div>
+                    <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 11, color: "#94a3b8", marginBottom: 6, cursor: "pointer" }}>
+                      <input type="checkbox" checked={suno.tempo !== undefined}
+                        onChange={(e) => setSunoField("tempo", e.target.checked ? 100 : undefined)} />
+                      กำหนดจังหวะเอง {suno.tempo === undefined && <span style={{ color: "#64748b" }}>(ปล่อยให้ AI เลือก)</span>}
+                    </label>
+                    {suno.tempo !== undefined && (
+                      <StyleSlider label="จังหวะ" value={suno.tempo} min={40} max={220} step={1}
+                        format={(v) => `${v} BPM`} onChange={(v) => setSunoField("tempo", v)} />
+                    )}
+                  </div>
+                  {sunoOpts?.keys && (
+                    <div>
+                      <div className="rp-sub">คีย์</div>
+                      <div className="rp-chips rp-scroll" style={{ maxHeight: 96, overflowY: "auto" }}>
+                        {sunoOpts.keys.map((k) => (
+                          <button key={k} type="button" className="rp-chip rp-raised rp-mono"
+                            data-on={(suno.key ?? "Any") === k ? "true" : "false"}
+                            onClick={() => setSunoField("key", k === "Any" ? undefined : k)}>{k === "Any" ? "อัตโนมัติ" : k}</button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -3965,6 +4237,73 @@ export default function GeneratePage() {
                   </Popover>
                 )}
 
+                {sunoTool && sunoTool !== "stems" && sunoTool !== "sounds" && (
+                  <Popover id="suno" open={openPanel} onToggle={setOpenPanel} label="ปรับละเอียด"
+                    value={sunoSummary}
+                    width={330} align="right">
+                    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                      {sunoTool === "song" && !instrumentalOn && !lyrics.trim() && (
+                        <div style={{ fontSize: 11, color: "#fbbf24", lineHeight: 1.5 }}>
+                          ตอนนี้ AI แต่งเนื้อให้เอง — ความยาว น้ำหนัก และความหลากหลายใช้ได้เมื่อใส่เนื้อเพลงเองหรือเลือกเพลงบรรเลง
+                        </div>
+                      )}
+                      <div>
+                        <div className="rp-sub">ชื่อเพลง</div>
+                        <input className="rp-input rp-well" value={suno.title ?? ""} maxLength={80}
+                          onChange={(e) => setSunoField("title", e.target.value || undefined)}
+                          placeholder="เว้นว่าง = ใช้คำแรกของสไตล์เพลง" aria-label="ชื่อเพลง" />
+                      </div>
+                      <div>
+                        <div className="rp-sub">ไม่เอาแนว / เสียงแบบนี้</div>
+                        <input className="rp-input rp-well" value={suno.exclude ?? ""} maxLength={500}
+                          onChange={(e) => setSunoField("exclude", e.target.value || undefined)}
+                          placeholder="เช่น heavy metal, autotune, เสียงแหลม" aria-label="ไม่เอาแนว" />
+                      </div>
+                      {sunoTool === "song" && (
+                        <div>
+                          <div className="rp-sub">ความยาวเพลง</div>
+                          <div className="rp-chips">
+                            <button type="button" className="rp-chip rp-raised" data-on={suno.length === undefined ? "true" : "false"}
+                              onClick={() => setSunoField("length", undefined)}>อัตโนมัติ</button>
+                            {SUNO_LENGTHS.map((sec) => (
+                              <button key={sec} type="button" className="rp-chip rp-raised" data-on={suno.length === sec ? "true" : "false"}
+                                onClick={() => setSunoField("length", sec)}>{sec < 60 ? `${sec} วิ` : `${sec / 60} นาที`}</button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      <div>
+                        <div className="rp-sub">ความหลากหลายของ 2 เวอร์ชัน</div>
+                        <div className="rp-chips">
+                          {SUNO_VARIETY.map((label, i) => (
+                            <button key={label} type="button" className="rp-chip rp-raised"
+                              data-on={(suno.variety ?? 1) === i ? "true" : "false"}
+                              onClick={() => setSunoField("variety", i === 1 ? undefined : i)}>{label}</button>
+                          ))}
+                        </div>
+                      </div>
+                      <StyleSlider label="ยึดตามสไตล์ที่พิมพ์" value={suno.styleWeight ?? 0.5} min={0} max={1} step={0.05}
+                        format={(v) => (suno.styleWeight === undefined ? "อัตโนมัติ" : `${Math.round(v * 100)}%`)}
+                        onChange={(v) => setSunoField("styleWeight", v)} />
+                      <StyleSlider label="ความแหวกแนว" value={suno.weirdness ?? 0.5} min={0} max={1} step={0.05}
+                        format={(v) => (suno.weirdness === undefined ? "อัตโนมัติ" : `${Math.round(v * 100)}%`)}
+                        onChange={(v) => setSunoField("weirdness", v)} />
+                      {!instrumentalOn && sunoTool !== "song" && (
+                        <StyleSlider label="ยึดตามเสียงต้นฉบับ" value={suno.audioWeight ?? 0.5} min={0} max={1} step={0.05}
+                          format={(v) => (suno.audioWeight === undefined ? "อัตโนมัติ" : `${Math.round(v * 100)}%`)}
+                          onChange={(v) => setSunoField("audioWeight", v)} />
+                      )}
+                      <button type="button" onClick={() => setSuno((c) => ({ continueAt: c.continueAt, stem: c.stem }))}
+                        style={{
+                          padding: "7px 0", borderRadius: 8, fontSize: 11.5, fontFamily: "inherit", cursor: "pointer",
+                          background: "rgba(255,255,255,0.04)", color: "#94a3b8", border: "1px solid rgba(255,255,255,0.08)",
+                        }}>
+                        กลับเป็นอัตโนมัติทั้งหมด
+                      </button>
+                    </div>
+                  </Popover>
+                )}
+
                 {musicOpts?.controls && (
                   <Popover id="arrange" open={openPanel} onToggle={setOpenPanel} label="ดนตรี"
                     value={musicComplexity(musicStyle.complexity).label} width={320} align="right">
@@ -3996,10 +4335,10 @@ export default function GeneratePage() {
                         format={(v) => musicComplexity(v).label}
                         onChange={(v) => setMusicField("complexity", v)} />
 
-                      <StyleSlider label="ความแปลกใหม่" value={musicStyle.variance ?? MUSIC_VARIANCE_DEFAULT}
+                      {!sunoTool && <StyleSlider label="ความแปลกใหม่" value={musicStyle.variance ?? MUSIC_VARIANCE_DEFAULT}
                         min={MUSIC_VARIANCE_MIN} max={MUSIC_VARIANCE_MAX} step={0.05}
                         format={(v) => (v < 0.85 ? `ปลอดภัย ${v.toFixed(2)}` : v > 1.15 ? `กล้าเสี่ยง ${v.toFixed(2)}` : `สมดุล ${v.toFixed(2)}`)}
-                        onChange={(v) => setMusicField("variance", v)} />
+                        onChange={(v) => setMusicField("variance", v)} />}
 
                       <button type="button"
                         onClick={() => setMusicStyle({ complexity: MUSIC_COMPLEXITY_DEFAULT, variance: MUSIC_VARIANCE_DEFAULT })}
@@ -4227,7 +4566,7 @@ export default function GeneratePage() {
               </div>
             ) : result?.status === "completed" && result.resultUrl ? (
               <div style={{ width: "100%" }}>
-                {result.resultUrls && result.resultUrls.length > 1 ? (
+                {result.resultUrls && result.resultUrls.length > 1 && !resultIsAudio ? (
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12, marginBottom: 16 }}>
                     {result.resultUrls.map((url, i) => (
                       <div key={i} style={{ position: "relative", borderRadius: 12, overflow: "hidden", border: "1px solid rgba(255,255,255,0.06)" }}>
@@ -4253,6 +4592,19 @@ export default function GeneratePage() {
                           <img src={result.resultUrl} alt={prompt} style={{ width: "100%", borderRadius: 12, objectFit: "contain" }} />
                         </div>
                       </div>
+                    ) : resultTracks ? (
+                      <AudioTracks
+                        key={result.id}
+                        kind={result.resultLabels?.length === resultTracks.length ? "stems" : "versions"}
+                        title={viewing?.prompt || songTitle || "เพลงของคุณ"}
+                        tracks={resultTracks}
+                        onDownload={(t) => handleDownload(t.url, t.label, true)}
+                        actions={songNext.map(([, tool, label]) => ({ id: tool, label }))}
+                        onAction={(id, t) => {
+                          const next = SONG_NEXT.find(([, tool]) => tool === id);
+                          if (next) carrySongTo(next[0], next[1], t.url, t.label);
+                        }}
+                      />
                     ) : resultIsAudio ? (
                       <AudioResult src={result.resultUrl} genId={result.id}
                         title={viewing?.prompt || (canvasTab === "speech" ? focusedJob?.prompt || "เสียงพูด" : songTitle || "เพลงของคุณ")} />
@@ -4282,6 +4634,16 @@ export default function GeneratePage() {
                     <Pill onClick={clearCanvas}>↻ สร้างใหม่</Pill>
                   </div>
                 </div>
+
+                {/* The next step for a finished track: split it, cover it, carry it on. */}
+                {resultIsAudio && canvasTab === "audio" && songNext.length > 0 && !resultTracks && (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+                    <span style={{ fontSize: 11, color: "#64748b", alignSelf: "center" }}>ใช้เพลงนี้ต่อ:</span>
+                    {songNext.map(([mode, tool, label]) => (
+                      <Pill key={tool} onClick={() => carrySongTo(mode, tool, result.resultUrl as string, songTitle || "เพลงจากงานนี้")}>{label}</Pill>
+                    ))}
+                  </div>
+                )}
 
                 {/* The next step for a finished picture — the chain a creator
                     actually follows: still → clip, still → edit, still → the
@@ -4735,6 +5097,9 @@ export default function GeneratePage() {
         }
         .rp-studio .rp-seg button b { font-size: 13px; font-weight: 500; }
         .rp-studio .rp-seg button span { font-size: 10.5px; opacity: 0.75; }
+        /* The music tab's six modes: three across, two on a phone. */
+        .rp-studio .rp-mseg { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        @media (max-width: 420px) { .rp-studio .rp-mseg { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
         .rp-studio .rp-seg button[data-on="true"] {
           color: #f8fafc;
           background: linear-gradient(180deg, rgba(var(--cy), 0.16), rgba(var(--cy), 0.05));

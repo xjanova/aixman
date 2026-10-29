@@ -18,6 +18,8 @@ export interface KiePriceTier {
   /** Thai or brand label on the studio chip. */
   label: string;
   isDefault?: boolean;
+  /** A line under the chips about the tier chosen. Display only: not kept in a row's table. */
+  description?: string;
 }
 
 export interface KiePriceTable {

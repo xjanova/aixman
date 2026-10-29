@@ -66,6 +66,17 @@ interface AIModel {
     maxSourceSeconds?: number | null;
     /** Whether the voice / genre / arrangement controls apply to this model. */
     controls?: boolean;
+    /** One of Suno's tools (kie-suno.ts `sunoStudioOptions`): its mode of the music tab. */
+    suno?: {
+      tool: "song" | "cover" | "extend" | "add-vocals" | "add-instrumental" | "stems" | "sounds";
+      /** Whether the "เพลงบรรเลง" switch means anything for this tool. */
+      instrumental: boolean;
+      maxSourceBytes: number | null;
+      /** "ดึงชิ้นเดียว": what may be pulled out. */
+      stems: { id: string; label: string }[] | null;
+      /** Sounds: the keys on offer. */
+      keys: string[] | null;
+    };
   } | null;
   /**
    * Set when the render is as long as the uploaded voice (a portrait made to

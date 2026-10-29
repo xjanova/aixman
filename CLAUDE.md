@@ -183,6 +183,21 @@ against the free `/api/v1/chat/credit` → encrypted pool row, daily quota 0 →
   balance, 402 banner, today/month per model, failures, fallback log, the
   switch, the per-model fallback editor, on/off. "สั่งทดสอบ" opens
   `/generate?model=<id>` — the studio selects that model and its tab.
+- **Suno** (music tab modes แต่งเพลง / คัฟเวอร์ / ต่อเพลง / เติมเสียง / แยกสเต็ม /
+  เสียงประกอบ; `kie-suno.ts`, tests `kie-suno.test.mts`): seven rows, one per
+  tool (`KieEntry.suno`), mode from the subcategory (`music`, `music-cover`,
+  `-extend`, `-add`, `-stems`, `-sounds`). The version (V6 / V6_WILD / V6_MINI,
+  one price) is the `quality` tier; on stems the tier is the split (vocals 10,
+  all 47, one stem 19 credits). Custom-only fields (`vocal_gender`, weights,
+  `variety`, `duration`) go only with lyrics or an instrumental — simple mode
+  takes a style and none of them. `params.suno` is `sanitizeSunoParams`ed in the
+  adapter and in GenerationService; a track is checked from the stored file
+  before charging (`checkSunoSource`: ≤ 8 min, stems ≤ 20 MB, an extension's
+  start clamped inside it). Stems come back named (`sunoStemLabels`, from
+  `origin_data` before the R2 copy renames them) → `params.outputLabels` →
+  `resultLabels` on the order and gallery APIs; the studio lists several
+  audio files as tracks (`AudioTracks`) and carries any one on to the next tool.
+  MCP's `generate_music` does not offer the tools that need a track.
 - Not yet exercised against the live API (no key on 2026-10-29): input field
   names come from docs.kie.ai — a family that 422s needs its `build()` fixed.
 

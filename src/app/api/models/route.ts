@@ -18,6 +18,7 @@ import { modelPreview } from '@/lib/model-samples';
 import { getKieEntry, kiePriceTable, type KieEntry } from '@/lib/providers/kie-catalog';
 import { kieQuote, readKiePriceTable, type KiePriceTable } from '@/lib/providers/kie-pricing';
 import { fallbackRefsFor, whyNotFallback } from '@/lib/providers/kie-fallback';
+import { sunoStudioOptions } from '@/lib/providers/kie-suno';
 import { loadFallbackSettings } from '@/lib/services/kie-route';
 import { pick, requestLocale, type Locale, type Msg } from '@/lib/i18n/locale';
 import { qualityModeText, tierLabel, voiceLabel } from '@/lib/i18n/model-text';
@@ -140,14 +141,18 @@ function kieOptions(entry: KieEntry, table: KiePriceTable, locale: Locale) {
         ? tiers.map((t) => ({
             id: t.id,
             label: tierLabel(t.label, locale),
-            description: '',
+            // Suno's versions and splits say what each is; other tiers are their label.
+            description: entry.tiers.find((x) => x.id === t.id)?.description ?? '',
             // Display only: the studio prices KIE rows from `priceTable`.
             creditsMultiplier: Math.round((kieQuote(table, { tier: t.id }) / base) * 100) / 100,
             isDefault: t.isDefault === true,
             adminOnly: false,
           }))
         : null,
-    music: entry.music
+    // A Suno tool draws its own mode of the music tab (kie-suno.ts).
+    music: entry.suno
+      ? sunoStudioOptions(entry.suno)
+      : entry.music
       ? { lyrics: true, sourceSong: false, maxDuration: null, autoLength: true, maxSourceSeconds: null, controls: true }
       : null,
     lengthFromAudio: entry.lengthFromAudio ?? null,

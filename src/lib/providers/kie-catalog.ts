@@ -21,6 +21,15 @@
 import type { LengthFromAudio } from '@/lib/voice-length';
 import type { ClipRule } from '@/lib/lipsync-rules';
 import { DEFAULT_KIE_BASIS, kieCredits, type KieBasis, type KiePriceTable, type KiePriceTier } from './kie-pricing';
+import {
+  SUNO_STEM_TIERS,
+  SUNO_SUBCATEGORY,
+  SUNO_VERSIONS,
+  buildSunoTask,
+  type SunoOrder,
+  type SunoParams,
+  type SunoTool,
+} from './kie-suno';
 
 export type KieCategory = 'image' | 'edit' | 'video' | 'audio';
 
@@ -48,6 +57,10 @@ export interface KieOrder {
   /** Music: the composed style line (genre, voice, mood …). */
   musicTags?: string;
   instrumental?: boolean;
+  /** Music: `vocal_gender` from the singer chip (Suno). */
+  vocalGender?: 'm' | 'f';
+  /** Suno: the customer's fine-tuning, already sanitised (kie-suno.ts). */
+  suno?: SunoParams;
   /** Speech: the voice id, already one of the entry's own. */
   voice?: string;
   /** Speech: how to say it ("slow and warm"), where the model takes a style. */
@@ -108,6 +121,8 @@ export interface KieEntry {
   lengthFromAudio?: LengthFromAudio;
   /** A song model: lyrics and the music tab's style chips. */
   music?: boolean;
+  /** One of Suno's tools (kie-suno.ts): its mode on the music tab, its inputs and checks. */
+  suno?: SunoTool;
   /** Priced per this many characters of the text read aloud (`usd(tier, n)` = n characters). */
   perChars?: number;
   /** A text-to-speech model: its voices and how much one order may read. */
@@ -164,6 +179,21 @@ function clean(input: Record<string, unknown>): Record<string, unknown> {
 }
 
 const cut = (text: string, max: number) => (text.length > max ? text.slice(0, max) : text);
+
+/** A KIE order as Suno's builders read it. */
+function sunoOrder(o: KieOrder): SunoOrder {
+  return {
+    style: o.musicTags ?? o.prompt,
+    prompt: o.prompt,
+    lyrics: o.lyrics,
+    instrumental: o.instrumental === true,
+    vocalGender: o.vocalGender,
+    negativePrompt: o.negativePrompt,
+    audio: o.audio,
+    tier: o.tier,
+    suno: o.suno ?? {},
+  };
+}
 
 /** A tier list from ids; the first given as default unless one is named. */
 function tiers(ids: [string, string][], defaultId?: string): KiePriceTier[] {
@@ -912,41 +942,104 @@ export const KIE_CATALOG: KieEntry[] = [
   },
 
   // ---------------------------------------------------------------- music
+  // Suno, seven tools (kie-suno.ts). One price for every version: the
+  // version is the customer's free choice on the quality chips.
   {
     key: 'kie/suno-v6',
     name: 'Suno V6',
-    description: 'แต่งเพลงพร้อมเสียงร้อง ได้ 2 เวอร์ชันต่อครั้ง — ใส่เนื้อร้องเองหรือให้ AI แต่งให้',
+    description: 'แต่งเพลงพร้อมเสียงร้อง ได้ 2 เวอร์ชันต่อครั้ง — เลือกรุ่น V6 / Wild / Mini · ใส่เนื้อร้องเองหรือให้ AI แต่งให้',
     category: 'audio',
-    subcategory: 'music',
+    subcategory: SUNO_SUBCATEGORY.song,
     featured: true,
-    tierParam: null,
-    tiers: tiers([['std', 'มาตรฐาน']]),
-    usd: flat({ std: 0.06 }),
+    tierParam: 'quality',
+    tiers: SUNO_VERSIONS,
+    usd: flat({ V6: 0.06, V6_WILD: 0.06, V6_MINI: 0.06 }),
     music: true,
+    suno: 'song',
     maxWaitSeconds: 15 * MIN,
-    build: (o) => {
-      const lyrics = o.instrumental ? '' : (o.lyrics ?? '').trim();
-      const style = (o.musicTags ?? o.prompt).trim();
-      // Custom mode sings the given words in the given style; without words
-      // and with vocals wanted, the simple mode writes the lyrics itself.
-      if (lyrics || o.instrumental) {
-        return {
-          model: 'ai-music-api/generate',
-          input: clean({
-            custom_mode: true,
-            instrumental: o.instrumental === true,
-            model: 'V6',
-            style: cut(style || 'pop', 1000),
-            title: cut(o.prompt.trim() || 'AIXMAN', 80),
-            lyrics: lyrics ? cut(lyrics, 5000) : undefined,
-          }),
-        };
-      }
-      return {
-        model: 'ai-music-api/generate',
-        input: clean({ custom_mode: false, instrumental: false, model: 'V6', prompt: cut(style || o.prompt, 500) }),
-      };
-    },
+    build: (o) => buildSunoTask('song', sunoOrder(o)),
+  },
+  {
+    key: 'kie/suno-cover',
+    name: 'Suno Cover',
+    description: 'คัฟเวอร์เพลงของคุณเป็นแนวใหม่ คงทำนองเดิม ได้ 2 เวอร์ชัน · ใส่เนื้อร้องใหม่ได้ · เพลงต้นฉบับไม่เกิน 8 นาที',
+    category: 'audio',
+    subcategory: SUNO_SUBCATEGORY.cover,
+    tierParam: 'quality',
+    tiers: SUNO_VERSIONS,
+    usd: flat({ V6: 0.06, V6_WILD: 0.06, V6_MINI: 0.06 }),
+    music: true,
+    suno: 'cover',
+    maxWaitSeconds: 15 * MIN,
+    build: (o) => buildSunoTask('cover', sunoOrder(o)),
+  },
+  {
+    key: 'kie/suno-extend',
+    name: 'Suno Extend',
+    description: 'ต่อเพลงให้ยาวขึ้นจากวินาทีที่เลือก สไตล์เดิมต่อเนื่อง ใส่เนื้อท่อนใหม่ได้ · เพลงต้นฉบับไม่เกิน 8 นาที',
+    category: 'audio',
+    subcategory: SUNO_SUBCATEGORY.extend,
+    tierParam: 'quality',
+    tiers: SUNO_VERSIONS,
+    usd: flat({ V6: 0.06, V6_WILD: 0.06, V6_MINI: 0.06 }),
+    music: true,
+    suno: 'extend',
+    maxWaitSeconds: 15 * MIN,
+    build: (o) => buildSunoTask('extend', sunoOrder(o)),
+  },
+  {
+    key: 'kie/suno-add-vocals',
+    name: 'Suno Add Vocals',
+    description: 'ใส่เสียงร้องลงบนดนตรีบรรเลงของคุณ ร้องตามเนื้อที่เขียนเอง หรือให้ AI แต่งเนื้อให้',
+    category: 'audio',
+    subcategory: SUNO_SUBCATEGORY['add-vocals'],
+    tierParam: 'quality',
+    tiers: SUNO_VERSIONS,
+    usd: flat({ V6: 0.06, V6_WILD: 0.06, V6_MINI: 0.06 }),
+    music: true,
+    suno: 'add-vocals',
+    maxWaitSeconds: 15 * MIN,
+    build: (o) => buildSunoTask('add-vocals', sunoOrder(o)),
+  },
+  {
+    key: 'kie/suno-add-instrumental',
+    name: 'Suno Add Instrumental',
+    description: 'แต่งดนตรีประกอบให้เสียงร้องเปล่าของคุณ เลือกแนวดนตรีได้ — ใช้กับเสียงร้องที่แยกสเต็มไว้ได้เลย',
+    category: 'audio',
+    subcategory: SUNO_SUBCATEGORY['add-instrumental'],
+    tierParam: 'quality',
+    tiers: SUNO_VERSIONS,
+    usd: flat({ V6: 0.06, V6_WILD: 0.06, V6_MINI: 0.06 }),
+    music: true,
+    suno: 'add-instrumental',
+    maxWaitSeconds: 15 * MIN,
+    build: (o) => buildSunoTask('add-instrumental', sunoOrder(o)),
+  },
+  {
+    key: 'kie/suno-stems',
+    name: 'Suno Stems',
+    description: 'แยกเพลงเป็นสเต็ม: เสียงร้อง/ดนตรี, ครบทุกชิ้น หรือดึงเครื่องดนตรีชิ้นเดียว · เลือกโหลดเฉพาะไฟล์ที่ต้องการ',
+    category: 'audio',
+    subcategory: SUNO_SUBCATEGORY.stems,
+    tierParam: 'quality',
+    tiers: SUNO_STEM_TIERS,
+    usd: flat({ vocals: 0.05, all: 0.25, one: 0.1 }),
+    suno: 'stems',
+    maxWaitSeconds: 10 * MIN,
+    build: (o) => buildSunoTask('stems', sunoOrder(o)),
+  },
+  {
+    key: 'kie/suno-sounds',
+    name: 'Suno Sounds',
+    description: 'เสียงประกอบและลูปดนตรีสั้น ๆ — บรรยากาศ เอฟเฟกต์ บีต · กำหนด BPM คีย์ และวนลูปไร้รอยต่อได้',
+    category: 'audio',
+    subcategory: SUNO_SUBCATEGORY.sounds,
+    tierParam: 'quality',
+    tiers: SUNO_VERSIONS,
+    usd: flat({ V6: 0.0125, V6_WILD: 0.0125, V6_MINI: 0.0125 }),
+    suno: 'sounds',
+    maxWaitSeconds: 10 * MIN,
+    build: (o) => buildSunoTask('sounds', sunoOrder(o)),
   },
 
   // --------------------------------------------------------------- speech
@@ -1144,7 +1237,8 @@ export function kiePriceTable(entry: KieEntry, basis: KieBasis = DEFAULT_KIE_BAS
   }
   return {
     tierParam: entry.tierParam,
-    tiers: entry.tiers,
+    // As a row stores it: a tier's description is display only (/api/models reads it from the entry).
+    tiers: entry.tiers.map((t) => ({ id: t.id, label: t.label, isDefault: t.isDefault === true })),
     durations: entry.perSecond || entry.perChars ? null : entry.durations ?? null,
     credits,
     perSecond: entry.perSecond === true,

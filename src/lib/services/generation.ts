@@ -27,6 +27,13 @@ import { communityMachineAvailable } from '@/lib/gpu/community-availability';
 import { OrderRefusedError } from './order-refusal';
 import { LLM_CATEGORY } from '@/lib/llm/pricing';
 import { getKieEntry, kieImageCount, kiePriceTable } from '@/lib/providers/kie-catalog';
+import {
+  checkSunoSource,
+  sanitizeSunoParams,
+  sunoMissingSource,
+  sunoTakesSource,
+  type SunoParams,
+} from '@/lib/providers/kie-suno';
 import { kieQuote, pickKieDuration, pickKieTier, readKiePriceTable, speechChars } from '@/lib/providers/kie-pricing';
 import { fallbackParams, kieRefusalReason, routeKieOrder, type FallbackOrder } from '@/lib/providers/kie-fallback';
 import { kieUnavailable, loadFallbackSettings, pickFallback, type ModelWithProvider, type PoolAccount } from './kie-route';
@@ -187,6 +194,18 @@ export class GenerationService {
     }
     if (kie?.needsImage && !request.inputImage?.trim()) {
       throw new OrderRefusedError('ต้องอัปโหลดภาพตัวละครก่อน', 'missing-image', 422);
+    }
+    // A Suno tool that works on a track (cover, extension, stems …) is checked
+    // against the stored file before charging — KIE refuses a long one after
+    // taking the order — and an extension's start is fixed inside the track.
+    let suno: SunoParams | undefined = kie?.suno ? sanitizeSunoParams(request.params?.suno) : undefined;
+    if (kie?.suno && sunoTakesSource(kie.suno)) {
+      if (!isAcceptedAudioSource(request.inputAudio)) {
+        throw new OrderRefusedError(sunoMissingSource(kie.suno), 'missing-audio', 422);
+      }
+      const fits = checkSunoSource(kie.suno, await this.voiceFacts(request.inputAudio), suno ?? {});
+      if (!fits.ok) throw new OrderRefusedError(fits.message, fits.code, 422);
+      if (fits.continueAt !== undefined) suno = { ...suno, continueAt: fits.continueAt };
     }
     // Speech is priced by its characters, so the text is checked here, not after the charge.
     const speechLength = speech ? speechChars(request.prompt) : 0;
@@ -392,6 +411,8 @@ export class GenerationService {
     const music =
       catalogEntry?.music?.controls === true || kie?.music === true ? sanitizeMusicParams(baseParams.music) : undefined;
     delete baseParams.music;
+    // Suno's choices as checked above, or nothing for any other model.
+    delete baseParams.suno;
     // The mode priced above, or nothing for a model without modes.
     delete baseParams.quality;
     if (qualityMode) baseParams.quality = qualityMode.id;
@@ -418,6 +439,7 @@ export class GenerationService {
     const storedParams: Record<string, unknown> = {
       ...baseParams,
       ...(music ? { music } : {}),
+      ...(suno ? { suno } : {}),
       ...(request.inputAudio ? { inputAudio: request.inputAudio } : {}),
       ...(request.inputVideo ? { inputVideo: request.inputVideo } : {}),
       ...(request.inputImageEnd ? { inputImageEnd: request.inputImageEnd } : {}),
@@ -755,6 +777,11 @@ export class GenerationService {
       const routed = route
         ? { params: { ...(request.params ?? {}), route } as unknown as Prisma.InputJsonValue, accountPoolId: served.account.id }
         : {};
+      // A stem split names its files ("เสียงร้อง", "กลอง" …); R2 copies them under random names.
+      const labels =
+        result.success && result.resultLabels && result.resultLabels.length === result.resultUrls?.length
+          ? result.resultLabels
+          : null;
 
       // 7. Record result — what the vendor says the order cost when it says
       // (KIE's creditsConsumed), else the row's list price.
@@ -789,6 +816,15 @@ export class GenerationService {
             processingMs: result.processingMs,
             completedAt: new Date(),
             ...routed,
+            ...(labels
+              ? {
+                  params: {
+                    ...(request.params ?? {}),
+                    ...(route ? { route } : {}),
+                    outputLabels: labels,
+                  } as unknown as Prisma.InputJsonValue,
+                }
+              : {}),
           },
         });
         if (settled.count === 0) {
@@ -815,6 +851,7 @@ export class GenerationService {
           status: 'completed',
           resultUrl: finalUrl,
           resultUrls: finalUrls,
+          resultLabels: labels ?? undefined,
           thumbnailUrl: finalUrl,
           processingMs: result.processingMs,
           creditsUsed: requiredCredits,

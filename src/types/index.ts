@@ -80,6 +80,8 @@ export interface GenerationResult {
   status: GenerationStatus;
   resultUrl?: string;
   resultUrls?: string[];
+  /** A name for each of `resultUrls` (stems), when the order names them. */
+  resultLabels?: string[];
   thumbnailUrl?: string;
   processingMs?: number;
   creditsUsed: number;
@@ -113,6 +115,8 @@ export interface ProviderResponse {
   jobId?: string;
   resultUrl?: string;
   resultUrls?: string[];
+  /** A name for each of `resultUrls`, same order (a stem split's "เสียงร้อง", "กลอง" …). */
+  resultLabels?: string[];
   error?: string;
   costUsd?: number;
   processingMs?: number;

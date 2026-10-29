@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { outputLabels } from '@/lib/output-labels';
 import { getCurrentUserId } from '@/lib/auth';
 import prisma from '@/lib/db';
 import { GpuQueue } from '@/lib/services/gpu-queue';
@@ -164,6 +165,8 @@ export async function GET(
     type: generation.type,
     resultUrl: generation.resultUrl,
     resultUrls: generation.resultUrls,
+    // A stem split's file names ("เสียงร้อง", "กลอง" …), same order as resultUrls.
+    resultLabels: outputLabels(generation.params, generation.resultUrls),
     thumbnailUrl: generation.thumbnailUrl,
     creditsUsed: generation.creditsUsed,
     processingMs: generation.processingMs,

@@ -2,6 +2,7 @@ import { BaseProvider } from './base';
 import type { ProviderGenerateParams, ProviderResponse, ProviderSlug } from '@/types';
 import { getKieEntry, type KieEntry, type KieOrder, type KieTask } from './kie-catalog';
 import { composeMusicTags, sanitizeMusicParams } from '@/lib/music-style';
+import { sanitizeSunoParams, sunoStemLabels, sunoVocalGender } from './kie-suno';
 
 /**
  * KIE.ai — one key for most vendors' image, video, music and lip-sync models.
@@ -115,7 +116,7 @@ export class KieProvider extends BaseProvider {
     const taskId = created.taskId;
     try {
       const result = await this.pollForResult(
-        () => this.readTask(params.apiKey, taskId, started),
+        () => this.readTask(params.apiKey, taskId, started, entry.suno === 'stems'),
         pollAttempts(params.maxWaitSeconds ?? entry.maxWaitSeconds, this.pollIntervalMs),
         this.pollIntervalMs
       );
@@ -150,6 +151,8 @@ export class KieProvider extends BaseProvider {
       entry.lastFrame && image && params.inputImageEnd ? await this.fetchable(params.inputImageEnd, params.apiKey) : undefined;
 
     const music = entry.music ? sanitizeMusicParams(extra.music) : undefined;
+    // GenerationService stored these sanitised (and an extension's start fixed); sanitised again here all the same.
+    const suno = entry.suno ? sanitizeSunoParams(extra.suno) : undefined;
     // Only one of the entry's own voices reaches KIE; anything else is its default.
     const voice = entry.speech ? (entry.speech.voices.find((v) => v.id === extra.voice) ?? entry.speech.voices[0]).id : undefined;
     const style = entry.speech?.style && typeof extra.speechStyle === 'string' ? extra.speechStyle.trim().slice(0, 300) : '';
@@ -168,6 +171,8 @@ export class KieProvider extends BaseProvider {
       lyrics: typeof extra.lyrics === 'string' ? extra.lyrics : undefined,
       musicTags: entry.music ? composeMusicTags(params.prompt ?? '', music) : undefined,
       instrumental: music?.instrumental === true,
+      vocalGender: entry.music && music?.instrumental !== true ? sunoVocalGender(music?.vocal) : undefined,
+      suno,
       voice,
       speechStyle: style || undefined,
     };
@@ -231,7 +236,8 @@ export class KieProvider extends BaseProvider {
   private async readTask(
     apiKey: string,
     taskId: string,
-    started: number
+    started: number,
+    stems = false
   ): Promise<{ done: boolean; result?: ProviderResponse }> {
     let res: Response;
     try {
@@ -266,6 +272,8 @@ export class KieProvider extends BaseProvider {
           success: true,
           resultUrl: urls[0],
           resultUrls: urls,
+          // Which stem each file is, read from KIE's names before R2 renames them.
+          resultLabels: stems ? sunoStemLabels(parseJson(data.resultJson), urls) : undefined,
           jobId: taskId,
           processingMs: Date.now() - started,
           costUsd: Number.isFinite(consumed) && consumed > 0 ? round6(consumed * USD_PER_KIE_CREDIT) : undefined,
