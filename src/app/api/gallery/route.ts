@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { outputLabels } from '@/lib/output-labels';
-import { songLyrics } from '@/lib/output-lyrics';
+import { songLyrics, songTracks } from '@/lib/output-lyrics';
+import { sanitizeSunoParams } from '@/lib/providers/kie-suno';
 import { getCurrentUserId } from '@/lib/auth';
 import prisma from '@/lib/db';
 import { daysUntil } from '@/lib/services/retention';
@@ -28,7 +29,21 @@ function remixParams(params: unknown): Record<string, unknown> | null {
   if (typeof p.speechStyle === 'string') out.speechStyle = p.speechStyle.slice(0, 300);
   // Already sanitised to known ids when the order was stored (music-style.ts).
   if (p.music && typeof p.music === 'object' && !Array.isArray(p.music)) out.music = p.music;
+  // Suno's fine-tuning. Its files and its Replace Section words come with the
+  // order's inputs (/api/gallery/[id]/inputs), not with every item of the list.
+  if (p.suno) {
+    const suno: Record<string, unknown> = { ...sanitizeSunoParams(p.suno) };
+    for (const key of ['mashWith', 'fullLyrics', 'originalLyrics', 'replaceFrom', 'replaceTo', 'replaceLines']) delete suno[key];
+    if (Object.keys(suno).length > 0) out.suno = suno;
+  }
   return Object.keys(out).length > 0 ? out : null;
+}
+
+/** A finished song's takes with the words each sings, for its karaoke; null when there is nothing to sing along to. */
+function karaokeTracks(g: { type: string; status: string; mediaDeletedAt: Date | null; params: unknown; resultUrl: string | null; resultUrls: unknown }, subcategory: string | null) {
+  if (g.type !== 'audio' || subcategory === 'speech' || g.status !== 'completed' || g.mediaDeletedAt) return null;
+  const tracks = songTracks(g.params, g.resultUrl, g.resultUrls);
+  return tracks.some((tr) => tr.lyrics.trim()) ? tracks : null;
 }
 
 export async function GET(request: NextRequest) {
@@ -122,6 +137,9 @@ export async function GET(request: NextRequest) {
       resultUrls: g.resultUrls,
       resultLabels: outputLabels(g.params, g.resultUrls),
       resultLyrics: g.type === 'audio' ? songLyrics(g.params, g.resultUrls) : null,
+      // One per song (Suno's two takes; a stem split is one), same order as
+      // /api/story/songs, so "make a karaoke MV" opens the take sung along to.
+      songTracks: karaokeTracks(g, g.model.subcategory),
       thumbnailUrl: g.thumbnailUrl,
       // The picture a 3D model was made from, so the 3D studio can show it
       // while the model is still rendering. Only a stored URL — a still sent

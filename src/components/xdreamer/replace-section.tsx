@@ -55,7 +55,12 @@ export function ReplaceSection({
   onWords: (text: string) => void;
 }) {
   const t = useT();
-  const [manual, setManual] = useState(false);
+  const [manualPick, setManual] = useState(false);
+  // A part is set by the seconds exactly when it has no lines: one that comes
+  // from outside (an order reopened from history) opens the way it was made.
+  const byHand = value !== null && value.first === null;
+  if (value && byHand !== manualPick) setManual(byHand);
+  const manual = value ? byHand : manualPick;
   const [message, setMessage] = useState<string | null>(null);
   const previewRef = useRef<HTMLAudioElement>(null);
   const k = useKaraoke(src && original.trim() && !manual ? { kind: "studio", src, lyrics: original } : null);

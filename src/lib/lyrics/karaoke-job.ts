@@ -15,7 +15,9 @@ import { alignTarget, buildTiming, lyricLines, parseTiming, type AlignResult, ty
  * the vocal is separated (Demucs, as for MV lip-sync), the Thai aligner gives
  * each letter its moment (aligner.ts), and karaoke.ts makes words and lines.
  * The song without its vocal comes out of the same separation and is kept
- * with it — the backing track of a sing-along cut.
+ * with it — the backing track of a sing-along cut. An MV whose song was
+ * already separated for lip-sync (story/vocals.ts separatedStems) hands over
+ * that vocal and minus-one instead: the song is not separated twice.
  *
  * Free to the customer, a few minutes per song, queued with the other CPU
  * jobs (story/media.ts). One timing per song and lyrics: the key is an HMAC
@@ -198,13 +200,26 @@ export async function findKaraoke(opts: { userId: number; songUrl: string; lyric
 export const karaokeNeedsRun = (status: KaraokeStatus, force: boolean) =>
   status.state === 'none' || status.state === 'failed' || (status.state === 'done' && force);
 
+/** A separation of the song already made (ours, sample for sample the song's): its lead vocal and the rest. */
+export interface SeparatedStems {
+  vocalsUrl: string;
+  instrumentalUrl: string;
+}
+
 /**
  * Time `songUrl` (one of ours — the caller checked it is the customer's) to
  * `lyrics`. Returns the id and where it stands; a timing that exists or is
  * being made is returned as it is unless `force` (then it is made again from
- * the song).
+ * the song). With `stems`, the song's own vocal is timed as it is and its
+ * minus-one kept, instead of separating the song.
  */
-export async function startKaraoke(opts: { userId: number; songUrl: string; lyrics: string; force?: boolean }): Promise<{ id: string; status: KaraokeStatus }> {
+export async function startKaraoke(opts: {
+  userId: number;
+  songUrl: string;
+  lyrics: string;
+  force?: boolean;
+  stems?: SeparatedStems | null;
+}): Promise<{ id: string; status: KaraokeStatus }> {
   const { userId, songUrl } = opts;
   const { id, lines, status } = await findKaraoke(opts);
   if (!karaokeNeedsRun(status, opts.force === true)) return { id, status };
@@ -217,7 +232,7 @@ export async function startKaraoke(opts: { userId: number; songUrl: string; lyri
   const job: Job = { userId, stage: 'queued', since: Date.now() };
   jobs.set(key, job);
   enqueueJob(() =>
-    makeTiming(job, userId, id, songUrl, lines).then(
+    makeTiming(job, userId, id, songUrl, lines, opts.stems ?? null).then(
       () => {
         if (jobs.get(key) === job) jobs.delete(key);
       },
@@ -252,41 +267,65 @@ function alignResult(raw: unknown, lineCount: number): (AlignResult & { ok: bool
   };
 }
 
-async function makeTiming(job: Job, userId: number, id: string, songUrl: string, lines: LyricLine[]): Promise<void> {
+/** A song this long can be timed: refused past the limit and under five seconds. */
+function checkSeconds(seconds: number): void {
+  if (seconds > KARAOKE_MAX_SECONDS + 0.5) {
+    throw new KaraokeError({ th: `เพลงยาวเกิน ${KARAOKE_MAX_SECONDS / 60} นาที`, en: `The song is longer than ${KARAOKE_MAX_SECONDS / 60} minutes.` });
+  }
+  if (seconds < 5) throw new KaraokeError({ th: 'เพลงสั้นเกินไป', en: 'The song is too short.' });
+}
+
+/** Separate the song in `dir`: leaves `v16.wav` (the vocal, for the aligner) and returns the stored minus-one. */
+async function separateSong(dir: string, demucs: string, userId: number, id: string, songUrl: string): Promise<string> {
+  await download(songUrl, path.join(dir, 'song.bin'), SONG_MAX_BYTES, { th: 'เพลง', en: 'the song' });
+  await runFfmpeg(
+    ['-y', '-hide_banner', '-loglevel', 'error', '-i', 'song.bin', '-t', String(KARAOKE_MAX_SECONDS + 1), '-vn', '-ac', '2', '-ar', '44100', '-c:a', 'pcm_s16le', 'in.wav'],
+    dir,
+    2 * 60_000
+  ).catch(() => {
+    throw new StoryJobError({ th: 'อ่านไฟล์เพลงไม่ได้ ใช้ไฟล์ MP3, WAV หรือ M4A', en: "Couldn't read the song. Use an MP3, WAV or M4A file." });
+  });
+  // 16-bit stereo at 44.1 kHz: four bytes a sample, after a 44-byte header.
+  checkSeconds(((await stat(path.join(dir, 'in.wav'))).size - 44) / (44100 * 4));
+
+  const sepThreads = demucsThreads();
+  await writeFile(path.join(dir, 'separate.py'), SEPARATE_PY);
+  await runNiced(demucs, ['-I', 'separate.py', 'in.wav', 'vocals.wav', String(sepThreads), 'rest.wav'], {
+    cwd: dir,
+    timeoutMs: SEPARATE_TIMEOUT_MS,
+    niceness: 15,
+    env: threadEnv(sepThreads),
+  });
+  await runFfmpeg(['-y', '-hide_banner', '-loglevel', 'error', '-i', 'vocals.wav', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', 'v16.wav'], dir, 2 * 60_000);
+  await runFfmpeg(['-y', '-hide_banner', '-loglevel', 'error', '-i', 'rest.wav', '-c:a', 'libmp3lame', '-b:a', '192k', 'minus.mp3'], dir, 2 * 60_000);
+  await rm(path.join(dir, 'in.wav'), { force: true });
+  return uploadBuffer(await readFile(path.join(dir, 'minus.mp3')), `karaoke/${userId}/${id}-minus-${Date.now()}.mp3`, 'audio/mpeg');
+}
+
+/** Ready `v16.wav` in `dir` from a vocal already separated from the song; returns its minus-one as it is. */
+async function fromStems(dir: string, stems: SeparatedStems): Promise<string> {
+  await download(stems.vocalsUrl, path.join(dir, 'vocals.bin'), SONG_MAX_BYTES, { th: 'ไฟล์เสียงร้อง', en: 'the vocal file' });
+  await runFfmpeg(
+    ['-y', '-hide_banner', '-loglevel', 'error', '-i', 'vocals.bin', '-t', String(KARAOKE_MAX_SECONDS + 1), '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', 'v16.wav'],
+    dir,
+    2 * 60_000
+  ).catch(() => {
+    throw new StoryJobError({ th: 'อ่านไฟล์เสียงร้องไม่ได้ ลองใหม่อีกครั้ง', en: "Couldn't read the vocal file. Please try again." });
+  });
+  // 16-bit mono at 16 kHz: two bytes a sample.
+  checkSeconds(((await stat(path.join(dir, 'v16.wav'))).size - 44) / (16000 * 2));
+  return stems.instrumentalUrl;
+}
+
+async function makeTiming(job: Job, userId: number, id: string, songUrl: string, lines: LyricLine[], stems: SeparatedStems | null): Promise<void> {
   const demucs = demucsPython();
   const aligner = alignerPython();
   const model = alignerModelDir();
-  if (!demucs || !aligner || !model) throw new KaraokeError(NOT_READY);
+  if ((!stems && !demucs) || !aligner || !model) throw new KaraokeError(NOT_READY);
   const dir = await mkdtemp(path.join(tmpdir(), 'aixman-karaoke-'));
   try {
-    job.stage = 'separating';
-    await download(songUrl, path.join(dir, 'song.bin'), SONG_MAX_BYTES, { th: 'เพลง', en: 'the song' });
-    await runFfmpeg(
-      ['-y', '-hide_banner', '-loglevel', 'error', '-i', 'song.bin', '-t', String(KARAOKE_MAX_SECONDS + 1), '-vn', '-ac', '2', '-ar', '44100', '-c:a', 'pcm_s16le', 'in.wav'],
-      dir,
-      2 * 60_000
-    ).catch(() => {
-      throw new StoryJobError({ th: 'อ่านไฟล์เพลงไม่ได้ ใช้ไฟล์ MP3, WAV หรือ M4A', en: "Couldn't read the song. Use an MP3, WAV or M4A file." });
-    });
-    // 16-bit stereo at 44.1 kHz: four bytes a sample, after a 44-byte header.
-    const seconds = ((await stat(path.join(dir, 'in.wav'))).size - 44) / (44100 * 4);
-    if (seconds > KARAOKE_MAX_SECONDS + 0.5) {
-      throw new KaraokeError({ th: `เพลงยาวเกิน ${KARAOKE_MAX_SECONDS / 60} นาที`, en: `The song is longer than ${KARAOKE_MAX_SECONDS / 60} minutes.` });
-    }
-    if (seconds < 5) throw new KaraokeError({ th: 'เพลงสั้นเกินไป', en: 'The song is too short.' });
-
-    const sepThreads = demucsThreads();
-    await writeFile(path.join(dir, 'separate.py'), SEPARATE_PY);
-    await runNiced(demucs, ['-I', 'separate.py', 'in.wav', 'vocals.wav', String(sepThreads), 'rest.wav'], {
-      cwd: dir,
-      timeoutMs: SEPARATE_TIMEOUT_MS,
-      niceness: 15,
-      env: threadEnv(sepThreads),
-    });
-    await runFfmpeg(['-y', '-hide_banner', '-loglevel', 'error', '-i', 'vocals.wav', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', 'v16.wav'], dir, 2 * 60_000);
-    await runFfmpeg(['-y', '-hide_banner', '-loglevel', 'error', '-i', 'rest.wav', '-c:a', 'libmp3lame', '-b:a', '192k', 'minus.mp3'], dir, 2 * 60_000);
-    await rm(path.join(dir, 'in.wav'), { force: true });
-    const instrumentalUrl = await uploadBuffer(await readFile(path.join(dir, 'minus.mp3')), `karaoke/${userId}/${id}-minus-${Date.now()}.mp3`, 'audio/mpeg');
+    job.stage = stems ? 'aligning' : 'separating';
+    const instrumentalUrl = stems ? await fromStems(dir, stems) : await separateSong(dir, demucs!, userId, id, songUrl);
 
     job.stage = 'aligning';
     const alignThreads = alignerThreads();

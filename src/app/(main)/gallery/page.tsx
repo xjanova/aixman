@@ -23,6 +23,7 @@ import { AudioWave } from "@/components/xdreamer/audio-wave";
 import { AudioTracks, type AudioTrack } from "@/components/xdreamer/audio-tracks";
 import { stemLabelText } from "@/lib/i18n/suno-text";
 import { SongLyrics } from "@/components/xdreamer/song-lyrics";
+import { KaraokePanel } from "@/components/xdreamer/karaoke";
 import { AquaChordHandoff } from "@/components/xdreamer/aquachord";
 import { ModelViewer } from "@/components/xdreamer/model-viewer";
 import { loginHref } from "@/lib/safe-callback";
@@ -52,6 +53,8 @@ interface Generation {
   resultLabels?: string[] | null;
   /** A song's words, one per delivered track (output-lyrics.ts). */
   resultLyrics?: string[] | null;
+  /** Each song it delivered with the words it sings, when there is something to sing along to (output-lyrics.ts songTracks). */
+  songTracks?: { url: string; lyrics: string }[] | null;
   thumbnailUrl: string;
   creditsUsed: number;
   /** Credits handed back on a failed generation. */
@@ -544,6 +547,18 @@ export default function GalleryPage() {
 
             {selectedItem.type === "audio" && selectedItem.resultLyrics && selectedItem.resultLyrics.length > 0 && (
               <SongLyrics key={`lyrics-${selectedItem.id}`} lyrics={selectedItem.resultLyrics} style={{ marginBottom: 14 }} />
+            )}
+            {/* Its karaoke, as under the studio's result: timed free on our server, on to an MV. */}
+            {selectedItem.type === "audio" && !selectedItem.mediaDeleted && selectedItem.songTracks && selectedItem.songTracks.length > 0 && (
+              <KaraokePanel
+                key={`karaoke-${selectedItem.id}`}
+                generationId={selectedItem.id}
+                tracks={selectedItem.songTracks.map((tr, i, all) => ({
+                  ...tr,
+                  label: all.length > 1 ? t(`เวอร์ชัน ${i + 1}`, `Version ${i + 1}`) : t("เพลง", "Song"),
+                }))}
+                style={{ marginBottom: 14 }}
+              />
             )}
 
             <div style={{ display: "flex", flexWrap: "wrap", gap: 14, fontSize: 11, color: "#64748b", marginBottom: 18 }}>

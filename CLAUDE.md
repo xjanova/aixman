@@ -208,9 +208,14 @@ against the free `/api/v1/chat/credit` → encrypted pool row, daily quota 0 →
   in the breaths between lines and, short of 10 s, takes in whole neighbouring
   lines (shown to the customer); `replacedLyrics` swaps exactly those lines
   in the original words. By time is the fallback (the customer types the whole
-  new lyrics). Mashup sends `upload_url_list: [first, params.suno.mashWith]`;
+  new lyrics). A by-lines order also stores `suno.originalLyrics` +
+  `replaceLines` (never sent to KIE) so it reopens from history on the same
+  lines (`order-inputs.ts` `replace`, with `mashWith`, via
+  `/api/gallery/[id]/inputs`; the rest of `suno` is in the gallery's `remix`).
+  Mashup sends `upload_url_list: [first, params.suno.mashWith]`;
   the second track is held to the first one's rules (ours, readable, ≤ 8 min) —
-  in our bucket, not checked as the caller's own, like `inputAudio`.
+  in our bucket, not checked as the caller's own, like `inputAudio`; retention
+  deletes it with its order (`SUNO_URL_PARAMS`).
 - **Waveforms on every audio file** (`TrackWave`, `track-wave.tsx`): each track,
   each stem, a carried or reopened source song (with an extension's start
   marked; `AudioTrimmer` marks it too), the gallery. Bytes come through
@@ -803,10 +808,10 @@ Code: `src/lib/story/{cinematic,service,http}.ts`, `/api/story/*`.
   img2img 1, everything else 0; a video model says first / first+last frame.
   `GenerationService.checkReferences` refuses more than the cap and any URL
   that is not ours (`keyFromPublicUrl`).
-- **Retention never deletes a story's pictures** (`retention.ts`): keys under
-  `story/` and every key a library picture or keyframe points to are skipped,
-  even when an old generation's params name them. Shot clips (`generations/…`)
-  still expire with their generation.
+- **Retention never deletes a story's pictures or an MV's song** (`retention.ts`):
+  keys under `story/` and every key a library picture, keyframe or project
+  `song_url` points to are skipped, even when an old generation's params name
+  them. Shot clips (`generations/…`) still expire with their generation.
 - **Film length** (`FILM_LENGTHS`: auto, 1/3/5/10 min, `script_json.targetSeconds`;
   60 shots, cut ≤ `LIMITS.maxFilmSeconds` 600).
 - **MV timing is ours, not the LLM's:** `songTimeline` lays the lyrics over the
@@ -840,7 +845,11 @@ Code: `src/lib/story/{cinematic,service,http}.ts`, `/api/story/*`.
   2.5.1, demucs 4.0.1, soundfile; `DEMUCS_PYTHON` / `DEMUCS_THREADS` override;
   weights in `~/.cache/torch/hub`). Free; ~2.5 min and ~1.9 GB for a 4-min
   song on 8 threads, `nice 15`, run with `python -I` from the temp dir. Or the
-  customer uploads a vocal stem (±2 s of the song). Separation and the cut
+  customer uploads a vocal stem (±2 s of the song). The same pass stores the
+  rest of the song beside the vocal (`minusOneFor`: `vocals-<ms>-minus.mp3`,
+  best effort), so the MV's karaoke times that vocal instead of separating
+  again (`separatedStems`; an uploaded stem or an older separation without
+  one still runs Demucs). Separation and the cut
   share one in-process queue (`enqueueJob`). Each dub: the shot's own window
   of the song (`startSec`, ≤ 20 s) sliced by ffmpeg, refused uncharged when
   silent (mean < −45 dB), then an ordinary `latentsync-1.6` order (video = the
@@ -872,7 +881,10 @@ lyrics.
   the same separation); `id` = HMAC of user, song key and sung lines, so the
   studio and an MV of the same song and words find the same doc. The customer's
   moved lines (`moveLine`, `shiftTiming`) are saved over it (PUT). Retention
-  does not delete `karaoke/` (nothing does yet).
+  deletes a timing and every minus-one under its id with the song's files
+  (`karaoke-files.ts`, from the doc's own `songUrl` — the id cannot be worked
+  back), never while a story project's `song_url` is that song.
+  The gallery shows the same `KaraokePanel` (`songTracks` from `/api/gallery`).
 - **Routes:** `/api/studio/karaoke` (POST start / `peek`, GET `?id=`, PUT
   timing; the song must be the caller's own, `isOwnAudioKey`) and
   `/api/story/[id]/karaoke` (the MV's song + brief). Starts are rate-limited

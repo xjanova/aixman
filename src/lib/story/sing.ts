@@ -87,6 +87,17 @@ export function meanVolumeDb(ffmpegLog: string): number | null {
   return m[1] === '-inf' ? -Infinity : Number(m[1]);
 }
 
+/**
+ * Where a separation keeps the song without its vocal: beside the vocal it
+ * separated (vocals.ts), `…/vocals-<ms>.mp3` → `…/vocals-<ms>-minus.mp3` — the
+ * karaoke backing track, so an MV's karaoke need not separate the song again.
+ * Takes a key or a URL; null for anything else (an uploaded stem has none).
+ */
+export function minusOneFor(vocals: string): string | null {
+  const m = /^(.*(?:^|\/)story\/\d+\/\d+\/vocals-\d+)\.mp3$/.exec(vocals);
+  return m ? `${m[1]}-minus.mp3` : null;
+}
+
 export type VocalsState = 'none' | 'separating' | 'done' | 'failed' | 'stale';
 
 /**

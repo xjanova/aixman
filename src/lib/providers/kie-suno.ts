@@ -146,6 +146,13 @@ export interface SunoParams {
   replaceTo?: number;
   /** Replace Section: the whole song's words with the new part in place. */
   fullLyrics?: string;
+  /**
+   * Replace Section picked by lines: the song's own words and the sung lines
+   * (first, last) picked from them. Never sent to KIE — kept so the studio can
+   * reopen the order on the same lines (order-inputs.ts).
+   */
+  originalLyrics?: string;
+  replaceLines?: [number, number];
   /** Mashup: the second track (ours, checked before charging like the first). */
   mashWith?: string;
 }
@@ -224,9 +231,19 @@ export function sanitizeSunoParams(raw: unknown): SunoParams {
     out.replaceFrom = replaceFrom;
     out.replaceTo = replaceTo;
   }
-  if (typeof r.fullLyrics === 'string') {
-    const full = r.fullLyrics.replace(/\r\n?/g, '\n').replace(/[\u0000-\u0008\u000B-\u001F\u007F]+/g, ' ').trim();
-    if (full) out.fullLyrics = full.slice(0, SUNO_LYRICS_MAX);
+  const words = (v: unknown) => {
+    if (typeof v !== 'string') return undefined;
+    const t = v.replace(/\r\n?/g, '\n').replace(/[\u0000-\u0008\u000B-\u001F\u007F]+/g, ' ').trim();
+    return t ? t.slice(0, SUNO_LYRICS_MAX) : undefined;
+  };
+  const fullLyrics = words(r.fullLyrics);
+  if (fullLyrics) out.fullLyrics = fullLyrics;
+  const lines = r.replaceLines;
+  const line = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 2000;
+  const originalLyrics = words(r.originalLyrics);
+  if (out.replaceFrom !== undefined && originalLyrics && Array.isArray(lines) && lines.length === 2 && line(lines[0]) && line(lines[1]) && lines[0] <= lines[1]) {
+    out.originalLyrics = originalLyrics;
+    out.replaceLines = [lines[0], lines[1]];
   }
   if (typeof r.mashWith === 'string' && r.mashWith.length <= 2000 && /^https:\/\/\S+$/i.test(r.mashWith)) out.mashWith = r.mashWith;
   return out;

@@ -1,5 +1,5 @@
 import { randomBytes } from 'crypto';
-import { S3Client, PutObjectCommand, DeleteObjectsCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectsCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { assetType } from './media-type';
 
 /**
@@ -112,6 +112,12 @@ export function publicUrlFor(key: string): string | null {
   return `${process.env.R2_PUBLIC_URL!.replace(/\/+$/, '')}/${keyPrefix()}${key}`;
 }
 
+/** The public URL of a whole key (as `listObjectKeys` and `keyFromPublicUrl` give it); null when storage is not set up. */
+export function publicUrlOfKey(fullKey: string): string | null {
+  if (!isStorageConfigured()) return null;
+  return `${process.env.R2_PUBLIC_URL!.replace(/\/+$/, '')}/${fullKey}`;
+}
+
 /**
  * Recover the object key from a public URL we handed out.
  *
@@ -160,6 +166,30 @@ export async function deleteObjects(keys: string[]): Promise<{ deleted: number; 
   }
 
   return { deleted, failed };
+}
+
+/**
+ * The keys under `prefix` (one of ours, as `uploadBuffer` takes it), at most
+ * `max`. Returned whole — with R2_KEY_PREFIX, as `keyFromPublicUrl` returns
+ * them and `deleteObjects` takes them.
+ */
+export async function listObjectKeys(prefix: string, max = 5000): Promise<string[]> {
+  if (!isStorageConfigured()) return [];
+  const keys: string[] = [];
+  let token: string | undefined;
+  do {
+    const res = await getClient().send(
+      new ListObjectsV2Command({
+        Bucket: process.env.R2_BUCKET!,
+        Prefix: `${keyPrefix()}${prefix}`,
+        ContinuationToken: token,
+        MaxKeys: Math.min(1000, max - keys.length),
+      })
+    );
+    for (const o of res.Contents ?? []) if (o.Key) keys.push(o.Key);
+    token = res.IsTruncated ? res.NextContinuationToken : undefined;
+  } while (token && keys.length < max);
+  return keys;
 }
 
 /**

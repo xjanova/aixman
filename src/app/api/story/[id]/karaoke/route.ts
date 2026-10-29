@@ -6,10 +6,12 @@ import { KaraokeError, findKaraoke, karaokeNeedsRun, karaokeReady, karaokeStatus
 import { rateLimit } from '@/lib/rate-limit';
 import { STORY_REPLY, hourlyLimitReply, storyErrorReply, storyReply } from '@/lib/story/http';
 import { StoryError, loadOwnedProject } from '@/lib/story/service';
+import { separatedStems } from '@/lib/story/vocals';
 
 /**
  * The MV's karaoke timing: its song timed to its lyrics (lyrics/karaoke-job.ts),
- * the same timing the studio makes for that song and those words.
+ * the same timing the studio makes for that song and those words. A song
+ * lip-sync already separated is timed on that vocal (story/vocals.ts separatedStems).
  *   GET            → { available, id, status }
  *   POST { force } → start it (free; the page polls GET)
  * The cut reads it when the karaoke switch is on (story/assemble.ts).
@@ -53,11 +55,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
     const force = body?.force === true;
     const found = await findKaraoke({ userId: p.userId, songUrl: p.songUrl, lyrics: p.lyrics });
-    if (karaokeNeedsRun(found.status, force) && !(await isAdmin())) {
+    const runs = karaokeNeedsRun(found.status, force);
+    if (runs && !(await isAdmin())) {
       const limit = rateLimit(`karaoke:${p.userId}`, STARTS_PER_HOUR, 60 * 60_000);
       if (!limit.ok) return hourlyLimitReply({ th: 'จับจังหวะเนื้อร้อง', en: 'timed lyrics' }, STARTS_PER_HOUR, limit.retryAfter, locale);
     }
-    const made = await startKaraoke({ userId: p.userId, songUrl: p.songUrl, lyrics: p.lyrics, force });
+    // The vocal lip-sync already separated from this song, when there is one: not separated twice.
+    const stems = runs ? await separatedStems(p.project) : null;
+    const made = await startKaraoke({ userId: p.userId, songUrl: p.songUrl, lyrics: p.lyrics, force, stems });
     return NextResponse.json({ available: karaokeReady(), id: made.id, status: karaokeStatusJson(made.status, locale) });
   } catch (error) {
     return errorReply(error, locale);

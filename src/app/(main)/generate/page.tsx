@@ -136,6 +136,9 @@ interface SunoChoices {
   replaceFrom?: number;
   replaceTo?: number;
   fullLyrics?: string;
+  /** Picked by lines: the song's own words and the sung lines picked, so the order reopens on them. */
+  originalLyrics?: string;
+  replaceLines?: [number, number];
   /** Mashup: the second track (our URL). */
   mashWith?: string;
 }
@@ -155,6 +158,8 @@ function sunoParamsFor(tool: SunoTool, c: SunoChoices, tier: string | undefined)
     replaceFrom: tool === "replace" ? c.replaceFrom : undefined,
     replaceTo: tool === "replace" ? c.replaceTo : undefined,
     fullLyrics: tool === "replace" ? c.fullLyrics : undefined,
+    originalLyrics: tool === "replace" && c.replaceLines ? c.originalLyrics : undefined,
+    replaceLines: tool === "replace" && c.originalLyrics ? c.replaceLines : undefined,
     mashWith: tool === "mashup" ? c.mashWith : undefined,
   };
 }
@@ -540,6 +545,8 @@ interface HistoryItem {
     strength?: number;
     lyrics?: string;
     music?: MusicStyleParams;
+    /** Suno's fine-tuning; its files and Replace Section words come with the order's inputs. */
+    suno?: SunoChoices;
     voice?: string;
     speechStyle?: string;
   } | null;
@@ -812,6 +819,8 @@ async function fetchOrderInputs(generationId: number): Promise<OrderInputs | nul
     if (!res.ok) return null;
     const data = await res.json();
     const text = (v: unknown) => (typeof v === "string" && v !== "" ? v : null);
+    const r = data.replace;
+    const lines = Array.isArray(r?.lines) && r.lines.length === 2 && r.lines.every(Number.isInteger) ? (r.lines as [number, number]) : null;
     return {
       inputImage: text(data.inputImage),
       inputImageEnd: text(data.inputImageEnd),
@@ -820,6 +829,10 @@ async function fetchOrderInputs(generationId: number): Promise<OrderInputs | nul
       referenceImages: Array.isArray(data.referenceImages)
         ? data.referenceImages.filter((u: unknown): u is string => typeof u === "string" && u !== "")
         : [],
+      mashWith: text(data.mashWith),
+      replace: r && typeof r.from === "number" && typeof r.to === "number" && typeof r.original === "string"
+        ? { from: r.from, to: r.to, lines, original: r.original }
+        : null,
     };
   } catch {
     return null;
@@ -2916,7 +2929,11 @@ export default function GeneratePage() {
         suno: sunoTool
           ? sunoParamsFor(
               sunoTool,
-              { ...suno, replaceFrom: replaceWindow?.from, replaceTo: replaceWindow?.to, fullLyrics: replaceFull || undefined, mashWith: mashSong?.url },
+              {
+                ...suno, replaceFrom: replaceWindow?.from, replaceTo: replaceWindow?.to, fullLyrics: replaceFull || undefined, mashWith: mashSong?.url,
+                originalLyrics: replaceLines ? replaceOriginal : undefined,
+                replaceLines: replaceLines ? [replaceLines.first, replaceLines.last] : undefined,
+              },
               activeQuality?.id,
             )
           : undefined,
@@ -3076,6 +3093,16 @@ export default function GeneratePage() {
     setInputAudio(audio); setInputAudioName(audio ? t("ไฟล์เสียงจากงานเดิม", "Audio from the earlier order") : null); setInputAudioFile(null);
     const video = kind === "lipsync" || tool ? inputs.inputVideo : null;
     setSourceVideo(video); setSourceVideoName(video ? t("คลิปจากงานเดิม", "Clip from the earlier order") : null);
+    // Replace Section's part goes back on the song it was picked from (by its
+    // lines when it was picked so); a mashup gets its second song back.
+    const replace = audio && kind === "audio" ? inputs.replace : null;
+    setReplaceOriginal(replace?.original ?? "");
+    setReplacePick(replace && audio
+      ? { from: replace.from, to: replace.to, first: replace.lines?.[0] ?? null, last: replace.lines?.[1] ?? null, seconds: null, src: audio, original: replace.original }
+      : null);
+    setMashSong(kind === "audio" && inputs.mashWith
+      ? { url: inputs.mashWith, name: t("เพลงที่สองจากงานเดิม", "Second song from the earlier order"), seconds: null }
+      : null);
   };
 
   /**
@@ -3142,6 +3169,8 @@ export default function GeneratePage() {
       setLyrics(typeof r.lyrics === "string" ? r.lyrics.slice(0, 3000) : "");
       setMusicStyle({ complexity: MUSIC_COMPLEXITY_DEFAULT, variance: MUSIC_VARIANCE_DEFAULT, ...(r.music ?? {}) });
       setInstrumental(r.music?.instrumental === true);
+      // Its own fine-tuning, not what was left on the form.
+      setSuno(r.suno && typeof r.suno === "object" ? r.suno : {});
     }
     if (kind === "speech") {
       setVoiceId(typeof r.voice === "string" ? r.voice : null);
@@ -4374,7 +4403,8 @@ export default function GeneratePage() {
                       />
                       {mashSong && (
                         <TrackWave key={mashSong.url} url={mashSong.url} label={mashSong.name} height={44} hue={320}
-                          onError={() => setMashSong(null)} style={{ marginTop: 10 }} />
+                          // One put back from an earlier order may have expired: say so.
+                          onError={() => { dropExpiredInput(mashSong.url, () => setMashSong(null)); setMashSong(null); }} style={{ marginTop: 10 }} />
                       )}
                     </div>
                   )}

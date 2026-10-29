@@ -8,10 +8,10 @@ import { creditsForDuration } from '@/lib/pricing';
 import { GenerationService } from '@/lib/services/generation';
 import { generationErrorResponse } from '@/lib/services/generation-errors';
 import { ModelReadiness } from '@/lib/services/model-readiness';
-import { uploadBuffer } from '@/lib/storage/r2';
+import { keyFromPublicUrl, uploadBuffer } from '@/lib/storage/r2';
 import { voiceRenderSeconds } from '@/lib/voice-length';
 import { StoryJobError, download, enqueueJob, runFfmpeg, runNiced } from './media';
-import { LIPSYNC_MODEL_KEY, SILENT_MEAN_DB, meanVolumeDb, vocalsState, voiceWindow } from './sing';
+import { LIPSYNC_MODEL_KEY, SILENT_MEAN_DB, meanVolumeDb, minusOneFor, vocalsState, voiceWindow } from './sing';
 import { StoryError, customerMsg, type StoryProjectFull } from './service';
 import type { Msg } from '@/lib/i18n/locale';
 import { packMsg, registerStoredMsgs } from '@/lib/i18n/messages';
@@ -167,14 +167,22 @@ async function separate(projectId: number): Promise<void> {
     });
     await writeFile(path.join(dir, 'separate.py'), SEPARATE_PY);
     const threads = demucsThreads();
-    await runNiced(python, ['-I', 'separate.py', 'in.wav', 'out.wav', String(threads)], {
+    // The rest of the song comes out of the same pass: the karaoke's minus-one.
+    await runNiced(python, ['-I', 'separate.py', 'in.wav', 'out.wav', String(threads), 'rest.wav'], {
       cwd: dir,
       timeoutMs: SEPARATE_TIMEOUT_MS,
       niceness: 15,
       env: { ...process.env, OMP_NUM_THREADS: String(threads), MKL_NUM_THREADS: String(threads) },
     });
     await runFfmpeg(['-y', '-hide_banner', '-loglevel', 'error', '-i', 'out.wav', '-c:a', 'libmp3lame', '-b:a', '192k', 'vocals.mp3'], dir, 2 * 60_000);
-    const url = await uploadBuffer(await readFile(path.join(dir, 'vocals.mp3')), `story/${project.userId}/${project.id}/vocals-${Date.now()}.mp3`, 'audio/mpeg');
+    const key = `story/${project.userId}/${project.id}/vocals-${Date.now()}.mp3`;
+    // Stored before the vocal, so a vocal with a minus-one key always has one
+    // (separatedStems). Not needed for lip-sync: a failure is only logged, and
+    // the karaoke then separates the song itself.
+    await runFfmpeg(['-y', '-hide_banner', '-loglevel', 'error', '-i', 'rest.wav', '-c:a', 'libmp3lame', '-b:a', '192k', 'minus.mp3'], dir, 2 * 60_000)
+      .then(async () => uploadBuffer(await readFile(path.join(dir, 'minus.mp3')), minusOneFor(key)!, 'audio/mpeg'))
+      .catch((error) => console.error(`[story] separate ${project.id} minus-one:`, error));
+    const url = await uploadBuffer(await readFile(path.join(dir, 'vocals.mp3')), key, 'audio/mpeg');
     // Only if the project still waits for this song's vocal.
     await prisma.aiStoryProject.updateMany({
       where: { id: project.id, vocalsStatus: 'separating', vocalsSongUrl: songUrl },
@@ -183,6 +191,23 @@ async function separate(projectId: number): Promise<void> {
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * The project's separated vocal and the minus-one made in the same pass, for
+ * its karaoke (lyrics/karaoke-job.ts) to time without separating the song
+ * again. Null for an uploaded stem — it is only checked to be about as long
+ * as the song, not to line up with it sample by sample, and the timing is
+ * shared with the studio — and for a separation from before minus-ones were
+ * kept, or whose minus-one failed: then the karaoke separates the song itself.
+ */
+export async function separatedStems(project: StoryProjectFull): Promise<{ vocalsUrl: string; instrumentalUrl: string } | null> {
+  if (projectVocalsState(project) !== 'done' || project.vocalsSource !== 'separated' || !project.vocalsUrl) return null;
+  if (!keyFromPublicUrl(project.vocalsUrl)) return null;
+  const instrumentalUrl = minusOneFor(project.vocalsUrl);
+  if (!instrumentalUrl) return null;
+  const res = await fetch(instrumentalUrl, { method: 'HEAD', cache: 'no-store', signal: AbortSignal.timeout(10_000) }).catch(() => null);
+  return res?.ok ? { vocalsUrl: project.vocalsUrl, instrumentalUrl } : null;
 }
 
 /** A vocal stem the customer uploaded instead (the route checked it is theirs and as long as the song). */

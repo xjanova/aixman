@@ -123,6 +123,21 @@ test('sunoReplaceWindow and checkSunoSource: KIE’s rules before the charge', (
   assert.equal(checkSunoSource('replace', facts, {}).ok, false);
 });
 
+test('a part picked by lines keeps its lines and the words they index, for reopening — never sent', () => {
+  const picked = sanitizeSunoParams({ replaceFrom: 29.65, replaceTo: 40.5, fullLyrics: 'ก\nใหม่', originalLyrics: 'ก\r\nข', replaceLines: [1, 1] });
+  assert.deepEqual(picked, { replaceFrom: 29.65, replaceTo: 40.5, fullLyrics: 'ก\nใหม่', originalLyrics: 'ก\nข', replaceLines: [1, 1] });
+  // Lines without words, words without lines, lines backwards, or no part at all: neither is kept.
+  for (const extra of [{ replaceLines: [1, 2] }, { originalLyrics: 'ก' }, { originalLyrics: 'ก', replaceLines: [2, 1] }, { originalLyrics: 'ก', replaceLines: [0.5, 1] }]) {
+    const out = sanitizeSunoParams({ replaceFrom: 10, replaceTo: 22, ...extra });
+    assert.equal(out.originalLyrics, undefined);
+    assert.equal(out.replaceLines, undefined);
+  }
+  assert.deepEqual(sanitizeSunoParams({ originalLyrics: 'ก', replaceLines: [0, 0] }), {});
+  const task = buildSunoTask('replace', { style: 'thai pop', prompt: '', instrumental: false, audio: 'https://r2.example/aixman/uploads/1/audio/a.mp3', tier: 'V6', suno: picked });
+  assert.equal(JSON.stringify(task).includes('ก\\nข'), false);
+  assert.equal('replaceLines' in task.input || 'originalLyrics' in task.input, false);
+});
+
 test('mashup: needs a second track, each within 8 minutes', () => {
   const facts = { seconds: 120, bytes: 1000 };
   assert.equal(checkSunoSource('mashup', facts, {}).ok, false);

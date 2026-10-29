@@ -1,6 +1,7 @@
 import prisma from '@/lib/db';
 import { Prisma } from '@/generated/prisma/client';
-import { deleteObjects, keyFromPublicUrl, isStorageConfigured } from '@/lib/storage/r2';
+import { expiredKaraokeKeys, karaokeObject } from '@/lib/lyrics/karaoke-files';
+import { deleteObjects, keyFromPublicUrl, isStorageConfigured, listObjectKeys, publicUrlOfKey } from '@/lib/storage/r2';
 
 /**
  * Media retention.
@@ -32,18 +33,27 @@ const SETTING_KEY = 'media_retention_days';
 const INPUT_URL_PARAMS = ['inputAudio', 'inputVideo', 'inputImageEnd'] as const;
 /** The same, for params that hold a list of URLs. */
 const INPUT_URL_LIST_PARAMS = ['referenceImages'] as const;
+/** The same, inside `params.suno`: a mashup's second song (kie-suno.ts). */
+const SUNO_URL_PARAMS = ['mashWith'] as const;
+
+function sunoOf(params: Record<string, unknown> | null): Record<string, unknown> | null {
+  const s = params?.suno;
+  return s && typeof s === 'object' && !Array.isArray(s) ? (s as Record<string, unknown>) : null;
+}
 
 /**
  * Objects a movie project still shows, which no order's expiry may take: its
- * library pictures (often an upload that an order sent as its first frame)
- * and its shots' opening pictures (an order's own result). Anything under
+ * library pictures (often an upload that an order sent as its first frame),
+ * its shots' opening pictures (an order's own result) and an MV's song (often
+ * a song ordered here — the cut and its karaoke read it). Anything under
  * `story/` is the project's own file. A project's pictures live as long as
  * the project — they are what keeps its faces the same.
  */
 async function storyKeepKeys(): Promise<Set<string>> {
-  const [assets, shots] = await Promise.all([
+  const [assets, shots, songs] = await Promise.all([
     prisma.aiStoryCharacter.findMany({ select: { referenceUrl: true, images: true } }),
     prisma.aiStoryShot.findMany({ where: { keyframeUrl: { not: null } }, select: { keyframeUrl: true } }),
+    prisma.aiStoryProject.findMany({ where: { songUrl: { not: null } }, select: { songUrl: true } }),
   ]);
   const keep = new Set<string>();
   const add = (url: unknown) => {
@@ -55,7 +65,57 @@ async function storyKeepKeys(): Promise<Set<string>> {
     if (Array.isArray(a.images)) a.images.forEach(add);
   }
   for (const s of shots) add(s.keyframeUrl);
+  for (const p of songs) add(p.songUrl);
   return keep;
+}
+
+/** A timing's song never changes under its key (the key is an HMAC of it), so a read is kept. */
+const karaokeSongs = new Map<string, string>();
+const KARAOKE_SONG_CACHE = 5000;
+const KARAOKE_DOCS_PER_USER = 500;
+
+/** The key of the song a stored karaoke timing was made on, or null when it cannot be read. */
+async function karaokeSongKey(docKey: string): Promise<string | null> {
+  const cached = karaokeSongs.get(docKey);
+  if (cached) return cached;
+  const url = publicUrlOfKey(docKey);
+  if (!url) return null;
+  const res = await fetch(`${url}?v=${Date.now()}`, { cache: 'no-store', signal: AbortSignal.timeout(10_000) }).catch(() => null);
+  const doc = res?.ok ? ((await res.json().catch(() => null)) as { songUrl?: unknown } | null) : null;
+  const song = typeof doc?.songUrl === 'string' ? keyFromPublicUrl(doc.songUrl) : null;
+  if (!song) return null;
+  if (karaokeSongs.size >= KARAOKE_SONG_CACHE) karaokeSongs.delete(karaokeSongs.keys().next().value!);
+  karaokeSongs.set(docKey, song);
+  return song;
+}
+
+/**
+ * The karaoke timings and minus-ones (lyrics/karaoke-job.ts) of songs whose
+ * files are going: under each customer's `karaoke/<userId>/`, every timing
+ * made on one of `songsByUser`'s songs and not on a song in `keep`.
+ */
+async function expiredKaraoke(songsByUser: Map<number, Set<string>>, keep: Set<string>): Promise<string[]> {
+  const out: string[] = [];
+  // A slow bucket must not hold up the sweep: what is not read in time is left for the next one.
+  const until = Date.now() + 90_000;
+  for (const [userId, songs] of songsByUser) {
+    try {
+      const keys = await listObjectKeys(`karaoke/${userId}/`);
+      const docs = keys.filter((k) => karaokeObject(k)?.doc).slice(0, KARAOKE_DOCS_PER_USER);
+      const songOf = new Map<string, string>();
+      for (let i = 0; i < docs.length && Date.now() < until; i += 8) {
+        const batch = docs.slice(i, i + 8);
+        const read = await Promise.all(batch.map(karaokeSongKey));
+        batch.forEach((key, k) => read[k] && songOf.set(key, read[k]));
+      }
+      const going = expiredKaraokeKeys(keys, songOf, songs, keep);
+      for (const key of going) karaokeSongs.delete(key);
+      out.push(...going);
+    } catch (error) {
+      console.error(`[retention] karaoke of user ${userId}:`, (error as Error).message);
+    }
+  }
+  return out;
 }
 
 export function isStoryKey(key: string): boolean {
@@ -119,6 +179,8 @@ export class RetentionService {
       },
       select: {
         id: true,
+        userId: true,
+        type: true,
         resultUrl: true,
         resultUrls: true,
         thumbnailUrl: true,
@@ -138,6 +200,8 @@ export class RetentionService {
     if (due.length === 0) return result;
 
     const keys: string[] = [];
+    // A song's files, per customer: its karaoke timings go with them.
+    const songKeys = new Map<number, Set<string>>();
     for (const gen of due) {
       const urls: string[] = [];
       if (gen.resultUrl) urls.push(gen.resultUrl);
@@ -158,18 +222,32 @@ export class RetentionService {
         const value = (gen.params as Record<string, unknown> | null)?.[field];
         if (Array.isArray(value)) for (const u of value) if (typeof u === 'string') urls.push(u);
       }
+      const suno = sunoOf(gen.params as Record<string, unknown> | null);
+      for (const field of SUNO_URL_PARAMS) if (typeof suno?.[field] === 'string') urls.push(suno[field] as string);
       for (const url of urls) {
         const key = keyFromPublicUrl(url);
         // Anything not in our bucket (a provider URL kept from before R2 was
         // configured) has nothing for us to delete — the row is still cleared.
-        if (key) keys.push(key);
+        if (!key) continue;
+        keys.push(key);
+        if (gen.type === 'audio') {
+          const own = songKeys.get(gen.userId) ?? new Set<string>();
+          songKeys.set(gen.userId, own.add(key));
+        }
       }
     }
 
     const keep = keys.length > 0 ? await storyKeepKeys() : new Set<string>();
     const doomed = [...new Set(keys)].filter((k) => !keep.has(k) && !isStoryKey(k));
     if (isStorageConfigured() && doomed.length > 0) {
-      const { deleted, failed } = await deleteObjects(doomed);
+      const doomedSet = new Set(doomed);
+      for (const [userId, own] of songKeys) {
+        const going = new Set([...own].filter((k) => doomedSet.has(k)));
+        if (going.size > 0) songKeys.set(userId, going);
+        else songKeys.delete(userId);
+      }
+      const karaoke = songKeys.size > 0 ? await expiredKaraoke(songKeys, keep) : [];
+      const { deleted, failed } = await deleteObjects([...doomed, ...karaoke]);
       result.objectsDeleted = deleted;
       result.objectsFailed = failed;
     }
@@ -197,10 +275,17 @@ export class RetentionService {
     // what they asked for after the media itself is gone.
     for (const gen of due) {
       const params = gen.params as Record<string, unknown> | null;
-      if (!params || ![...INPUT_URL_PARAMS, ...INPUT_URL_LIST_PARAMS].some((f) => params[f] !== undefined)) continue;
+      const suno = sunoOf(params);
+      const sunoUrls = SUNO_URL_PARAMS.some((f) => suno?.[f] !== undefined);
+      if (!params || (![...INPUT_URL_PARAMS, ...INPUT_URL_LIST_PARAMS].some((f) => params[f] !== undefined) && !sunoUrls)) continue;
 
       const stripped = { ...params };
       for (const field of [...INPUT_URL_PARAMS, ...INPUT_URL_LIST_PARAMS]) delete stripped[field];
+      if (suno && sunoUrls) {
+        const kept = { ...suno };
+        for (const field of SUNO_URL_PARAMS) delete kept[field];
+        stripped.suno = kept;
+      }
 
       await prisma.aiGeneration.update({
         where: { id: gen.id },

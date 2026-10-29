@@ -16,6 +16,7 @@ import {
   LIPSYNC_MAX_SECONDS,
   dubState,
   meanVolumeDb,
+  minusOneFor,
   suggestedForLipsync,
   usableDub,
   vocalsState,
@@ -68,6 +69,17 @@ test('the vocal\'s state: a dead separation fails, another song makes it stale',
   assert.equal(vocalsState(done, 40 * 60_000, now), 'done');
   assert.equal(vocalsState({ ...done, songUrl: 'https://cdn/other.mp3' }, 40 * 60_000, now), 'stale');
   assert.equal(vocalsState({ ...p, vocalsStatus: null }, 40 * 60_000, now), 'none');
+});
+
+test('a separated vocal has its minus-one beside it; an uploaded stem has none', () => {
+  assert.equal(minusOneFor('story/7/31/vocals-1761700000000.mp3'), 'story/7/31/vocals-1761700000000-minus.mp3');
+  assert.equal(
+    minusOneFor('https://cdn.example/aixman/story/7/31/vocals-1761700000000.mp3'),
+    'https://cdn.example/aixman/story/7/31/vocals-1761700000000-minus.mp3'
+  );
+  assert.equal(minusOneFor('https://cdn.example/aixman/uploads/7/audio/vocals-1761700000000.mp3'), null);
+  assert.equal(minusOneFor('story/7/31/vocals-1761700000000-minus.mp3'), null);
+  assert.equal(minusOneFor('story/7/31/sing-4-1761700000000.wav'), null);
 });
 
 test('the lip-sync switch is an MV setting: on by default there, never on for a film', () => {

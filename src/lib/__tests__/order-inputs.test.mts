@@ -30,6 +30,8 @@ test('a lip-sync order gives back its voice track and its clip', () => {
     inputAudio: `${OURS}voice.mp3`,
     inputVideo: `${OURS}clip.mp4`,
     referenceImages: [],
+    mashWith: null,
+    replace: null,
   });
 });
 
@@ -57,7 +59,7 @@ test('anything /api/generate would refuse is dropped, not shown', () => {
     },
     isOurs
   );
-  assert.deepEqual(out, { inputImage: null, inputImageEnd: null, inputAudio: null, inputVideo: null, referenceImages: [] });
+  assert.deepEqual(out, { inputImage: null, inputImageEnd: null, inputAudio: null, inputVideo: null, referenceImages: [], mashWith: null, replace: null });
 });
 
 test('a data URL that is not a picture is not an image input', () => {
@@ -89,4 +91,40 @@ test('a reference list with a stranger in it is not put back at all', () => {
 test('a reference list that is not a list is ignored', () => {
   const out = orderInputs({ inputImage: null, params: { referenceImages: `${OURS}a.webp` } }, isOurs);
   assert.deepEqual(out.referenceImages, []);
+});
+
+test('a mashup gives back its second song, when it is ours', () => {
+  const out = orderInputs({ inputImage: null, params: { inputAudio: `${OURS}a.mp3`, suno: { mashWith: `${OURS}b.mp3` } } }, isOurs);
+  assert.equal(out.inputAudio, `${OURS}a.mp3`);
+  assert.equal(out.mashWith, `${OURS}b.mp3`);
+  const foreign = orderInputs({ inputImage: null, params: { suno: { mashWith: 'https://elsewhere.example/b.mp3' } } }, isOurs);
+  assert.equal(foreign.mashWith, null);
+});
+
+test("a part picked by lines gives back its seconds, its lines and the song's own words", () => {
+  const suno = { replaceFrom: 29.65, replaceTo: 41.2, replaceLines: [2, 3], originalLyrics: '[Verse]\nก\nข', fullLyrics: '[Verse]\nก\nใหม่' };
+  const out = orderInputs({ inputImage: null, params: { suno } }, isOurs);
+  assert.deepEqual(out.replace, { from: 29.65, to: 41.2, lines: [2, 3], original: '[Verse]\nก\nข' });
+});
+
+test("a part set by the seconds gives back the whole song's words as typed", () => {
+  const out = orderInputs({ inputImage: null, params: { suno: { replaceFrom: 10, replaceTo: 22, fullLyrics: 'ทั้งเพลง' } } }, isOurs);
+  assert.deepEqual(out.replace, { from: 10, to: 22, lines: null, original: 'ทั้งเพลง' });
+});
+
+test('lines without the words they index fall back to the seconds and the whole song', () => {
+  const out = orderInputs({ inputImage: null, params: { suno: { replaceFrom: 10, replaceTo: 22, replaceLines: [1, 2], fullLyrics: 'หลังแก้' } } }, isOurs);
+  assert.deepEqual(out.replace, { from: 10, to: 22, lines: null, original: 'หลังแก้' });
+});
+
+test('a replace part that is not a part is not put back', () => {
+  for (const suno of [
+    { replaceFrom: 20, replaceTo: 10, fullLyrics: 'x' },
+    { replaceFrom: '10', replaceTo: 20, fullLyrics: 'x' },
+    { replaceFrom: 10, replaceTo: 20 },
+    { replaceFrom: 10, replaceTo: 20, replaceLines: [3, 1], originalLyrics: 'x' },
+    'replace',
+  ]) {
+    assert.equal(orderInputs({ inputImage: null, params: { suno } }, isOurs).replace, null);
+  }
 });
