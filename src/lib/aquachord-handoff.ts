@@ -159,6 +159,11 @@ export function handoffTitle(prompt: string | null, params: unknown): string {
  * stay: AquaChord drops them itself before lining the words up with the audio.
  */
 export function handoffLyrics(params: unknown): string {
+  // What the song actually sings (Suno writes its own when the box was empty; output-lyrics.ts).
+  const sung = record(params)?.outputLyrics;
+  if (Array.isArray(sung) && typeof sung[0] === 'string' && sung[0].trim()) {
+    return sung[0].replace(/\r\n?/g, '\n').trim().slice(0, 20_000);
+  }
   const lyrics = record(params)?.lyrics;
   return typeof lyrics === 'string' ? lyrics.replace(/\r\n?/g, '\n').trim().slice(0, 20_000) : '';
 }

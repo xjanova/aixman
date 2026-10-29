@@ -157,6 +157,9 @@ test('lyrics come from params.lyrics, capped', () => {
   assert.equal(handoffLyrics({ lyrics: 5 }), '');
   assert.equal(handoffLyrics(null), '');
   assert.equal(handoffLyrics({ lyrics: 'a'.repeat(30_000) }).length, 20_000);
+  // What Suno sang wins over an empty or typed box (output-lyrics.ts).
+  assert.equal(handoffLyrics({ lyrics: '', outputLyrics: ['[Verse]\r\nร้องจริง', 'อีกเวอร์ชัน'] }), '[Verse]\nร้องจริง');
+  assert.equal(handoffLyrics({ lyrics: 'พิมพ์เอง', outputLyrics: ['  '] }), 'พิมพ์เอง');
 });
 
 test('language: the studio choice first, else the lyrics script', () => {
