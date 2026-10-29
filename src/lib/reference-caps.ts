@@ -1,4 +1,5 @@
 import { getCatalogEntry } from '@/lib/gpu/catalog';
+import { getKieEntry } from '@/lib/providers/kie-catalog';
 
 /**
  * How many reference pictures a model takes with one order — a picture's
@@ -20,6 +21,8 @@ import { getCatalogEntry } from '@/lib/gpu/catalog';
  *   - fal / Replicate / Stability: our adapters forward a single image, and
  *     only to endpoints that read one.
  *   - Our rented video models take a first frame, some a last frame too.
+ *   - KIE.ai rows: what each catalogue entry's builder forwards
+ *     (kie-catalog.ts) — 3 to 16 pictures, or a clip's first/last frame.
  */
 
 export interface ReferenceCaps {
@@ -58,6 +61,10 @@ function imageLimits(provider: string, model: string): [number, number] {
       return /(\/edit\b|kontext|image-to-image|redux)/.test(id) ? [1, 1] : [0, 0];
     case 'replicate':
       return /(kontext|img2img|image-to-image)/.test(id) ? [1, 1] : [0, 0];
+    case 'kie': {
+      const n = getKieEntry(model)?.references ?? 0;
+      return [n, n];
+    }
     case 'stability':
       // editImage is SD3.5 image-to-image whatever the row.
       return /^sd3/.test(id) ? [1, 1] : [0, 0];
@@ -73,8 +80,14 @@ function adminOverride(defaultParams: unknown): number | null {
 
 export function referenceCaps(model: ReferenceModel): ReferenceCaps {
   if (model.category === 'video') {
-    // Only our rented models are wired for frames end to end (frame-input.ts).
-    const video = model.providerSlug === 'simplepod' ? getCatalogEntry(model.modelId)?.video : undefined;
+    // Only our rented models and KIE's are wired for frames end to end
+    // (frame-input.ts, kie.ts).
+    const video =
+      model.providerSlug === 'simplepod'
+        ? getCatalogEntry(model.modelId)?.video
+        : model.providerSlug === 'kie'
+          ? getKieEntry(model.modelId)
+          : undefined;
     return video ? { images: 0, firstFrame: video.firstFrame === true, lastFrame: video.lastFrame === true } : NONE;
   }
   if (model.category !== 'image') return NONE;

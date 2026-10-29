@@ -13,6 +13,7 @@
  */
 
 import { useState, useEffect } from "react";
+import { KieCard } from "./kie-card";
 
 const HUE = 70;
 
@@ -320,6 +321,8 @@ export default function ProvidersPage() {
           </button>
         </div>
       </div>
+
+      <KieCard onChanged={fetchProviders} />
 
       {/* Auth type legend */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 18, fontSize: 11, color: "#64748b" }}>

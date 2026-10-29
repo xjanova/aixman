@@ -4,6 +4,7 @@ import type { DurationCurve } from '@/lib/pricing';
 import type { LengthFromAudio } from '@/lib/voice-length';
 import type { ReferenceCaps } from '@/lib/reference-caps';
 import type { ModelPreview } from '@/lib/model-samples';
+import type { KiePriceTable } from '@/lib/providers/kie-pricing';
 
 interface AIModel {
   id: number;
@@ -92,6 +93,12 @@ interface AIModel {
     /** Visible because the viewer is an admin; customers do not see it yet. */
     adminOnly?: boolean;
   }[] | null;
+  /**
+   * A KIE.ai row's credits by tier, length and pictures attached
+   * (kie-pricing.ts `kieQuote`) — the table GenerationService charges from.
+   * Null for every other model.
+   */
+  priceTable?: KiePriceTable | null;
 }
 
 interface AIStyle {

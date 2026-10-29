@@ -73,6 +73,17 @@ export const API_VIDEO_LIPSYNC: Record<string, VideoLipsyncRule> = {
     billing: { kind: 'flat' },
     maxWaitSeconds: 20 * 60,
   },
+  // KIE `volcengine/video-to-video-lip-sync` (docs.kie.ai/market/volcengine/
+  // video-to-video-lip-sync) — video 360p–1080p (above is scaled down, below
+  // refused), MP4/MOV; voice over 1 s, up to 210 s in basic mode; $0.04 per
+  // second. Held to 60 s, and the voice to the clip, so billing every started
+  // second of the clip covers whatever KIE measures.
+  'kie/volcengine-lipsync': {
+    clip: { minSeconds: 1, maxSeconds: 60, minSide: 360, maxBytes: 200 * MB, containers: ['mp4'] },
+    voice: { minSeconds: 1.1, maxSeconds: 60, notLongerThanClip: true },
+    billing: { kind: 'clipBlocks', blockSeconds: 1 },
+    maxWaitSeconds: 40 * 60,
+  },
 };
 
 export function apiVideoLipsyncRule(modelId: string): VideoLipsyncRule | undefined {

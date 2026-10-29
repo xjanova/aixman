@@ -76,6 +76,16 @@ const EXACT: Record<string, string> = {
   'sdxl-community': 'sdxl',
   'yue2-music': 'yue',
   'yue2-cover': 'yue',
+  // KIE.ai rows of families we have a picture for. Kling, Seedance, Seedream
+  // 5, FLUX, Qwen-Image and MiniMax H3 already match the patterns below;
+  // Veo, Nano Banana, Ideogram, Grok, Wan, PixVerse, Z-Image, Suno and the
+  // Volcengine dub have no published sample here yet and draw the category art.
+  'kie/gpt-image-2-5': 'gpt-image',
+  'kie/recraft-remove-background': 'remove-background',
+  'kie/recraft-crisp-upscale': 'upscale',
+  'kie/topaz-image-upscale': 'upscale',
+  'kie/kling-avatar': 'kling-lipsync',
+  'kie/infinitalk': 'infinitalk',
 };
 
 const PATTERNS: [RegExp, string][] = [

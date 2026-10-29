@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { isAdmin } from '@/lib/auth';
 import { encrypt } from '@/lib/utils/encryption';
 import prisma from '@/lib/db';
+import { syncKieModels } from '@/lib/providers/kie-sync';
 
 /**
  * POST /api/admin/seed
@@ -284,6 +285,13 @@ export async function POST() {
       });
       results.models++;
     }
+
+    // KIE.ai — the primary provider: its row and every catalogue model with
+    // its credits table (kie-sync.ts). New rows start `tuning` until an admin's
+    // order renders; Admin → ผู้ให้บริการ → KIE can open them all at once.
+    const kie = await syncKieModels();
+    results.providers++;
+    results.models += kie.created + kie.updated;
 
     // ══════════════════════════════════════════
     // 3. CREDIT PACKAGES

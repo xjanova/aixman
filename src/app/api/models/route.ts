@@ -15,6 +15,8 @@ import { getAllStoredWorkflows, visibleQualityModes } from '@/lib/gpu/workflow-o
 import { apiVideoLipsyncRule, type ClipRule, type LipsyncBilling, type VoiceRule } from '@/lib/lipsync-rules';
 import { referenceCaps } from '@/lib/reference-caps';
 import { modelPreview } from '@/lib/model-samples';
+import { getKieEntry, kiePriceTable, type KieEntry } from '@/lib/providers/kie-catalog';
+import { kieQuote, readKiePriceTable, type KiePriceTable } from '@/lib/providers/kie-pricing';
 
 /**
  * Public model list for the studio and the mobile app.
@@ -109,6 +111,48 @@ function qualityOptions(
   }));
 }
 
+/**
+ * What the studio draws for a KIE.ai row, from its catalogue entry and the
+ * credits table its sync wrote: tiers as the quality or resolution chips the
+ * studio already has, the clip's frames, the music panel, the voice rule.
+ */
+function kieOptions(entry: KieEntry, table: KiePriceTable) {
+  const tiers = table.tiers;
+  const base = kieQuote(table, {});
+  return {
+    video:
+      entry.category === 'video' && !entry.subcategory.startsWith('lipsync')
+        ? {
+            firstFrame: entry.firstFrame === true,
+            lastFrame: entry.lastFrame === true,
+            resolutions:
+              table.tierParam === 'resolution'
+                ? tiers.map((t) => ({ id: t.id, label: t.label, aspects: [...STUDIO_ASPECTS], isDefault: t.isDefault === true }))
+                : undefined,
+          }
+        : null,
+    quality:
+      table.tierParam === 'quality' && tiers.length > 1
+        ? tiers.map((t) => ({
+            id: t.id,
+            label: t.label,
+            description: '',
+            // Display only: the studio prices KIE rows from `priceTable`.
+            creditsMultiplier: Math.round((kieQuote(table, { tier: t.id }) / base) * 100) / 100,
+            isDefault: t.isDefault === true,
+            adminOnly: false,
+          }))
+        : null,
+    music: entry.music
+      ? { lyrics: true, sourceSong: false, maxDuration: null, autoLength: true, maxSourceSeconds: null, controls: true }
+      : null,
+    lengthFromAudio: entry.lengthFromAudio ?? null,
+  };
+}
+
+/** Every shape the studio offers; a KIE entry maps each to its nearest own. */
+const STUDIO_ASPECTS = ['1:1', '16:9', '9:16', '4:3', '3:2', '3:4', '2:3'] as const;
+
 /** From the provider's keys: can any of them take a request right now? */
 function fromAccounts(blocks: (AccountBlock | null)[]): Availability {
   if (blocks.some((b) => b === null)) return 'ok';
@@ -202,6 +246,9 @@ export async function GET() {
   return NextResponse.json({
     models: models.map((m) => {
       const inHouse = isInHouse(m.provider.slug);
+      const kieEntry = m.provider.slug === 'kie' ? getKieEntry(m.modelId) : undefined;
+      const kieTable = kieEntry ? readKiePriceTable(m.defaultParams) ?? kiePriceTable(kieEntry) : null;
+      const kie = kieEntry && kieTable ? kieOptions(kieEntry, kieTable) : null;
       const avail = pausedModels.has(m.modelId)
         ? 'maintenance'
         : inHouse && isCommunityOnlyModel(m.modelId)
@@ -242,21 +289,21 @@ export async function GET() {
         provider: publicProvider(m.provider),
         // What GenerationService will charge, so the studio shows the same
         // number: an in-house job renders one output and may price by length.
-        maxOutputs: inHouse ? 1 : null,
+        maxOutputs: inHouse || kie ? 1 : null,
         durationCurve: inHouse ? getCatalogEntry(m.modelId)?.pricing.durationCurve ?? null : null,
         // First/last frame and resolution presets the studio may offer. Null for
         // models that have none, so older clients see nothing new. Admin-only
         // presets reach admins only.
-        video: inHouse ? visibleVideoOptions(getCatalogEntry(m.modelId), admin) : null,
+        video: inHouse ? visibleVideoOptions(getCatalogEntry(m.modelId), admin) : kie ? kie.video : null,
         // What the music tab needs to draw itself: whether the model sings the
         // customer's words, and whether it starts from a song they upload.
         // Null for anything that is not a rented-GPU audio model.
-        music: inHouse ? musicOptions(m.modelId) : null,
+        music: inHouse ? musicOptions(m.modelId) : kie ? kie.music : null,
         // A model whose render is as long as the uploaded voice: the studio
         // rounds the voice's length with the same rule GenerationService
         // applies (voice-length.ts) and prices that, instead of a length
         // control. Null for every other model.
-        lengthFromAudio: inHouse ? getCatalogEntry(m.modelId)?.lengthFromAudio ?? null : null,
+        lengthFromAudio: inHouse ? getCatalogEntry(m.modelId)?.lengthFromAudio ?? null : kie ? kie.lengthFromAudio : null,
         // A model that re-dubs a clip: its rules, so the studio can say before
         // the order whether the clip fits and what it costs. Null otherwise.
         videoLipsync: videoLipsyncOptions(m.modelId, inHouse),
@@ -266,7 +313,11 @@ export async function GET() {
         // Quality modes the studio may offer (Qwen-Image เร็ว / คุณภาพสูง), each
         // with the multiplier GenerationService prices it at. Null when the
         // model has none; admin-only modes reach admins only.
-        quality: inHouse ? qualityOptions(m.modelId, workflows.get(m.modelId) ?? null, admin) : null,
+        quality: inHouse ? qualityOptions(m.modelId, workflows.get(m.modelId) ?? null, admin) : kie ? kie.quality : null,
+        // A KIE.ai row's credits by tier, length and pictures (kie-pricing.ts),
+        // the table GenerationService charges from. Credits only — never the
+        // vendor's price. Null for every other model.
+        priceTable: kieTable,
         // 'tuning' stays orderable for admins — running it is how it gets
         // proven. 'unavailable' is not orderable by anyone: it would fail.
         status,

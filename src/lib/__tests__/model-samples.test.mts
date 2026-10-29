@@ -23,6 +23,13 @@ const LIVE_IDS = [
   'sdxl-community', 'seedance-1.0-lite', 'seedance-2.0', 'seedream-3.0', 'seedream-5.0', 'seedream-5.0-lite', 'sora-2',
   'sd3.5-large', 'sd3.5-medium', 'stable-image-core', 'stable-image-ultra', 'yue2-music', 'yue2-cover',
   'latentsync-1.6', 'fal-ai/latentsync', 'fal-ai/infinitalk', 'hunyuan3d-2.1', 'fal-ai/kling-video/lipsync/audio-to-video',
+  // Every KIE catalogue key (kie-catalog.ts) — kept in step by the KIE test.
+  'kie/nano-banana-2-1', 'kie/nano-banana-pro', 'kie/gpt-image-2-5', 'kie/seedream-5-pro', 'kie/seedream-5-flash',
+  'kie/flux-3-klein', 'kie/flux-2-pro', 'kie/ideogram-v3', 'kie/qwen-image-3', 'kie/grok-imagine-image-2', 'kie/z-image',
+  'kie/nano-banana-2-1-edit', 'kie/flux-3-klein-edit', 'kie/recraft-remove-background', 'kie/recraft-crisp-upscale',
+  'kie/topaz-image-upscale', 'kie/kling-3', 'kie/kling-4', 'kie/veo-3-1-fast', 'kie/veo-3-1-lite', 'kie/veo-3-1',
+  'kie/seedance-2-fast', 'kie/seedance-2-mini', 'kie/seedance-2-5', 'kie/minimax-h3', 'kie/wan-3', 'kie/grok-imagine-video',
+  'kie/pixverse-v6-max', 'kie/kling-avatar', 'kie/infinitalk', 'kie/volcengine-lipsync', 'kie/suno-v6',
 ];
 
 test('every bundled picture and clip a model points at is on disk', () => {
@@ -42,6 +49,14 @@ test('families resolve to their own picture', () => {
   assert.equal(modelPreview('kling-v2.5-pro', null)?.src, '/model-samples/kling-video.webp');
   assert.equal(modelPreview('fal-ai/kling-video/lipsync/audio-to-video', null)?.src, '/model-samples/kling-lipsync.webp');
   assert.equal(modelPreview('ltx-2.5', null)?.src, '/model-samples/ltx.webp');
+  assert.equal(modelPreview('kie/kling-3', null)?.src, '/model-samples/kling-video.webp');
+  assert.equal(modelPreview('kie/kling-avatar', null)?.src, '/model-samples/kling-lipsync.webp');
+  assert.equal(modelPreview('kie/seedream-5-pro', null)?.src, '/model-samples/seedream-5.webp');
+  assert.equal(modelPreview('kie/minimax-h3', null)?.src, '/model-samples/minimax-h3.webp');
+  assert.equal(modelPreview('kie/recraft-crisp-upscale', null)?.src, '/model-samples/upscale.webp');
+  // No published sample for these families yet: the category art.
+  assert.equal(modelPreview('kie/veo-3-1-fast', null), null);
+  assert.equal(modelPreview('kie/suno-v6', null), null);
 });
 
 test('a family with no published example falls back to the category art', () => {

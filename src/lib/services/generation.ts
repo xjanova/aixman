@@ -26,6 +26,8 @@ import { communityOrderRefusal, communityRefusalMessage } from '@/lib/gpu/commun
 import { communityMachineAvailable } from '@/lib/gpu/community-availability';
 import { OrderRefusedError } from './order-refusal';
 import { LLM_CATEGORY } from '@/lib/llm/pricing';
+import { getKieEntry, kieImageCount, kiePriceTable } from '@/lib/providers/kie-catalog';
+import { kieQuote, pickKieDuration, pickKieTier, readKiePriceTable } from '@/lib/providers/kie-pricing';
 
 /**
  * Why an order was refused when its type and its model disagree about whether
@@ -131,6 +133,23 @@ export class GenerationService {
     if (gpuModel && isRetiredCatalogKey(model.modelId)) {
       throw new OrderRefusedError('โมเดลนี้ถูกปลดออกแล้ว กรุณาเลือกโมเดลอื่น', 'model-retired', 422);
     }
+    // A KIE row is priced and built from its catalogue entry (kie-catalog.ts).
+    // One whose entry was removed would be sent to KIE as a model it does not
+    // know, after the customer was charged.
+    const kie = model.provider.slug === 'kie' ? getKieEntry(model.modelId) : undefined;
+    if (model.provider.slug === 'kie' && !kie) {
+      throw new OrderRefusedError('โมเดลนี้ถูกปลดออกแล้ว กรุณาเลือกโมเดลอื่น', 'model-retired', 422);
+    }
+    if (kie?.category === 'edit' && !request.inputImage?.trim()) {
+      throw new OrderRefusedError('ต้องอัปโหลดภาพที่จะแก้ก่อน', 'missing-image', 422);
+    }
+    if (kie?.lengthFromAudio) {
+      if (!isAcceptedAudioSource(request.inputAudio)) {
+        throw new OrderRefusedError('ต้องอัปโหลดไฟล์เสียงที่จะให้พูดก่อน', 'missing-audio', 422);
+      }
+      if (!request.inputImage?.trim()) throw new OrderRefusedError('ต้องอัปโหลดรูปคนที่จะให้พูดก่อน', 'missing-image', 422);
+    }
+
     if (gpuModel && !isStorageConfigured()) {
       raiseAlert({
         type: 'config-error',
@@ -220,8 +239,9 @@ export class GenerationService {
     // never from a number the client sends (lipsync is priced per second, and
     // the studio's own measurement is only a preview of this one).
     let voiceSeconds: number | null = null;
-    if (catalogEntry?.lengthFromAudio) {
-      voiceSeconds = await this.voiceLength(request.inputAudio as string, catalogEntry.lengthFromAudio, model.maxDuration);
+    const lengthRule = catalogEntry?.lengthFromAudio ?? kie?.lengthFromAudio;
+    if (lengthRule) {
+      voiceSeconds = await this.voiceLength(request.inputAudio as string, lengthRule, model.maxDuration);
     }
 
     // The model's limits are what its price was set against and what a rented
@@ -250,7 +270,8 @@ export class GenerationService {
 
     // A rented-GPU job is one render with one output, whatever count was asked
     // for — charging per requested output sold four images and delivered one.
-    const numOutputs = gpuModel ? 1 : request.params?.numOutputs || 1;
+    // A KIE task yields one output too: its catalogue builds one per order.
+    const numOutputs = gpuModel || kie ? 1 : request.params?.numOutputs || 1;
     // Length-priced types are video *and* audio: a rented card renders a four
     // minute song for four times what it renders one minute for, and the curve
     // is what keeps the price on the same slope. Restricting this to 'video'
@@ -270,10 +291,26 @@ export class GenerationService {
           options.isAdmin === true
         )
       : null;
+    // A KIE row prices from the credits table its sync wrote (kie-pricing.ts),
+    // by tier, length and pictures attached — the same table the studio shows.
+    // A row synced before the table existed is priced from the catalogue.
+    const kieTable = kie ? readKiePriceTable(model.defaultParams) ?? kiePriceTable(kie) : null;
+    const kieTier = kieTable ? pickKieTier(kieTable, kieTable.tierParam ? request.params?.[kieTable.tierParam] : undefined) : null;
+    const kieSeconds = kieTable ? voiceSeconds ?? pickKieDuration(kieTable, request.params?.duration) : null;
     const requiredCredits =
       apiLipsync && clip
         ? lipsyncCredits(apiLipsync.billing, model.creditsPerUnit, clip.seconds)
-        : Math.ceil(creditsForDuration(model.creditsPerUnit, curve, gpuDuration) * (qualityMode?.creditsMultiplier ?? 1)) *
+        : kie && kieTable
+          ? kieQuote(kieTable, {
+              tier: kieTier?.id,
+              seconds: kieSeconds,
+              images: kieImageCount(kie, {
+                references: references.length || (request.inputImage ? 1 : 0),
+                inputImage: request.inputImage,
+                inputImageEnd: request.inputImageEnd,
+              }),
+            })
+          : Math.ceil(creditsForDuration(model.creditsPerUnit, curve, gpuDuration) * (qualityMode?.creditsMultiplier ?? 1)) *
           numOutputs;
 
     // Uploaded inputs are folded into params so they are persisted with the
@@ -293,11 +330,21 @@ export class GenerationService {
     // they compose into — the catalogue entry builds the model's `[Tags]` line
     // from these at render time, so every client agrees, and a customer
     // reopening the order still sees "หญิง / ลูกทุ่ง / 92 BPM".
-    const music = catalogEntry?.music?.controls === true ? sanitizeMusicParams(baseParams.music) : undefined;
+    const music =
+      catalogEntry?.music?.controls === true || kie?.music === true ? sanitizeMusicParams(baseParams.music) : undefined;
     delete baseParams.music;
     // The mode priced above, or nothing for a model without modes.
     delete baseParams.quality;
     if (qualityMode) baseParams.quality = qualityMode.id;
+    // The tier and length priced above, kept where the studio reads them back
+    // and where the adapter builds the task from — never re-derived.
+    if (kieTable && kieTier) {
+      if (kieTable.tierParam) baseParams[kieTable.tierParam] = kieTier.id;
+      baseParams.kieTier = kieTier.id;
+      if (kieSeconds !== null) baseParams.duration = kieSeconds;
+      else delete baseParams.duration;
+      baseParams.numOutputs = 1;
+    }
 
     const storedParams: Record<string, unknown> = {
       ...baseParams,
@@ -442,12 +489,13 @@ export class GenerationService {
       userId,
       generationId: generation.id,
       model,
-      // The references as checked above, not as sent.
-      request: { ...request, referenceImages: references },
+      // The references as checked above, not as sent — and for KIE the params
+      // as priced (tier, length, sanitised music), not as sent.
+      request: { ...request, referenceImages: references, params: kie ? storedParams : request.params },
       styleSuffix,
       account,
       requiredCredits,
-      maxWaitSeconds: apiLipsync?.maxWaitSeconds,
+      maxWaitSeconds: apiLipsync?.maxWaitSeconds ?? kie?.maxWaitSeconds,
     };
 
     // A video lip-sync render takes the vendor minutes (Kling: about twelve),
@@ -456,7 +504,9 @@ export class GenerationService {
     // order again. Those run after the response and the studio polls the
     // order, as it does a rented-GPU one; ApiOrderSweep settles any that a
     // restart cut off.
-    if (apiLipsync || options.deferApi) {
+    // Every KIE order is an async task (a picture in seconds, a clip in many
+    // minutes), so they all run this way.
+    if (apiLipsync || options.deferApi || kie) {
       await prisma.aiGeneration.update({
         where: { id: generation.id },
         data: { status: 'processing', startedAt: new Date() },
@@ -518,6 +568,7 @@ export class GenerationService {
         aspectRatio: request.params?.aspectRatio,
         numOutputs: request.params?.numOutputs || 1,
         inputImage: request.inputImage ?? references[0],
+        inputImageEnd: request.inputImageEnd,
         referenceImages: references.length ? references : undefined,
         inputAudio: request.inputAudio,
         inputVideo: request.inputVideo,
@@ -543,12 +594,20 @@ export class GenerationService {
             throw new Error('This model does not support image editing');
           }
           break;
+        case 'audio':
+          if (provider.generateAudio) {
+            result = await provider.generateAudio(providerParams);
+          } else {
+            throw new Error('This model does not support music generation');
+          }
+          break;
         default:
           throw new Error(`Unknown generation type: ${request.type}`);
       }
 
-      // 7. Record result
-      const costUsd = Number(model.costPerUnit);
+      // 7. Record result — what the vendor says the order cost when it says
+      // (KIE's creditsConsumed), else the row's list price.
+      const costUsd = result.costUsd ?? Number(model.costPerUnit);
 
       await prisma.aiUsageLog.create({
         data: {
@@ -626,11 +685,30 @@ export class GenerationService {
         // Provider returned a failure — record it against the account (with
         // rate-limit-aware cooldown) so the pool can rotate/auto-disable, then
         // refund the user.
-        await AccountPoolManager.recordError(
-          account.id,
-          result.error || 'Generation failed',
-          this.isRateLimitError(result.error)
-        );
+        // A refused prompt or a failed render is the order's, not the key's
+        // (ProviderResponse.orderFault): counted, a few of them would disable
+        // the one key every KIE model shares.
+        if (result.orderFault !== true) {
+          await AccountPoolManager.recordError(
+            account.id,
+            result.error || 'Generation failed',
+            this.isRateLimitError(result.error)
+          );
+        }
+        if (model.provider.slug === 'kie' && /^KIE 402\b/.test(result.error ?? '')) {
+          raiseAlert({
+            type: 'kie-balance',
+            key: String(account.id),
+            level: 'critical',
+            title: 'เครดิต KIE.ai หมด — ลูกค้าสั่งงานโมเดล KIE ไม่ได้',
+            lines: [
+              `ลูกค้าเพิ่งสั่ง ${model.name} ไม่สำเร็จ (คืนเครดิตแล้ว)`,
+              'เติมเครดิตที่ kie.ai แล้วกด "ทดสอบคีย์" ที่การ์ด KIE.ai หน้า ผู้ให้บริการ',
+              'ถ้าคีย์ถูกปิดอัตโนมัติไปแล้ว ให้วางคีย์เดิมอีกครั้งแล้วกด "บันทึกคีย์ + สร้างโมเดล" — ระบบจะเปิดคีย์นั้นกลับมา',
+            ],
+            path: '/admin/providers',
+          });
+        }
         await this.refundCredits(userId, requiredCredits, generation.id);
 
         await prisma.aiGeneration.updateMany({

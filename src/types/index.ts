@@ -8,7 +8,7 @@ export type GenerationType = 'image' | 'video' | 'edit' | 'audio' | 'model3d';
 export type GenerationStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
 export type CreditTransactionType = 'purchase' | 'usage' | 'refund' | 'bonus' | 'admin_adjust';
 export type PoolRotationMode = 'round_robin' | 'balanced' | 'quota_first';
-export type ProviderSlug = 'pollinations' | 'byteplus' | 'openai' | 'replicate' | 'fal' | 'stability' | 'runway' | 'kling' | 'luma' | 'leonardo' | 'minimax' | 'simplepod';
+export type ProviderSlug = 'pollinations' | 'byteplus' | 'openai' | 'replicate' | 'fal' | 'stability' | 'runway' | 'kling' | 'luma' | 'leonardo' | 'minimax' | 'simplepod' | 'kie';
 
 /**
  * GPU-rental providers have no inference API — we rent a machine and run the
@@ -116,6 +116,12 @@ export interface ProviderResponse {
   error?: string;
   costUsd?: number;
   processingMs?: number;
+  /**
+   * The failure is the order's — a refused prompt or picture, a render that
+   * failed — not the API key's. Not counted against the account, so a few
+   * customers' bad prompts cannot disable a key every model shares.
+   */
+  orderFault?: boolean;
 }
 
 // Provider adapter interface — all providers must implement this
@@ -125,6 +131,8 @@ export interface AIProviderAdapter {
   generateImage(params: ProviderGenerateParams): Promise<ProviderResponse>;
   generateVideo(params: ProviderGenerateParams): Promise<ProviderResponse>;
   editImage?(params: ProviderGenerateParams): Promise<ProviderResponse>;
+  /** Music: a song from a description, lyrics and style. */
+  generateAudio?(params: ProviderGenerateParams): Promise<ProviderResponse>;
   checkJobStatus?(jobId: string, apiKey: string, apiEndpoint?: string): Promise<ProviderResponse>;
 }
 
@@ -148,6 +156,8 @@ export interface ProviderGenerateParams {
   aspectRatio?: string;
   numOutputs?: number;
   inputImage?: string;
+  /** The frame a clip must end on; `inputImage` is its first frame. */
+  inputImageEnd?: string;
   /** Several pictures to compose from; `inputImage` is the first of them. */
   referenceImages?: string[];
   /** Voice track for lip-sync models. Always a fetchable URL, never base64. */

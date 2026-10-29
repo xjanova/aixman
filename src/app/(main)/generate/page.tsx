@@ -21,6 +21,7 @@ import Image from "next/image";
 import { useAppStore } from "@/lib/store/app-store";
 import { useToast } from "@/components/ui/toast-provider";
 import { creditsForDuration } from "@/lib/pricing";
+import { kieQuote } from "@/lib/providers/kie-pricing";
 import { voiceRenderSeconds } from "@/lib/voice-length";
 import {
   composeMusicTags,
@@ -1631,16 +1632,36 @@ export default function GeneratePage() {
     ? qualityModes.find((m) => m.id === qualityId) ?? qualityModes.find((m) => m.isDefault) ?? qualityModes[0]
     : null;
   /**
+   * A KIE.ai row's credits by tier, length and pictures (kie-pricing.ts) —
+   * the table GenerationService charges from. Its tiers are the quality or
+   * resolution chips below; the raw pick goes in, and `kieQuote` falls back
+   * to the default exactly as the server does.
+   */
+  const priceTable = selectedModel?.priceTable ?? null;
+  const kieTier =
+    priceTable?.tierParam === "quality" ? activeQuality?.id
+      : priceTable?.tierParam === "resolution" ? resolution ?? undefined
+        : undefined;
+  /** Pictures KIE may bill: the references on the image tab, the frames on the video tab. */
+  const kieImages =
+    tab === "image" ? refs.length
+      : tab === "video" && videoMode === "i2v" && inputImage
+        ? 1 + (selectedModel?.video?.lastFrame === true && inputImageEnd ? 1 : 0)
+        : 0;
+  /**
    * One output's price — the same formula GenerationService charges with,
    * rounded up after the quality multiplier exactly as the server does.
+   * `tier` prices a chip other than the chosen one.
    */
-  const creditsFor = (seconds: number | null) =>
-    selectedModel
-      ? Math.ceil(
-          creditsForDuration(selectedModel.creditsPerUnit, selectedModel.durationCurve, seconds) *
-            (activeQuality?.creditsMultiplier ?? 1)
-        )
-      : 0;
+  const creditsFor = (seconds: number | null, tier?: string) =>
+    !selectedModel
+      ? 0
+      : priceTable
+        ? kieQuote(priceTable, { tier: tier ?? kieTier, seconds, images: kieImages })
+        : Math.ceil(
+            creditsForDuration(selectedModel.creditsPerUnit, selectedModel.durationCurve, seconds) *
+              (activeQuality?.creditsMultiplier ?? 1)
+          );
 
   /** Which second file the chosen lip-sync model animates — a clip, or a still. */
   const lipsyncNeeds: "image" | "video" =
@@ -1650,6 +1671,8 @@ export default function GeneratePage() {
 
   /** Lengths this model can actually produce. Always offers at least 5s. */
   const durationChoices = (() => {
+    // A KIE clip is sold at the lengths its table prices, and only those.
+    if (tab === "video" && priceTable?.durations) return priceTable.durations;
     const base = tab === "audio" ? AUDIO_DURATIONS : VIDEO_DURATIONS;
     const max = selectedModel?.maxDuration ?? (tab === "audio" ? 240 : 10);
     const fits = base.filter((d) => d <= max);
@@ -1879,6 +1902,20 @@ export default function GeneratePage() {
     return done.length - failed;
   };
   const removeRef = (id: number) => setRefs((rs) => rs.filter((r) => r.id !== id));
+  /**
+   * Swap a picture with its neighbour. The order is what "ภาพ 1, ภาพ 2 …"
+   * in the prompt and the model's own input list mean, and the first is the
+   * main one.
+   */
+  const moveRef = (id: number, step: -1 | 1) =>
+    setRefs((rs) => {
+      const from = rs.findIndex((r) => r.id === id);
+      const to = from + step;
+      if (from < 0 || to < 0 || to >= rs.length) return rs;
+      const next = [...rs];
+      [next[from], next[to]] = [next[to], next[from]];
+      return next;
+    });
   const cycleRole = (id: number) =>
     setRefs((rs) => rs.map((r) => (r.id === id ? { ...r, role: nextRole(r.role) } : r)));
 
@@ -2864,7 +2901,9 @@ export default function GeneratePage() {
       <span style={{ color: "#fbbf24" }}>{voiceLength.message}</span>
     ) : hasAudio
       ? `ความยาวคลิป = ความยาวเสียง${voiceLength ? ` ${voiceLength.seconds.toFixed(1)} วินาที` : ""} · ✦ ${totalCredits} เครดิต`
-      : `คิดเครดิตตามความยาวเสียง: ✦ ${creditsFor(null)} (ไม่เกิน 5 วิ) ถึง ✦ ${creditsFor(lipsyncAudioMax)} (${lipsyncAudioMax} วิ)`
+      : priceTable?.perSecond
+        ? `คิดเครดิตตามความยาวเสียง: ✦ ${creditsFor(1)} ต่อวินาที (สูงสุด ${lipsyncAudioMax} วิ = ✦ ${creditsFor(lipsyncAudioMax)})`
+        : `คิดเครดิตตามความยาวเสียง: ✦ ${creditsFor(null)} (ไม่เกิน 5 วิ) ถึง ✦ ${creditsFor(lipsyncAudioMax)} (${lipsyncAudioMax} วิ)`
   ) : null);
   const orbModes: OrbItem[] = TAB_ORDER.map((key) => {
     const blocked = tabBlockedReason(key);
@@ -3233,6 +3272,14 @@ export default function GeneratePage() {
                         )}
                         {multiRef && <span className="rp-rno rp-mono">{i + 1}</span>}
                         <button type="button" className="rp-rx" onClick={() => removeRef(r.id)} aria-label={`เอาภาพ ${i + 1} ออก`}>×</button>
+                        {multiRef && refs.length > 1 && (
+                          <span className="rp-rmove">
+                            <button type="button" disabled={i === 0} onClick={() => moveRef(r.id, -1)}
+                              aria-label={`เลื่อนภาพ ${i + 1} ไปก่อนหน้า`} title="เลื่อนไปก่อนหน้า">‹</button>
+                            <button type="button" disabled={i === refs.length - 1} onClick={() => moveRef(r.id, 1)}
+                              aria-label={`เลื่อนภาพ ${i + 1} ไปถัดไป`} title="เลื่อนไปถัดไป">›</button>
+                          </span>
+                        )}
                         {multiRef && (
                           <button type="button" className="rp-rrole" onClick={() => cycleRole(r.id)} title="กดเพื่อเปลี่ยนว่าภาพนี้คืออะไร">
                             {roleLabel(r.role)} ▾
@@ -3501,7 +3548,7 @@ export default function GeneratePage() {
                       <button key={d} type="button" className="rp-chip rp-raised" data-on={duration === d ? "true" : "false"} onClick={() => setDuration(d)}>
                         {tab === "audio" && d >= 60 && d % 60 === 0 ? `${d / 60} นาที` : `${d}s`}
                         {/* Priced by length: say so before the order, not on the receipt. */}
-                        {selectedModel?.durationCurve && <small>✦ {creditsFor(d)}</small>}
+                        {(selectedModel?.durationCurve || priceTable?.durations) && <small>✦ {creditsFor(d)}</small>}
                       </button>
                     ))}
                   </div>
@@ -3530,7 +3577,10 @@ export default function GeneratePage() {
                   <div className="rp-chips">
                     {resolutionChoices.map(r => (
                       <button key={r.id} type="button" className="rp-chip rp-raised" data-on={activeResolution?.id === r.id ? "true" : "false"}
-                        onClick={() => setResolution(r.id)}>{r.label}</button>
+                        onClick={() => setResolution(r.id)}>
+                        {r.label}
+                        {priceTable && <small>✦ {creditsFor(duration, r.id)}</small>}
+                      </button>
                     ))}
                   </div>
                 </div>
@@ -3547,7 +3597,11 @@ export default function GeneratePage() {
                       <button key={m.id} type="button" className="rp-chip rp-raised" data-on={activeQuality?.id === m.id ? "true" : "false"}
                         title={m.description} onClick={() => setQualityId(m.id)}>
                         {m.label}{m.adminOnly ? " · ทดลอง (เห็นเฉพาะแอดมิน)" : ""}
-                        <small>{m.creditsMultiplier === 1 ? "ราคาปกติ" : `×${m.creditsMultiplier} เครดิต`}</small>
+                        <small>
+                          {priceTable
+                            ? `✦ ${creditsFor(tab === "video" ? duration : null, m.id)}`
+                            : m.creditsMultiplier === 1 ? "ราคาปกติ" : `×${m.creditsMultiplier} เครดิต`}
+                        </small>
                       </button>
                     ))}
                   </div>
@@ -4423,6 +4477,18 @@ export default function GeneratePage() {
         }
         .rp-studio .rp-rtile:hover .rp-rx, .rp-studio .rp-rx:focus-visible { opacity: 1; }
         @media (hover: none) { .rp-studio .rp-rx { opacity: 1; } }
+        .rp-studio .rp-rmove {
+          position: absolute; left: 3px; right: 3px; top: 50%; z-index: 1; transform: translateY(-50%);
+          display: flex; justify-content: space-between; pointer-events: none; opacity: 0; transition: opacity 120ms;
+        }
+        .rp-studio .rp-rmove button {
+          pointer-events: auto; width: 22px; height: 26px; border: 0; border-radius: 7px; padding: 0; cursor: pointer;
+          display: grid; place-items: center; color: #e2e8f0; font-size: 16px; line-height: 1;
+          background: rgba(3, 6, 18, 0.72); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+        }
+        .rp-studio .rp-rmove button:disabled { visibility: hidden; }
+        .rp-studio .rp-rtile:hover .rp-rmove, .rp-studio .rp-rmove:focus-within { opacity: 1; }
+        @media (hover: none) { .rp-studio .rp-rmove { opacity: 1; } }
         .rp-studio .rp-rrole {
           position: absolute; left: 4px; right: 4px; bottom: 4px; z-index: 1; display: flex; align-items: center; justify-content: center;
           gap: 3px; padding: 3px 0; border: 0; border-radius: 6px; cursor: pointer; font: inherit; font-size: 10.5px; color: #e2e8f0;

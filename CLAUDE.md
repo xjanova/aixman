@@ -115,6 +115,32 @@ npx prisma db push   # Push schema (ai_ tables only!)
 
 Auto-cooldown on rate limit (5 min), auto-disable after 5 consecutive errors.
 
+## KIE.ai — the primary API provider (one key, provider `kie`)
+
+Since 2026-10-29 the owner's chosen main provider: one key reaches image, edit,
+video, lip-sync and music models. Code: `src/lib/providers/kie{,-catalog,-pricing,-sync}.ts`,
+`/api/admin/providers/kie`, the card on Admin → ผู้ให้บริการ (paste key → checked
+against the free `/api/v1/chat/credit` → encrypted pool row, daily quota 0 → rows synced).
+- **The catalogue is the model list.** Each `kie-catalog.ts` entry is a row
+  (`model_id` = `kie/…`, never renamed) with its USD prices, reference cap, frames
+  and `build()` → `{model, input}`. GenerationService refuses a `kie` row with no
+  entry (it would reach KIE as an unknown model after charging). Retire a model by
+  moving its key to `RETIRED_KIE_KEYS`; "ซิงก์โมเดล/ราคา" switches its row off.
+- **Price = a credits table**, `defaultParams.kie` (tier × sold length, per voice
+  second, per extra picture), written by the sync at twice cost at the cheapest
+  package rate. `/api/models` sends `defaultParams` to anyone — **never put USD in
+  it**. The studio and GenerationService both price with `kieQuote`; the adapter
+  sends the tier and length GenerationService stored, never the raw request.
+- Every KIE order runs deferred (`after()` + poll, ApiOrderSweep after 60 min).
+  Errors arrive as HTTP 200 with a `code`. **`ProviderResponse.orderFault`**: a
+  refused prompt, a failed render, a timeout or a bad input is the order's, not the
+  key's — counted, five customers' bad prompts would disable the one key every
+  KIE model shares. 401/402 do count; 402 raises `kie-balance`. Re-pasting the
+  same key reactivates it.
+- Inputs: our R2 https URLs as they are; data: URIs go through KIE's base64 upload.
+- Not yet exercised against the live API (no key on 2026-10-29): input field
+  names come from docs.kie.ai — a family that 422s needs its `build()` fixed.
+
 ## Self-Hosted GPU (SimplePod · RunPod · Vast.ai · Verda · Google Cloud → MiniMax H3)
 
 **SimplePod is a GPU rental marketplace, NOT an inference API.** There is no
