@@ -40,10 +40,24 @@ picture with `thumbnail` on Admin → Models.
 | qwen-image.webp | Qwen team (Alibaba) | Apache-2.0 | https://huggingface.co/Qwen/Qwen-Image |
 | ltx.webp | Lightricks | vendor promotional, no licence stated (video embedded in the LTX-2 repo README; weights under the LTX-2 Community License) | https://github.com/Lightricks/LTX-2 |
 | hunyuan3d.webp | Tencent Hunyuan3D team (Hunyuan3D 2.0 README results GIF) | Tencent Hunyuan 3D 2.0 Community License (not for use in the EU, UK or South Korea) | https://github.com/Tencent-Hunyuan/Hunyuan3D-2 |
+| veo.webp | Google DeepMind (Veo 3 demo "Owl and Badger", uploaded to Commons) | Public domain (as stated on Commons) | https://commons.wikimedia.org/wiki/File:Veo_3_demo_Owl_and_Badger.webm |
+| nano-banana.webp | Google DeepMind (Nano Banana 2.1 model page example) | vendor promotional, no licence stated | https://deepmind.google/models/gemini-image/flash/ |
+| nano-banana-pro.webp | Google DeepMind (Nano Banana Pro model page example) | vendor promotional, no licence stated | https://deepmind.google/models/gemini-image/pro/ |
+| ideogram.webp | VulcanSphere (made with Ideogram 3.0) | Public domain (as stated on Commons) | https://commons.wikimedia.org/wiki/File:Welcome_to_the_Simulated_Universe_(Ideogram_3.0).webp |
+| z-image.webp | Tongyi-MAI / Alibaba (model card showcase, `assets/showcase.jpg`) | Apache-2.0 (repo licence) | https://huggingface.co/Tongyi-MAI/Z-Image-Turbo |
+| grok-imagine-image.webp | xAI (Grok Imagine Image 2.0 announcement, "World is so vast" poster) | vendor promotional, no licence stated | https://x.ai/news/grok-imagine-image-2 |
+| grok-imagine-video.webp | xAI (Grok Imagine API announcement, camera-motion example) | vendor promotional, no licence stated | https://x.ai/news/grok-imagine-api |
+| wan.webp | Alibaba Wan (Wan3.0 launch blog, "Coffee Brand Doc to TVC" showcase) | vendor promotional, no licence stated | https://modelstudio.alibabacloud.com/intl/blog/wan3-ai-video-generation-model/ |
+| pixverse.webp | PixVerse (the PixVerse V6 reel on the homepage's Models tab) | vendor promotional, no licence stated | https://pixverse.ai/en |
+| topaz-video.webp | Topaz Labs (Topaz Video page, before/after cuttlefish comparison) | vendor promotional, no licence stated | https://www.topazlabs.com/topaz-video |
+| kling-motion-control.webp | Kuaishou Kling (Kling VIDEO 3.0 Motion Control showcase, "@Soccer Boy" output) | vendor promotional, no licence stated | https://app.klingai.com/global/quickstart/motion-control-user-guide |
+| elevenlabs-v3.webp | ElevenLabs (Eleven v3 launch post sample, drawn here as its waveform) | vendor promotional, no licence stated | https://elevenlabs.io/blog/eleven-v3 |
+| gemini-tts.webp | Google (Gemini 3.8 Flash TTS launch post, "high-energy DJ voice from Melbourne", drawn here as its waveform) | vendor promotional, no licence stated | https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-3-8-text-to-speech/ |
+| suno.webp | "This Is My World ( V6 Edition )" by Zombie Robby (made with Suno, featured on suno.com's homepage), drawn here as its spectrum | featured by the vendor, no licence stated | https://suno.com/song/057fa44a-a2c2-4089-8fca-52a637117f00 |
 
 ## Showcase clips
 
-Twelve families also have a looping clip, `<slug>.mp4`, played inside their balloon (`VIDEO_SLUGS` in
+Eighteen families also have a looping clip, `<slug>.mp4`, played inside their balloon (`VIDEO_SLUGS` in
 model-samples.ts). Each is a 3.5–7 s window of the clip below, cropped to a 480 px square, 24 fps, H.264 main
 profile, no sound, its loop seam cross-faded (≈ 0.1–0.4 MB each). The `.webp` of the same name is that
 window's first frame (640 px), so the picture and the clip agree; credits and licences are those in the table above.
@@ -62,6 +76,25 @@ window's first frame (640 px), so the picture and the clip agree; credits and li
 | runway-gen3.mp4 | 0.3–7.5 s ("flowers blooming from the concrete"), cropped clear of the corner mark | https://d3phaj0sisr2ct.cloudfront.net/site/videos/gen-3-alpha/carousel-03/gen-3-alpha-output-006.mp4 |
 | latentsync.mp4 | 0–6 s of the README's first lip-synced result (footage of contracted models, per the README) | https://github.com/bytedance/LatentSync (README demo table) |
 | hunyuan3d.mp4 | the whole GIF, one turn of the left figure | https://raw.githubusercontent.com/Tencent-Hunyuan/Hunyuan3D-2/main/assets/images/e2e-1.gif |
+| veo.mp4 | 7.4–11.5 s, the owl and the badger in the moonlit forest | https://upload.wikimedia.org/wikipedia/commons/e/ef/Veo_3_demo_Owl_and_Badger.webm |
+| grok-imagine-video.mp4 | 0–4.2 s, the giant tree and two small figures | https://data.x.ai/releases/imagine/camera-motions/camera-motions-9.mp4 |
+| wan.mp4 | 11.45–17.5 s, three espresso shots of the film (pour, drip, steam) | https://cloud.video.taobao.com/vod/sPb5V92Q6jQQZaNzmvhD_ypTBNkfLSmsiyy_Vlv6-Ek.mp4 |
+| pixverse.mp4 | 64.4–69.6 s, the whale and the diver (the reel's last shot) | https://media.pixverse.ai/asset/media/V6-hero.mp4 |
+| topaz-video.mp4 | 0.6–5.6 s; left half from the page's "before" file, right half from its "after" file, the square following the cuttlefish | https://downloads.topazlabs.com/web-assets/tp-upscale-before.mp4 and https://downloads.topazlabs.com/web-assets/tp-upscale-after.mp4 |
+| kling-motion-control.mp4 | 0.6–5.0 s of the "@Soccer Boy" output, the dance on the steppe | https://static-9.klingai-cdn-aws.com/kling-blog/presigned_url/fd45662f-9a36-436f-aacc-4667dc74ba4c_kling_20260205_%E5%8A%A8%E4%BD%9C%E6%8E%A7%E5%88%B6__5145_3.mp4 |
+
+## Audio pictures
+
+The speech and song models have no picture of their own, so their `.webp` is drawn from the vendor's own audio
+sample: the clip's real loudness envelope (bars, ring) or its spectrum, in the studio's palette (`globals.css`
+background and its emerald → cyan → violet gradient). Nothing but the shape comes from the audio. The audio itself
+is not in this repo.
+
+| Picture | Drawn as | Audio used |
+|---|---|---|
+| elevenlabs-v3.webp | mirrored bars, the loudness of the whole 28.9 s monologue | https://eleven-public-cdn.elevenlabs.io/payloadcms/n1g9ef8ilol.mp3 |
+| gemini-tts.webp | a ring, the loudness of the whole 19.5 s clip | the sound of https://storage.googleapis.com/gweb-uniblog-publish-prod/original_videos/AudioWaveform-Blue_HighEnergyDJ.mp4 |
+| suno.webp | the spectrum of 60–74 s, mirrored (low notes in the middle) | https://cdn-o.suno.com/splash-page/clips/057fa44a-a2c2-4089-8fca-52a637117f00.mp3 |
 
 Notes:
 - `leonardo-diffusion-xl.webp` is a resized crop of a CC BY-SA 4.0 work and is shared under CC BY-SA 4.0 too.
@@ -73,5 +106,18 @@ Notes:
 - InfiniteTalk has no clip on purpose: its demo videos are marked academic use only by MeiGen-AI, and the README's
   first demo is a well-known animated character. `infinitalk.webp` is unchanged.
 - `hunyuan3d` shows Hunyuan3D **2.0** output: 2.1 publishes no clip or GIF.
+- `veo` shows a Veo **3** demo for the three Veo 3.1 rows: Google publishes its Veo 3.1 examples only as YouTube
+  embeds or with a "Veo" mark burned in.
+- `z-image` comes from the Z-Image-Turbo model card; KIE's row does not say whether it runs Turbo or the base model.
+- `grok-imagine-video` comes from the Grok Imagine API launch page; KIE's row names no version.
+- The `wan`, `pixverse` and `kling-motion-control` loops dissolve at the seam (the shot does not return to where it
+  began); `wan` also spans two cuts of the vendor's film.
+- `topaz-video` is recomposed: it shows the vendor's own before and after files side by side, as the page's slider
+  does. Nothing in it was upscaled by this site.
+- `kling-motion-control` is the model's output only: Kling's 3.0 Motion Control section publishes the character's
+  face reference, not the motion clip it followed.
+- `suno.webp` is drawn from a user's song that Suno features on its homepage (tagged "made with suno", created
+  2026-09-10, titled "V6 Edition"), not from a song Suno made itself.
+- Volcengine's video lip-sync (`kie/volcengine-lipsync`) has no picture: Volcengine publishes no example of it.
 - Pictures and clips marked "vendor promotional" are the vendor's own showcase of the model with no licence
   stated. Replace them (or set an admin thumbnail) if a vendor objects. An admin thumbnail also turns the clip off.

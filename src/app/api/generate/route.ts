@@ -61,8 +61,9 @@ export async function POST(request: NextRequest) {
     // A voice track is itself the instruction: re-dubbing a clip has nothing to
     // describe, and LatentSync's schema has no prompt field to put one in. Every
     // other route still requires a prompt, so an empty text-to-image request is
-    // rejected exactly as before.
-    if (!genRequest.prompt?.trim() && !genRequest.inputAudio) {
+    // rejected exactly as before. A clip is its own instruction too: an upscale
+    // has nothing to describe, and a motion copy's prompt is optional.
+    if (!genRequest.prompt?.trim() && !genRequest.inputAudio && !genRequest.inputVideo) {
       return NextResponse.json({ error: 'Prompt is required' }, { status: 400 });
     }
 

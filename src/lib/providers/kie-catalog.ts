@@ -19,6 +19,7 @@
  * Pure: the sync, the adapter, GenerationService and `/api/models` read it.
  */
 import type { LengthFromAudio } from '@/lib/voice-length';
+import type { ClipRule } from '@/lib/lipsync-rules';
 import { DEFAULT_KIE_BASIS, kieCredits, type KieBasis, type KiePriceTable, type KiePriceTier } from './kie-pricing';
 
 export type KieCategory = 'image' | 'edit' | 'video' | 'audio';
@@ -47,6 +48,30 @@ export interface KieOrder {
   /** Music: the composed style line (genre, voice, mood …). */
   musicTags?: string;
   instrumental?: boolean;
+  /** Speech: the voice id, already one of the entry's own. */
+  voice?: string;
+  /** Speech: how to say it ("slow and warm"), where the model takes a style. */
+  speechStyle?: string;
+}
+
+/** One voice a speech model offers, labelled for the studio's picker. */
+export interface KieVoice {
+  /** The vendor's id, sent as it is. */
+  id: string;
+  /** Thai, on the picker: who it sounds like. */
+  label: string;
+  gender: 'female' | 'male';
+}
+
+export interface KieSpeech {
+  /** The first is the default. */
+  voices: KieVoice[];
+  /** Most characters one order may read. */
+  maxChars: number;
+  /** Takes a speaking-style line beside the text. */
+  style?: boolean;
+  /** Reads audio tags in square brackets in the text ([laughs], [whispers]). */
+  tags?: boolean;
 }
 
 export interface KieTask {
@@ -83,6 +108,18 @@ export interface KieEntry {
   lengthFromAudio?: LengthFromAudio;
   /** A song model: lyrics and the music tab's style chips. */
   music?: boolean;
+  /** Priced per this many characters of the text read aloud (`usd(tier, n)` = n characters). */
+  perChars?: number;
+  /** A text-to-speech model: its voices and how much one order may read. */
+  speech?: KieSpeech;
+  /**
+   * A clip the order works on (an upscale, a motion reference): checked
+   * against the stored file before charging (lipsync-rules.ts checkClip) and
+   * priced per second of it — the output is as long as the clip.
+   */
+  sourceClip?: ClipRule;
+  /** The order needs a picture of its own besides the clip (motion control's character). */
+  needsImage?: boolean;
   maxDuration?: number;
   /** How long the vendor may take before the order is failed and refunded. */
   maxWaitSeconds: number;
@@ -140,6 +177,50 @@ const perSecond = (prices: Record<string, number>) => (tier: string, seconds: nu
   (prices[tier] ?? Math.max(...Object.values(prices))) * Math.max(1, seconds);
 
 const IMAGE_K: [string, string][] = [['1K', '1K'], ['2K', '2K'], ['4K', '4K']];
+const MB = 1024 * 1024;
+/** Thai script: ElevenLabs is told the language rather than left to guess it from a short line. */
+const THAI = /[\u0E00-\u0E7F]/;
+/** A price per character, quoted per thousand as vendors list it. */
+const perThousandChars = (usd: number) => (_tier: string, chars: number) => (usd * chars) / 1000;
+
+/**
+ * ElevenLabs' preset voices, a curated set (docs.kie.ai lists 60+; previews at
+ * static.aiquickdraw.com/elevenlabs/voice/<id>.mp3). V3 speaks Thai with all of them.
+ */
+const ELEVENLABS_VOICES: KieVoice[] = [
+  { id: 'hpp4J3VqNfWAUOO0d1Us', label: 'Bella — หญิง สุภาพ อบอุ่น', gender: 'female' },
+  { id: 'EkK5I93UQWFDigLMpZcX', label: 'James — ชาย ทุ้ม มีพลัง', gender: 'male' },
+  { id: 'BZgkqPqms7Kj9ulSkVzn', label: 'Eve — หญิง สดใส ร่าเริง', gender: 'female' },
+  { id: 'nPczCjzI2devNBz1zQrb', label: 'Brian — ชาย ทุ้มลึก นุ่มนวล', gender: 'male' },
+  { id: '5l5f8iK3YPeGga21rQIX', label: 'Adeline — หญิง คุยเป็นกันเอง', gender: 'female' },
+  { id: 'UgBBYS2sOqTuMpoF3BR0', label: 'Mark — ชาย พูดเป็นธรรมชาติ', gender: 'male' },
+  { id: 'FGY2WhTYpPnrIDTdsKH5', label: 'Laura — หญิง กระตือรือร้น', gender: 'female' },
+  { id: 'TX3LPaxmHKxFdv7VOQHJ', label: 'Liam — ชาย สไตล์ครีเอเตอร์', gender: 'male' },
+  { id: 'kPzsL2i3teMYv0FxEYQ6', label: 'Brittney — หญิง วัยรุ่น สนุก', gender: 'female' },
+  { id: 'DYkrAHD8iwork3YSUBbs', label: 'Tom — ชาย เล่าเรื่อง หนังสือเสียง', gender: 'male' },
+  { id: '56AoDkrOh6qfVPDXZ7Pt', label: 'Cassidy — หญิง ชัดถ้อยชัดคำ', gender: 'female' },
+  { id: 'x70vRnQBMBu4FAYhjJbO', label: 'Nathan — ชาย ดีเจวิทยุ', gender: 'male' },
+  { id: 'Z3R5wn05IrDiVCyEkUrK', label: 'Arabella — หญิง ลึกลับ มีอารมณ์', gender: 'female' },
+  { id: 'DGzg6RaUqxGRTHSBjfgF', label: 'Brock — ชาย ดุดัน หนักแน่น', gender: 'male' },
+];
+
+/** Gemini's prebuilt voices with the character Google gives each (ai.google.dev, speech generation). */
+const GEMINI_VOICES: KieVoice[] = [
+  { id: 'Kore', label: 'Kore — หญิง หนักแน่น มั่นใจ', gender: 'female' },
+  { id: 'Charon', label: 'Charon — ชาย ให้ข้อมูล น่าเชื่อถือ', gender: 'male' },
+  { id: 'Zephyr', label: 'Zephyr — หญิง สดใส', gender: 'female' },
+  { id: 'Puck', label: 'Puck — ชาย ร่าเริง', gender: 'male' },
+  { id: 'Sulafat', label: 'Sulafat — หญิง อบอุ่น', gender: 'female' },
+  { id: 'Achird', label: 'Achird — ชาย เป็นมิตร', gender: 'male' },
+  { id: 'Leda', label: 'Leda — หญิง วัยรุ่น', gender: 'female' },
+  { id: 'Orus', label: 'Orus — ชาย หนักแน่น', gender: 'male' },
+  { id: 'Aoede', label: 'Aoede — หญิง สบาย ๆ', gender: 'female' },
+  { id: 'Fenrir', label: 'Fenrir — ชาย ตื่นเต้น', gender: 'male' },
+  { id: 'Despina', label: 'Despina — หญิง นุ่มนวล', gender: 'female' },
+  { id: 'Schedar', label: 'Schedar — ชาย สุขุม', gender: 'male' },
+  { id: 'Achernar', label: 'Achernar — หญิง เสียงนุ่ม', gender: 'female' },
+  { id: 'Algenib', label: 'Algenib — ชาย เสียงแหบ', gender: 'male' },
+];
 const STUDIO_ASPECTS = ['1:1', '16:9', '9:16', '4:3', '3:2', '3:4', '2:3'] as const;
 
 /** Someone speaking, when a portrait order came with no direction of its own. */
@@ -866,6 +947,101 @@ export const KIE_CATALOG: KieEntry[] = [
       };
     },
   },
+
+  // --------------------------------------------------------------- speech
+  {
+    key: 'kie/elevenlabs-v3',
+    name: 'ElevenLabs V3',
+    description: 'อ่านข้อความเป็นเสียงพูดธรรมชาติ พูดไทยได้ ใส่อารมณ์ด้วยแท็กอย่าง [laughs] [whispers] · สูงสุด 5,000 ตัวอักษร',
+    category: 'audio',
+    subcategory: 'speech',
+    featured: true,
+    tierParam: null,
+    tiers: tiers([['std', 'มาตรฐาน']]),
+    usd: perThousandChars(0.07),
+    perChars: 1000,
+    speech: { voices: ELEVENLABS_VOICES, maxChars: 5000, tags: true },
+    maxWaitSeconds: 10 * MIN,
+    build: (o) => ({
+      // V3 is reached through the dialogue route; one turn is plain speech.
+      // Multilingual v2 and Turbo 2.5 are cheaper but do not speak Thai.
+      model: 'elevenlabs/text-to-dialogue-v3',
+      input: clean({
+        dialogue: [{ text: cut(o.prompt.trim(), 5000), voice: o.voice ?? ELEVENLABS_VOICES[0].id }],
+        stability: 0.5,
+        language_code: THAI.test(o.prompt) ? 'th' : undefined,
+      }),
+    }),
+  },
+  {
+    key: 'kie/gemini-3-8-flash-tts',
+    name: 'Gemini 3.8 Flash TTS',
+    description: 'เสียงพูดราคาประหยัด พูดไทยได้ กำหนดสไตล์การพูดได้ เช่น “พูดช้า ๆ อบอุ่น” · สูงสุด 3,000 ตัวอักษร',
+    category: 'audio',
+    subcategory: 'speech',
+    tierParam: null,
+    tiers: tiers([['std', 'มาตรฐาน']]),
+    // Billed by tokens ($0.35/M in, $6.30/M audio out ≈ 32 a second); a
+    // thousand characters at a slow 8 a second is about $0.026.
+    usd: perThousandChars(0.03),
+    perChars: 1000,
+    speech: { voices: GEMINI_VOICES, maxChars: 3000, style: true },
+    maxWaitSeconds: 10 * MIN,
+    build: (o) => ({
+      model: 'google/gemini-3-8-flash-tts',
+      input: clean({
+        speakers: [{ speaker_id: 'Speaker 1', voice_name: o.voice ?? GEMINI_VOICES[0].id }],
+        dialogue_turns: [
+          clean({ speaker_id: 'Speaker 1', text: cut(o.prompt.trim(), 3000), style: o.speechStyle ? cut(o.speechStyle, 300) : undefined }),
+        ],
+      }),
+    }),
+  },
+
+  // ---------------------------------------------------------- video tools
+  {
+    key: 'kie/topaz-video-upscale',
+    name: 'Topaz Video Upscale',
+    description: 'ขยายวิดีโอให้คมชัดขึ้น 2 หรือ 4 เท่า (หรือเพิ่มความคมที่ขนาดเดิม) · คิดตามความยาวคลิป สูงสุด 30 วินาที',
+    category: 'video',
+    subcategory: 'video-upscale',
+    tierParam: 'resolution',
+    tiers: tiers([['1', 'คมขึ้น ขนาดเดิม'], ['2', 'ขยาย ×2'], ['4', 'ขยาย ×4']], '2'),
+    usd: perSecond({ '1': 0.04, '2': 0.04, '4': 0.07 }),
+    perSecond: true,
+    // Topaz takes MP4, MOV or MKV up to 50 MB and names no length; 30 s caps a ×4 at about $2.
+    sourceClip: { minSeconds: 1, maxSeconds: 30, maxBytes: 50 * MB, containers: ['mp4'] },
+    maxDuration: 30,
+    maxWaitSeconds: 40 * MIN,
+    build: (o) => ({ model: 'topaz/video-upscale', input: clean({ video_url: o.video, upscale_factor: o.tier }) }),
+  },
+  {
+    key: 'kie/kling-3-motion-control',
+    name: 'Kling 3.0 Motion Control',
+    description: 'ภาพตัวละคร + คลิปท่าทาง → ตัวละครขยับตามคลิป (เต้น ท่าทาง สีหน้า) · คลิป 3–30 วินาที',
+    category: 'video',
+    subcategory: 'motion',
+    tierParam: 'resolution',
+    tiers: tiers([['720p', '720p'], ['1080p', '1080p']]),
+    usd: perSecond({ '720p': 0.1, '1080p': 0.135 }),
+    perSecond: true,
+    needsImage: true,
+    // The docs: video 3–30 s, ≤ 100 MB, sides over 340 px, MP4 or MOV.
+    sourceClip: { minSeconds: 3, maxSeconds: 30, minSide: 340, maxBytes: 100 * MB, containers: ['mp4'] },
+    maxDuration: 30,
+    maxWaitSeconds: 40 * MIN,
+    build: (o) => ({
+      model: 'kling-3.0/motion-control',
+      input: clean({
+        prompt: o.prompt.trim() ? cut(o.prompt.trim(), 2500) : undefined,
+        input_urls: o.image ? [o.image] : [],
+        video_urls: o.video ? [o.video] : [],
+        mode: o.tier,
+        // The clip's facing, so a dancer turning round turns the character too.
+        character_orientation: 'video',
+      }),
+    }),
+  },
 ];
 
 function veoTask(o: KieOrder, tier: 'veo3_fast' | 'veo3_lite' | 'veo3'): KieTask {
@@ -902,6 +1078,47 @@ function seedanceTask(model: string, o: KieOrder, maxPrompt: number): KieTask {
 /** Keys this file once defined and no longer sells: their rows are switched off by the sync. */
 export const RETIRED_KIE_KEYS: string[] = [];
 
+/**
+ * Where an order on a KIE model goes when KIE cannot take it (no credit, key
+ * refused or cooling down, rate limit, outage — kie-fallback.ts): rows of
+ * other providers in the account pool, `<provider slug>:<model_id>`, tried in
+ * this order. A row that is missing, off, not yet proven, or cannot do this
+ * order (references, frames, length, clip) is skipped. The admin edits this
+ * per model on /admin/kie (`ai_settings.kie_fallback_map`); a model not listed
+ * has no fallback and its order is refunded, as before.
+ */
+export const KIE_FALLBACKS: Record<string, string[]> = {
+  'kie/nano-banana-2-1': ['openai:gpt-image-1', 'byteplus:seedream-5.0'],
+  'kie/nano-banana-pro': ['openai:gpt-image-1', 'byteplus:seedream-5.0'],
+  'kie/gpt-image-2-5': ['openai:gpt-image-1'],
+  'kie/seedream-5-pro': ['byteplus:seedream-5.0'],
+  'kie/seedream-5-flash': ['byteplus:seedream-5.0-lite', 'byteplus:seedream-5.0'],
+  'kie/flux-3-klein': ['fal:fal-ai/flux/schnell', 'replicate:black-forest-labs/flux-schnell'],
+  'kie/flux-2-pro': ['fal:fal-ai/flux-pro/v1.1', 'replicate:black-forest-labs/flux-1.1-pro'],
+  'kie/ideogram-v3': ['fal:fal-ai/recraft-v3'],
+  'kie/qwen-image-3': ['fal:fal-ai/flux/dev', 'replicate:black-forest-labs/flux-dev'],
+  'kie/grok-imagine-image-2': ['openai:gpt-image-1', 'fal:fal-ai/flux-pro/v1.1'],
+  'kie/z-image': ['fal:fal-ai/flux/schnell', 'replicate:black-forest-labs/flux-schnell'],
+  'kie/recraft-remove-background': ['stability:remove-background'],
+  'kie/recraft-crisp-upscale': ['stability:stable-image-upscale', 'fal:fal-ai/creative-upscaler'],
+  'kie/topaz-image-upscale': ['stability:stable-image-upscale', 'fal:fal-ai/creative-upscaler'],
+  'kie/kling-3': ['kling:kling-v2.5-pro', 'kling:kling-v2.5'],
+  'kie/kling-4': ['kling:kling-v2.5-pro'],
+  'kie/veo-3-1-fast': ['openai:sora-2', 'runway:gen4_turbo'],
+  'kie/veo-3-1-lite': ['openai:sora-2', 'runway:gen4_turbo'],
+  'kie/veo-3-1': ['openai:sora-2', 'runway:gen4_turbo'],
+  'kie/seedance-2-fast': ['byteplus:seedance-2.0'],
+  'kie/seedance-2-mini': ['byteplus:seedance-1.0-lite', 'byteplus:seedance-2.0'],
+  'kie/seedance-2-5': ['byteplus:seedance-2.0'],
+  'kie/minimax-h3': ['minimax:MiniMax-H3'],
+  'kie/wan-3': ['luma:ray-2', 'kling:kling-v2.5'],
+  'kie/grok-imagine-video': ['luma:ray-2-flash', 'kling:kling-v1.6'],
+  'kie/pixverse-v6-max': ['luma:ray-2', 'kling:kling-v2.5'],
+  'kie/kling-avatar': ['fal:fal-ai/infinitalk'],
+  'kie/infinitalk': ['fal:fal-ai/infinitalk'],
+  'kie/volcengine-lipsync': ['fal:fal-ai/latentsync', 'fal:fal-ai/kling-video/lipsync/audio-to-video'],
+};
+
 const BY_KEY = new Map(KIE_CATALOG.map((e) => [e.key, e]));
 
 export function getKieEntry(key: string): KieEntry | undefined {
@@ -913,7 +1130,9 @@ export function kiePriceTable(entry: KieEntry, basis: KieBasis = DEFAULT_KIE_BAS
   const credits: Record<string, Record<string, number>> = {};
   for (const tier of entry.tiers) {
     const row: Record<string, number> = {};
-    if (entry.perSecond) {
+    if (entry.perChars) {
+      row['1'] = kieCredits(entry.usd(tier.id, entry.perChars), basis);
+    } else if (entry.perSecond) {
       row['1'] = kieCredits(entry.usd(tier.id, 1), basis);
     } else if (entry.durations) {
       for (const s of entry.durations) row[String(s)] = kieCredits(entry.usd(tier.id, s), basis);
@@ -925,9 +1144,10 @@ export function kiePriceTable(entry: KieEntry, basis: KieBasis = DEFAULT_KIE_BAS
   return {
     tierParam: entry.tierParam,
     tiers: entry.tiers,
-    durations: entry.perSecond ? null : entry.durations ?? null,
+    durations: entry.perSecond || entry.perChars ? null : entry.durations ?? null,
     credits,
     perSecond: entry.perSecond === true,
+    perChars: entry.perChars,
     imageCredits: entry.imageUsd ? kieCredits(entry.imageUsd, basis) : undefined,
     freeImages: entry.imageUsd ? entry.freeImages ?? 0 : undefined,
   };

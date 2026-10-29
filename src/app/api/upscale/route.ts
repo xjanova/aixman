@@ -35,15 +35,18 @@ export async function POST(req: NextRequest) {
     let upscaleModel;
     if (modelId && Number.isInteger(modelId)) {
       upscaleModel = await prisma.aiModel.findFirst({
-        where: { id: modelId, isActive: true },
+        where: { id: modelId, isActive: true, NOT: { category: "video" } },
         include: { provider: true },
       });
     } else {
-      // Auto-select: prefer models explicitly tagged as upscale/enhance.
+      // Auto-select: prefer models explicitly tagged as upscale/enhance. A
+      // picture is upscaled by a picture model — "Topaz Video Upscale" matches
+      // the same words and would be handed a still.
       upscaleModel = await prisma.aiModel.findFirst({
         where: {
           isActive: true,
           provider: { isActive: true },
+          NOT: { category: "video" },
           OR: [
             { subcategory: "upscale" },
             { name: { contains: "upscale" } },

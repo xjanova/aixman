@@ -99,6 +99,19 @@ interface AIModel {
    * Null for every other model.
    */
   priceTable?: KiePriceTable | null;
+  /**
+   * A text-to-speech row: its voices (the first is the default), most
+   * characters, whether it takes a speaking style, and whether it reads audio
+   * tags like [laughs] in the text.
+   */
+  speech?: {
+    voices: { id: string; label: string; gender: 'female' | 'male' }[];
+    maxChars: number;
+    style: boolean;
+    tags: boolean;
+  } | null;
+  /** A video tool that works on an uploaded clip (upscale, motion copy): the clip's rule, and whether a character picture goes with it. */
+  clipInput?: { clip: ClipRule; needsImage: boolean } | null;
 }
 
 interface AIStyle {

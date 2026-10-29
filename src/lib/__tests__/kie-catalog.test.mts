@@ -12,9 +12,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import { KIE_CATALOG, getKieEntry, kieImageCount, kiePriceTable, nearestAspect, type KieOrder } from '@/lib/providers/kie-catalog';
-import { DEFAULT_KIE_BASIS, kieCredits, kieQuote, pickKieDuration, readKiePriceTable } from '@/lib/providers/kie-pricing';
+import { DEFAULT_KIE_BASIS, kieCredits, kieQuote, pickKieDuration, readKiePriceTable, speechChars } from '@/lib/providers/kie-pricing';
 import { referenceCaps } from '@/lib/reference-caps';
-import { apiVideoLipsyncRule } from '@/lib/lipsync-rules';
+import { apiVideoLipsyncRule, checkClip } from '@/lib/lipsync-rules';
 
 const order = (over: Partial<KieOrder> = {}): KieOrder => ({
   prompt: 'a lighthouse at dusk',
@@ -69,13 +69,15 @@ test('every entry builds a task with a model and no empty values, for every tier
         seconds: e.perSecond ? 6 : e.durations?.[0] ?? null,
         aspectRatio: '16:9',
         images: e.category === 'image' && e.references ? [frame, frame] : [],
-        image: e.category === 'edit' || e.firstFrame || e.subcategory.startsWith('lipsync') ? frame : undefined,
+        image: e.category === 'edit' || e.firstFrame || e.needsImage || e.subcategory.startsWith('lipsync') ? frame : undefined,
         audio: e.subcategory.startsWith('lipsync') ? 'https://cdn.example.test/uploads/7/audio/v.mp3' : undefined,
-        video: e.subcategory === 'lipsync' ? 'https://cdn.example.test/uploads/7/video/c.mp4' : undefined,
+        video: e.subcategory === 'lipsync' || e.sourceClip ? 'https://cdn.example.test/uploads/7/video/c.mp4' : undefined,
+        voice: e.speech?.voices[0].id,
       }));
       assert.ok(typeof task.model === 'string' && task.model.length > 0, e.key);
       for (const [k, v] of Object.entries(task.input)) {
         assert.ok(v !== undefined && v !== null && v !== '', `${e.key}: ${k} is empty`);
+        if (Array.isArray(v)) assert.ok(v.length > 0, `${e.key}: ${k} is an empty list`);
       }
     }
   }
@@ -186,4 +188,123 @@ test('nearest aspect: the model’s own shape closest to the order', () => {
 test('the picker test lists every catalogue key', () => {
   const src = readFileSync('src/lib/__tests__/model-samples.test.mts', 'utf8');
   for (const e of KIE_CATALOG) assert.ok(src.includes(`'${e.key}'`), `${e.key} missing from model-samples LIVE_IDS`);
+});
+
+test('speech: priced per thousand characters, pro rata, at least one credit', () => {
+  const eleven = kiePriceTable(getKieEntry('kie/elevenlabs-v3')!);
+  assert.equal(eleven.perChars, 1000);
+  assert.equal(eleven.durations, null);
+  const perThousand = kieCredits(0.07);
+  assert.equal(perThousand, 14);
+  assert.equal(kieQuote(eleven, { chars: 1000 }), perThousand);
+  assert.equal(kieQuote(eleven, { chars: 5000 }), perThousand * 5);
+  // A one-line greeting is not billed a thousand characters…
+  assert.equal(kieQuote(eleven, { chars: 200 }), Math.ceil((perThousand * 200) / 1000));
+  // …and nothing is free.
+  assert.equal(kieQuote(eleven, { chars: 1 }), 1);
+  assert.equal(kieQuote(eleven, { chars: 0 }), 1);
+  assert.equal(kieQuote(kiePriceTable(getKieEntry('kie/gemini-3-8-flash-tts')!), { chars: 1000 }), kieCredits(0.03));
+  // A stored table with a broken character unit is read without it, not trusted.
+  const bad = readKiePriceTable({ kie: { tiers: [{ id: 'std', label: 'x' }], credits: { std: { '1': 14 } }, perChars: -5 } });
+  assert.equal(bad?.perChars, undefined);
+});
+
+test('speech characters are counted the way GenerationService counts them', () => {
+  assert.equal(speechChars('  hello  '), 5);
+  // Thai is counted by code point, vowel and tone marks included.
+  assert.equal(speechChars('สวัสดี'), 6);
+  // An emoji is one character, not two UTF-16 halves.
+  assert.equal(speechChars('hi 👋'), 4);
+  assert.equal(speechChars(undefined), 0);
+  assert.equal(speechChars(42), 0);
+});
+
+test('speech: voices are unique, labelled "Name — description", and the text is cut to the limit', () => {
+  for (const e of KIE_CATALOG.filter((x) => x.speech)) {
+    const voices = e.speech!.voices;
+    assert.ok(voices.length >= 4, e.key);
+    assert.equal(new Set(voices.map((v) => v.id)).size, voices.length, `${e.key}: duplicate voice`);
+    for (const v of voices) {
+      assert.match(v.id, /^[A-Za-z0-9]+$/, `${e.key}: ${v.id}`);
+      assert.match(v.label, /^\S.* — \S/, `${e.key}: ${v.label} — the studio splits the name from the description`);
+      assert.ok(v.gender === 'female' || v.gender === 'male', v.id);
+    }
+    assert.equal(e.category, 'audio');
+    assert.equal(e.subcategory, 'speech');
+    assert.equal(e.perChars, 1000, e.key);
+    const long = 'ก'.repeat(e.speech!.maxChars + 50);
+    const text = JSON.stringify(e.build(order({ tier: e.tiers[0].id, prompt: long, voice: voices[0].id })).input);
+    assert.ok(!text.includes('ก'.repeat(e.speech!.maxChars + 1)), `${e.key}: text past the limit reached KIE`);
+  }
+});
+
+test('ElevenLabs: one dialogue turn in the chosen voice, Thai text marked Thai', () => {
+  const e = getKieEntry('kie/elevenlabs-v3')!;
+  const thai = e.build(order({ tier: 'std', prompt: '  สวัสดีค่ะ [laughs] ยินดีต้อนรับ ', voice: 'EkK5I93UQWFDigLMpZcX' }));
+  assert.equal(thai.model, 'elevenlabs/text-to-dialogue-v3');
+  assert.deepEqual(thai.input, {
+    dialogue: [{ text: 'สวัสดีค่ะ [laughs] ยินดีต้อนรับ', voice: 'EkK5I93UQWFDigLMpZcX' }],
+    stability: 0.5,
+    language_code: 'th',
+  });
+  const english = e.build(order({ tier: 'std', prompt: 'Welcome back.', voice: 'hpp4J3VqNfWAUOO0d1Us' }));
+  assert.equal((english.input as Record<string, unknown>).language_code, undefined);
+});
+
+test('Gemini TTS: one speaker in the chosen voice, the speaking style on its turn', () => {
+  const e = getKieEntry('kie/gemini-3-8-flash-tts')!;
+  const task = e.build(order({ tier: 'std', prompt: 'นิทานก่อนนอน', voice: 'Puck', speechStyle: 'พูดช้า ๆ อบอุ่น' }));
+  assert.equal(task.model, 'google/gemini-3-8-flash-tts');
+  assert.deepEqual(task.input, {
+    speakers: [{ speaker_id: 'Speaker 1', voice_name: 'Puck' }],
+    dialogue_turns: [{ speaker_id: 'Speaker 1', text: 'นิทานก่อนนอน', style: 'พูดช้า ๆ อบอุ่น' }],
+  });
+  const plain = e.build(order({ tier: 'std', prompt: 'hello', voice: 'Kore' }));
+  assert.deepEqual((plain.input as { dialogue_turns: unknown[] }).dialogue_turns, [{ speaker_id: 'Speaker 1', text: 'hello' }]);
+});
+
+test('clip tools: priced per second of the clip, with the clip rule the order is checked against', () => {
+  const topaz = getKieEntry('kie/topaz-video-upscale')!;
+  const motion = getKieEntry('kie/kling-3-motion-control')!;
+  for (const e of [topaz, motion]) {
+    assert.equal(e.category, 'video');
+    assert.equal(e.perSecond, true, e.key);
+    assert.ok(e.sourceClip, e.key);
+    assert.equal(e.tierParam, 'resolution', `${e.key}: its tiers are the studio's resolution chips`);
+    assert.ok(e.maxDuration === e.sourceClip!.maxSeconds, e.key);
+  }
+  assert.equal(topaz.subcategory, 'video-upscale');
+  assert.equal(motion.subcategory, 'motion');
+  assert.equal(motion.needsImage, true);
+
+  const up = kiePriceTable(topaz);
+  assert.equal(kieQuote(up, { tier: '4', seconds: 12 }), kieCredits(0.07) * 12);
+  assert.equal(kieQuote(up, { tier: '2', seconds: 12 }), kieCredits(0.04) * 12);
+  assert.equal(kieQuote(up, {}), kieCredits(0.04), 'the default is ×2, one second when no clip is known');
+  const mo = kiePriceTable(motion);
+  assert.equal(kieQuote(mo, { tier: '1080p', seconds: 10 }), kieCredits(0.135) * 10);
+
+  const clip = { seconds: 8, width: 1280, height: 720, bytes: 20 * 1024 * 1024, ext: 'mp4' as const };
+  assert.equal(checkClip(motion.sourceClip!, clip).ok, true);
+  assert.equal(checkClip(motion.sourceClip!, { ...clip, seconds: 2 }).ok, false, 'motion needs 3 s');
+  assert.equal(checkClip(motion.sourceClip!, { ...clip, seconds: 31 }).ok, false);
+  assert.equal(checkClip(motion.sourceClip!, { ...clip, width: 320, height: 240 }).ok, false, 'sides over 340 px');
+  assert.equal(checkClip(motion.sourceClip!, { ...clip, ext: 'webm' as never }).ok, false);
+  assert.equal(checkClip(topaz.sourceClip!, { ...clip, bytes: 60 * 1024 * 1024 }).ok, false, 'Topaz takes 50 MB');
+});
+
+test('clip tools build what KIE documents', () => {
+  const video = 'https://cdn.example.test/uploads/7/video/c.mp4';
+  const image = 'https://cdn.example.test/uploads/7/image/hero.png';
+  assert.deepEqual(getKieEntry('kie/topaz-video-upscale')!.build(order({ tier: '4', video, prompt: '' })), {
+    model: 'topaz/video-upscale',
+    input: { video_url: video, upscale_factor: '4' },
+  });
+  const motion = getKieEntry('kie/kling-3-motion-control')!;
+  assert.deepEqual(motion.build(order({ tier: '1080p', video, image, prompt: '' })), {
+    model: 'kling-3.0/motion-control',
+    input: { input_urls: [image], video_urls: [video], mode: '1080p', character_orientation: 'video' },
+  });
+  const withPrompt = motion.build(order({ tier: '720p', video, image, prompt: ' on a beach at sunset ' })).input as Record<string, unknown>;
+  assert.equal(withPrompt.prompt, 'on a beach at sunset');
 });

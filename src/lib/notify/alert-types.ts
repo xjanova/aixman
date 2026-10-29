@@ -40,10 +40,11 @@ export const ALERT_TYPES: AlertType[] = [
   { id: 'model-demoted', level: 'critical', title: 'โมเดลถูกปิดรับงาน เพราะล้มติดกัน 3 ครั้ง', when: 'ทันที · และแจ้งอีกครั้งเมื่อเปิดรับงานคืน' },
   { id: 'config-error', level: 'critical', title: 'ตั้งค่าระบบเช่าผิด (R2 หาย / ไม่มีคีย์ / โปรไฟล์เครื่องผิด) — คืนเครดิตทั้งคิว', when: 'ทันที (ซ้ำได้ทุก 1 ชม.)' },
   { id: 'llm-upstream', level: 'critical', title: 'API โมเดลภาษา: ผู้ให้บริการหรือเครื่อง GPU ตอบผิดพลาดติดกัน 5 ครั้ง — ลูกค้าเรียกใช้ไม่ได้', when: 'ต่อผู้ให้บริการ/โมเดล ไม่เกินทุก 1 ชม.' },
-  { id: 'kie-balance', level: 'critical', title: 'เครดิต KIE.ai หมด — ลูกค้าสั่งงานโมเดล KIE ไม่ได้ (คืนเครดิตให้แล้ว)', when: 'ครั้งแรกที่ KIE ตอบ 402 (ซ้ำได้ทุก 1 ชม.)' },
+  { id: 'kie-balance', level: 'critical', title: 'เครดิต KIE.ai หมด — งานโมเดล KIE ไปผู้ให้บริการสำรอง หรือคืนเครดิตถ้าไม่มีสำรอง', when: 'ครั้งแรกที่ KIE ตอบ 402 (ซ้ำได้ทุก 1 ชม.)' },
   { id: 'no-accounts', level: 'critical', title: 'ผู้ให้บริการ AI ไม่มีคีย์ที่ใช้ได้ — ลูกค้าสั่งงานโมเดลนั้นไม่ได้', when: 'ครั้งแรกที่ลูกค้าโดนปฏิเสธ (ซ้ำได้ทุก 1 ชม.)' },
   { id: 'gpux-earning-expiring', level: 'critical', title: 'รายได้ของงานเครื่องชุมชน (GPUxMINE) ยังไม่ถูกบันทึก และจะหลุดจากรอบตรวจภายใน 24 ชม.', when: 'ทุก 6 ชม. ขณะยังมีงานใกล้หลุด' },
   // Something went wrong and was handled, but deserves a look.
+  { id: 'kie-fallback', level: 'warning', title: 'KIE.ai รับงานไม่ได้ — ระบบสลับไปใช้โมเดลสำรองใน Account Pool (ลูกค้าจ่ายราคาเดิม)', when: 'ต่อโมเดล KIE ไม่เกินทุก 1 ชม. ขณะยังสลับอยู่' },
   { id: 'budget', level: 'warning', title: 'งบค่าเครื่องวันนี้ใช้ถึง 80% / หมดแล้ว (หยุดเช่าใหม่จนขึ้นวันใหม่)', when: 'วันละครั้งต่อระดับ' },
   { id: 'llm-budget', level: 'warning', title: 'งบเครื่อง GPU ของ API โมเดลภาษาวันนี้ใช้ถึง 80% / หมดแล้ว (ปิดเครื่อง API จนขึ้นวันใหม่)', when: 'วันละครั้งต่อระดับ' },
   { id: 'boot-failed', level: 'warning', title: 'เครื่องบูตไม่สำเร็จ / บูตไม่เสร็จในเวลา', when: 'ทุกเครื่องที่บูตพัง' },

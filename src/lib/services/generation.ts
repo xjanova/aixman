@@ -7,7 +7,7 @@ import { AccountPoolManager } from './account-pool';
 import { ModelReadiness, TUNING_MESSAGE } from './model-readiness';
 import { persistAssetSafe, isStorageConfigured, keyFromPublicUrl } from '@/lib/storage/r2';
 import { referenceCaps } from '@/lib/reference-caps';
-import type { GenerationRequest, GenerationResult, ProviderSlug } from '@/types';
+import type { GenerationRequest, GenerationResult, ProviderResponse, ProviderSlug } from '@/types';
 import { fitFrame } from '@/lib/gpu/frame';
 import { getCatalogEntry, isAdminOnlyPreset, isCommunityOnlyModel, isRetiredCatalogKey, orderNeedsProviderAccount } from '@/lib/gpu/catalog';
 import { isAcceptedAudioSource, isAcceptedFrameSource, isAcceptedVideoSource, openVideoSource, readAudioSource } from '@/lib/gpu/frame-input';
@@ -27,7 +27,9 @@ import { communityMachineAvailable } from '@/lib/gpu/community-availability';
 import { OrderRefusedError } from './order-refusal';
 import { LLM_CATEGORY } from '@/lib/llm/pricing';
 import { getKieEntry, kieImageCount, kiePriceTable } from '@/lib/providers/kie-catalog';
-import { kieQuote, pickKieDuration, pickKieTier, readKiePriceTable } from '@/lib/providers/kie-pricing';
+import { kieQuote, pickKieDuration, pickKieTier, readKiePriceTable, speechChars } from '@/lib/providers/kie-pricing';
+import { fallbackParams, routeKieOrder, type FallbackOrder } from '@/lib/providers/kie-fallback';
+import { kieUnavailable, loadFallbackSettings, pickFallback, type ModelWithProvider, type PoolAccount } from './kie-route';
 
 /**
  * Why an order was refused when its type and its model disagree about whether
@@ -39,13 +41,31 @@ export const TYPE_MISMATCH_MESSAGE = 'โมเดลนี้ไม่รอง
 interface ApiOrderRun {
   userId: number;
   generationId: number;
-  model: Prisma.AiModelGetPayload<{ include: { provider: true } }>;
+  model: ModelWithProvider;
   request: GenerationRequest;
   styleSuffix: string;
-  account: NonNullable<Awaited<ReturnType<typeof AccountPoolManager.selectAccount>>>;
+  /** The key the order runs on: KIE's, or its fallback's when `kie.preRouted`. */
+  account: PoolAccount;
   requiredCredits: number;
   /** How long the provider may take (lipsync-rules.ts); its own default when unset. */
   maxWaitSeconds?: number;
+  /**
+   * A KIE order (kie-fallback.ts): what a fallback row must be able to do,
+   * and the row chosen before charging when no KIE key could take it.
+   */
+  kie?: { order: FallbackOrder; preRouted: { model: ModelWithProvider; reason: string } | null };
+}
+
+/** What `params.route` says on an order a fallback row ran: read by /admin/kie. */
+function orderRoute(target: ModelWithProvider, reason: string): Record<string, unknown> {
+  return {
+    via: 'fallback',
+    provider: target.provider.slug,
+    modelId: target.modelId,
+    name: target.name,
+    reason,
+    at: new Date().toISOString(),
+  };
 }
 
 /**
@@ -109,7 +129,9 @@ export class GenerationService {
     // and every provider; the tier is stored with the order and decides
     // whether a GPUxMINE home PC may ever see it. A style's suffix and song
     // lyrics are words the model reads too.
-    const styleSuffix = request.styleId ? await this.getStyleSuffix(request.styleId) : '';
+    // A speech order's prompt is the text read aloud: a style's suffix would be read out with it.
+    const speech = model.provider.slug === 'kie' ? getKieEntry(model.modelId)?.speech : undefined;
+    const styleSuffix = request.styleId && !speech ? await this.getStyleSuffix(request.styleId) : '';
     const references = this.checkReferences(model, request.referenceImages);
     const hasInputMedia =
       references.length > 0 ||
@@ -119,7 +141,11 @@ export class GenerationService {
     const content = classifyContent({
       prompt: request.prompt,
       negativePrompt: request.negativePrompt,
-      extraText: [styleSuffix, typeof request.params?.lyrics === 'string' ? request.params.lyrics : undefined],
+      extraText: [
+        styleSuffix,
+        typeof request.params?.lyrics === 'string' ? request.params.lyrics : undefined,
+        typeof request.params?.speechStyle === 'string' ? request.params.speechStyle : undefined,
+      ],
       hasInputMedia: hasInputMedia && options.inputIsOwnRender !== true,
     });
     if (content.tier === 'blocked') this.refuseBlocked(userId, model.name, content);
@@ -148,6 +174,29 @@ export class GenerationService {
         throw new OrderRefusedError('ต้องอัปโหลดไฟล์เสียงที่จะให้พูดก่อน', 'missing-audio', 422);
       }
       if (!request.inputImage?.trim()) throw new OrderRefusedError('ต้องอัปโหลดรูปคนที่จะให้พูดก่อน', 'missing-image', 422);
+    }
+    // KIE fetches every picture, voice and clip itself, on our account, so
+    // each must be one of ours (or a picture the adapter uploads from a data:
+    // URI). /api/generate checks voices, clips and last frames; the first
+    // frame, and orders from MCP, are checked only here.
+    if (kie) {
+      const strange =
+        [request.inputImage, request.inputImageEnd].some((src) => !!src?.trim() && !isAcceptedFrameSource(src)) ||
+        [request.inputAudio, request.inputVideo].some((src) => !!src?.trim() && !keyFromPublicUrl(src));
+      if (strange) throw new OrderRefusedError('ไฟล์ที่แนบไม่ถูกต้อง กรุณาอัปโหลดใหม่', 'invalid-input', 422);
+    }
+    if (kie?.needsImage && !request.inputImage?.trim()) {
+      throw new OrderRefusedError('ต้องอัปโหลดภาพตัวละครก่อน', 'missing-image', 422);
+    }
+    // Speech is priced by its characters, so the text is checked here, not after the charge.
+    const speechLength = speech ? speechChars(request.prompt) : 0;
+    if (speech && speechLength === 0) throw new OrderRefusedError('ใส่ข้อความที่จะให้อ่านก่อน', 'missing-text', 422);
+    if (speech && speechLength > speech.maxChars) {
+      throw new OrderRefusedError(
+        `ข้อความยาวเกินไป (${speechLength.toLocaleString('en-US')} ตัวอักษร) — โมเดลนี้อ่านได้ครั้งละไม่เกิน ${speech.maxChars.toLocaleString('en-US')} ตัวอักษร`,
+        'text-too-long',
+        422
+      );
     }
 
     if (gpuModel && !isStorageConfigured()) {
@@ -221,16 +270,21 @@ export class GenerationService {
     // anything is charged. An API row also prices by the clip and checks the
     // voice beside it; a rented one prices by the voice, below.
     const apiLipsync = gpuModel ? undefined : apiVideoLipsyncRule(model.modelId);
-    const clipRule = catalogEntry?.sourceVideo ?? apiLipsync?.clip;
+    // A KIE upscale or motion reference is checked the same way, and priced by it below.
+    const clipRule = catalogEntry?.sourceVideo ?? apiLipsync?.clip ?? kie?.sourceClip;
     let clip: ClipFacts | null = null;
     if (clipRule) {
-      clip = await this.clipFacts(request.inputVideo);
+      clip = await this.clipFacts(
+        request.inputVideo,
+        kie?.sourceClip ? 'ต้องอัปโหลดคลิปก่อน' : 'ต้องอัปโหลดคลิปต้นฉบับที่จะพากย์ทับก่อน'
+      );
       const fits = checkClip(clipRule, clip);
       if (!fits.ok) throw new OrderRefusedError(fits.message, fits.code, 422);
     }
+    let voiceFile: { seconds: number; bytes: number } | null = null;
     if (apiLipsync && clip) {
-      const voice = await this.voiceFacts(request.inputAudio);
-      const fits = checkVoice(apiLipsync.voice, voice, clip.seconds);
+      voiceFile = await this.voiceFacts(request.inputAudio);
+      const fits = checkVoice(apiLipsync.voice, voiceFile, clip.seconds);
       if (!fits.ok) throw new OrderRefusedError(fits.message, fits.code, 422);
     }
 
@@ -296,7 +350,11 @@ export class GenerationService {
     // A row synced before the table existed is priced from the catalogue.
     const kieTable = kie ? readKiePriceTable(model.defaultParams) ?? kiePriceTable(kie) : null;
     const kieTier = kieTable ? pickKieTier(kieTable, kieTable.tierParam ? request.params?.[kieTable.tierParam] : undefined) : null;
-    const kieSeconds = kieTable ? voiceSeconds ?? pickKieDuration(kieTable, request.params?.duration) : null;
+    // The length priced: the voice a portrait speaks, the clip an upscale or a
+    // motion copy runs for (whole seconds, as KIE bills), else the length ordered.
+    const kieSeconds = kieTable
+      ? voiceSeconds ?? (kie?.sourceClip && clip ? Math.ceil(clip.seconds) : pickKieDuration(kieTable, request.params?.duration))
+      : null;
     const requiredCredits =
       apiLipsync && clip
         ? lipsyncCredits(apiLipsync.billing, model.creditsPerUnit, clip.seconds)
@@ -309,6 +367,7 @@ export class GenerationService {
                 inputImage: request.inputImage,
                 inputImageEnd: request.inputImageEnd,
               }),
+              chars: speechLength,
             })
           : Math.ceil(creditsForDuration(model.creditsPerUnit, curve, gpuDuration) * (qualityMode?.creditsMultiplier ?? 1)) *
           numOutputs;
@@ -345,6 +404,16 @@ export class GenerationService {
       else delete baseParams.duration;
       baseParams.numOutputs = 1;
     }
+    // The voice that was priced and will speak: one of the model's own, never a raw id.
+    if (speech) {
+      baseParams.voice = (speech.voices.find((v) => v.id === baseParams.voice) ?? speech.voices[0]).id;
+      const style = speech.style && typeof baseParams.speechStyle === 'string' ? baseParams.speechStyle.trim().slice(0, 300) : '';
+      if (style) baseParams.speechStyle = style;
+      else delete baseParams.speechStyle;
+    } else {
+      delete baseParams.voice;
+      delete baseParams.speechStyle;
+    }
 
     const storedParams: Record<string, unknown> = {
       ...baseParams,
@@ -361,7 +430,33 @@ export class GenerationService {
     //    or in cooldown every order was refused as "Service temporarily
     //    unavailable", by a rental vendor the model never uses.
     const needsAccount = orderNeedsProviderAccount(model.modelId, gpuModel);
-    const account = needsAccount ? await AccountPoolManager.selectAccount(model.providerId) : null;
+    let account = needsAccount ? await AccountPoolManager.selectAccount(model.providerId) : null;
+    // What a KIE order's fallback must be able to do: the order as priced.
+    // A portrait's picture and a clip tool's character are inputs, not frames.
+    const framed = kie?.category === 'video' && !kie.lengthFromAudio && !kie.sourceClip;
+    const kieOrder: FallbackOrder | null = kie
+      ? {
+          kieKey: model.modelId,
+          references: references.length || (request.inputImage ? 1 : 0),
+          firstFrame: framed && !!request.inputImage?.trim(),
+          lastFrame: framed && !!request.inputImage?.trim() && !!request.inputImageEnd?.trim(),
+          seconds: kieSeconds,
+          clip,
+          voice: voiceFile,
+        }
+      : null;
+    // No KIE key can take it now (switched off, cooling down after errors):
+    // straight to KIE's fallback, before anything is charged, at KIE's price.
+    let preRouted: { model: ModelWithProvider; reason: string } | null = null;
+    if (kieOrder && needsAccount && !account) {
+      const settings = await loadFallbackSettings();
+      const picked = settings.enabled ? await pickFallback(model.modelId, kieOrder, settings.map) : null;
+      if (picked) {
+        account = picked.account;
+        preRouted = { model: picked.model, reason: await kieUnavailable(model.providerId) };
+        storedParams.route = orderRoute(picked.model, preRouted.reason);
+      }
+    }
     if (needsAccount && !account) {
       raiseAlert({
         type: 'no-accounts',
@@ -370,9 +465,11 @@ export class GenerationService {
         title: `${model.provider.name} ไม่มีคีย์ API ที่ใช้ได้`,
         lines: [
           `ลูกค้าเพิ่งโดนปฏิเสธที่โมเดล ${model.name}`,
-          'คีย์ทุกอันถูกปิด ติดลิมิต หรือถูกพักจากข้อผิดพลาด — ตรวจที่หน้าคลังคีย์ (Pools)',
+          kie
+            ? 'คีย์ KIE ถูกปิด ติดลิมิต หรือถูกพัก และไม่มีโมเดลสำรองที่รับงานนี้ได้ — ตรวจที่หน้า KIE.ai'
+            : 'คีย์ทุกอันถูกปิด ติดลิมิต หรือถูกพักจากข้อผิดพลาด — ตรวจที่หน้าคลังคีย์ (Pools)',
         ],
-        path: '/admin/pools',
+        path: kie ? '/admin/kie' : '/admin/pools',
       });
       throw new Error('No available API accounts for this provider. Please try again later.');
     }
@@ -496,6 +593,7 @@ export class GenerationService {
       account,
       requiredCredits,
       maxWaitSeconds: apiLipsync?.maxWaitSeconds ?? kie?.maxWaitSeconds,
+      kie: kieOrder ? { order: kieOrder, preRouted } : undefined,
     };
 
     // A video lip-sync render takes the vendor minutes (Kling: about twelve),
@@ -537,9 +635,16 @@ export class GenerationService {
    * order the sweep already failed and refunded back into a delivered one.
    */
   private static async runApiOrder(run: ApiOrderRun): Promise<GenerationResult> {
-    const { userId, model, request, styleSuffix, account, requiredCredits } = run;
+    const { userId, model, request, requiredCredits } = run;
     const generation = { id: run.generationId };
-    const references = request.referenceImages ?? [];
+    // The row and key the last call went to: a delivery is credited to them,
+    // a crash charged to them. A KIE order may end on a fallback row.
+    let served: { model: ModelWithProvider; account: PoolAccount } = {
+      model: run.kie?.preRouted?.model ?? model,
+      account: run.account,
+    };
+    // Written on the order when a fallback row ran it (KIE could not).
+    let route: Record<string, unknown> | null = null;
 
     // 6. Execute generation via provider
     try {
@@ -548,81 +653,93 @@ export class GenerationService {
         data: { status: 'processing', startedAt: new Date() },
       });
 
-      const provider = getProvider(model.provider.slug as ProviderSlug);
-      if (!provider) {
-        throw new Error(`Provider adapter not found: ${model.provider.slug}`);
-      }
-
-      const providerParams = {
-        modelId: model.modelId,
-        prompt: request.prompt + styleSuffix,
-        negativePrompt: request.negativePrompt,
-        width: request.params?.width || model.maxWidth || 1024,
-        height: request.params?.height || model.maxHeight || 1024,
-        steps: request.params?.steps,
-        cfgScale: request.params?.cfgScale,
-        seed: request.params?.seed,
-        duration: request.params?.duration || model.maxDuration || undefined,
-        maxDuration: model.maxDuration ?? undefined,
-        fps: request.params?.fps,
-        aspectRatio: request.params?.aspectRatio,
-        numOutputs: request.params?.numOutputs || 1,
-        inputImage: request.inputImage ?? references[0],
-        inputImageEnd: request.inputImageEnd,
-        referenceImages: references.length ? references : undefined,
-        inputAudio: request.inputAudio,
-        inputVideo: request.inputVideo,
-        apiKey: account.apiKey,
-        apiSecret: account.apiSecret,
-        apiEndpoint: account.apiEndpoint,
-        extraParams: request.params as Record<string, unknown>,
-        maxWaitSeconds: run.maxWaitSeconds,
+      // One call, to one row on one key: logged, and a failure that is the
+      // key's counted against that key, with rate-limit-aware cooldown, so the
+      // pool can rotate or auto-disable it.
+      const attempt = async (target: ModelWithProvider, account: PoolAccount, viaFallback: boolean) => {
+        served = { model: target, account };
+        const result = await this.callProvider(target, account, run, viaFallback);
+        await prisma.aiUsageLog.create({
+          data: {
+            accountPoolId: account.id,
+            modelId: target.modelId,
+            action: request.type,
+            status: result.success ? 'success' : 'error',
+            costUsd: result.success ? result.costUsd ?? Number(target.costPerUnit) : 0,
+            responseMs: result.processingMs,
+            errorMessage: result.error,
+            ...(run.kie
+              ? { metadata: { generationId: generation.id, route: viaFallback ? 'fallback' : 'kie', kieModel: model.modelId } }
+              : {}),
+          },
+        });
+        // A refused prompt or a failed render is the order's, not the key's
+        // (ProviderResponse.orderFault): counted, a few of them would disable
+        // the one key every KIE model shares.
+        if (!result.success && result.orderFault !== true) {
+          await AccountPoolManager.recordError(account.id, result.error || 'Generation failed', this.isRateLimitError(result.error));
+        }
+        if (target.provider.slug === 'kie' && /^KIE 402\b/.test(result.error ?? '')) {
+          raiseAlert({
+            type: 'kie-balance',
+            key: String(account.id),
+            level: 'critical',
+            title: 'เครดิต KIE.ai หมด — งานโมเดล KIE ไปผู้ให้บริการสำรอง หรือคืนเครดิตถ้าไม่มีสำรอง',
+            lines: [
+              `ลูกค้าเพิ่งสั่ง ${model.name} แล้ว KIE ตอบ 402`,
+              'เติมเครดิตที่ kie.ai แล้วกด "ตรวจคีย์อีกครั้ง" ที่หน้า KIE.ai ในแอดมิน — คีย์จะกลับมารับงานทันที',
+            ],
+            path: '/admin/kie',
+          });
+        }
+        return result;
       };
 
-      let result;
-      switch (request.type) {
-        case 'image':
-          result = await provider.generateImage(providerParams);
-          break;
-        case 'video':
-          result = await provider.generateVideo(providerParams);
-          break;
-        case 'edit':
-          if (provider.editImage) {
-            result = await provider.editImage(providerParams);
-          } else {
-            throw new Error('This model does not support image editing');
-          }
-          break;
-        case 'audio':
-          if (provider.generateAudio) {
-            result = await provider.generateAudio(providerParams);
-          } else {
-            throw new Error('This model does not support music generation');
-          }
-          break;
-        default:
-          throw new Error(`Unknown generation type: ${request.type}`);
+      let result: ProviderResponse;
+      if (run.kie) {
+        // KIE first; its fallback only when KIE never took the order (kie-fallback.ts).
+        const kie = run.kie;
+        const settings = kie.preRouted ? null : await loadFallbackSettings();
+        const outcome = await routeKieOrder<ModelWithProvider>({
+          kie: kie.preRouted ? null : () => attempt(model, run.account, false),
+          unavailable: kie.preRouted?.reason,
+          enabled: kie.preRouted !== null || settings?.enabled === true,
+          pick: async () => {
+            const picked = kie.preRouted
+              ? { model: kie.preRouted.model, account: run.account }
+              : await pickFallback(model.modelId, kie.order, settings?.map ?? {});
+            return picked ? { target: picked.model, run: () => attempt(picked.model, picked.account, true) } : null;
+          },
+        });
+        result = outcome.result;
+        if (outcome.via === 'fallback') {
+          route = orderRoute(outcome.target, outcome.reason);
+          raiseAlert({
+            type: 'kie-fallback',
+            key: model.modelId,
+            level: 'warning',
+            title: 'KIE.ai รับงานไม่ได้ — ระบบสลับไปใช้โมเดลสำรอง',
+            lines: [
+              `${model.name} → ${outcome.target.name} (${outcome.target.provider.name})`,
+              `สาเหตุ: ${outcome.reason}`,
+              result.success ? 'ส่งงานให้ลูกค้าแล้ว ในราคาเดิมของ KIE' : 'โมเดลสำรองก็ทำไม่สำเร็จ — คืนเครดิตให้ลูกค้าแล้ว',
+            ],
+            path: '/admin/kie',
+          });
+        }
+      } else {
+        result = await attempt(model, run.account, false);
       }
+      // Where a fallback ran the order, the order says so, and its key is the one that served it.
+      const routed = route
+        ? { params: { ...(request.params ?? {}), route } as unknown as Prisma.InputJsonValue, accountPoolId: served.account.id }
+        : {};
 
       // 7. Record result — what the vendor says the order cost when it says
       // (KIE's creditsConsumed), else the row's list price.
-      const costUsd = result.costUsd ?? Number(model.costPerUnit);
-
-      await prisma.aiUsageLog.create({
-        data: {
-          accountPoolId: account.id,
-          modelId: model.modelId,
-          action: request.type,
-          status: result.success ? 'success' : 'error',
-          costUsd: result.success ? costUsd : 0,
-          responseMs: result.processingMs,
-          errorMessage: result.error,
-        },
-      });
-
       if (result.success) {
-        await AccountPoolManager.recordSuccess(account.id, costUsd);
+        const costUsd = result.costUsd ?? Number(served.model.costPerUnit);
+        await AccountPoolManager.recordSuccess(served.account.id, costUsd);
 
         // Persist provider output to durable R2 storage. Provider URLs expire and
         // base64 results shouldn't live in the DB long-term. persistAssetSafe is a
@@ -650,6 +767,7 @@ export class GenerationService {
             costUsd,
             processingMs: result.processingMs,
             completedAt: new Date(),
+            ...routed,
           },
         });
         if (settled.count === 0) {
@@ -663,8 +781,9 @@ export class GenerationService {
         // already promised.
         const { RetentionService, daysUntil } = await import('./retention');
         await RetentionService.stampExpiry(generation.id);
-        // A model that just delivered is proven, whatever we believed before.
-        await ModelReadiness.recordSuccess(model.id);
+        // A model that just delivered is proven, whatever we believed before —
+        // the row that rendered it: a fallback's delivery proves nothing about KIE's.
+        await ModelReadiness.recordSuccess(served.model.id);
         const stamped = await prisma.aiGeneration.findUnique({
           where: { id: generation.id },
           select: { expiresAt: true },
@@ -682,33 +801,7 @@ export class GenerationService {
           daysLeft: daysUntil(stamped?.expiresAt),
         };
       } else {
-        // Provider returned a failure — record it against the account (with
-        // rate-limit-aware cooldown) so the pool can rotate/auto-disable, then
-        // refund the user.
-        // A refused prompt or a failed render is the order's, not the key's
-        // (ProviderResponse.orderFault): counted, a few of them would disable
-        // the one key every KIE model shares.
-        if (result.orderFault !== true) {
-          await AccountPoolManager.recordError(
-            account.id,
-            result.error || 'Generation failed',
-            this.isRateLimitError(result.error)
-          );
-        }
-        if (model.provider.slug === 'kie' && /^KIE 402\b/.test(result.error ?? '')) {
-          raiseAlert({
-            type: 'kie-balance',
-            key: String(account.id),
-            level: 'critical',
-            title: 'เครดิต KIE.ai หมด — ลูกค้าสั่งงานโมเดล KIE ไม่ได้',
-            lines: [
-              `ลูกค้าเพิ่งสั่ง ${model.name} ไม่สำเร็จ (คืนเครดิตแล้ว)`,
-              'เติมเครดิตที่ kie.ai แล้วกด "ทดสอบคีย์" ที่การ์ด KIE.ai หน้า ผู้ให้บริการ',
-              'ถ้าคีย์ถูกปิดอัตโนมัติไปแล้ว ให้วางคีย์เดิมอีกครั้งแล้วกด "บันทึกคีย์ + สร้างโมเดล" — ระบบจะเปิดคีย์นั้นกลับมา',
-            ],
-            path: '/admin/providers',
-          });
-        }
+        // The failure was counted against its key in `attempt`; refund the user.
         await this.refundCredits(userId, requiredCredits, generation.id);
 
         await prisma.aiGeneration.updateMany({
@@ -717,6 +810,7 @@ export class GenerationService {
             status: 'failed',
             errorMessage: result.error,
             completedAt: new Date(),
+            ...routed,
           },
         });
 
@@ -730,7 +824,7 @@ export class GenerationService {
     } catch (error) {
       // Record error and refund
       const message = (error as Error).message;
-      await AccountPoolManager.recordError(account.id, message, this.isRateLimitError(message));
+      await AccountPoolManager.recordError(served.account.id, message, this.isRateLimitError(message));
       await this.refundCredits(userId, requiredCredits, generation.id);
 
       await prisma.aiGeneration.updateMany({
@@ -748,6 +842,67 @@ export class GenerationService {
         creditsUsed: 0,
         error: (error as Error).message,
       };
+    }
+  }
+
+  /**
+   * One provider call for an order: the row it runs on decides the model id,
+   * the size and length limits; a fallback row gets the order's params as a
+   * studio order on it would carry them (fallbackParams) and its own wait.
+   */
+  private static async callProvider(
+    target: ModelWithProvider,
+    account: PoolAccount,
+    run: ApiOrderRun,
+    viaFallback: boolean
+  ): Promise<ProviderResponse> {
+    const { request, styleSuffix } = run;
+    const references = request.referenceImages ?? [];
+    const provider = getProvider(target.provider.slug as ProviderSlug);
+    if (!provider) {
+      throw new Error(`Provider adapter not found: ${target.provider.slug}`);
+    }
+
+    const providerParams = {
+      modelId: target.modelId,
+      prompt: request.prompt + styleSuffix,
+      negativePrompt: request.negativePrompt,
+      width: request.params?.width || target.maxWidth || 1024,
+      height: request.params?.height || target.maxHeight || 1024,
+      steps: request.params?.steps,
+      cfgScale: request.params?.cfgScale,
+      seed: request.params?.seed,
+      duration: request.params?.duration || target.maxDuration || undefined,
+      maxDuration: target.maxDuration ?? undefined,
+      fps: request.params?.fps,
+      aspectRatio: request.params?.aspectRatio,
+      // KIE priced one output; its fallback delivers one.
+      numOutputs: viaFallback ? 1 : request.params?.numOutputs || 1,
+      inputImage: request.inputImage ?? references[0],
+      inputImageEnd: request.inputImageEnd,
+      referenceImages: references.length ? references : undefined,
+      inputAudio: request.inputAudio,
+      inputVideo: request.inputVideo,
+      apiKey: account.apiKey,
+      apiSecret: account.apiSecret,
+      apiEndpoint: account.apiEndpoint,
+      extraParams: (viaFallback ? fallbackParams(request.params) : request.params) as Record<string, unknown>,
+      maxWaitSeconds: viaFallback ? apiVideoLipsyncRule(target.modelId)?.maxWaitSeconds : run.maxWaitSeconds,
+    };
+
+    switch (request.type) {
+      case 'image':
+        return provider.generateImage(providerParams);
+      case 'video':
+        return provider.generateVideo(providerParams);
+      case 'edit':
+        if (!provider.editImage) throw new Error('This model does not support image editing');
+        return provider.editImage(providerParams);
+      case 'audio':
+        if (!provider.generateAudio) throw new Error('This model does not support music generation');
+        return provider.generateAudio(providerParams);
+      default:
+        throw new Error(`Unknown generation type: ${request.type}`);
     }
   }
 
@@ -829,9 +984,9 @@ export class GenerationService {
    * Thai refusal when there is none, it cannot be read, or its headers do not
    * say (the order is then refused, never priced on a guess).
    */
-  private static async clipFacts(source: string | undefined): Promise<ClipFacts> {
+  private static async clipFacts(source: string | undefined, missing: string): Promise<ClipFacts> {
     if (!isAcceptedVideoSource(source)) {
-      throw new OrderRefusedError('ต้องอัปโหลดคลิปต้นฉบับที่จะพากย์ทับก่อน', 'missing-video', 422);
+      throw new OrderRefusedError(missing, 'missing-video', 422);
     }
     let opened: Awaited<ReturnType<typeof openVideoSource>>;
     try {

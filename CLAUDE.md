@@ -138,6 +138,45 @@ against the free `/api/v1/chat/credit` → encrypted pool row, daily quota 0 →
   KIE model shares. 401/402 do count; 402 raises `kie-balance`. Re-pasting the
   same key reactivates it.
 - Inputs: our R2 https URLs as they are; data: URIs go through KIE's base64 upload.
+  GenerationService refuses any other URL before charging (`isAcceptedFrameSource`).
+  The studio polls KIE orders for 35 min, not 4 (`slowApi`).
+- **Speech** (studio tab เสียงพูด, MCP `generate_speech`; rows category `audio`,
+  subcategory `speech`): ElevenLabs v3 and Gemini TTS. `KieEntry.speech` holds the
+  voices (the adapter maps an unknown id to the entry's default), `maxChars`,
+  `style` (Gemini's spoken-style line, ≤ 300, content-gated) and `tags`
+  (ElevenLabs' `[laughs]`…). Priced by `perChars`: the table's `'1'` is per
+  `perChars` characters, charged pro rata on `speechChars` (code points of the
+  trimmed text), at least 1. Empty or over-long text is refused before charging.
+  ElevenLabs v2/Turbo are not offered: they do not speak Thai.
+- **Clip tools** on the video tab (modes เลียนท่าทาง / ขยายวิดีโอ, subcategory
+  `motion` / `video-upscale`): `sourceClip` is a `ClipRule` checked on the stored
+  file (`video-probe`) before charging, priced per whole second of the clip
+  (`perSecond`); motion `needsImage` (the character). MCP does not offer them.
+  `/api/upscale` (pictures) must keep skipping `category: 'video'` — "Topaz Video
+  Upscale" matches its name search.
+- **KIE first, the account pool only when KIE cannot take the order**
+  (`kie-fallback.ts` pure + tests, `services/kie-route.ts`, `runApiOrder`).
+  `ProviderResponse.retryElsewhere` = KIE never took it: createTask refused with
+  401/402/403/429/455/5xx/505, or the request never reached KIE. Anything after a
+  task was accepted (fail state, timeout, no output) and any 422/refused prompt
+  stays an order fault — refunded, never moved, or a slow KIE render could run
+  twice. The fallback list per model is `KIE_FALLBACKS` (`<provider slug>:<model_id>`),
+  overridden per model by `ai_settings.kie_fallback_map` (an empty list = none);
+  `kie_fallback_enabled` (default on) is the switch. A candidate must pass
+  `whyNotFallback` (same category and shaped subcategory, active, `ready`,
+  references/frames/length/lip-sync rules, an account in its pool) — speech,
+  music and the clip tools have none. With no usable KIE key the order is routed
+  *before* charging; otherwise after KIE refused. The customer pays the KIE quote
+  either way, one settle; `fallbackParams` strips KIE-only params (fal copies
+  `extraParams` into its body). The serving route is stored in `params.route`
+  (never sent to customers), the usage log carries `metadata.route`, and the
+  `kie-fallback` alert fires (per model, hourly). `/api/models` keeps a KIE model
+  orderable while its key is out but a fallback can serve it.
+- **Admin → KIE.ai (หลัก)** (`/admin/kie`, `/api/admin/kie`): masked key, replace
+  (checked against the credit endpoint, stored encrypted), re-check, live
+  balance, 402 banner, today/month per model, failures, fallback log, the
+  switch, the per-model fallback editor, on/off. "สั่งทดสอบ" opens
+  `/generate?model=<id>` — the studio selects that model and its tab.
 - Not yet exercised against the live API (no key on 2026-10-29): input field
   names come from docs.kie.ai — a family that 422s needs its `build()` fixed.
 

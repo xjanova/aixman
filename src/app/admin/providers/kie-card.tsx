@@ -51,7 +51,7 @@ const inputStyle: React.CSSProperties = {
   fontSize: 13, fontFamily: "ui-monospace, monospace", letterSpacing: "0.04em", outline: "none",
 };
 
-export function KieCard({ onChanged }: { onChanged: () => void }) {
+export function KieCard({ onChanged, onKiePage = false }: { onChanged: () => void; onKiePage?: boolean }) {
   const [status, setStatus] = useState<KieStatus | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [openNow, setOpenNow] = useState(false);
@@ -113,6 +113,12 @@ export function KieCard({ onChanged }: { onChanged: () => void }) {
           {status === null
             ? "กำลังโหลด…"
             : `คีย์ที่ใช้งาน ${activeKeys} · โมเดล ${status.models.total}/${status.catalog} · พร้อมขาย ${status.models.ready} · รอทดสอบ ${status.models.tuning}`}
+          {!onKiePage && (
+            <>
+              {" · "}
+              <a href="/admin/kie" style={{ color: "#a5f3fc" }}>หน้าจัดการ KIE →</a>
+            </>
+          )}
         </div>
       </div>
       <p style={{ fontSize: 13, color: "rgba(203,213,225,0.75)", lineHeight: 1.6, margin: "10px 0 14px" }}>

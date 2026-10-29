@@ -91,9 +91,10 @@ export async function syncKieModels(opts: { openNow?: boolean; markup?: number }
     const table = kiePriceTable(entry, basis);
     const tier = pickKieTier(table, undefined);
     // The row's own price: the default tier at the shortest length (per
-    // second for a voice- or clip-length model) — what the list shows "from".
-    const creditsPerUnit = kieQuote(table, {});
-    const costPerUnit = Math.round(entry.usd(tier.id, entry.durations?.[0] ?? 1) * 1e6) / 1e6;
+    // second for a voice- or clip-length model, per thousand characters for
+    // speech) — what the list shows "from".
+    const creditsPerUnit = kieQuote(table, entry.perChars ? { chars: entry.perChars } : {});
+    const costPerUnit = Math.round(entry.usd(tier.id, entry.perChars ?? entry.durations?.[0] ?? 1) * 1e6) / 1e6;
     // An admin's own keys in defaultParams (e.g. a lower maxReferenceImages) stay.
     const prior = existing.get(entry.key);
     const kept = prior && typeof prior === 'object' && !Array.isArray(prior) ? { ...(prior as Record<string, unknown>) } : {};

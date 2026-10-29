@@ -35,6 +35,13 @@ const CREATE_ATTEMPTS = 3;
 const ORDER_FAULT_CODES = new Set([400, 404, 413, 422, 433, 455, 500, 501, 505]);
 /** Status-read answers that mean "ask again", not "the task is gone". */
 const RETRY_CODES = new Set([429, 455, 500, 502, 503, 504]);
+/**
+ * createTask refusals that are KIE's or the account's, not the order's: no
+ * credit, key refused, rate limit after the retries, maintenance or an
+ * outage, the model switched off. Nothing was queued, so another provider may
+ * take the order (`retryElsewhere`). A refused prompt (400, 422) is not here.
+ */
+const ELSEWHERE_CODES = new Set([401, 402, 403, 429, 455, 500, 502, 503, 504, 505]);
 
 type Created = { ok: true; taskId: string } | { ok: false; response: ProviderResponse };
 
@@ -90,17 +97,31 @@ export class KieProvider extends BaseProvider {
       // A picture or voice KIE cannot take is the order's problem, not the key's.
       return { success: false, error: `KIE input refused: ${(error as Error).message}`, orderFault: true };
     }
+    let task: KieTask;
     try {
-      const created = await this.createTask(params.apiKey, entry.build(order));
-      if (!created.ok) return created.response;
+      task = entry.build(order);
+    } catch (error) {
+      return { success: false, error: `KIE order not built: ${(error as Error).message}`, orderFault: true };
+    }
+    let created: Created;
+    try {
+      created = await this.createTask(params.apiKey, task);
+    } catch (error) {
+      // KIE could not be reached to take the order. (A create that timed out
+      // after KIE accepted it may still render — the known, accepted case.)
+      return { success: false, error: `KIE request failed: ${(error as Error).message}`, retryElsewhere: true };
+    }
+    if (!created.ok) return created.response;
+    const taskId = created.taskId;
+    try {
       const result = await this.pollForResult(
-        () => this.readTask(params.apiKey, created.taskId, started),
+        () => this.readTask(params.apiKey, taskId, started),
         pollAttempts(params.maxWaitSeconds ?? entry.maxWaitSeconds, this.pollIntervalMs),
         this.pollIntervalMs
       );
       // Out of patience is not the key's fault either.
       if (!result.success && /^Polling timeout/.test(result.error ?? '')) {
-        return { success: false, error: `KIE task ${created.taskId} timed out`, orderFault: true };
+        return { success: false, error: `KIE task ${taskId} timed out`, orderFault: true };
       }
       return result;
     } catch (error) {
@@ -129,6 +150,9 @@ export class KieProvider extends BaseProvider {
       entry.lastFrame && image && params.inputImageEnd ? await this.fetchable(params.inputImageEnd, params.apiKey) : undefined;
 
     const music = entry.music ? sanitizeMusicParams(extra.music) : undefined;
+    // Only one of the entry's own voices reaches KIE; anything else is its default.
+    const voice = entry.speech ? (entry.speech.voices.find((v) => v.id === extra.voice) ?? entry.speech.voices[0]).id : undefined;
+    const style = entry.speech?.style && typeof extra.speechStyle === 'string' ? extra.speechStyle.trim().slice(0, 300) : '';
     return {
       prompt: params.prompt ?? '',
       negativePrompt: params.negativePrompt,
@@ -144,6 +168,8 @@ export class KieProvider extends BaseProvider {
       lyrics: typeof extra.lyrics === 'string' ? extra.lyrics : undefined,
       musicTags: entry.music ? composeMusicTags(params.prompt ?? '', music) : undefined,
       instrumental: music?.instrumental === true,
+      voice,
+      speechStyle: style || undefined,
     };
   }
 
@@ -197,7 +223,8 @@ export class KieProvider extends BaseProvider {
         await new Promise((r) => setTimeout(r, this.retryDelayMs * attempt));
         continue;
       }
-      return { ok: false, response: failure(code, describe(body?.msg)) };
+      const refused = failure(code, describe(body?.msg));
+      return { ok: false, response: ELSEWHERE_CODES.has(code) ? { ...refused, retryElsewhere: true } : refused };
     }
   }
 

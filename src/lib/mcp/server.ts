@@ -1,5 +1,7 @@
 import prisma from '@/lib/db';
 import { ApiError, chatCompletion, listModels, type ApiCaller } from '@/lib/llm/gateway';
+import { getKieEntry } from '@/lib/providers/kie-catalog';
+import { kieQuote, readKiePriceTable, speechChars } from '@/lib/providers/kie-pricing';
 import { publicProvider } from '@/lib/public-provider';
 import { ModelReadiness } from '@/lib/services/model-readiness';
 import { isOrderRefused } from '@/lib/services/order-refusal';
@@ -9,8 +11,8 @@ import type { GenerationRequest, GenerationType } from '@/types';
 
 /**
  * aixman as an MCP server: Claude Code, Claude Desktop, Cursor and any other
- * MCP client can make images, videos and music, follow them, and call our
- * language models, with the customer's own API key and credits.
+ * MCP client can make images, videos, music and speech, follow them, and call
+ * our language models, with the customer's own API key and credits.
  *
  * Every tool goes through what the website uses — GenerationService for
  * renders (same content gate, readiness, prices, refunds), the /api/v1 gateway
@@ -49,12 +51,28 @@ const ASPECTS: Record<string, { w: number; h: number }> = {
 };
 const ASPECT_ENUM = Object.keys(ASPECTS);
 
+/**
+ * What the render tools order, as list_models names it. Music and speech are
+ * both 'audio' rows; the subcategory tells them apart.
+ */
+type Kind = 'image' | 'video' | 'audio' | 'speech';
+const KINDS: Kind[] = ['image', 'video', 'audio', 'speech'];
+
+/** A row's kind, or null for one no tool here can feed: lip-sync and the clip tools want a clip. */
+function kindOf(row: { category: string; subcategory: string | null }): Kind | null {
+  const sub = row.subcategory ?? '';
+  if (sub.startsWith('lipsync') || sub === 'motion' || sub === 'video-upscale') return null;
+  if (row.category === 'audio') return sub === 'speech' ? 'speech' : 'audio';
+  return row.category === 'image' || row.category === 'video' ? row.category : null;
+}
+
 export const TOOLS: ToolDef[] = [
   {
     name: 'list_models',
     title: 'List models',
-    description: 'Models you can use, with their price in credits. kind: image | video | audio | text (language models for `chat`). Omit for all.',
-    inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: ['image', 'video', 'audio', 'text'] } } },
+    description:
+      'Models you can use, with their price in credits. kind: image | video | audio (music) | speech (text to speech: voices and character limit) | text (language models for `chat`). Omit for all.',
+    inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: [...KINDS, 'text'] } } },
     annotations: { readOnlyHint: true },
   },
   {
@@ -112,6 +130,22 @@ export const TOOLS: ToolDef[] = [
         lyrics: { type: 'string', maxLength: 3000 },
         model: { type: 'string', description: 'A model id from list_models (kind audio).' },
         duration: { type: 'integer', minimum: 10, maximum: 300 },
+      },
+    },
+  },
+  {
+    name: 'generate_speech',
+    title: 'Text to speech',
+    description:
+      "Read a text aloud (Thai or English) in one of a model's voices. Spends credits by the text's length (per 1,000 characters, pro rata). list_models kind speech gives each model's voices and character limit. Follow with get_generation.",
+    inputSchema: {
+      type: 'object',
+      required: ['text'],
+      properties: {
+        text: { type: 'string', maxLength: 10000, description: 'What to say. ElevenLabs reads tags like [laughs] or [whispers] as delivery, not words.' },
+        model: { type: 'string', description: 'A model id from list_models (kind speech). Default: the featured one.' },
+        voice: { type: 'string', description: "A voice id from that model's `voices`. Default: its first." },
+        style: { type: 'string', maxLength: 300, description: 'How to speak (e.g. "slow, warm, like a bedtime story") — only models with takes_style.' },
       },
     },
   },
@@ -192,21 +226,25 @@ async function isAdminUser(userId: number): Promise<boolean> {
   return user?.role === 'admin' || user?.role === 'super_admin';
 }
 
-/** A model the caller may order, by its id or name, or the featured one of a kind. */
-async function pickModel(category: 'image' | 'video' | 'audio', wanted: string | undefined, admin: boolean) {
+/**
+ * A model the caller may order, by its id or name, or the featured one of a
+ * kind. Speech rows are kept out of music (a featured voice model would read
+ * the song's style aloud) and the clip tools out of video.
+ */
+async function pickModel(kind: Kind, wanted: string | undefined, admin: boolean) {
   const rows = await prisma.aiModel.findMany({
-    where: { category, isActive: true, provider: { isActive: true } },
+    where: { category: kind === 'speech' ? 'audio' : kind, isActive: true, provider: { isActive: true } },
     orderBy: [{ isFeatured: 'desc' }, { sortOrder: 'asc' }, { id: 'asc' }],
     include: { provider: { select: { name: true, slug: true, logo: true } } },
   });
-  const orderable = rows.filter((r) => ModelReadiness.canOrder(r.readiness, admin) && r.subcategory?.startsWith('lipsync') !== true);
+  const orderable = rows.filter((r) => ModelReadiness.canOrder(r.readiness, admin) && kindOf(r) === kind);
   if (!wanted) {
-    if (orderable.length === 0) throw new McpToolError(`No ${category} model is available right now.`);
+    if (orderable.length === 0) throw new McpToolError(`No ${kind} model is available right now.`);
     return orderable[0];
   }
   const w = wanted.trim().toLowerCase();
   const found = orderable.find((r) => r.modelId.toLowerCase() === w || String(r.id) === w || r.name.toLowerCase() === w);
-  if (!found) throw new McpToolError(`No ${category} model "${wanted}" is available. Call list_models with kind "${category}".`);
+  if (!found) throw new McpToolError(`No ${kind} model "${wanted}" is available. Call list_models with kind "${kind}".`);
   return found;
 }
 
@@ -264,14 +302,46 @@ async function generate(caller: ApiCaller, type: GenerationType, category: 'imag
     inputImageEnd: ownUrl(args, 'last_frame_url'),
   };
   if (request.inputImageEnd && !request.inputImage) throw new McpToolError('`last_frame_url` needs `first_frame_url` too.');
+  return order(caller, model.modelId, request, admin);
+}
 
+/** A text read aloud: checked against the model's own voices and limit before anything is charged. */
+async function speak(caller: ApiCaller, args: Json): Promise<Json> {
+  const text = str(args, 'text', true)!;
+  const admin = await isAdminUser(caller.userId);
+  const model = await pickModel('speech', str(args, 'model'), admin);
+  const speech = model.provider.slug === 'kie' ? getKieEntry(model.modelId)?.speech : undefined;
+  if (!speech) throw new McpToolError(`"${model.modelId}" cannot read text aloud. Call list_models with kind "speech".`);
+  const chars = speechChars(text);
+  if (chars === 0) throw new McpToolError('`text` is empty.');
+  if (chars > speech.maxChars) {
+    throw new McpToolError(`\`text\` is ${chars} characters; ${model.modelId} reads at most ${speech.maxChars} per order. Split it.`);
+  }
+  const voice = str(args, 'voice');
+  if (voice && !speech.voices.some((v) => v.id === voice)) {
+    throw new McpToolError(`Unknown voice "${voice}" for ${model.modelId}. Voices: ${speech.voices.map((v) => v.id).join(', ')}.`);
+  }
+  const style = str(args, 'style')?.trim();
+  if (style && !speech.style) throw new McpToolError(`${model.modelId} takes no \`style\`; leave it out or pick a model with takes_style.`);
+  if (style && style.length > 300) throw new McpToolError('`style` must be under 300 characters.');
+  const request: GenerationRequest = {
+    modelId: model.id,
+    type: 'audio',
+    prompt: text,
+    params: { voice: voice ?? speech.voices[0].id, ...(style ? { speechStyle: style } : {}) },
+  };
+  return order(caller, model.modelId, request, admin);
+}
+
+/** The order itself, through the studio's own path, and its outcome as the caller sees it. */
+async function order(caller: ApiCaller, modelId: string, request: GenerationRequest, admin: boolean): Promise<Json> {
   // Lazily: the service pulls in Next's request helpers.
   const { GenerationService } = await import('@/lib/services/generation');
   try {
     const result = await GenerationService.generate(caller.userId, request, { isAdmin: admin });
     return {
       id: result.id,
-      model: model.modelId,
+      model: modelId,
       status: result.status,
       credits_used: result.creditsUsed,
       result_urls: result.resultUrls ?? (result.resultUrl ? [result.resultUrl] : []),
@@ -296,26 +366,44 @@ async function callTool(caller: ApiCaller, name: string, args: Json): Promise<Js
       const admin = await isAdminUser(caller.userId);
       const out: Json[] = [];
       if (!kind || kind !== 'text') {
+        if (kind && !(KINDS as string[]).includes(kind)) {
+          throw new McpToolError(`\`kind\` must be one of ${[...KINDS, 'text'].join(', ')}.`);
+        }
         const rows = await prisma.aiModel.findMany({
           where: {
             isActive: true,
             provider: { isActive: true },
-            category: kind ? kind : { in: ['image', 'video', 'audio'] },
+            category: kind ? (kind === 'speech' ? 'audio' : kind) : { in: ['image', 'video', 'audio'] },
           },
           orderBy: [{ category: 'asc' }, { isFeatured: 'desc' }, { sortOrder: 'asc' }],
           include: { provider: { select: { name: true, slug: true, logo: true } } },
         });
         for (const r of rows) {
-          if (!ModelReadiness.canOrder(r.readiness, admin) || r.subcategory?.startsWith('lipsync')) continue;
+          const rowKind = kindOf(r);
+          if (!ModelReadiness.canOrder(r.readiness, admin) || !rowKind || (kind && rowKind !== kind)) continue;
+          const speech = rowKind === 'speech' && r.provider.slug === 'kie' ? getKieEntry(r.modelId)?.speech : undefined;
+          if (rowKind === 'speech' && !speech) continue;
+          const table = speech ? readKiePriceTable(r.defaultParams) : null;
           out.push({
             id: r.modelId,
-            kind: r.category,
+            kind: rowKind,
             name: r.name,
             provider: publicProvider(r.provider).name,
             description: r.description,
-            credits: r.creditsPerUnit,
-            unit: r.category === 'image' ? 'per image' : r.category === 'video' ? 'base clip (longer costs more)' : 'per song',
-            ...(r.maxDuration ? { max_duration_seconds: r.maxDuration } : {}),
+            credits: table ? kieQuote(table, { chars: 1000 }) : r.creditsPerUnit,
+            unit:
+              rowKind === 'image' ? 'per image'
+                : rowKind === 'video' ? 'base clip (longer costs more)'
+                  : rowKind === 'speech' ? 'per 1,000 characters (charged pro rata, at least 1)'
+                    : 'per song',
+            ...(r.maxDuration && rowKind !== 'speech' ? { max_duration_seconds: r.maxDuration } : {}),
+            ...(speech
+              ? {
+                  max_characters: speech.maxChars,
+                  takes_style: speech.style === true,
+                  voices: speech.voices.map((v) => ({ id: v.id, name: v.label, gender: v.gender })),
+                }
+              : {}),
           });
         }
       }
@@ -338,6 +426,8 @@ async function callTool(caller: ApiCaller, name: string, args: Json): Promise<Js
       return generate(caller, 'video', 'video', args);
     case 'generate_music':
       return generate(caller, 'audio', 'audio', args);
+    case 'generate_speech':
+      return speak(caller, args);
 
     case 'get_generation': {
       const id = int(args, 'id', 1, Number.MAX_SAFE_INTEGER);
@@ -430,7 +520,7 @@ export async function handleRpc(caller: ApiCaller, msg: RpcRequest): Promise<Jso
         capabilities: { tools: { listChanged: false } },
         serverInfo: SERVER_INFO,
         instructions:
-          'XDREAMER (ai.xman4289.com): make images, videos and music, and call language models, paid from your AI credits. ' +
+          'XDREAMER (ai.xman4289.com): make images, videos, music and speech, and call language models, paid from your AI credits. ' +
           'Renders return an id at once; follow them with get_generation (wait_seconds 45) until completed. ' +
           'Use a generated image URL as first_frame_url to animate it. Prompts may be Thai or English.',
       });

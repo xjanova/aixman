@@ -15,13 +15,14 @@ function remixParams(params: unknown): Record<string, unknown> | null {
   if (!params || typeof params !== 'object' || Array.isArray(params)) return null;
   const p = params as Record<string, unknown>;
   const out: Record<string, unknown> = {};
-  for (const key of ['aspectRatio', 'resolution', 'quality'] as const) {
+  for (const key of ['aspectRatio', 'resolution', 'quality', 'voice'] as const) {
     if (typeof p[key] === 'string' && (p[key] as string).length <= 40) out[key] = p[key];
   }
   for (const key of ['width', 'height', 'duration', 'numOutputs', 'steps', 'cfgScale', 'strength'] as const) {
     if (typeof p[key] === 'number' && Number.isFinite(p[key])) out[key] = p[key];
   }
   if (typeof p.lyrics === 'string') out.lyrics = p.lyrics.slice(0, 3000);
+  if (typeof p.speechStyle === 'string') out.speechStyle = p.speechStyle.slice(0, 300);
   // Already sanitised to known ids when the order was stored (music-style.ts).
   if (p.music && typeof p.music === 'object' && !Array.isArray(p.music)) out.music = p.music;
   return Object.keys(out).length > 0 ? out : null;

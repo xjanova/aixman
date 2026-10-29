@@ -17,7 +17,7 @@ import { Code, Tabs } from "./parts";
 export const metadata: Metadata = {
   title: "คู่มือนักพัฒนา — API และ MCP | X-DREAMER",
   description:
-    "เชื่อม X-DREAMER เข้ากับโค้ดและผู้ช่วย AI ของคุณ: API โมเดลภาษาแบบ OpenAI/Anthropic, MCP สำหรับสร้างภาพ วิดีโอ เพลง และวิธีต่อกับ Claude Code, Cursor, BrainX, CluadeX",
+    "เชื่อม X-DREAMER เข้ากับโค้ดและผู้ช่วย AI ของคุณ: API โมเดลภาษาแบบ OpenAI/Anthropic, MCP สำหรับสร้างภาพ วิดีโอ เพลง เสียงพูด และวิธีต่อกับ Claude Code, Cursor, BrainX, CluadeX",
 };
 
 /** Production address: the guide is read by people pasting it into their tools. */
@@ -240,7 +240,7 @@ export default function DocsPage() {
         eyebrow="· คู่มือนักพัฒนา"
         title="API และ MCP"
         emphasis="ของ X-DREAMER"
-        sub="ต่อโค้ด แอป และผู้ช่วย AI ของคุณเข้ากับโมเดลภาษา และเครื่องมือสร้างภาพ วิดีโอ เพลง — คีย์เดียว เครดิตเดียว"
+        sub="ต่อโค้ด แอป และผู้ช่วย AI ของคุณเข้ากับโมเดลภาษา และเครื่องมือสร้างภาพ วิดีโอ เพลง เสียงพูด — คีย์เดียว เครดิตเดียว"
         hue={190}
       >
         <div className="docs-hero-cta">
@@ -270,7 +270,7 @@ export default function DocsPage() {
           <div className="docs-cards">
             {[
               { k: "API", t: "โมเดลภาษา", d: "รูปแบบ OpenAI และ Anthropic — ใช้ไลบรารีเดิมได้ เปลี่ยนแค่ base URL", href: "#api" },
-              { k: "MCP", t: "สร้างภาพ วิดีโอ เพลง", d: "ให้ Claude, Cursor หรือ BrainX สั่งงานสตูดิโอของเราเองได้", href: "#mcp" },
+              { k: "MCP", t: "สร้างภาพ วิดีโอ เพลง เสียงพูด", d: "ให้ Claude, Cursor หรือ BrainX สั่งงานสตูดิโอของเราเองได้", href: "#mcp" },
               { k: "✦", t: "คิดเงินเป็นเครดิต", d: "จ่ายตามจริงต่อ token / ต่องาน · ตั้งเพดานต่อคีย์ได้", href: "#billing" },
             ].map((c) => (
               <a key={c.k} href={c.href} className="docs-card">
@@ -325,7 +325,7 @@ export default function DocsPage() {
                 [<C key="m">POST</C>, <C key="p">/api/v1/chat/completions</C>, "แชต — รูปแบบ OpenAI รองรับ stream, tools / function calling"],
                 [<C key="m">POST</C>, <C key="p">/api/v1/messages</C>, "แชต — รูปแบบ Anthropic (สำหรับ Claude Code และ Anthropic SDK)"],
                 [<C key="m">POST</C>, <C key="p">/api/v1/messages/count_tokens</C>, "ประมาณจำนวน token ของคำขอ (ไม่คิดเงิน)"],
-                [<C key="m">POST</C>, <C key="p">/api/mcp</C>, "MCP server — เครื่องมือสร้างภาพ วิดีโอ เพลง (ดูหัวข้อ MCP)"],
+                [<C key="m">POST</C>, <C key="p">/api/mcp</C>, "MCP server — เครื่องมือสร้างภาพ วิดีโอ เพลง เสียงพูด (ดูหัวข้อ MCP)"],
               ]}
             />
             <Tabs
@@ -368,7 +368,7 @@ export default function DocsPage() {
           <Section id="mcp" eyebrow="MCP" title="MCP คืออะไร">
             <P>
               Model Context Protocol คือมาตรฐานที่ให้ผู้ช่วย AI ใช้เครื่องมือภายนอกได้ เมื่อต่อ MCP ของเรา Claude, Cursor, BrainX หรือ CluadeX
-              จะสั่งสร้างภาพ วิดีโอ เพลง ตรวจสถานะงาน และถามโมเดลภาษาได้เอง โดยใช้คีย์และเครดิตเดียวกับ API
+              จะสั่งสร้างภาพ วิดีโอ เพลง เสียงพูด ตรวจสถานะงาน และถามโมเดลภาษาได้เอง โดยใช้คีย์และเครดิตเดียวกับ API
             </P>
             <Table
               head={["", ""]}
@@ -386,11 +386,12 @@ export default function DocsPage() {
             <Table
               head={["เครื่องมือ", "ทำอะไร", "พารามิเตอร์หลัก", "เครดิต"]}
               rows={[
-                [<C key="t">list_models</C>, "โมเดลที่ใช้ได้ พร้อมราคา", <span key="p"><C>kind</C>: image · video · audio · text</span>, "ฟรี"],
+                [<C key="t">list_models</C>, "โมเดลที่ใช้ได้ พร้อมราคา", <span key="p"><C>kind</C>: image · video · audio (เพลง) · speech (เสียงพูด: รายชื่อเสียงและจำนวนตัวอักษรสูงสุด) · text</span>, "ฟรี"],
                 [<C key="t">get_credits</C>, "ยอดเครดิตคงเหลือ", "—", "ฟรี"],
                 [<C key="t">generate_image</C>, "สร้างภาพจากข้อความ (ไทย/อังกฤษ)", <span key="p"><C>prompt</C>* <C>model</C> <C>aspect_ratio</C> <C>negative_prompt</C> <C>num_outputs</C> (1–4)</span>, "ตามโมเดล"],
                 [<C key="t">generate_video</C>, "สร้างวิดีโอ (หลายโมเดลมีเสียงในตัว) เริ่มจากภาพแรก/จบที่ภาพสุดท้ายได้", <span key="p"><C>prompt</C>* <C>model</C> <C>duration</C> <C>aspect_ratio</C> <C>resolution</C> <C>first_frame_url</C> <C>last_frame_url</C></span>, "ตามโมเดล/ความยาว"],
                 [<C key="t">generate_music</C>, "สร้างเพลงจากสไตล์ ใส่เนื้อร้องได้", <span key="p"><C>prompt</C>* <C>lyrics</C> <C>model</C> <C>duration</C> (10–300 วิ)</span>, "ตามโมเดล"],
+                [<C key="t">generate_speech</C>, "อ่านข้อความเป็นเสียงพูด (ไทย/อังกฤษ) เลือกเสียงได้ บางโมเดลกำหนดสไตล์การพูดได้", <span key="p"><C>text</C>* <C>model</C> <C>voice</C> <C>style</C></span>, "ต่อ 1,000 ตัวอักษร (คิดตามจริง)"],
                 [<C key="t">get_generation</C>, "สถานะและลิงก์ผลงาน รอให้เสร็จได้สูงสุด 45 วินาทีต่อครั้ง", <span key="p"><C>id</C>* <C>wait_seconds</C> (0–45)</span>, "ฟรี"],
                 [<C key="t">list_generations</C>, "งานล่าสุดของคุณ", <span key="p"><C>limit</C> (1–20)</span>, "ฟรี"],
                 [<C key="t">upload_image</C>, "อัปโหลดภาพ (PNG/JPEG/WebP base64) เพื่อใช้เป็นเฟรมของวิดีโอ", <span key="p"><C>data_base64</C>*</span>, "ฟรี"],
@@ -402,7 +403,7 @@ export default function DocsPage() {
 
           <Section id="workflow" eyebrow="MCP" title="ลำดับการทำงาน">
             <P>
-              งานสร้างภาพ/วิดีโอ/เพลงตอบกลับทันทีพร้อมเลข <C>id</C> (ตัดเครดิตตอนสั่ง ถ้างานล้มเหลวคืนเครดิตอัตโนมัติ) แล้วใช้{" "}
+              งานสร้างภาพ/วิดีโอ/เพลง/เสียงพูดตอบกลับทันทีพร้อมเลข <C>id</C> (ตัดเครดิตตอนสั่ง ถ้างานล้มเหลวคืนเครดิตอัตโนมัติ) แล้วใช้{" "}
               <C>get_generation</C> พร้อม <C>wait_seconds</C> รอผล — ภาพมักเสร็จในรอบแรก วิดีโอใช้เวลาหลายนาที
             </P>
             <Code lang="text" title="ตัวอย่างลำดับที่ผู้ช่วย AI ทำให้" code={WORKFLOW} />
@@ -507,6 +508,7 @@ export default function DocsPage() {
                 ["Cache", "ข้อความที่ส่งซ้ำ (เช่น ไฟล์เดิมในบทสนทนา) คิดราคา input แบบ cache ที่ถูกกว่า — ดูคอลัมน์ “Input ซ้ำ” ที่หน้า Developer"],
                 ["ช่วงลดราคา", "บางโมเดลมีช่วง off-peak ราคาถูกลง แสดงไว้ใต้ราคาในหน้า Developer (เวลาไทย)"],
                 ["งานภาพ/วิดีโอ/เพลง", "ราคาต่องานตาม list_models ตัดตอนสั่ง งานล้มเหลวคืนเครดิตอัตโนมัติ"],
+                ["เสียงพูด", "คิดตามจำนวนตัวอักษรของข้อความ (ราคาต่อ 1,000 ตัวอักษรใน list_models คิดตามสัดส่วน ขั้นต่ำ 1 เครดิต) ตัดตอนสั่ง"],
                 ["เพดานต่อคีย์", "ต่อวัน/ต่อเดือน (เวลากรุงเทพ) ตั้งได้ที่หน้า Developer"],
               ]}
             />

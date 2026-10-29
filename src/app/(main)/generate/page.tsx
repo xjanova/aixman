@@ -21,7 +21,7 @@ import Image from "next/image";
 import { useAppStore } from "@/lib/store/app-store";
 import { useToast } from "@/components/ui/toast-provider";
 import { creditsForDuration } from "@/lib/pricing";
-import { kieQuote } from "@/lib/providers/kie-pricing";
+import { kieQuote, speechChars } from "@/lib/providers/kie-pricing";
 import { voiceRenderSeconds } from "@/lib/voice-length";
 import {
   composeMusicTags,
@@ -66,7 +66,20 @@ import { shotHint, type ShotSpec } from "@/lib/camera-shots";
 
 const HUE = 70;
 
-type TabType = "image" | "video" | "edit" | "lipsync" | "audio";
+type TabType = "image" | "video" | "edit" | "lipsync" | "audio" | "speech";
+
+/**
+ * The video tab's modes. The last two are KIE's clip tools: each works on an
+ * uploaded clip rather than a description, and offers only its own models.
+ */
+type VideoMode = "t2v" | "i2v" | "motion" | "upscale";
+type VideoTool = "motion" | "upscale";
+const videoToolOf = (subcategory?: string | null): VideoTool | null =>
+  subcategory === "motion" ? "motion" : subcategory === "video-upscale" ? "upscale" : null;
+
+/** Text-to-speech rows are 'audio' on the server, like songs; the subcategory gives them their own tab. */
+const isSpeechModel = (m: { category: string; subcategory: string | null }) =>
+  m.category === "audio" && m.subcategory === "speech";
 
 /**
  * Lip-sync models are `category: 'video'` on the server — a clip is what comes
@@ -397,6 +410,8 @@ interface HistoryItem {
     strength?: number;
     lyrics?: string;
     music?: MusicStyleParams;
+    voice?: string;
+    speechStyle?: string;
   } | null;
   resultUrl?: string;
   thumbnailUrl?: string;
@@ -444,7 +459,9 @@ interface FormSnapshot {
   guidance: number;
   musicStyle: MusicStyleParams;
   instrumental: boolean;
-  videoMode: "t2v" | "i2v";
+  videoMode: VideoMode;
+  voiceId: string | null;
+  speechStyle: string;
   refs: RefPic[];
   trimSrc: TrimSource | null;
   trimSel: TrimRange | null;
@@ -484,9 +501,14 @@ function Pill({ active, children, onClick, disabled, title }: { active?: boolean
 }
 
 /** One numbered section of the composer: "01 โมเดล", with an optional note on the right. */
-function Field({ no, label, aside, children }: { no: string; label: string; aside?: string; children: React.ReactNode }) {
+function Field({ no, label, aside, hidden, children }: {
+  no: string; label: string; aside?: string;
+  /** Kept mounted but not shown — the prompt box on an upscale, which has nothing to describe. */
+  hidden?: boolean;
+  children: React.ReactNode;
+}) {
   return (
-    <div>
+    <div hidden={hidden}>
       <div className="rp-lbl"><i>{no}</i>{label}{aside && <span>{aside}</span>}</div>
       {children}
     </div>
@@ -836,14 +858,14 @@ const GENERATING_FRAME_MAX_H = "var(--gen-frame-h, min(460px, 44vh))";
 
 /** English names of the tabs — what `?tab=` and a saved draft are checked against. */
 const TAB_EN: Record<TabType, string> = {
-  image: "Image", video: "Video", edit: "Edit", lipsync: "Lip Sync", audio: "Music",
+  image: "Image", video: "Video", edit: "Edit", lipsync: "Lip Sync", audio: "Music", speech: "Speech",
 };
 
 /** The modes in the order the orb lists them and the composer counts them. */
-const TAB_ORDER: TabType[] = ["image", "video", "edit", "lipsync", "audio"];
+const TAB_ORDER: TabType[] = ["image", "video", "edit", "lipsync", "audio", "speech"];
 
 const TAB_LABEL: Record<TabType, string> = {
-  image: "สร้างภาพ", video: "สร้างวิดีโอ", edit: "แก้ไขภาพ", lipsync: "ลิปซิงค์", audio: "สร้างเพลง",
+  image: "สร้างภาพ", video: "สร้างวิดีโอ", edit: "แก้ไขภาพ", lipsync: "ลิปซิงค์", audio: "สร้างเพลง", speech: "เสียงพูด",
 };
 
 /**
@@ -859,6 +881,7 @@ const PICKER_TITLE: Record<TabType, string> = {
   edit: "เลือกโมเดลแก้ภาพ",
   lipsync: "เลือกโมเดลพากย์ทับคลิป",
   audio: "เลือกโมเดลเพลง",
+  speech: "เลือกโมเดลเสียงพูด",
 };
 
 const TAB_ICON: Record<TabType, string> = {
@@ -867,6 +890,7 @@ const TAB_ICON: Record<TabType, string> = {
   edit: "/studio/ic-edit-v1.webp",
   lipsync: "/studio/ic-lipsync-v1.webp",
   audio: "/studio/ic-music-v1.webp",
+  speech: "/studio/ic-speech-v1.webp",
 };
 /** Drawn in the same set; these two open pages of their own. */
 const MODEL3D_ICON = "/studio/ic-3d-v1.webp";
@@ -885,6 +909,7 @@ const TAB_GLYPH: Record<TabType, React.ReactNode> = {
   edit: glyph(<><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16v4z" /><path d="m13.5 6.5 4 4" /></>),
   lipsync: glyph(<><path d="M3 12c3-4 6-5 9-5s6 1 9 5c-3 4-6 5-9 5s-6-1-9-5z" /><path d="M3 12h18" /></>),
   audio: glyph(<><path d="M9 18V5l11-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="17" cy="16" r="3" /></>),
+  speech: glyph(<><path d="M4 10v4" /><path d="M8 7v10" /><path d="M12 4v16" /><path d="M16 8v8" /><path d="M20 10.5v3" /></>),
 };
 
 /** Where a panel actually fits, worked out when it opens: fixed coordinates. */
@@ -1165,7 +1190,23 @@ const CREATING_TIPS: Record<string, string[]> = {
   edit: ["กำลังอ่านภาพต้นฉบับ…", "กำลังแก้ไขตามที่สั่ง…", "กำลังเกลี่ยรอยต่อให้เนียน…"],
   lipsync: ["กำลังฟังเสียงพูด…", "กำลังขยับปากให้ตรงจังหวะ…", "กำลังเก็บรายละเอียดใบหน้า…"],
   audio: ["กำลังแต่งทำนอง…", "กำลังเรียบเรียงดนตรี…", "กำลังใส่เสียงร้อง…", "กำลังมิกซ์เสียง…"],
+  speech: ["กำลังอ่านข้อความ…", "กำลังใส่จังหวะและน้ำเสียง…", "กำลังเก็บเสียงให้ใส…"],
 };
+
+/**
+ * ElevenLabs v3's audio tags: written into the text in square brackets and
+ * performed, not read out (elevenlabs.io/docs, "Audio tags").
+ */
+const SPEECH_TAGS = [
+  { tag: "[laughs]", th: "หัวเราะ" },
+  { tag: "[whispers]", th: "กระซิบ" },
+  { tag: "[sighs]", th: "ถอนหายใจ" },
+  { tag: "[excited]", th: "ตื่นเต้น" },
+  { tag: "[curious]", th: "สงสัย" },
+  { tag: "[sarcastic]", th: "ประชด" },
+  { tag: "[crying]", th: "ร้องไห้" },
+  { tag: "[exhales]", th: "ผ่อนลมหายใจ" },
+];
 
 /** The animated centre of a frame while its result is being made. */
 function GeneratingOverlay({ progress }: { progress: QueueProgress | null }) {
@@ -1340,9 +1381,11 @@ export default function GeneratePage() {
   const [draft0] = useState(readDraft);
   const [tab, setTab] = useState<TabType>(() => (draft0.tab && draft0.tab in TAB_EN ? draft0.tab : "image"));
   const [selectedModelId, setSelectedModelId] = useState<number | null>(null);
+  /** A model a link named (`?model=`, the admin's test order), applied once the list has loaded. */
+  const [linkedModel, setLinkedModel] = useState<number | null>(null);
   const [prompt, setPrompt] = useState(() => (typeof draft0.prompt === "string" ? draft0.prompt.slice(0, 10_000) : ""));
   // A link from the home page names the tab (`?tab=`) and may carry a prompt
-  // (`?prompt=`). Read after mount, not in the initializers above: on a
+  // (`?prompt=`); an admin page may name a model (`?model=`). Read after mount, not in the initializers above: on a
   // client-side navigation the address still shows the previous page while
   // this one first renders. Saved to the draft at once — a visitor who is not
   // signed in goes through /login, which comes back to /generate without the
@@ -1350,19 +1393,22 @@ export default function GeneratePage() {
   // whatever was written since.
   useEffect(() => {
     const url = new URL(window.location.href);
-    if (!url.searchParams.has("tab") && !url.searchParams.has("prompt")) return;
+    if (!url.searchParams.has("tab") && !url.searchParams.has("prompt") && !url.searchParams.has("model")) return;
     const tabParam = url.searchParams.get("tab");
     const promptParam = url.searchParams.get("prompt")?.trim();
+    const modelParam = Number(url.searchParams.get("model"));
     const fromLink: StudioDraft = {};
     if (tabParam && Object.hasOwn(TAB_EN, tabParam)) fromLink.tab = tabParam as TabType;
     if (promptParam) fromLink.prompt = promptParam.slice(0, 2000);
     /* eslint-disable react-hooks/set-state-in-effect -- the address is only readable once mounted */
     if (fromLink.tab) setTab(fromLink.tab);
     if (fromLink.prompt) setPrompt(fromLink.prompt);
+    if (Number.isInteger(modelParam) && modelParam > 0) setLinkedModel(modelParam);
     /* eslint-enable react-hooks/set-state-in-effect */
     if (fromLink.tab || fromLink.prompt) writeDraft({ ...readDraft(), ...fromLink });
     url.searchParams.delete("tab");
     url.searchParams.delete("prompt");
+    url.searchParams.delete("model");
     window.history.replaceState(window.history.state, "", url.pathname + url.search + url.hash);
   }, []);
   const [negativePrompt, setNegativePrompt] = useState(() => (typeof draft0.negativePrompt === "string" ? draft0.negativePrompt : ""));
@@ -1438,7 +1484,10 @@ export default function GeneratePage() {
    * existed on the server. The studio just never gave anyone a way to say
    * which one they wanted.
    */
-  const [videoMode, setVideoMode] = useState<"t2v" | "i2v">("t2v");
+  const [videoMode, setVideoMode] = useState<VideoMode>("t2v");
+  /** Speech tab: the voice picked (null = the model's default) and, for a model that takes one, how to speak. */
+  const [voiceId, setVoiceId] = useState<string | null>(null);
+  const [speechStyle, setSpeechStyle] = useState("");
   /**
    * Lip-sync inputs. Unlike every other upload in this page these are stored
    * as URLs, not base64: a voice track and a clip are megabytes, and both
@@ -1553,11 +1602,28 @@ export default function GeneratePage() {
   const inTab = (m: (typeof models)[number], key: TabType) =>
     key === "lipsync"
       ? isLipsyncModel(m.subcategory)
-      : // Lip-sync models are stored under 'video' but belong to their own tab;
-        // leaving them in this list would offer a model whose required inputs
-        // the video controls cannot supply.
-        m.category === key && !isLipsyncModel(m.subcategory);
-  const filteredModels = models.filter((m) => inTab(m, tab));
+      : key === "speech"
+        ? isSpeechModel(m)
+        : // Lip-sync models are stored under 'video' and speech under 'audio',
+          // but each belongs to its own tab; leaving them in this list would
+          // offer a model whose required inputs these controls cannot supply.
+          m.category === key && !isLipsyncModel(m.subcategory) && !isSpeechModel(m);
+  /** The clip tool the video tab is in, or null on text/image → video. */
+  const videoTool: VideoTool | null = tab === "video" && (videoMode === "motion" || videoMode === "upscale") ? videoMode : null;
+  // A video mode lists only its own models: a motion copy offered on text →
+  // video would get no clip, a text model on "upscale" no description.
+  const filteredModels = models.filter((m) => inTab(m, tab) && (tab !== "video" || videoToolOf(m.subcategory) === videoTool));
+  /** The clip tools some connected video model offers — their modes appear only then. */
+  const videoTools = (["motion", "upscale"] as const).filter((t) =>
+    models.some((m) => m.category === "video" && videoToolOf(m.subcategory) === t),
+  );
+  // A tool mode whose models went away (switched off, or a reopened order's
+  // model since retired) falls back to text → video rather than an empty list.
+  const lostVideoTool = modelsLoaded && videoTool !== null && !videoTools.includes(videoTool);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (lostVideoTool) setVideoMode("t2v");
+  }, [lostVideoTool]);
   /**
    * Why a whole tab is unusable right now (no model in it can be ordered —
    * provider not connected, keys failing, switched off), or null. The tab is
@@ -1594,6 +1660,26 @@ export default function GeneratePage() {
       setSelectedModelId(featured?.id ?? pool[0].id);
     }
   }, [tab, modelsLoaded, filteredModels, selectedModelId]);
+
+  // The model a link named: its own tab and video mode, then the model. After
+  // the re-pick above, so its choice for the old tab does not win.
+  useEffect(() => {
+    if (!modelsLoaded || linkedModel === null) return;
+    const m = models.find((x) => x.id === linkedModel);
+    /* eslint-disable react-hooks/set-state-in-effect -- the list arrives after mount */
+    setLinkedModel(null);
+    if (!m) return;
+    const home: TabType | undefined = isLipsyncModel(m.subcategory)
+      ? "lipsync"
+      : isSpeechModel(m)
+        ? "speech"
+        : TAB_ORDER.find((t) => t === m.category);
+    if (!home) return;
+    setTab(home);
+    if (home === "video") setVideoMode(videoToolOf(m.subcategory) ?? "t2v");
+    setSelectedModelId(m.id);
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [modelsLoaded, linkedModel, models]);
 
   const selectedModel = models.find((m) => m.id === selectedModelId);
 
@@ -1648,6 +1734,13 @@ export default function GeneratePage() {
       : tab === "video" && videoMode === "i2v" && inputImage
         ? 1 + (selectedModel?.video?.lastFrame === true && inputImageEnd ? 1 : 0)
         : 0;
+  /** A text-to-speech row's voices and limit (the speech tab), else null. */
+  const speechRule = tab === "speech" ? selectedModel?.speech ?? null : null;
+  /** Characters a speech order is priced and capped by, counted as the server counts them. */
+  const speechLength = speechRule ? speechChars(prompt) : 0;
+  const speechTooLong = speechRule !== null && speechLength > speechRule.maxChars;
+  /** The voice that will speak: the pick if this model has it, else its default. */
+  const activeVoice = speechRule ? speechRule.voices.find((v) => v.id === voiceId) ?? speechRule.voices[0] ?? null : null;
   /**
    * One output's price — the same formula GenerationService charges with,
    * rounded up after the quality multiplier exactly as the server does.
@@ -1657,7 +1750,7 @@ export default function GeneratePage() {
     !selectedModel
       ? 0
       : priceTable
-        ? kieQuote(priceTable, { tier: tier ?? kieTier, seconds, images: kieImages })
+        ? kieQuote(priceTable, { tier: tier ?? kieTier, seconds, images: kieImages, chars: speechLength })
         : Math.ceil(
             creditsForDuration(selectedModel.creditsPerUnit, selectedModel.durationCurve, seconds) *
               (activeQuality?.creditsMultiplier ?? 1)
@@ -1733,14 +1826,27 @@ export default function GeneratePage() {
    * the stored files, so a clip that will be refused is refused here first.
    */
   const videoRule = tab === "lipsync" && lipsyncNeeds === "video" ? selectedModel?.videoLipsync ?? null : null;
+  /** A clip tool's rule for its clip (upscale, motion copy), checked the same way as a re-dub's. */
+  const toolClipRule = videoTool ? selectedModel?.clipInput?.clip ?? null : null;
+  const clipRule = videoRule?.clip ?? toolClipRule;
   const sourceClip = sourceVideo ? clipFacts[sourceVideo] ?? null : null;
-  const clipCheck = videoRule && sourceClip ? checkClip(videoRule.clip, sourceClip) : null;
+  const clipCheck = clipRule && sourceClip ? checkClip(clipRule, sourceClip) : null;
   const clipVoiceCheck =
     videoRule?.voice && sourceClip && inputAudioSeconds !== null
       ? checkVoice(videoRule.voice, { seconds: inputAudioSeconds, bytes: inputAudioFile?.size ?? 0 }, sourceClip.seconds)
       : null;
   /** Longest clip the picker takes: the model's own limit where it has one. */
-  const clipMaxSeconds = videoRule?.clip.maxSeconds ?? MAX_INPUT_SECONDS;
+  const clipMaxSeconds = clipRule?.maxSeconds ?? MAX_INPUT_SECONDS;
+  /** Whole seconds a clip tool is billed for (KIE rounds up), once the clip is in. */
+  const toolSeconds = videoTool && sourceClip ? Math.ceil(sourceClip.seconds) : null;
+  /** A motion copy animates a character picture; an upscale takes the clip alone. */
+  const toolNeedsImage = videoTool !== null && selectedModel?.clipInput?.needsImage === true;
+  /** What a clip tool still needs — said on the form and when the button is pressed — or null. */
+  const missingToolText = !videoTool
+    ? null
+    : !sourceVideo
+      ? videoTool === "motion" ? "ต้องอัปโหลดคลิปท่าทางต้นแบบก่อน" : "ต้องอัปโหลดคลิปที่จะขยายก่อน"
+      : toolNeedsImage && !inputImage ? "ต้องอัปโหลดภาพตัวละครก่อน" : null;
   /** The portrait in the slot, at its natural size, once it has drawn. */
   const portraitDims = imageDims && imageDims.src === inputImagePreview ? imageDims : null;
 
@@ -1796,8 +1902,10 @@ export default function GeneratePage() {
     runningJobs >= MAX_PARALLEL_JOBS ||
     !selectedModelId ||
     selectedModel?.canOrder === false ||
-    (tab !== "lipsync" && !prompt.trim()) ||
+    (tab !== "lipsync" && !videoTool && !prompt.trim()) ||
     missingStartFrame ||
+    missingToolText !== null ||
+    speechTooLong ||
     missingLipsyncInput ||
     // A voice the server would refuse (too long, too short, unreadable).
     voiceLength?.ok === false ||
@@ -1822,6 +1930,8 @@ export default function GeneratePage() {
    */
   const upscaleAvailable = models.some((m) =>
     m.canOrder !== false &&
+    // A picture is upscaled by a picture model; Topaz Video Upscale matches the same words.
+    m.category !== "video" &&
     (m.subcategory === "upscale" || /upscale|esrgan/i.test(m.name) || /upscale|esrgan/i.test(m.modelId))
   );
 
@@ -1919,11 +2029,10 @@ export default function GeneratePage() {
   const cycleRole = (id: number) =>
     setRefs((rs) => rs.map((r) => (r.id === id ? { ...r, role: nextRole(r.role) } : r)));
 
-  /** "ภาพ 2" into the prompt at the caret — the words that point the model at a picture. */
-  const insertRefToken = (n: number) => {
+  /** A word put where the caret is in the prompt box (or at its end), with a space either side. */
+  const insertAtCaret = (token: string) => {
     // ✨ is rewriting the box; anything put in now would be lost under its answer.
     if (enhancing) return;
-    const token = referenceToken(n);
     const el = promptRef.current;
     // A box never clicked into reports its caret at 0: add to the end instead.
     const untouched = !el || (document.activeElement !== el && el.selectionStart === 0 && el.selectionEnd === 0);
@@ -1943,6 +2052,8 @@ export default function GeneratePage() {
       box.setSelectionRange(caret, caret);
     });
   };
+  /** "ภาพ 2" into the prompt at the caret — the words that point the model at a picture. */
+  const insertRefToken = (n: number) => insertAtCaret(referenceToken(n));
 
   /** Forget the voice or song: the upload, the picked file and its selection. */
   const clearAudio = () => {
@@ -2264,13 +2375,22 @@ export default function GeneratePage() {
     // Lip-sync is driven by the uploaded voice, not by text, so it is the one
     // mode that may legitimately run with an empty prompt.
     if (!selectedModelId) return;
-    if (tab !== "lipsync" && !prompt.trim()) return;
+    // …and so may a clip tool: an upscale has nothing to describe.
+    if (tab !== "lipsync" && !videoTool && !prompt.trim()) return;
     if (runningJobs >= MAX_PARALLEL_JOBS) {
       toast("info", `กำลังสร้างอยู่ ${MAX_PARALLEL_JOBS} งานแล้ว`, "รอให้งานใดงานหนึ่งเสร็จก่อน แล้วค่อยสั่งเพิ่ม");
       return;
     }
     if (missingStartFrame) {
       toast("error", "ยังไม่ได้เลือกภาพเริ่มต้น", "โหมดภาพ → วิดีโอ ต้องอัปโหลดภาพก่อน");
+      return;
+    }
+    if (missingToolText) {
+      toast("error", "ยังใส่ไฟล์ไม่ครบ", missingToolText);
+      return;
+    }
+    if (speechTooLong && speechRule) {
+      toast("error", "ข้อความยาวเกินไป", `โมเดลนี้อ่านได้ครั้งละไม่เกิน ${speechRule.maxChars.toLocaleString()} ตัวอักษร — ตัดให้สั้นลงหรือแบ่งเป็นหลายงาน`);
       return;
     }
     if (missingLipsyncInput) {
@@ -2337,7 +2457,9 @@ export default function GeneratePage() {
     const pendingId = -clickedAt;
     // A portrait made to speak keeps its own shape.
     const portrait = tab === "lipsync" && lipsyncNeeds === "image" ? portraitDims : null;
-    const jobAspect = tab === "audio" ? "1:1" : portrait ? `${portrait.width}:${portrait.height}` : aspectRatio;
+    // A clip tool's frame is its clip's; a voice, like a song, has none.
+    const toolFrame = videoTool && sourceClip ? `${sourceClip.width}:${sourceClip.height}` : null;
+    const jobAspect = tab === "audio" || tab === "speech" ? "1:1" : portrait ? `${portrait.width}:${portrait.height}` : toolFrame ?? aspectRatio;
     setJobs((js) => [
       { id: pendingId, tab, prompt: prompt.trim(), aspect: jobAspect, startedAt: clickedAt, status: "running", progress: null, result: null },
       ...js.filter((j) => j.status === "running"),
@@ -2355,31 +2477,37 @@ export default function GeneratePage() {
     const imageToSend =
       tab === "image"
         ? (multiSend ? null : sentPics[0]?.url ?? null)
-        : tab === "audio" || (tab === "video" && videoMode === "t2v") ? null : inputImage;
+        : tab === "audio" || tab === "speech" || (tab === "video" && (videoMode === "t2v" || videoMode === "upscale")) ? null : inputImage;
     // The music tab hides the picture controls, but their state lives on — an
     // image tab's negative prompt reaching the music model would be sung as
     // the lyrics, and its image style appended to the song's description.
     const music = tab === "audio";
+    // Speech and the clip tools have none of the picture knobs either: a
+    // negative prompt or a style's words would be read out, or ignored.
+    const noPictureKnobs = music || tab === "speech" || videoTool !== null;
     // The song keeps the name it was made under, not whatever is typed next.
     if (music) setSongTitle(prompt.trim());
-    // An API row that bills by the clip is a re-dub the server finishes in the background.
-    const slowApi = Boolean(videoRule?.billing);
+    // An API row that bills by the clip is a re-dub the server finishes in the
+    // background, and so is every KIE order (after() + poll): a Veo clip or an
+    // upscale outlasts the four minutes an API answer is otherwise given.
+    const slowApi = Boolean(videoRule?.billing) || selectedModel?.provider.slug === "kie";
     const sent = await postGeneration({
       modelId: selectedModelId,
       // Lip-sync has no generation type of its own on the server: what it
       // produces is a clip, and the tab exists only to give it the right
       // controls here.
-      type: tab === "lipsync" ? "video" : tab,
+      // Speech is an 'audio' order, like a song.
+      type: tab === "lipsync" ? "video" : tab === "speech" ? "audio" : tab,
       prompt: promptToSend,
       // Checked against the model's cap and our bucket again on the server.
       referenceImages: multiSend ? sentPics.map((r) => r.url) : undefined,
-      negativePrompt: music ? undefined : negativePrompt.trim() || undefined,
-      styleId: music ? undefined : selectedStyle || undefined,
+      negativePrompt: noPictureKnobs ? undefined : negativePrompt.trim() || undefined,
+      styleId: noPictureKnobs ? undefined : selectedStyle || undefined,
       inputImage: tab === "lipsync" && lipsyncNeeds === "video" ? undefined : imageToSend || undefined,
       // A cover reads the same field as lip-sync: both are "a track the server
       // fetches from our bucket and hands to the model".
       inputAudio: tab === "lipsync" || musicOpts?.sourceSong ? inputAudio ?? undefined : undefined,
-      inputVideo: tab === "lipsync" ? sourceVideo ?? undefined : undefined,
+      inputVideo: tab === "lipsync" || videoTool ? sourceVideo ?? undefined : undefined,
       // Only alongside a first frame: an end frame on its own is not a mode
       // this studio offers. A model without first-and-last-frame mode never
       // shows the picker, and ignores the field if it is sent.
@@ -2405,10 +2533,11 @@ export default function GeneratePage() {
         // …and none from a music model that sets its own length: the server
         // gives it the full token budget, so anything sent here could only
         // shorten the song.
-        duration: tab === "video" || (music && !musicOpts?.autoLength) ? duration : undefined,
+        // A clip tool is as long as its clip, which the server reads for itself.
+        duration: (tab === "video" && !videoTool) || (music && !musicOpts?.autoLength) ? duration : undefined,
         // The music model is a distilled turbo with its own fixed step count.
-        steps: tab === "video" || tab === "lipsync" || music ? undefined : steps,
-        cfgScale: tab === "video" || tab === "lipsync" || music ? undefined : guidance,
+        steps: tab === "video" || tab === "lipsync" || tab === "speech" || music ? undefined : steps,
+        cfgScale: tab === "video" || tab === "lipsync" || tab === "speech" || music ? undefined : guidance,
         seed: overrides.seed ?? seed ?? undefined,
         // Instrumental wins over whatever is in the box, and is expressed by
         // sending no lyrics at all — which is exactly what the models read as
@@ -2417,6 +2546,9 @@ export default function GeneratePage() {
         // The choices, not the prompt they compose into: the server builds the
         // `[Tags]` line so every client builds the same one.
         music: musicOpts?.controls ? { ...musicStyle, instrumental } : undefined,
+        // One of the model's own voices; the server falls back to its default.
+        voice: tab === "speech" ? activeVoice?.id : undefined,
+        speechStyle: tab === "speech" && speechRule?.style ? speechStyle.trim() || undefined : undefined,
       },
     });
     if (sent.kind !== "ok") {
@@ -2504,12 +2636,14 @@ export default function GeneratePage() {
   const tabForHistory = (g: HistoryItem): TabType => {
     const subcategory = g.model?.subcategory ?? models.find((m) => m.id === g.modelDbId)?.subcategory;
     if (isLipsyncModel(subcategory)) return "lipsync";
+    // Speech is an 'audio' order like a song; its model says which.
+    if (g.type === "audio" && subcategory === "speech") return "speech";
     return g.type === "video" || g.type === "edit" || g.type === "audio" ? g.type : "image";
   };
 
   const captureForm = (): FormSnapshot => ({
     tab, modelId: selectedModelId, prompt, negativePrompt, lyrics, aspectRatio, duration, resolution,
-    qualityId, numOutputs, strength, steps, guidance, musicStyle, instrumental, videoMode,
+    qualityId, numOutputs, strength, steps, guidance, musicStyle, instrumental, videoMode, voiceId, speechStyle,
     refs: refs.filter((r) => r.url !== null), trimSrc, trimSel, trimUploaded,
     inputImage, inputImagePreview, inputImageEnd,
     inputAudio, inputAudioName, inputAudioFile, sourceVideo, sourceVideoName,
@@ -2522,6 +2656,7 @@ export default function GeneratePage() {
     setQualityId(f.qualityId); setNumOutputs(f.numOutputs);
     setStrength(f.strength); setSteps(f.steps); setGuidance(f.guidance);
     setMusicStyle(f.musicStyle); setInstrumental(f.instrumental); setVideoMode(f.videoMode);
+    setVoiceId(f.voiceId); setSpeechStyle(f.speechStyle);
     setRefs(f.refs);
     trimSeqRef.current += 1;
     setTrimSrc(f.trimSrc); setTrimSel(f.trimSel); setTrimUploaded(f.trimUploaded); setTrimFailed(null); setTrimDragging(false);
@@ -2535,7 +2670,12 @@ export default function GeneratePage() {
    * slot is emptied, so the form shows what that order used and nothing left
    * over from before.
    */
-  const fillAttachments = (kind: TabType, inputs: OrderInputs, roles: ReferenceRole[] | null = null) => {
+  const fillAttachments = (
+    kind: TabType,
+    inputs: OrderInputs,
+    roles: ReferenceRole[] | null = null,
+    tool: VideoTool | null = null,
+  ) => {
     const image = inputs.inputImage;
     // An image order's pictures: the several it composed from, or its one reference.
     const pics = kind !== "image" ? [] : inputs.referenceImages.length > 0 ? inputs.referenceImages : image ? [image] : [];
@@ -2547,12 +2687,13 @@ export default function GeneratePage() {
     setInputImage(main); setInputImagePreview(main);
     // The server only takes an end frame alongside a start frame.
     setInputImageEnd(kind === "video" && image ? inputs.inputImageEnd : null);
-    if (kind === "video") setVideoMode(image ? "i2v" : "t2v");
+    // A clip tool's order reopens in its own mode, or its model would not be listed.
+    if (kind === "video") setVideoMode(tool ?? (image ? "i2v" : "t2v"));
     const audio = kind === "lipsync" || kind === "audio" ? inputs.inputAudio : null;
     trimSeqRef.current += 1;
     setTrimSrc(null); setTrimSel(null); setTrimUploaded(null); setTrimFailed(null);
     setInputAudio(audio); setInputAudioName(audio ? "ไฟล์เสียงจากงานเดิม" : null); setInputAudioFile(null);
-    const video = kind === "lipsync" ? inputs.inputVideo : null;
+    const video = kind === "lipsync" || tool ? inputs.inputVideo : null;
     setSourceVideo(video); setSourceVideoName(video ? "คลิปจากงานเดิม" : null);
   };
 
@@ -2566,6 +2707,7 @@ export default function GeneratePage() {
     const seq = ++openSeqRef.current;
     const kind = tabForHistory(g);
     const model = models.find((m) => m.id === g.modelDbId);
+    const tool = kind === "video" ? videoToolOf(g.model?.subcategory ?? model?.subcategory) : null;
     const r = g.remix ?? {};
 
     // Kept once, from before the first piece opened over it: browsing on from
@@ -2613,6 +2755,10 @@ export default function GeneratePage() {
       setMusicStyle({ complexity: MUSIC_COMPLEXITY_DEFAULT, variance: MUSIC_VARIANCE_DEFAULT, ...(r.music ?? {}) });
       setInstrumental(r.music?.instrumental === true);
     }
+    if (kind === "speech") {
+      setVoiceId(typeof r.voice === "string" ? r.voice : null);
+      setSpeechStyle(typeof r.speechStyle === "string" ? r.speechStyle.slice(0, 300) : "");
+    }
 
     const notes = [
       !model ? "โมเดลเดิมไม่มีแล้ว — ใช้โมเดลที่เลือกอยู่แทน"
@@ -2626,7 +2772,7 @@ export default function GeneratePage() {
 
     // The files come in their own request (a start frame can be megabytes).
     // Until they land the slots are empty and the order button waits.
-    fillAttachments(kind, NO_ORDER_INPUTS);
+    fillAttachments(kind, NO_ORDER_INPUTS, null, tool);
     setOpenedInputs(null);
     setLoadingInputs(true);
     const inputs = await fetchOrderInputs(g.id);
@@ -2637,7 +2783,7 @@ export default function GeneratePage() {
       return;
     }
     setOpenedInputs(inputs);
-    fillAttachments(kind, inputs, split.roles);
+    fillAttachments(kind, inputs, split.roles, tool);
   };
 
   /** "↶": the draft from before the first history item was opened, and an empty canvas. */
@@ -2723,10 +2869,11 @@ export default function GeneratePage() {
       if (kind === "audio" && tab === "lipsync") return pickAudio(file, lipsyncAudioMax);
       if (kind === "audio" && musicOpts?.sourceSong) return pickAudio(file, coverSourceSeconds);
       if (kind === "video" && tab === "lipsync" && lipsyncNeeds === "video") return uploadMediaFile(file, "video", clipMaxSeconds);
+      if (kind === "video" && videoTool) return uploadMediaFile(file, "video", clipMaxSeconds);
       toast(
         "info",
         "แท็บนี้ไม่ได้ใช้ไฟล์ชนิดนี้",
-        kind === "audio" ? "ไฟล์เสียงใช้ได้ที่แท็บลิปซิงค์ หรือโมเดลคัฟเวอร์เพลง" : "คลิปใช้ได้ที่แท็บลิปซิงค์",
+        kind === "audio" ? "ไฟล์เสียงใช้ได้ที่แท็บลิปซิงค์ หรือโมเดลคัฟเวอร์เพลง" : "คลิปใช้ได้ที่แท็บลิปซิงค์ และโหมดเลียนท่าทาง / ขยายวิดีโอ",
       );
       return;
     }
@@ -2751,6 +2898,11 @@ export default function GeneratePage() {
     if (tab === "edit") {
       setInputImage(url); setInputImagePreview(url);
       toast("success", "ใส่เป็นภาพต้นฉบับแล้ว");
+    } else if (tab === "video" && videoTool === "upscale") {
+      toast("info", "โหมดขยายวิดีโอใช้คลิป ไม่ใช้ภาพ");
+    } else if (tab === "video" && videoTool === "motion") {
+      setInputImage(url); setInputImagePreview(url);
+      toast("success", "ใส่เป็นภาพตัวละครแล้ว");
     } else if (tab === "video") {
       setVideoMode("i2v"); setInputImage(url); setInputImagePreview(url);
       toast("success", "ใส่เป็นภาพเริ่มต้นของคลิปแล้ว");
@@ -2832,11 +2984,14 @@ export default function GeneratePage() {
     // An API clip re-dub is billed by its own rule: one price, or per started block of the clip.
     videoRule?.billing && selectedModel
       ? lipsyncCredits(videoRule.billing, selectedModel.creditsPerUnit, sourceClip?.seconds ?? 0)
-      : creditsFor(tab === "video" || tab === "audio" ? duration : voiceLength?.ok ? voiceLength.seconds : null) * outputs;
+      : videoTool
+        // Priced by the clip's whole seconds, so there is no price before a clip is in.
+        ? toolSeconds !== null && clipCheck?.ok !== false ? creditsFor(toolSeconds) : 0
+        : creditsFor(tab === "video" || tab === "audio" ? duration : voiceLength?.ok ? voiceLength.seconds : null) * outputs;
   /** The balance is known and this order costs more than it. The server is still the judge. */
   const shortOfCredits = creditsLoaded && totalCredits > 0 && creditBalance < totalCredits;
-  /** A song has no picture shape; its in-progress frame is square. */
-  const frameAspect = tab === "audio" ? "1:1" : aspectRatio;
+  /** A song or a voice has no picture shape; its in-progress frame is square. */
+  const frameAspect = tab === "audio" || tab === "speech" ? "1:1" : aspectRatio;
   /** The tray order on the canvas, if the canvas is showing one. */
   const focusedJob = jobs.find((j) => j.id === focusId) ?? null;
   /** Shape and kind of what the canvas shows — the focused order's, not the form's current values. */
@@ -2844,7 +2999,8 @@ export default function GeneratePage() {
   const canvasTab = focusedJob?.tab ?? tab;
   const resultUrl = result?.resultUrl ?? "";
   const resultKind = viewing?.type ?? canvasTab;
-  const resultIsAudio = AUDIO_EXT.test(resultUrl);
+  // Songs and voices are always sound, whatever their file is called.
+  const resultIsAudio = AUDIO_EXT.test(resultUrl) || resultKind === "audio" || resultKind === "speech";
   const resultIsVideo =
     !resultIsAudio && (resultKind === "video" || resultKind === "lipsync" || /\.(mp4|webm|mov)(\?|$)/i.test(resultUrl));
   const resultIsImage = !!resultUrl && !resultIsAudio && !resultIsVideo;
@@ -2863,12 +3019,16 @@ export default function GeneratePage() {
   // only a cover takes a file.
   const tabNo = TAB_ORDER.indexOf(tab) + 1;
   const showLyrics = tab === "audio";
-  const showInputs = tab !== "audio" || musicOpts?.sourceSong === true;
-  const inputsAt = showLyrics ? 4 : 3;
+  // Speech takes no file; a song only when it is a cover.
+  const showInputs = (tab !== "audio" && tab !== "speech") || musicOpts?.sourceSong === true;
+  // An upscale has no prompt, so its clip is section 02.
+  const inputsAt = showLyrics ? 4 : videoTool === "upscale" ? 2 : 3;
+  /** The text is read out (speech) or optional (clip tools): no prompt assistant, builder or templates. */
+  const plainPrompt = tab === "speech" || videoTool !== null;
   const settingsAt = inputsAt + (showInputs ? 1 : 0);
   const inputsLabel =
     tab === "image" ? "ภาพอ้างอิง"
-      : tab === "video" ? "เริ่มจาก"
+      : tab === "video" ? (videoTool === "motion" ? "ตัวละครและท่าทาง" : videoTool === "upscale" ? "คลิปที่จะขยาย" : "เริ่มจาก")
         : tab === "edit" ? "ภาพต้นฉบับ"
           : tab === "lipsync" ? "ไฟล์ที่ใช้"
             : "เพลงต้นฉบับที่จะคัฟเวอร์";
@@ -2989,7 +3149,7 @@ export default function GeneratePage() {
             <div style={{ minWidth: 0 }}>
               <div className="rp-crumb">
                 <span className="rp-dot" data-run={runningJobs > 0 ? "true" : "false"} aria-hidden="true" />
-                <span className="rp-mono">{sectionNo(tabNo)} / 05</span> สตูดิโอ
+                <span className="rp-mono">{sectionNo(tabNo)} / {sectionNo(TAB_ORDER.length)}</span> สตูดิโอ
               </div>
               <h1 className="rp-title">{TAB_LABEL[tab]}</h1>
             </div>
@@ -3054,33 +3214,67 @@ export default function GeneratePage() {
             </div>
           </Field>
 
-          {/* ── 02 Prompt ── */}
-          <Field no="02" label={tab === "lipsync" ? "Prompt (ไม่บังคับ)" : tab === "audio" ? "สไตล์เพลง" : "Prompt"}
-            aside={`${prompt.trim() ? `${prompt.trim().split(/\s+/).length} คำ · ` : ""}${prompt.length.toLocaleString()} / 10,000`}>
+          {/* ── 02 Prompt (the text to read, on speech; none on an upscale) ── */}
+          <Field no="02" hidden={videoTool === "upscale"}
+            label={tab === "lipsync" || videoTool === "motion" ? "Prompt (ไม่บังคับ)" : tab === "audio" ? "สไตล์เพลง" : tab === "speech" ? "ข้อความที่จะให้อ่าน" : "Prompt"}
+            aside={speechRule
+              ? `${speechLength.toLocaleString()} / ${speechRule.maxChars.toLocaleString()} ตัวอักษร`
+              : `${prompt.trim() ? `${prompt.trim().split(/\s+/).length} คำ · ` : ""}${prompt.length.toLocaleString()} / 10,000`}>
             <div className="rp-prompt rp-well">
               {/* Read-only while ✨ works: its answer replaces the box, and would
                   silently drop anything typed in the meantime (Context-IR can
                   take a minute). */}
               <textarea ref={promptRef} value={prompt} onChange={(e) => setPrompt(e.target.value)} onKeyDown={onSubmitKey}
-                readOnly={enhancing} aria-busy={enhancing} aria-label="Prompt"
+                readOnly={enhancing} aria-busy={enhancing} aria-label={tab === "speech" ? "ข้อความที่จะให้อ่าน" : "Prompt"}
                 placeholder={
                   tab === "lipsync"
                     ? lipsyncNeeds === "image"
                       ? "อธิบายท่าทาง/บรรยากาศเพิ่มได้ เช่น พิธีกรยิ้มแย้ม พูดกับกล้อง..."
                       : "ไม่ต้องใส่ก็ได้ — เสียงที่อัปโหลดเป็นตัวกำหนดผลลัพธ์"
                     : tab === "video"
-                      ? "อธิบายวิดีโอที่ต้องการ..."
+                      ? videoTool === "motion"
+                        ? "ไม่ใส่ก็ได้ — ท่าทางมาจากคลิป · อธิบายฉากหลัง แสง หรือรายละเอียดเพิ่มได้"
+                        : "อธิบายวิดีโอที่ต้องการ..."
+                      : tab === "speech"
+                        ? "พิมพ์ข้อความที่ต้องการให้อ่านออกเสียง เช่น สวัสดีค่ะ ยินดีต้อนรับสู่ร้านของเรา วันนี้มีโปรโมชันพิเศษสำหรับลูกค้าทุกท่าน"
                       : tab === "audio"
                         ? "แนวเพลง อารมณ์ เครื่องดนตรี เสียงร้อง เช่น ป๊อปไทยสดใส เสียงร้องหญิง กีตาร์โปร่ง จังหวะเร็ว"
                         : multiRef && refs.length > 1
                           ? "เช่น ผู้หญิงจาก ภาพ 1 สวมชุดจาก ภาพ 2 ยืนหน้าร้านใน ภาพ 3 แสงเย็นอ่อน ๆ"
                           : "อธิบายภาพที่ต้องการ..."
                 }
-                style={{ minHeight: tab === "audio" ? 72 : 104, opacity: enhancing ? 0.6 : 1 }} />
+                style={{ minHeight: tab === "audio" ? 72 : tab === "speech" ? 150 : 104, opacity: enhancing ? 0.6 : 1 }} />
+              {/* How much of what one order may read is used. */}
+              {speechRule && (
+                <div className="rp-cmeter" data-over={speechTooLong ? "true" : undefined} aria-hidden="true">
+                  <i style={{ width: `${Math.min(100, (speechLength / speechRule.maxChars) * 100)}%` }} />
+                </div>
+              )}
               {/* The prompt assistant: short idea in, the model's own format
                   out. The result replaces the box's text where the customer
                   can read and edit it — and ↶ puts back what they wrote. */}
               <div className="rp-ptools">
+                {/* Emotion tags, put in the text where they should be performed. */}
+                {speechRule?.tags && (
+                  <Popover id="speechtags" open={openPanel} onToggle={setOpenPanel} variant="tool" width={320} label="🎭 แท็กอารมณ์">
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {SPEECH_TAGS.map((t) => (
+                        <button key={t.tag} type="button" title={`แทรก ${t.tag} ตรงตำแหน่งเคอร์เซอร์`}
+                          onClick={() => { insertAtCaret(t.tag); setOpenPanel(null); }}
+                          style={{
+                            padding: "5px 10px", borderRadius: 999, fontSize: 11, cursor: "pointer", fontFamily: "inherit",
+                            background: "rgba(255,255,255,0.05)", color: "#cbd5e1", border: "1px solid rgba(255,255,255,0.1)",
+                          }}>
+                          {t.th} <span style={{ color: "#a5f3fc", fontFamily: "ui-monospace,monospace", fontSize: 10.5 }}>{t.tag}</span>
+                        </button>
+                      ))}
+                    </div>
+                    <div style={{ fontSize: 10.5, color: "#64748b", lineHeight: 1.5, marginTop: 10 }}>
+                      วางแท็กไว้หน้าคำหรือประโยคที่ต้องการ — โมเดลจะพูดด้วยอารมณ์นั้น ไม่ได้อ่านแท็กออกเสียง
+                    </div>
+                  </Popover>
+                )}
+                {!plainPrompt && (<>
                 <button type="button" className="rp-tool rp-tool-ai" onClick={handleEnhance} disabled={enhancing || !prompt.trim()}
                   title={tab === "video" && selectedModel?.modelId === "minimax-h3"
                     ? "เรียบเรียงเป็นโครงช็อต กล้อง และเสียง ตามรูปแบบที่ MiniMax H3 ถูกฝึกมา"
@@ -3167,8 +3361,9 @@ export default function GeneratePage() {
                     </div>
                   )}
                 </Popover>
+                </>)}
                 {/* Templates are about pictures — none of them reaches a music model. */}
-                {templates.length > 0 && tab !== "edit" && tab !== "audio" && (
+                {templates.length > 0 && !plainPrompt && tab !== "edit" && tab !== "audio" && (
                   <Popover id="templates" open={openPanel} onToggle={setOpenPanel} label="เทมเพลต" variant="tool" width={300}>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                       {templates.slice(0, 10).map(t => (
@@ -3197,6 +3392,11 @@ export default function GeneratePage() {
             )}
             {enhanceNote && (
               <div style={{ fontSize: 10.5, color: "#a78bfa", marginTop: 6 }}>✦ {enhanceNote} — แก้ต่อได้ตามใจ</div>
+            )}
+            {speechRule && (
+              <div className="rp-note">
+                {THAI_CHARS.test(prompt) ? "อ่านภาษาไทยได้ · " : ""}ใส่ตัวเลข วันที่ และชื่อเฉพาะเป็นคำอ่านจะออกเสียงได้แม่นกว่า เช่น “สองร้อยบาท”
+              </div>
             )}
           </Field>
 
@@ -3333,16 +3533,69 @@ export default function GeneratePage() {
                 <>
                   <div className="rp-seg rp-well">
                     {([
-                      { key: "t2v" as const, label: "ข้อความ → วิดีโอ", hint: "เริ่มจากคำอธิบายล้วน" },
-                      { key: "i2v" as const, label: "ภาพ → วิดีโอ", hint: "ทำให้ภาพที่มีอยู่เคลื่อนไหว" },
-                    ]).map((m) => (
+                      { key: "t2v", label: "ข้อความ → วิดีโอ", hint: "เริ่มจากคำอธิบายล้วน" },
+                      { key: "i2v", label: "ภาพ → วิดีโอ", hint: "ทำให้ภาพที่มีอยู่เคลื่อนไหว" },
+                      // KIE's clip tools, offered only where such a model is connected.
+                      ...(videoTools.includes("motion") ? [{ key: "motion", label: "เลียนท่าทาง", hint: "ตัวละครขยับตามคลิปต้นแบบ" }] : []),
+                      ...(videoTools.includes("upscale") ? [{ key: "upscale", label: "ขยายวิดีโอ", hint: "เพิ่มความคมชัดให้คลิปเดิม" }] : []),
+                    ] as { key: VideoMode; label: string; hint: string }[]).map((m) => (
                       <button key={m.key} type="button" data-on={videoMode === m.key ? "true" : "false"} onClick={() => setVideoMode(m.key)}>
                         <b>{m.label}</b>
                         <span>{m.hint}</span>
                       </button>
                     ))}
                   </div>
-                  {videoMode === "t2v" ? (
+                  {videoTool ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12 }}>
+                      {toolNeedsImage && (
+                        <div>
+                          <div className="rp-sub">ภาพตัวละคร</div>
+                          <ImageSlot src={inputImagePreview} alt="ภาพตัวละคร" hint="อัปโหลดภาพตัวละคร" accept="image/png,image/jpeg,image/webp"
+                            onPick={handleImageUpload} onClear={clearInputImage} onLoad={onInputImageLoad}
+                            onError={() => dropExpiredInput(inputImagePreview, clearInputImage)} />
+                          <div className="rp-note">เห็นตัวละครชัดทั้งตัว ไม่ถูกบัง — ท่าในภาพใกล้กับท่าแรกของคลิปจะได้ผลเนียนที่สุด</div>
+                        </div>
+                      )}
+                      <div>
+                        <div className="rp-sub">{videoTool === "motion" ? "คลิปท่าทางต้นแบบ" : "คลิปที่จะขยาย"}</div>
+                        <FilePick
+                          value={sourceVideoName}
+                          busy={uploading === "video"}
+                          accept="video/mp4,video/quicktime"
+                          hint="อัปโหลดคลิป (MP4 / MOV)"
+                          onPick={(e) => handleMediaUpload(e, "video", clipMaxSeconds)}
+                          onClear={() => { setSourceVideo(null); setSourceVideoName(null); }}
+                        />
+                        {/* Seen before it is paid for: the motion to copy, or the clip to sharpen. */}
+                        {sourceVideo && (
+                          <video src={sourceVideo} muted loop playsInline autoPlay preload="metadata"
+                            // A clip put back from a past order has no upload reading:
+                            // the player's prices it here (the server reads the file again).
+                            onLoadedMetadata={(e) => {
+                              const v = e.currentTarget;
+                              if (!(v.duration > 0) || !Number.isFinite(v.duration) || !v.videoWidth) return;
+                              const ext = /\.webm(\?|$)/i.test(sourceVideo) ? "webm" : "mp4";
+                              setClipFacts((m) => (sourceVideo in m ? m : {
+                                ...m, [sourceVideo]: { seconds: v.duration, width: v.videoWidth, height: v.videoHeight, bytes: 0, ext },
+                              }));
+                            }}
+                            onError={() => dropExpiredInput(sourceVideo, () => { setSourceVideo(null); setSourceVideoName(null); })}
+                            style={{ width: "100%", maxHeight: 200, marginTop: 8, borderRadius: 10, background: "#000", display: "block", objectFit: "contain" }} />
+                        )}
+                        {sourceClip && (
+                          <div style={{ marginTop: 8, fontSize: 11.5, lineHeight: 1.5, color: "#a5f3fc" }}>
+                            คลิป {sourceClip.seconds.toFixed(1)} วินาที · {sourceClip.width}×{sourceClip.height}
+                            {toolSeconds !== null && clipCheck?.ok !== false ? ` · คิด ${toolSeconds} วินาที = ✦ ${totalCredits} เครดิต` : ""}
+                          </div>
+                        )}
+                        {clipCheck?.ok === false && <div className="rp-warn" style={{ marginTop: 8 }}>{clipCheck.message}</div>}
+                        <div className="rp-note">
+                          {clipRuleHint(clipRule ?? undefined, null)} · คิดเครดิตตามความยาวคลิป ✦ {creditsFor(1)} ต่อวินาที
+                          {videoTool === "motion" ? " · คนในคลิปเห็นชัดทั้งตัว ท่าไม่เร็วเกินไป" : ""}
+                        </div>
+                      </div>
+                    </div>
+                  ) : videoMode === "t2v" ? (
                     // The upload lives behind the mode, so on t2v the slot would
                     // simply be absent with nothing saying why. Offer it, one click.
                     <button type="button" className="rp-drop" style={{ marginTop: 10 }} onClick={() => setVideoMode("i2v")}>
@@ -3511,11 +3764,45 @@ export default function GeneratePage() {
           )}
 
           {/* ── Settings: the knobs, as chips where a glance should tell ── */}
-          <Field no={sectionNo(settingsAt)} label="ตั้งค่า">
+          <Field no={sectionNo(settingsAt)} label={tab === "speech" ? "เสียงผู้พูด" : "ตั้งค่า"}>
             <div className="rp-sets">
+              {/* The voices as cards: who speaks, in a word or two how. */}
+              {speechRule && (
+                <div>
+                  <div className="rp-sub">เลือกเสียง · {speechRule.voices.length} เสียง</div>
+                  <div className="rp-voices rp-scroll" role="radiogroup" aria-label="เสียงผู้พูด">
+                    {speechRule.voices.map((v) => {
+                      const [name, ...about] = v.label.split(" — ");
+                      const on = activeVoice?.id === v.id;
+                      return (
+                        <button key={v.id} type="button" role="radio" aria-checked={on} className="rp-voice rp-raised"
+                          data-on={on ? "true" : "false"} data-g={v.gender} onClick={() => setVoiceId(v.id)}>
+                          <span className="rp-vwave" aria-hidden="true"><i /><i /><i /><i /><i /></span>
+                          <span style={{ minWidth: 0 }}>
+                            <b>{name}</b>
+                            {about.length > 0 && <small>{about.join(" — ")}</small>}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {speechRule?.style && (
+                <div>
+                  <div className="rp-sub">สไตล์การพูด (ไม่บังคับ)</div>
+                  <input className="rp-input rp-well" value={speechStyle} maxLength={300} onChange={(e) => setSpeechStyle(e.target.value)}
+                    aria-label="สไตล์การพูด" placeholder="เช่น พูดช้า ๆ น้ำเสียงอบอุ่น เหมือนเล่านิทานก่อนนอน" />
+                </div>
+              )}
+              {speechRule && priceTable && (
+                <div className="rp-note" style={{ marginTop: 0 }}>
+                  คิดเครดิตตามความยาวข้อความ · ✦ {kieQuote(priceTable, { chars: 1000 })} ต่อ 1,000 ตัวอักษร — ประโยคสั้นคิดตามจริง ขั้นต่ำ ✦ 1
+                </div>
+              )}
               {/* Lip-sync has no aspect to choose: the result keeps the shape
                   of the clip or the portrait it was given. */}
-              {tab !== "edit" && tab !== "lipsync" && tab !== "audio" && (
+              {tab !== "edit" && tab !== "lipsync" && tab !== "audio" && tab !== "speech" && !videoTool && (
                 <div>
                   <div className="rp-sub">สัดส่วน</div>
                   <div className="rp-chips">
@@ -3540,7 +3827,7 @@ export default function GeneratePage() {
                   20s on a model that tops out at 5 just buys a failed job.
                   Hidden on a model that decides its own length: there the number
                   was never a length anyone received, only where the song got cut. */}
-              {(tab === "video" || (tab === "audio" && !musicOpts?.autoLength)) && (
+              {((tab === "video" && !videoTool) || (tab === "audio" && !musicOpts?.autoLength)) && (
                 <div>
                   <div className="rp-sub">ความยาว</div>
                   <div className="rp-chips">
@@ -3579,7 +3866,13 @@ export default function GeneratePage() {
                       <button key={r.id} type="button" className="rp-chip rp-raised" data-on={activeResolution?.id === r.id ? "true" : "false"}
                         onClick={() => setResolution(r.id)}>
                         {r.label}
-                        {priceTable && <small>✦ {creditsFor(duration, r.id)}</small>}
+                        {priceTable && (
+                          <small>
+                            ✦ {videoTool
+                              ? toolSeconds !== null ? creditsFor(toolSeconds, r.id) : `${creditsFor(1, r.id)}/วินาที`
+                              : creditsFor(duration, r.id)}
+                          </small>
+                        )}
                       </button>
                     ))}
                   </div>
@@ -3609,6 +3902,8 @@ export default function GeneratePage() {
                 </div>
               )}
 
+              {/* Style, song direction and seed: nothing a voice or a clip tool reads. */}
+              {tab !== "speech" && !videoTool && (
               <div className="rp-poprow">
                 {/* The image styles are about pictures — none reaches a music model. */}
                 {stylesLoaded && styles.length > 0 && tab !== "edit" && tab !== "audio" && (
@@ -3758,8 +4053,9 @@ export default function GeneratePage() {
                   </div>
                 </Popover>
               </div>
+              )}
 
-              {tab !== "edit" && tab !== "audio" && (
+              {tab !== "edit" && tab !== "audio" && tab !== "speech" && !videoTool && (
                 <input className="rp-input rp-well" value={negativePrompt} onChange={(e) => setNegativePrompt(e.target.value)}
                   aria-label="Negative prompt" placeholder="Negative prompt — blurry, low quality, text..." />
               )}
@@ -3776,6 +4072,12 @@ export default function GeneratePage() {
           )}
           {loadingInputs && <div className="rp-info">กำลังโหลดไฟล์แนบของงานเดิม…</div>}
           {missingStartFrame && !loadingInputs && <div className="rp-warn">โหมด “ภาพ → วิดีโอ” ต้องอัปโหลดภาพเริ่มต้นก่อน</div>}
+          {missingToolText && !loadingInputs && uploading !== "video" && <div className="rp-warn">{missingToolText}</div>}
+          {speechTooLong && speechRule && (
+            <div className="rp-warn">
+              ข้อความยาว {speechLength.toLocaleString()} ตัวอักษร — โมเดลนี้อ่านได้ครั้งละไม่เกิน {speechRule.maxChars.toLocaleString()} ตัวอักษร ตัดให้สั้นลงหรือแบ่งเป็นหลายงาน
+            </div>
+          )}
           {missingLipsyncInput && !loadingInputs && (
             <div className="rp-warn">
               {!hasAudio
@@ -3835,7 +4137,7 @@ export default function GeneratePage() {
               const on = j.id === focusId;
               const fraction = j.status === "running" && j.progress?.stage === "rendering" ? shownFraction(j.progress, j.progress.at) : null;
               const thumb = j.result?.thumbnailUrl || j.result?.resultUrl;
-              const isAudio = j.tab === "audio" || AUDIO_EXT.test(thumb ?? "");
+              const isAudio = j.tab === "audio" || j.tab === "speech" || AUDIO_EXT.test(thumb ?? "");
               const isVideoThumb = !isAudio && (j.tab === "video" || j.tab === "lipsync" || /\.(mp4|webm|mov)(\?|$)/i.test(thumb ?? ""));
               return (
                 <button key={j.id} type="button" role="listitem" onClick={() => focusJob(j)} title={j.prompt || "งานลิปซิงค์"}
@@ -3882,7 +4184,7 @@ export default function GeneratePage() {
           <span className="rp-led" aria-hidden="true"><i /></span>
           <div className="rp-cbar">
             <span className="rp-dot" data-run={isGenerating ? "true" : "false"} aria-hidden="true" />
-            <span className="rp-mono">{TAB_LABEL[canvasTab]}{canvasTab === "audio" ? "" : ` · ${canvasAspect}`}</span>
+            <span className="rp-mono">{TAB_LABEL[canvasTab]}{canvasTab === "audio" || canvasTab === "speech" ? "" : ` · ${canvasAspect}`}</span>
             <span>{canvasState}</span>
             <span className="rp-cbar-r">
               {/* Variations is just another order, so it follows the button's rule. */}
@@ -3952,8 +4254,9 @@ export default function GeneratePage() {
                           <img src={result.resultUrl} alt={prompt} style={{ width: "100%", borderRadius: 12, objectFit: "contain" }} />
                         </div>
                       </div>
-                    ) : AUDIO_EXT.test(result.resultUrl) ? (
-                      <AudioResult src={result.resultUrl} title={viewing?.prompt || songTitle || "เพลงของคุณ"} genId={result.id} />
+                    ) : resultIsAudio ? (
+                      <AudioResult src={result.resultUrl} genId={result.id}
+                        title={viewing?.prompt || (canvasTab === "speech" ? focusedJob?.prompt || "เสียงพูด" : songTitle || "เพลงของคุณ")} />
                     ) : resultIsVideo ? (
                       <video src={result.resultUrl} controls autoPlay loop style={{ width: "100%", borderRadius: 12, maxHeight: 600, margin: "0 auto", display: "block" }} />
                     ) : (
@@ -4529,6 +4832,45 @@ export default function GeneratePage() {
           box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), inset 0 0 0 1px rgba(var(--cy), 0.45), inset 0 -2px 0 rgba(var(--cy), 0.9), 0 6px 16px -6px rgba(var(--cy), 0.55);
         }
         .rp-studio .rp-chip small { font-size: 10.5px; color: #fbbf24; font-family: var(--font-geist-mono), ui-monospace, monospace; }
+        /* speech: the voices as cards, each with a small waveform that plays when chosen */
+        .rp-studio .rp-voices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; max-height: 252px; overflow-y: auto; padding: 2px; }
+        .rp-studio .rp-voice {
+          --tone: var(--cy);
+          display: flex; align-items: center; gap: 10px; min-width: 0; padding: 9px 10px; border-radius: 10px;
+          font: inherit; text-align: left; cursor: pointer; color: #94a3b8;
+        }
+        .rp-studio .rp-voice[data-g="male"] { --tone: var(--vi); }
+        .rp-studio .rp-voice b { display: block; font-size: 12.5px; font-weight: 500; color: #e2e8f0; }
+        .rp-studio .rp-voice small {
+          display: block; font-size: 10.5px; line-height: 1.4; color: #64748b;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .rp-studio .rp-voice[data-on="true"] {
+          background: linear-gradient(180deg, rgba(var(--tone), 0.16), rgba(var(--tone), 0.05));
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), inset 0 0 0 1px rgba(var(--tone), 0.45), 0 6px 16px -6px rgba(var(--tone), 0.55);
+        }
+        .rp-studio .rp-voice[data-on="true"] small { color: #a5b4c8; }
+        .rp-studio .rp-vwave { flex: none; display: flex; align-items: center; gap: 2px; width: 22px; height: 22px; }
+        .rp-studio .rp-vwave i { flex: 1; height: 100%; border-radius: 2px; background: rgba(var(--tone), 0.45); transform: scaleY(0.35); }
+        .rp-studio .rp-vwave i:nth-child(2), .rp-studio .rp-vwave i:nth-child(4) { transform: scaleY(0.7); }
+        .rp-studio .rp-vwave i:nth-child(3) { transform: scaleY(1); }
+        .rp-studio .rp-voice[data-on="true"] .rp-vwave i {
+          background: rgb(var(--tone)); box-shadow: 0 0 6px rgba(var(--tone), 0.7);
+          animation: rp-vwave 1.1s ease-in-out infinite;
+        }
+        .rp-studio .rp-voice[data-on="true"] .rp-vwave i:nth-child(2) { animation-delay: -0.25s; }
+        .rp-studio .rp-voice[data-on="true"] .rp-vwave i:nth-child(3) { animation-delay: -0.5s; }
+        .rp-studio .rp-voice[data-on="true"] .rp-vwave i:nth-child(4) { animation-delay: -0.75s; }
+        .rp-studio .rp-voice[data-on="true"] .rp-vwave i:nth-child(5) { animation-delay: -0.4s; }
+        @keyframes rp-vwave { 0%, 100% { transform: scaleY(0.3); } 50% { transform: scaleY(1); } }
+        .rp-studio .rp-cmeter { height: 3px; margin: 0 2px 8px; border-radius: 2px; background: rgba(255, 255, 255, 0.06); overflow: hidden; }
+        .rp-studio .rp-cmeter i {
+          display: block; height: 100%; border-radius: inherit;
+          background: linear-gradient(90deg, rgba(var(--cy), 0.9), rgba(var(--vi), 0.9)); transition: width 160ms;
+        }
+        .rp-studio .rp-cmeter[data-over="true"] i { background: #f87171; }
+        @media (prefers-reduced-motion: reduce) { .rp-studio .rp-vwave i { animation: none !important; } }
+        @media (max-width: 420px) { .rp-studio .rp-voices { grid-template-columns: minmax(0, 1fr); } }
         .rp-studio .rp-shape { display: inline-block; border: 1.5px solid currentColor; border-radius: 2px; box-sizing: border-box; }
         .rp-studio .rp-poprow { display: flex; flex-wrap: wrap; gap: 6px; }
         .rp-studio .rp-input {

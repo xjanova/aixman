@@ -36,7 +36,7 @@ test('notifications get no answer; unknown methods and malformed messages get JS
 test('tools/list: every tool has a name, a description and an object schema; required fields exist', async () => {
   const res = (await rpc('tools/list')) as { result: { tools: typeof TOOLS } };
   const names = res.result.tools.map((t) => t.name);
-  for (const want of ['list_models', 'get_credits', 'generate_image', 'generate_video', 'generate_music', 'get_generation', 'list_generations', 'upload_image', 'chat']) {
+  for (const want of ['list_models', 'get_credits', 'generate_image', 'generate_video', 'generate_music', 'generate_speech', 'get_generation', 'list_generations', 'upload_image', 'chat']) {
     assert.ok(names.includes(want), want);
   }
   for (const t of res.result.tools) {
@@ -55,6 +55,9 @@ test('a bad tool call is a tool error the model can read, not a protocol error',
   assert.match(noPrompt.result.content[0].text, /prompt/);
   const wrongType = (await rpc('tools/call', { name: 'generate_video', arguments: { prompt: 7 } })) as { result: { isError: boolean } };
   assert.equal(wrongType.result.isError, true);
+  const noText = (await rpc('tools/call', { name: 'generate_speech', arguments: { voice: 'Kore' } })) as { result: { isError: boolean; content: { text: string }[] } };
+  assert.equal(noText.result.isError, true);
+  assert.match(noText.result.content[0].text, /text/);
   const unknownTool = (await rpc('tools/call', { name: 'rm_rf', arguments: {} })) as { error: { code: number } };
   assert.equal(unknownTool.error.code, -32602);
 });

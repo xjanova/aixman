@@ -122,6 +122,13 @@ export interface ProviderResponse {
    * customers' bad prompts cannot disable a key every model shares.
    */
   orderFault?: boolean;
+  /**
+   * The provider never took the order — out of credit, key refused, rate
+   * limited, down — so nothing ran and nothing was billed: another provider
+   * may run it (KIE's fallback, kie-fallback.ts). Never set once a task was
+   * accepted, whatever happened to it after.
+   */
+  retryElsewhere?: boolean;
 }
 
 // Provider adapter interface — all providers must implement this

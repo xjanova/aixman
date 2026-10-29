@@ -31,8 +31,10 @@ export interface KiePriceTable {
    * `perSecond`, a single `'1'` key the length multiplies; otherwise `'*'`.
    */
   credits: Record<string, Record<string, number>>;
-  /** Priced per second of an uploaded voice (talking portraits). */
+  /** Priced per second of an uploaded voice or clip (portraits, re-dubs, upscales). */
   perSecond?: boolean;
+  /** Priced per this many characters of text (speech): `credits[tier]['1']` per block, pro rata. */
+  perChars?: number;
   /** Credits per attached picture past `freeImages` (KIE bills some inputs). */
   imageCredits?: number;
   freeImages?: number;
@@ -91,12 +93,14 @@ export function readKiePriceTable(defaultParams: unknown): KiePriceTable | null 
   const tierParam = raw.tierParam === 'quality' || raw.tierParam === 'resolution' ? raw.tierParam : null;
   const imageCredits = Number(raw.imageCredits);
   const freeImages = Number(raw.freeImages);
+  const perChars = Number(raw.perChars);
   return {
     tierParam,
     tiers: tiers.map((t) => ({ id: t.id, label: t.label, isDefault: t.isDefault === true })),
     durations: durations && durations.length > 0 ? durations : null,
     credits,
     perSecond: raw.perSecond === true,
+    perChars: Number.isInteger(perChars) && perChars > 0 ? perChars : undefined,
     imageCredits: Number.isInteger(imageCredits) && imageCredits > 0 ? imageCredits : undefined,
     freeImages: Number.isInteger(freeImages) && freeImages >= 0 ? freeImages : undefined,
   };
@@ -121,6 +125,16 @@ export interface KieQuoteInput {
   seconds?: unknown;
   /** Pictures attached (references and frames). */
   images?: number;
+  /** Characters of text to speak (`speechChars`). */
+  chars?: number;
+}
+
+/**
+ * Characters a speech order is priced by: the text as it will be sent,
+ * counted in code points (a Thai vowel mark is a character, as KIE counts it).
+ */
+export function speechChars(text: unknown): number {
+  return typeof text === 'string' ? [...text.trim()].length : 0;
 }
 
 /** Credits for one order. The studio and GenerationService both call this. */
@@ -128,7 +142,11 @@ export function kieQuote(table: KiePriceTable, order: KieQuoteInput): number {
   const tier = pickKieTier(table, order.tier);
   const row = table.credits[tier.id] ?? {};
   let credits: number;
-  if (table.perSecond) {
+  if (table.perChars) {
+    // Pro rata, so a one-line greeting is not billed a thousand characters.
+    const chars = Math.max(1, Math.floor(Number(order.chars) || 0));
+    credits = Math.max(1, Math.ceil(((row['1'] ?? 1) * chars) / table.perChars - 1e-9));
+  } else if (table.perSecond) {
     const seconds = Math.max(1, Math.ceil(Number(order.seconds) || 0));
     credits = (row['1'] ?? 1) * seconds;
   } else if (table.durations) {

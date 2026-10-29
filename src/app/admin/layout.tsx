@@ -28,6 +28,7 @@ const adminNav = [
   { href: "/admin/generations", label: "ผลงาน", icon: "▧" },
   { href: "/admin/transactions", label: "ประวัติเครดิต", icon: "▤" },
   { href: "/admin/referrals", label: "ชวนเพื่อน", icon: "⇄" },
+  { href: "/admin/kie", label: "KIE.ai (หลัก)", icon: "✺" },
   { href: "/admin/providers", label: "Providers", icon: "⚙" },
   { href: "/admin/pools", label: "Account Pools", icon: "▣" },
   { href: "/admin/models", label: "โมเดล AI", icon: "✦" },

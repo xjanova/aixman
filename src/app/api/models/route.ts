@@ -17,6 +17,8 @@ import { referenceCaps } from '@/lib/reference-caps';
 import { modelPreview } from '@/lib/model-samples';
 import { getKieEntry, kiePriceTable, type KieEntry } from '@/lib/providers/kie-catalog';
 import { kieQuote, readKiePriceTable, type KiePriceTable } from '@/lib/providers/kie-pricing';
+import { fallbackRefsFor, whyNotFallback } from '@/lib/providers/kie-fallback';
+import { loadFallbackSettings } from '@/lib/services/kie-route';
 
 /**
  * Public model list for the studio and the mobile app.
@@ -147,6 +149,18 @@ function kieOptions(entry: KieEntry, table: KiePriceTable) {
       ? { lyrics: true, sourceSong: false, maxDuration: null, autoLength: true, maxSourceSeconds: null, controls: true }
       : null,
     lengthFromAudio: entry.lengthFromAudio ?? null,
+    // The speech tab's voice picker and character limit.
+    speech: entry.speech
+      ? {
+          voices: entry.speech.voices,
+          maxChars: entry.speech.maxChars,
+          style: entry.speech.style === true,
+          tags: entry.speech.tags === true,
+        }
+      : null,
+    // A clip the order works on (upscale, motion reference): the rule GenerationService
+    // checks the stored file against, so the studio can say first.
+    clipInput: entry.sourceClip ? { clip: entry.sourceClip, needsImage: entry.needsImage === true } : null,
   };
 }
 
@@ -236,6 +250,33 @@ export async function GET() {
       communityOnly.map(async (m) => [m.modelId, await communityMachineAvailable(m.modelId).catch(() => true)] as const)
     )
   );
+  // A KIE model whose keys cannot take an order now is still sold when its
+  // fallback can (kie-fallback.ts): GenerationService routes the order there
+  // before charging, at the KIE price. A failed read leaves KIE's own state.
+  const kieFallback = models.some((m) => m.provider.slug === 'kie') ? await loadFallbackSettings().catch(() => null) : null;
+  const byRef = new Map(models.map((m) => [`${m.provider.slug}:${m.modelId}`, m]));
+  const fallbackServes = (kieKey: string): boolean =>
+    kieFallback?.enabled === true &&
+    fallbackRefsFor(kieKey, kieFallback.map).some((ref) => {
+      const row = byRef.get(ref);
+      if (!row) return false;
+      const why = whyNotFallback(
+        { kieKey, references: 0, firstFrame: false, lastFrame: false, seconds: null, clip: null, voice: null },
+        {
+          providerSlug: row.provider.slug,
+          providerActive: row.provider.isActive,
+          modelId: row.modelId,
+          category: row.category,
+          subcategory: row.subcategory,
+          isActive: row.isActive,
+          readiness: row.readiness,
+          maxDuration: row.maxDuration,
+          defaultParams: row.defaultParams,
+        }
+      );
+      return why === null && availability(row.provider) === 'ok';
+    });
+
   const communityAvailability = (m: { modelId: string; provider: { isActive: boolean } }): Availability =>
     communityListing({
       providerActive: m.provider.isActive,
@@ -249,11 +290,13 @@ export async function GET() {
       const kieEntry = m.provider.slug === 'kie' ? getKieEntry(m.modelId) : undefined;
       const kieTable = kieEntry ? readKiePriceTable(m.defaultParams) ?? kiePriceTable(kieEntry) : null;
       const kie = kieEntry && kieTable ? kieOptions(kieEntry, kieTable) : null;
-      const avail = pausedModels.has(m.modelId)
+      const own = pausedModels.has(m.modelId)
         ? 'maintenance'
         : inHouse && isCommunityOnlyModel(m.modelId)
           ? communityAvailability(m)
           : availability(m.provider);
+      // KIE switched off on Providers is refused before any routing: only an active KIE hands over to its fallback.
+      const avail: Availability = own !== 'ok' && m.provider.isActive && kieEntry && fallbackServes(m.modelId) ? 'ok' : own;
       const readinessOk = ModelReadiness.canOrder(m.readiness, admin);
       const status = avail !== 'ok' ? 'unavailable' : m.readiness === 'tuning' ? 'tuning' : readinessOk ? 'ready' : 'unavailable';
       const reason =
@@ -318,6 +361,10 @@ export async function GET() {
         // the table GenerationService charges from. Credits only — never the
         // vendor's price. Null for every other model.
         priceTable: kieTable,
+        // Text-to-speech voices and limit (KIE speech rows), else null.
+        speech: kie ? kie.speech : null,
+        // A clip to upscale or copy the motion of (KIE video tools), else null.
+        clipInput: kie ? kie.clipInput : null,
         // 'tuning' stays orderable for admins — running it is how it gets
         // proven. 'unavailable' is not orderable by anyone: it would fail.
         status,

@@ -14,7 +14,9 @@
 /**
  * Families that have a picture in `public/model-samples/<slug>.webp`. Mapped
  * families missing here (Stable Image, Kino XL, ACE-Step, YuE) had no usable
- * published example and show the category art.
+ * published example and show the category art. The speech and song models
+ * (ElevenLabs v3, Gemini TTS, Suno) show their vendor's own sample drawn as a
+ * waveform or spectrum — the shape is that audio's, the audio is not bundled.
  */
 const SAMPLE_SLUGS = new Set<string>([
   'seedream', 'seedream-5', 'seedance', 'gpt-image', 'dall-e-3', 'sora-2', 'sd3.5', 'sdxl',
@@ -22,6 +24,8 @@ const SAMPLE_SLUGS = new Set<string>([
   'flux-pro', 'flux-dev', 'flux-schnell', 'minimax-video', 'minimax-h3', 'recraft-v3',
   'latentsync', 'kling-lipsync', 'infinitalk', 'runway-gen4', 'runway-gen3', 'kling-video',
   'kolors', 'luma-ray2', 'leonardo-phoenix', 'leonardo-diffusion-xl', 'qwen-image', 'ltx', 'hunyuan3d',
+  'veo', 'nano-banana', 'nano-banana-pro', 'ideogram', 'z-image', 'grok-imagine-image', 'grok-imagine-video',
+  'wan', 'pixverse', 'topaz-video', 'kling-motion-control', 'elevenlabs-v3', 'gemini-tts', 'suno',
 ]);
 
 /**
@@ -33,6 +37,7 @@ const SAMPLE_SLUGS = new Set<string>([
 const VIDEO_SLUGS = new Set<string>([
   'seedance', 'sora-2', 'minimax-video', 'minimax-h3', 'ltx', 'kling-video', 'kling-lipsync',
   'luma-ray2', 'runway-gen4', 'runway-gen3', 'latentsync', 'hunyuan3d',
+  'veo', 'grok-imagine-video', 'wan', 'pixverse', 'topaz-video', 'kling-motion-control',
 ]);
 
 /** Pictures whose licence requires a credit where they are shown (CC BY / BY-SA). */
@@ -77,15 +82,34 @@ const EXACT: Record<string, string> = {
   'yue2-music': 'yue',
   'yue2-cover': 'yue',
   // KIE.ai rows of families we have a picture for. Kling, Seedance, Seedream
-  // 5, FLUX, Qwen-Image and MiniMax H3 already match the patterns below;
-  // Veo, Nano Banana, Ideogram, Grok, Wan, PixVerse, Z-Image, Suno and the
-  // Volcengine dub have no published sample here yet and draw the category art.
+  // 5, FLUX, Qwen-Image and MiniMax H3 already match the patterns below; the
+  // rest are named one by one so no other row changes picture. Only the
+  // Volcengine dub (kie/volcengine-lipsync) draws the category art: Volcengine
+  // publishes no example of it, only resellers' pages do.
   'kie/gpt-image-2-5': 'gpt-image',
   'kie/recraft-remove-background': 'remove-background',
   'kie/recraft-crisp-upscale': 'upscale',
   'kie/topaz-image-upscale': 'upscale',
   'kie/kling-avatar': 'kling-lipsync',
   'kie/infinitalk': 'infinitalk',
+  'kie/veo-3-1-fast': 'veo',
+  'kie/veo-3-1-lite': 'veo',
+  'kie/veo-3-1': 'veo',
+  'kie/nano-banana-2-1': 'nano-banana',
+  'kie/nano-banana-2-1-edit': 'nano-banana',
+  'kie/nano-banana-pro': 'nano-banana-pro',
+  'kie/ideogram-v3': 'ideogram',
+  'kie/z-image': 'z-image',
+  'kie/grok-imagine-image-2': 'grok-imagine-image',
+  'kie/grok-imagine-video': 'grok-imagine-video',
+  'kie/wan-3': 'wan',
+  'kie/pixverse-v6-max': 'pixverse',
+  'kie/topaz-video-upscale': 'topaz-video',
+  // Kling's own 3.0 Motion Control showcase, not the plain Kling clip /kling/i gives.
+  'kie/kling-3-motion-control': 'kling-motion-control',
+  'kie/elevenlabs-v3': 'elevenlabs-v3',
+  'kie/gemini-3-8-flash-tts': 'gemini-tts',
+  'kie/suno-v6': 'suno',
 };
 
 const PATTERNS: [RegExp, string][] = [

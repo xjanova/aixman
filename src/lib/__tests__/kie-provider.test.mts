@@ -320,3 +320,85 @@ test('the key check reads KIE’s balance and never takes a key it refuses', asy
   const refused = await new FastKie().credits('bad');
   assert.equal(refused.ok, false);
 });
+
+test('speech: the chosen voice reaches ElevenLabs; a voice it does not have becomes its default', async () => {
+  const calls = stubFetch([[CREATE, created], [RECORD, succeeded({ resultUrls: ['https://tempfile.kie.test/voice.mp3'] })]]);
+  const result = await new FastKie().generateAudio({
+    modelId: 'kie/elevenlabs-v3',
+    prompt: 'สวัสดีค่ะ',
+    apiKey: 'k',
+    extraParams: { kieTier: 'std', voice: 'nPczCjzI2devNBz1zQrb' },
+  });
+  assert.equal(result.success, true);
+  assert.equal(result.resultUrl, 'https://tempfile.kie.test/voice.mp3');
+  assert.deepEqual(calls.find((c) => CREATE.test(c.url))!.body, {
+    model: 'elevenlabs/text-to-dialogue-v3',
+    input: { dialogue: [{ text: 'สวัสดีค่ะ', voice: 'nPczCjzI2devNBz1zQrb' }], stability: 0.5, language_code: 'th' },
+  });
+
+  const again = stubFetch([[CREATE, created], [RECORD, succeeded({ resultUrls: ['https://tempfile.kie.test/voice.mp3'] })]]);
+  await new FastKie().generateAudio({
+    modelId: 'kie/elevenlabs-v3',
+    prompt: 'Hello',
+    apiKey: 'k',
+    extraParams: { voice: 'not-a-voice; drop table', speechStyle: 'ignored here' },
+  });
+  const input = again.find((c) => CREATE.test(c.url))!.body?.input as { dialogue: { voice: string }[] };
+  assert.equal(input.dialogue[0].voice, 'hpp4J3VqNfWAUOO0d1Us');
+  assert.equal(JSON.stringify(input).includes('ignored here'), false, 'ElevenLabs takes no style line');
+});
+
+test('speech: Gemini gets its speaking style, trimmed and capped', async () => {
+  const calls = stubFetch([[CREATE, created], [RECORD, succeeded({ resultUrls: ['https://tempfile.kie.test/v.wav'] })]]);
+  await new FastKie().generateAudio({
+    modelId: 'kie/gemini-3-8-flash-tts',
+    prompt: 'กาลครั้งหนึ่งนานมาแล้ว',
+    apiKey: 'k',
+    extraParams: { voice: 'Charon', speechStyle: `  ${'ช้า'.repeat(200)}  ` },
+  });
+  const input = calls.find((c) => CREATE.test(c.url))!.body?.input as {
+    speakers: { voice_name: string }[];
+    dialogue_turns: { style: string }[];
+  };
+  assert.equal(input.speakers[0].voice_name, 'Charon');
+  assert.ok(input.dialogue_turns[0].style.length <= 300);
+  assert.ok(input.dialogue_turns[0].style.startsWith('ช้า'));
+});
+
+test('clip tools: the uploaded clip (and the character) reach Topaz and Kling motion control', async () => {
+  const clip = 'https://cdn.example.test/uploads/7/video/dance.mp4';
+  const up = stubFetch([[CREATE, created], [RECORD, succeeded({ resultUrls: ['https://tempfile.kie.test/sharp.mp4'] })]]);
+  const sharp = await new FastKie().generateVideo({
+    modelId: 'kie/topaz-video-upscale',
+    prompt: '',
+    inputVideo: clip,
+    duration: 9,
+    apiKey: 'k',
+    extraParams: { kieTier: '4' },
+  });
+  assert.equal(sharp.success, true);
+  assert.deepEqual(up.find((c) => CREATE.test(c.url))!.body, { model: 'topaz/video-upscale', input: { video_url: clip, upscale_factor: '4' } });
+
+  const mo = stubFetch([
+    [UPLOAD, () => json({ success: true, code: 200, msg: 'ok', data: { downloadUrl: 'https://tempfile.redpandaai.co/x/hero.png' } })],
+    [CREATE, created],
+    [RECORD, succeeded({ resultUrls: ['https://tempfile.kie.test/moved.mp4'] })],
+  ]);
+  await new FastKie().generateVideo({
+    modelId: 'kie/kling-3-motion-control',
+    prompt: '',
+    inputImage: 'data:image/png;base64,iVBORw0KGgo=',
+    inputVideo: clip,
+    apiKey: 'k',
+    extraParams: { kieTier: '1080p' },
+  });
+  assert.deepEqual(mo.find((c) => CREATE.test(c.url))!.body, {
+    model: 'kling-3.0/motion-control',
+    input: {
+      input_urls: ['https://tempfile.redpandaai.co/x/hero.png'],
+      video_urls: [clip],
+      mode: '1080p',
+      character_orientation: 'video',
+    },
+  });
+});

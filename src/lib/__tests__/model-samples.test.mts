@@ -30,6 +30,7 @@ const LIVE_IDS = [
   'kie/topaz-image-upscale', 'kie/kling-3', 'kie/kling-4', 'kie/veo-3-1-fast', 'kie/veo-3-1-lite', 'kie/veo-3-1',
   'kie/seedance-2-fast', 'kie/seedance-2-mini', 'kie/seedance-2-5', 'kie/minimax-h3', 'kie/wan-3', 'kie/grok-imagine-video',
   'kie/pixverse-v6-max', 'kie/kling-avatar', 'kie/infinitalk', 'kie/volcengine-lipsync', 'kie/suno-v6',
+  'kie/elevenlabs-v3', 'kie/gemini-3-8-flash-tts', 'kie/topaz-video-upscale', 'kie/kling-3-motion-control',
 ];
 
 test('every bundled picture and clip a model points at is on disk', () => {
@@ -54,9 +55,30 @@ test('families resolve to their own picture', () => {
   assert.equal(modelPreview('kie/seedream-5-pro', null)?.src, '/model-samples/seedream-5.webp');
   assert.equal(modelPreview('kie/minimax-h3', null)?.src, '/model-samples/minimax-h3.webp');
   assert.equal(modelPreview('kie/recraft-crisp-upscale', null)?.src, '/model-samples/upscale.webp');
-  // No published sample for these families yet: the category art.
-  assert.equal(modelPreview('kie/veo-3-1-fast', null), null);
-  assert.equal(modelPreview('kie/suno-v6', null), null);
+});
+
+test('every KIE family with a published example gets its own picture', () => {
+  assert.deepEqual(modelPreview('kie/veo-3-1-fast', null), { src: '/model-samples/veo.webp', video: '/model-samples/veo.mp4', credit: null });
+  assert.equal(modelPreview('kie/veo-3-1-lite', null)?.src, '/model-samples/veo.webp');
+  assert.equal(modelPreview('kie/nano-banana-2-1-edit', null)?.src, '/model-samples/nano-banana.webp');
+  assert.equal(modelPreview('kie/nano-banana-pro', null)?.src, '/model-samples/nano-banana-pro.webp');
+  assert.equal(modelPreview('kie/ideogram-v3', null)?.src, '/model-samples/ideogram.webp');
+  assert.equal(modelPreview('kie/z-image', null)?.src, '/model-samples/z-image.webp');
+  assert.equal(modelPreview('kie/grok-imagine-image-2', null)?.video, null);
+  assert.equal(modelPreview('kie/grok-imagine-image-2', null)?.src, '/model-samples/grok-imagine-image.webp');
+  assert.equal(modelPreview('kie/grok-imagine-video', null)?.video, '/model-samples/grok-imagine-video.mp4');
+  assert.equal(modelPreview('kie/wan-3', null)?.video, '/model-samples/wan.mp4');
+  assert.equal(modelPreview('kie/pixverse-v6-max', null)?.video, '/model-samples/pixverse.mp4');
+  assert.equal(modelPreview('kie/topaz-video-upscale', null)?.video, '/model-samples/topaz-video.mp4');
+  // Motion control has its own clip, ahead of the /kling/ pattern every other Kling row takes.
+  assert.equal(modelPreview('kie/kling-3-motion-control', null)?.video, '/model-samples/kling-motion-control.mp4');
+  assert.equal(modelPreview('kie/kling-4', null)?.src, '/model-samples/kling-video.webp');
+  // Speech and song: the vendor's sample drawn as a waveform, no clip.
+  assert.deepEqual(modelPreview('kie/elevenlabs-v3', null), { src: '/model-samples/elevenlabs-v3.webp', video: null, credit: null });
+  assert.equal(modelPreview('kie/gemini-3-8-flash-tts', null)?.src, '/model-samples/gemini-tts.webp');
+  assert.equal(modelPreview('kie/suno-v6', null)?.src, '/model-samples/suno.webp');
+  // Volcengine publishes no example of its dub: the category art.
+  assert.equal(modelPreview('kie/volcengine-lipsync', null), null);
 });
 
 test('a family with no published example falls back to the category art', () => {
