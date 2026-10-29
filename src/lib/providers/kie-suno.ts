@@ -198,7 +198,12 @@ export type SunoSourceCheck =
   | { ok: true; continueAt?: number }
   | { ok: false; code: string; message: string };
 
-const minutes = (s: number) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
+// Whole seconds first, rounded up: 539.6 s is 9:00, never 8:60, and a song
+// refused for passing 8 minutes never reads as 8:00.
+const minutes = (s: number) => {
+  const whole = Math.ceil(s);
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+};
 
 /**
  * Whether the track fits the tool, read from the stored file before charging

@@ -185,6 +185,12 @@ test('a track longer than 8 minutes is refused before charging; stems also over 
     assert.equal(r.ok, false, tool);
     assert.equal(r.ok === false && r.code, 'song-too-long');
   }
+  const message = (seconds: number) => {
+    const r = checkSunoSource('cover', { seconds, bytes: 1000 }, {});
+    return r.ok === false ? r.message : '';
+  };
+  assert.match(message(539.6), /ยาว 9:00 นาที/);
+  assert.match(message(480.2), /ยาว 8:01 นาที/);
   const big = checkSunoSource('stems', { seconds: 200, bytes: 21 * 1024 * 1024 }, {});
   assert.equal(big.ok === false && big.code, 'song-too-large');
   assert.equal(checkSunoSource('cover', { seconds: 200, bytes: 21 * 1024 * 1024 }, {}).ok, true);
