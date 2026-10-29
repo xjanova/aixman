@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth';
 import prisma from '@/lib/db';
 import { daysUntil } from '@/lib/services/retention';
-import { publicProvider } from '@/lib/public-provider';
+import { publicErrorMessage, publicModelName, publicProvider } from '@/lib/public-provider';
 import type { Prisma } from '@/generated/prisma/client';
 
 /**
@@ -126,7 +126,7 @@ export async function GET(request: NextRequest) {
       // leaving the customer to work out whether they were charged.
       creditsRefunded: g.creditsRefunded,
       processingMs: g.processingMs,
-      errorMessage: g.errorMessage,
+      errorMessage: publicErrorMessage(g.errorMessage),
       // Retention: how long this file will still be here, and whether it has
       // already gone. Surfaced on every item so nobody discovers the policy by
       // losing something.
@@ -137,7 +137,7 @@ export async function GET(request: NextRequest) {
       isFavorited: g.favorites.length > 0,
       favoritesCount: g._count.favorites,
       model: {
-        name: g.model.name,
+        name: publicModelName(g.model.modelId, g.model.name),
         // In-house models show our brand, not the rented hardware behind them.
         provider: publicProvider(g.model.provider).name,
         providerSlug: publicProvider(g.model.provider).slug,

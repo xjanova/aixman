@@ -19,7 +19,6 @@ import type { ModelPreview } from "@/lib/model-samples";
 export interface BalloonModel {
   id: number;
   name: string;
-  provider: { name: string };
   subcategory?: string | null;
   description?: string | null;
   creditsPerUnit: number;
@@ -35,6 +34,26 @@ export interface BalloonModel {
 const MIN_SKY_WIDTH = 560;
 /** The picked balloon's lift before the sky closes. */
 const PICK_MS = 240;
+
+/** What a balloon says under the name: the kind of work, never the service behind it. */
+const KIND_LABEL: Record<string, string> = {
+  general: "ทั่วไป",
+  premium: "พรีเมียม",
+  fast: "เร็ว",
+  design: "งานออกแบบ",
+  cinematic: "โทนภาพยนตร์",
+  instruct: "สั่งแก้ด้วยคำพูด",
+  background: "ลบพื้นหลัง",
+  upscale: "ขยายภาพ",
+  inpaint: "แก้บางส่วน",
+  outpaint: "ขยายขอบภาพ",
+  lipsync: "พากย์ทับคลิป",
+  "lipsync-portrait": "ภาพพูดได้",
+  music: "เพลง",
+  speech: "เสียงพูด",
+  motion: "เลียนท่าทาง",
+  "video-upscale": "ขยายวิดีโอ",
+};
 
 function hueOf(name: string): number {
   let h = 0;
@@ -151,7 +170,7 @@ export function ModelBalloons({
             const p = m.preview;
             const vars = {
               "--i": i,
-              "--hue": hueOf(m.provider.name),
+              "--hue": hueOf(m.name),
               "--y": `${((i % 3) - 1) * 16}px`,
               "--bob": `${3.4 + ((i * 0.37) % 1.6)}s`,
               "--lag": `${-((i * 0.53) % 3)}s`,
@@ -188,7 +207,7 @@ export function ModelBalloons({
                   </svg>
                   <span className="xdr-btag">
                     <b>{m.name}</b>
-                    <small>{blocked ? reason : `${m.provider.name}${m.subcategory ? ` · ${m.subcategory}` : ""}`}</small>
+                    <small>{blocked ? reason : KIND_LABEL[m.subcategory ?? ""] ?? "X-DREAMER"}</small>
                     {p?.credit && <small className="xdr-bcredit">{p.credit}</small>}
                   </span>
                 </span>

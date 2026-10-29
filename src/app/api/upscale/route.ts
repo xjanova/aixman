@@ -3,6 +3,7 @@ import { getCurrentUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { GenerationService } from "@/lib/services/generation";
 import { isOrderRefused } from "@/lib/services/order-refusal";
+import { publicErrorMessage } from "@/lib/public-provider";
 
 export async function POST(req: NextRequest) {
   try {
@@ -84,7 +85,7 @@ export async function POST(req: NextRequest) {
       params,
     }, { inputIsOwnRender: true });
 
-    return NextResponse.json(result);
+    return NextResponse.json(result.error ? { ...result, error: publicErrorMessage(result.error) } : result);
   } catch (error) {
     // Refused before charging, in Thai the customer can act on (content-tier.ts).
     if (isOrderRefused(error)) {
@@ -92,7 +93,7 @@ export async function POST(req: NextRequest) {
     }
     console.error("Upscale error:", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "เกิดข้อผิดพลาดในการ Upscale" },
+      { error: (error instanceof Error && publicErrorMessage(error.message)) || "เกิดข้อผิดพลาดในการ Upscale" },
       { status: 500 }
     );
   }

@@ -90,7 +90,7 @@ export async function POST(request: NextRequest) {
 
   // Create default models
   const defaultModels = [
-    { providerSlug: 'pollinations', modelId: 'flux', name: 'Pollinations Free', category: 'image', costPerUnit: 0, creditsPerUnit: 1, maxWidth: 1280, maxHeight: 1280 },
+    { providerSlug: 'pollinations', modelId: 'flux', name: 'FLUX ฟรี', category: 'image', costPerUnit: 0, creditsPerUnit: 1, maxWidth: 1280, maxHeight: 1280 },
     { providerSlug: 'byteplus', modelId: 'seedream-3.0', name: 'Seedream 3.0', category: 'image', costPerUnit: 0.03, creditsPerUnit: 3, maxWidth: 2048, maxHeight: 2048 },
     { providerSlug: 'byteplus', modelId: 'seedream-5.0-lite', name: 'Seedream 5.0 Lite', category: 'image', costPerUnit: 0.03, creditsPerUnit: 3, maxWidth: 4096, maxHeight: 4096 },
     { providerSlug: 'byteplus', modelId: 'seedance-1.0-lite', name: 'Seedance 1.0 Lite', category: 'video', costPerUnit: 0.05, creditsPerUnit: 12, maxDuration: 10 },

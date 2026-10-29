@@ -730,8 +730,9 @@ export const KIE_CATALOG: KieEntry[] = [
   },
   {
     key: 'kie/minimax-h3',
-    name: 'MiniMax H3 (KIE)',
-    description: 'MiniMax H3 ผ่าน KIE — ไม่ต้องรอเช่าเครื่อง ใส่ภาพแรก/ภาพสุดท้ายได้ ถึง 2K',
+    // Customers see this name: never the vendor's, never how we serve it (public-provider.ts).
+    name: 'MiniMax H3 Express',
+    description: 'MiniMax H3 เริ่มสร้างทันทีไม่ต้องรอคิว ใส่ภาพแรก/ภาพสุดท้ายได้ ถึง 2K',
     category: 'video',
     subcategory: 'general',
     tierParam: 'resolution',

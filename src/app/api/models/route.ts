@@ -8,7 +8,7 @@ import { getCatalogEntry, isCommunityOnlyModel, visibleVideoOptions } from '@/li
 import { getGpuConfig } from '@/lib/gpu/config';
 import { GpuBalance } from '@/lib/services/gpu-balance';
 import { isStorageConfigured } from '@/lib/storage/r2';
-import { isInHouse, publicProvider } from '@/lib/public-provider';
+import { isInHouse, publicModelDescription, publicModelId, publicModelName, publicProvider } from '@/lib/public-provider';
 import { communityListing, NO_MACHINE_LISTING_TEXT } from '@/lib/gpu/community-dispatch';
 import { communityMachineAvailable } from '@/lib/gpu/community-availability';
 import { getAllStoredWorkflows, visibleQualityModes } from '@/lib/gpu/workflow-overrides';
@@ -310,9 +310,10 @@ export async function GET() {
               : UNAVAILABLE_TEXT.maintenance;
       return {
         id: m.id,
-        modelId: m.modelId,
-        name: m.name,
-        description: m.description,
+        // Customers never see which vendor serves a model (public-provider.ts).
+        modelId: publicModelId(m.modelId),
+        name: publicModelName(m.modelId, m.name),
+        description: publicModelDescription(m.modelId, m.description),
         category: m.category,
         subcategory: m.subcategory,
         thumbnail: m.thumbnail,
@@ -331,6 +332,11 @@ export async function GET() {
         sortOrder: m.sortOrder,
         readiness: m.readiness,
         provider: publicProvider(m.provider),
+        // What the studio used to read off the provider's slug: an order that
+        // finishes in the background (poll up to 35 min), and a model that
+        // reads Latin prompts only (warn before a Thai one).
+        asyncApi: m.provider.slug === 'kie',
+        latinPromptOnly: m.provider.slug === 'pollinations',
         // What GenerationService will charge, so the studio shows the same
         // number: an in-house job renders one output and may price by length.
         maxOutputs: inHouse || kie ? 1 : null,

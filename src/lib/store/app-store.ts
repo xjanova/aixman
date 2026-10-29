@@ -18,7 +18,12 @@ interface AIModel {
   maxDuration: number | null;
   description?: string | null;
   isFeatured: boolean;
+  /** Always our own brand: customers never learn which vendor serves a model (public-provider.ts). */
   provider: { name: string; slug: string; logo: string | null };
+  /** The order finishes in the background; the studio polls it for up to 35 min. */
+  asyncApi?: boolean;
+  /** The model reads Latin prompts only; a Thai one renders something unrelated. */
+  latinPromptOnly?: boolean;
   /** Picker picture: the admin's thumbnail or the family's sample (model-samples.ts). */
   preview?: ModelPreview | null;
   /**

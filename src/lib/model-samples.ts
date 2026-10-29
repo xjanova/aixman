@@ -5,7 +5,9 @@
  * Pictures are the publishers' own examples found on the web (model cards,
  * official pages, Wikimedia Commons), copied into `public/model-samples/` —
  * not hotlinked, since a vendor page that moves would leave the picker broken.
- * Where each one came from is in `public/model-samples/CREDITS.md`.
+ * Where each one came from is in `assets/model-samples/CREDITS.md` — kept
+ * out of `public/`: it names the vendor pages, and customers must not read
+ * which services we use (public-provider.ts).
  *
  * An admin's `ai_models.thumbnail` wins over these, so a row can be given its
  * own picture without a deploy.

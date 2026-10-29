@@ -2490,7 +2490,7 @@ export default function GeneratePage() {
     // An API row that bills by the clip is a re-dub the server finishes in the
     // background, and so is every KIE order (after() + poll): a Veo clip or an
     // upscale outlasts the four minutes an API answer is otherwise given.
-    const slowApi = Boolean(videoRule?.billing) || selectedModel?.provider.slug === "kie";
+    const slowApi = Boolean(videoRule?.billing) || selectedModel?.asyncApi === true;
     const sent = await postGeneration({
       modelId: selectedModelId,
       // Lip-sync has no generation type of its own on the server: what it
@@ -3197,7 +3197,6 @@ export default function GeneratePage() {
                         {selectedModel.canOrder === false ? (selectedModel.status === "tuning" ? "กำลังปรับแต่ง" : "ยังใช้ไม่ได้") : "พร้อมใช้"}
                       </span>
                       {refText && <span className="rp-tag" data-tone="ref">{refText}</span>}
-                      <span className="rp-tag">{selectedModel.provider.name}</span>
                     </span>
                   )}
                 </span>
@@ -3383,9 +3382,9 @@ export default function GeneratePage() {
                 <span className="rp-kbd rp-mono" title="สั่งสร้างจากช่องพิมพ์ได้เลย">Ctrl/⌘ + Enter = ทอ</span>
               </div>
             </div>
-            {/* The free Pollinations model does not understand Thai — it renders
-                an unrelated image instead of failing, so warn before credits are spent. */}
-            {selectedModel?.provider.slug === "pollinations" && THAI_CHARS.test(prompt) && (
+            {/* The free model does not understand Thai — it renders an unrelated
+                image instead of failing, so warn before credits are spent. */}
+            {selectedModel?.latinPromptOnly && THAI_CHARS.test(prompt) && (
               <div className="rp-warn" style={{ marginTop: 8 }}>
                 โมเดลฟรีอ่านภาษาไทยไม่ออก — จะได้ภาพที่ไม่ตรงกับที่พิมพ์ กรุณาพิมพ์ prompt เป็นภาษาอังกฤษ หรือเลือกโมเดลแบบเสียเครดิต
               </div>

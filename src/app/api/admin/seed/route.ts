@@ -116,7 +116,7 @@ export async function POST() {
       // Pollinations — Image (free, no key). One model only: the anonymous tier
       // ignores the `model` param and serves whatever it picks, so listing
       // flux/turbo variants here would be fiction.
-      { providerSlug: 'pollinations', modelId: 'flux', name: 'Pollinations Free', category: 'image', subcategory: 'fast', costPerUnit: 0, creditsPerUnit: 1, maxWidth: 1280, maxHeight: 1280, isFeatured: true, description: 'ฟรี ไม่ต้องใช้ API key • คิว/ความละเอียดจำกัด • ใส่ token ที่ Account Pool เพื่ออัปเกรดโมเดล' },
+      { providerSlug: 'pollinations', modelId: 'flux', name: 'FLUX ฟรี', category: 'image', subcategory: 'fast', costPerUnit: 0, creditsPerUnit: 1, maxWidth: 1280, maxHeight: 1280, isFeatured: true, description: 'สร้างภาพฟรี • คิวและความละเอียดจำกัด • เหมาะลองไอเดียเร็ว ๆ' },
 
       // BytePlus — Image
       { providerSlug: 'byteplus', modelId: 'seedream-3.0', name: 'Seedream 3.0', category: 'image', subcategory: 'general', costPerUnit: 0.03, creditsPerUnit: 3, maxWidth: 2048, maxHeight: 2048, isFeatured: true },

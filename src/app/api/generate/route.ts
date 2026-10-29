@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId, isAdmin } from '@/lib/auth';
 import { GenerationService } from '@/lib/services/generation';
 import { generationErrorResponse } from '@/lib/services/generation-errors';
+import { publicErrorMessage } from '@/lib/public-provider';
 import { keyFromPublicUrl } from '@/lib/storage/r2';
 import type { GenerationRequest } from '@/types';
 
@@ -95,7 +96,8 @@ export async function POST(request: NextRequest) {
       isAdmin: await isAdmin(),
     });
 
-    return NextResponse.json(result);
+    // A vendor's failure text names the vendor; customers get it without.
+    return NextResponse.json(result.error ? { ...result, error: publicErrorMessage(result.error) } : result);
   } catch (error) {
     const known = generationErrorResponse(error);
     if (known) return NextResponse.json(known.body, { status: known.status });

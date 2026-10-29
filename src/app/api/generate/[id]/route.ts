@@ -7,7 +7,7 @@ import { GpuEta, formatEta } from '@/lib/services/gpu-eta';
 import { GpuProgress, estimatedFraction, type RenderPhase } from '@/lib/services/gpu-progress';
 import { GpuBalance, INSUFFICIENT_BALANCE_GRACE_MS } from '@/lib/services/gpu-balance';
 import { getGpuConfig } from '@/lib/gpu/config';
-import { publicProvider } from '@/lib/public-provider';
+import { publicErrorMessage, publicModelName, publicProvider } from '@/lib/public-provider';
 import { startupPlaces } from '@/lib/queue-progress';
 
 /**
@@ -159,10 +159,10 @@ export async function GET(
     thumbnailUrl: generation.thumbnailUrl,
     creditsUsed: generation.creditsUsed,
     processingMs: generation.processingMs,
-    errorMessage: generation.errorMessage,
+    errorMessage: publicErrorMessage(generation.errorMessage),
     prompt: generation.prompt,
     model: {
-      name: generation.model.name,
+      name: publicModelName(generation.model.modelId, generation.model.name),
       provider: publicProvider(generation.model.provider).name,
     },
     createdAt: generation.createdAt,

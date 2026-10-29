@@ -2,7 +2,7 @@ import prisma from '@/lib/db';
 import { ApiError, chatCompletion, listModels, type ApiCaller } from '@/lib/llm/gateway';
 import { getKieEntry } from '@/lib/providers/kie-catalog';
 import { kieQuote, readKiePriceTable, speechChars } from '@/lib/providers/kie-pricing';
-import { publicProvider } from '@/lib/public-provider';
+import { matchesModelId, publicErrorMessage, publicModelDescription, publicModelId, publicModelName, publicProvider } from '@/lib/public-provider';
 import { ModelReadiness } from '@/lib/services/model-readiness';
 import { isOrderRefused } from '@/lib/services/order-refusal';
 import { isStorageConfigured, keyFromPublicUrl, uploadBuffer } from '@/lib/storage/r2';
@@ -243,7 +243,9 @@ async function pickModel(kind: Kind, wanted: string | undefined, admin: boolean)
     return orderable[0];
   }
   const w = wanted.trim().toLowerCase();
-  const found = orderable.find((r) => r.modelId.toLowerCase() === w || String(r.id) === w || r.name.toLowerCase() === w);
+  const found = orderable.find(
+    (r) => matchesModelId(r.modelId, w) || String(r.id) === w || r.name.toLowerCase() === w || publicModelName(r.modelId, r.name).toLowerCase() === w,
+  );
   if (!found) throw new McpToolError(`No ${kind} model "${wanted}" is available. Call list_models with kind "${kind}".`);
   return found;
 }
@@ -259,11 +261,11 @@ async function describeGeneration(userId: number, id: number): Promise<Json | nu
   return {
     id: g.id,
     type: g.type,
-    model: g.model.modelId,
+    model: publicModelId(g.model.modelId),
     status: g.status,
     prompt: g.prompt,
     result_urls: g.mediaDeletedAt ? [] : urls,
-    error: g.status === 'failed' ? g.errorMessage : null,
+    error: g.status === 'failed' ? publicErrorMessage(g.errorMessage) : null,
     credits_used: g.creditsUsed - g.creditsRefunded,
     refunded: g.creditsRefunded > 0,
     expires_at: g.expiresAt?.toISOString() ?? null,
@@ -311,18 +313,18 @@ async function speak(caller: ApiCaller, args: Json): Promise<Json> {
   const admin = await isAdminUser(caller.userId);
   const model = await pickModel('speech', str(args, 'model'), admin);
   const speech = model.provider.slug === 'kie' ? getKieEntry(model.modelId)?.speech : undefined;
-  if (!speech) throw new McpToolError(`"${model.modelId}" cannot read text aloud. Call list_models with kind "speech".`);
+  if (!speech) throw new McpToolError(`"${publicModelId(model.modelId)}" cannot read text aloud. Call list_models with kind "speech".`);
   const chars = speechChars(text);
   if (chars === 0) throw new McpToolError('`text` is empty.');
   if (chars > speech.maxChars) {
-    throw new McpToolError(`\`text\` is ${chars} characters; ${model.modelId} reads at most ${speech.maxChars} per order. Split it.`);
+    throw new McpToolError(`\`text\` is ${chars} characters; ${publicModelId(model.modelId)} reads at most ${speech.maxChars} per order. Split it.`);
   }
   const voice = str(args, 'voice');
   if (voice && !speech.voices.some((v) => v.id === voice)) {
-    throw new McpToolError(`Unknown voice "${voice}" for ${model.modelId}. Voices: ${speech.voices.map((v) => v.id).join(', ')}.`);
+    throw new McpToolError(`Unknown voice "${voice}" for ${publicModelId(model.modelId)}. Voices: ${speech.voices.map((v) => v.id).join(', ')}.`);
   }
   const style = str(args, 'style')?.trim();
-  if (style && !speech.style) throw new McpToolError(`${model.modelId} takes no \`style\`; leave it out or pick a model with takes_style.`);
+  if (style && !speech.style) throw new McpToolError(`${publicModelId(model.modelId)} takes no \`style\`; leave it out or pick a model with takes_style.`);
   if (style && style.length > 300) throw new McpToolError('`style` must be under 300 characters.');
   const request: GenerationRequest = {
     modelId: model.id,
@@ -341,11 +343,11 @@ async function order(caller: ApiCaller, modelId: string, request: GenerationRequ
     const result = await GenerationService.generate(caller.userId, request, { isAdmin: admin });
     return {
       id: result.id,
-      model: modelId,
+      model: publicModelId(modelId),
       status: result.status,
       credits_used: result.creditsUsed,
       result_urls: result.resultUrls ?? (result.resultUrl ? [result.resultUrl] : []),
-      ...(result.error ? { error: result.error } : {}),
+      ...(result.error ? { error: publicErrorMessage(result.error) } : {}),
       next: DONE.has(result.status) ? undefined : `Call get_generation with id ${result.id} and wait_seconds 45 until status is completed.`,
     };
   } catch (error) {
@@ -385,11 +387,11 @@ async function callTool(caller: ApiCaller, name: string, args: Json): Promise<Js
           if (rowKind === 'speech' && !speech) continue;
           const table = speech ? readKiePriceTable(r.defaultParams) : null;
           out.push({
-            id: r.modelId,
+            id: publicModelId(r.modelId),
             kind: rowKind,
-            name: r.name,
+            name: publicModelName(r.modelId, r.name),
             provider: publicProvider(r.provider).name,
-            description: r.description,
+            description: publicModelDescription(r.modelId, r.description),
             credits: table ? kieQuote(table, { chars: 1000 }) : r.creditsPerUnit,
             unit:
               rowKind === 'image' ? 'per image'
