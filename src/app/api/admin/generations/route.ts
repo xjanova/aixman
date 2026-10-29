@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isAdmin } from '@/lib/auth';
 import type { Prisma } from '@/generated/prisma/client';
 import prisma from '@/lib/db';
+import { storedMessageThai } from '@/lib/i18n/messages';
 
 /** Admin generations list — moderation / oversight across all users. */
 export async function GET(request: NextRequest) {
@@ -53,7 +54,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       // costUsd is a Prisma Decimal — it serialises as a string, which the
       // client would then have to guess at. Send a number.
-      data: data.map((g) => ({ ...g, costUsd: Number(g.costUsd) })),
+      // A customer-facing failure is stored in both languages; admins read the Thai.
+      data: data.map((g) => ({ ...g, costUsd: Number(g.costUsd), errorMessage: storedMessageThai(g.errorMessage) })),
       total,
       pages: Math.ceil(total / limit),
       page,

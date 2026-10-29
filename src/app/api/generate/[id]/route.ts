@@ -9,6 +9,7 @@ import { GpuBalance, INSUFFICIENT_BALANCE_GRACE_MS } from '@/lib/services/gpu-ba
 import { getGpuConfig } from '@/lib/gpu/config';
 import { publicErrorMessage, publicModelName, publicProvider } from '@/lib/public-provider';
 import { startupPlaces } from '@/lib/queue-progress';
+import { pick, requestLocale, type Locale, type Msg } from '@/lib/i18n/locale';
 
 /**
  * What the customer sees while an in-house job waits: a queue.
@@ -21,26 +22,33 @@ import { startupPlaces } from '@/lib/queue-progress';
  */
 
 const QUEUE_LABELS = {
-  queued: 'อยู่ในคิว',
-  next: 'ใกล้ถึงคิวของคุณแล้ว',
-  starting: 'ถึงคิวของคุณแล้ว กำลังเริ่มสร้าง',
-  rendering: 'กำลังสร้างผลงานของคุณ',
-  paused: 'ระบบสร้างงานหยุดชั่วคราว',
-} as const;
+  queued: { th: 'อยู่ในคิว', en: 'In the queue' },
+  next: { th: 'ใกล้ถึงคิวของคุณแล้ว', en: 'You’re almost next' },
+  starting: { th: 'ถึงคิวของคุณแล้ว กำลังเริ่มสร้าง', en: 'It’s your turn — starting to create' },
+  rendering: { th: 'กำลังสร้างผลงานของคุณ', en: 'Creating your work' },
+} satisfies Record<string, Msg>;
 
 /** What each measured stage of a render is called — never how it is run. */
-const PHASE_LABELS: Record<RenderPhase, string> = {
+const PHASE_LABELS: Record<RenderPhase, Msg> = {
   waiting: QUEUE_LABELS.starting,
-  loading: 'ถึงคิวของคุณแล้ว กำลังเตรียมการสร้าง',
+  loading: { th: 'ถึงคิวของคุณแล้ว กำลังเตรียมการสร้าง', en: 'It’s your turn — getting ready to create' },
   sampling: QUEUE_LABELS.rendering,
-  finishing: 'ใกล้เสร็จแล้ว กำลังเก็บรายละเอียดสุดท้าย',
-  saving: 'สร้างเสร็จแล้ว กำลังบันทึกผลงาน',
+  finishing: { th: 'ใกล้เสร็จแล้ว กำลังเก็บรายละเอียดสุดท้าย', en: 'Almost done — adding the final details' },
+  saving: { th: 'สร้างเสร็จแล้ว กำลังบันทึกผลงาน', en: 'Done — saving your work' },
 };
 
+function pausedLabel(locale: Locale): string {
+  const minutes = Math.round(INSUFFICIENT_BALANCE_GRACE_MS / 60_000);
+  return locale === 'en'
+    ? `Creating is paused for now. If it isn’t back within ${minutes} minutes, your credits are refunded automatically.`
+    : `ระบบสร้างงานหยุดชั่วคราว ถ้ายังไม่กลับมาภายใน ${minutes} นาที จะคืนเครดิตให้อัตโนมัติ`;
+}
+
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const locale = requestLocale(request);
   const userId = await getCurrentUserId();
   if (!userId) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -102,22 +110,22 @@ export async function GET(
       const elapsed = job.startedAt ? (Date.now() - job.startedAt.getTime()) / 1000 : 0;
       gpu = {
         stage: 'rendering',
-        label: measured?.phase ? PHASE_LABELS[measured.phase] : QUEUE_LABELS.rendering,
+        label: pick(measured?.phase ? PHASE_LABELS[measured.phase] : QUEUE_LABELS.rendering, locale),
         queuePosition: 0,
         etaSeconds: eta.seconds,
-        etaLabel: formatEta(eta.seconds),
+        etaLabel: formatEta(eta.seconds, locale),
         etaBasis: eta.basis,
         progress: measured?.fraction ?? estimatedFraction(elapsed, eta.seconds),
         phase: measured?.phase ?? null,
       };
     } else if (job.status === 'assigned') {
-      gpu = { stage: 'starting', label: QUEUE_LABELS.starting, queuePosition: 0, etaSeconds: eta.seconds, etaLabel: formatEta(eta.seconds), etaBasis: eta.basis, progress: 0, phase: null };
+      gpu = { stage: 'starting', label: pick(QUEUE_LABELS.starting, locale), queuePosition: 0, etaSeconds: eta.seconds, etaLabel: formatEta(eta.seconds, locale), etaBasis: eta.basis, progress: 0, phase: null };
     } else if (await GpuBalance.pausesModel(await getGpuConfig(), job.modelKey)) {
       // Nothing will render until an admin tops up the vendor balance, so a
       // countdown would be a false promise. Say what happens instead.
       gpu = {
         stage: 'queued',
-        label: `${QUEUE_LABELS.paused} ถ้ายังไม่กลับมาภายใน ${Math.round(INSUFFICIENT_BALANCE_GRACE_MS / 60_000)} นาที จะคืนเครดิตให้อัตโนมัติ`,
+        label: pausedLabel(locale),
         queuePosition: null,
         etaSeconds: null,
         etaLabel: null,
@@ -132,10 +140,10 @@ export async function GET(
       const position = real + startup;
       gpu = {
         stage: 'queued',
-        label: position <= 1 ? QUEUE_LABELS.next : QUEUE_LABELS.queued,
+        label: pick(position <= 1 ? QUEUE_LABELS.next : QUEUE_LABELS.queued, locale),
         queuePosition: position,
         etaSeconds: eta.seconds,
-        etaLabel: formatEta(eta.seconds),
+        etaLabel: formatEta(eta.seconds, locale),
         // 'baseline' means no history yet — the UI softens the wording so a
         // first run's rough guess isn't presented as a firm promise.
         etaBasis: eta.basis,
@@ -159,10 +167,10 @@ export async function GET(
     thumbnailUrl: generation.thumbnailUrl,
     creditsUsed: generation.creditsUsed,
     processingMs: generation.processingMs,
-    errorMessage: publicErrorMessage(generation.errorMessage),
+    errorMessage: publicErrorMessage(generation.errorMessage, locale),
     prompt: generation.prompt,
     model: {
-      name: publicModelName(generation.model.modelId, generation.model.name),
+      name: publicModelName(generation.model.modelId, generation.model.name, locale),
       provider: publicProvider(generation.model.provider).name,
     },
     createdAt: generation.createdAt,

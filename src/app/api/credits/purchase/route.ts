@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth';
 import { WalletService } from '@/lib/services/wallet';
 import { ReferralService } from '@/lib/services/referral';
+import { requestLocale, translator } from '@/lib/i18n/locale';
 
 /**
  * POST /api/credits/purchase
@@ -11,6 +12,7 @@ import { ReferralService } from '@/lib/services/referral';
  * Body: { packageSlug: string, idempotencyKey: string }
  */
 export async function POST(request: NextRequest) {
+  const t = translator(requestLocale(request));
   const userId = await getCurrentUserId();
   if (!userId) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -31,7 +33,7 @@ export async function POST(request: NextRequest) {
     const result = await WalletService.purchasePackageWithWallet(userId, packageSlug, idempotencyKey);
 
     if (result.duplicate) {
-      return NextResponse.json({ success: true, duplicate: true, message: 'รายการนี้ถูกดำเนินการแล้ว' });
+      return NextResponse.json({ success: true, duplicate: true, message: t('รายการนี้ถูกดำเนินการแล้ว', 'This purchase has already gone through.') });
     }
 
     // Referral commission — credit the referrer if this buyer was referred
@@ -53,16 +55,16 @@ export async function POST(request: NextRequest) {
 
     switch (message) {
       case 'PACKAGE_NOT_FOUND':
-        return NextResponse.json({ error: 'ไม่พบแพ็กเกจนี้ หรือไม่สามารถซื้อด้วยกระเป๋าเงินได้' }, { status: 404 });
+        return NextResponse.json({ error: t('ไม่พบแพ็กเกจนี้ หรือไม่สามารถซื้อด้วยกระเป๋าเงินได้', "This package wasn't found or can't be bought with Wallet.") }, { status: 404 });
       case 'NO_WALLET':
-        return NextResponse.json({ error: 'คุณยังไม่มีกระเป๋าเงิน กรุณาเติมเงินที่ XMAN Studio ก่อน' }, { status: 400 });
+        return NextResponse.json({ error: t('คุณยังไม่มีกระเป๋าเงิน กรุณาเติมเงินที่ XMAN Studio ก่อน', "You don't have a Wallet yet. Please top up at XMAN Studio first.") }, { status: 400 });
       case 'WALLET_INACTIVE':
-        return NextResponse.json({ error: 'กระเป๋าเงินถูกระงับการใช้งาน' }, { status: 403 });
+        return NextResponse.json({ error: t('กระเป๋าเงินถูกระงับการใช้งาน', 'Your Wallet is suspended.') }, { status: 403 });
       case 'INSUFFICIENT_WALLET':
-        return NextResponse.json({ error: 'ยอดเงินในกระเป๋าไม่เพียงพอ กรุณาเติมเงินที่ XMAN Studio' }, { status: 402 });
+        return NextResponse.json({ error: t('ยอดเงินในกระเป๋าไม่เพียงพอ กรุณาเติมเงินที่ XMAN Studio', 'Your Wallet balance is too low. Please top up at XMAN Studio.') }, { status: 402 });
       default:
         console.error('Wallet purchase error:', error);
-        return NextResponse.json({ error: 'ไม่สามารถดำเนินการได้ กรุณาลองใหม่' }, { status: 500 });
+        return NextResponse.json({ error: t('ไม่สามารถดำเนินการได้ กรุณาลองใหม่', "We couldn't complete the purchase. Please try again.") }, { status: 500 });
     }
   }
 }

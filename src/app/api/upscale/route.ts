@@ -4,12 +4,16 @@ import { prisma } from "@/lib/db";
 import { GenerationService } from "@/lib/services/generation";
 import { isOrderRefused } from "@/lib/services/order-refusal";
 import { publicErrorMessage } from "@/lib/public-provider";
+import { requestLocale, translator } from "@/lib/i18n/locale";
+import { errorMsg, messageFor } from "@/lib/i18n/messages";
 
 export async function POST(req: NextRequest) {
+  const locale = requestLocale(req);
+  const t = translator(locale);
   try {
     const userId = await getCurrentUserId();
     if (!userId) {
-      return NextResponse.json({ error: "กรุณาเข้าสู่ระบบ" }, { status: 401 });
+      return NextResponse.json({ error: t("กรุณาเข้าสู่ระบบ", "Please sign in") }, { status: 401 });
     }
 
     const body = await req.json().catch(() => ({}));
@@ -19,7 +23,7 @@ export async function POST(req: NextRequest) {
       body.modelId == null ? null : typeof body.modelId === "number" ? body.modelId : parseInt(String(body.modelId), 10);
 
     if (!Number.isInteger(generationId) || generationId <= 0) {
-      return NextResponse.json({ error: "กรุณาระบุ generationId ที่ถูกต้อง" }, { status: 400 });
+      return NextResponse.json({ error: t("กรุณาระบุ generationId ที่ถูกต้อง", "Please give a valid generationId") }, { status: 400 });
     }
 
     // Fetch the original generation (scoped to the requesting user)
@@ -29,7 +33,7 @@ export async function POST(req: NextRequest) {
     });
 
     if (!original || !original.resultUrl) {
-      return NextResponse.json({ error: "ไม่พบผลงานต้นฉบับ" }, { status: 404 });
+      return NextResponse.json({ error: t("ไม่พบผลงานต้นฉบับ", "The original work wasn’t found") }, { status: 404 });
     }
 
     // Find an upscale model - use specified or auto-select
@@ -63,7 +67,7 @@ export async function POST(req: NextRequest) {
 
     if (!upscaleModel) {
       return NextResponse.json(
-        { error: "ยังไม่มีโมเดล Upscale ที่ใช้งานได้ กรุณาให้แอดมินเพิ่มโมเดล Upscale ก่อน" },
+        { error: t("ยังไม่มีโมเดล Upscale ที่ใช้งานได้ กรุณาให้แอดมินเพิ่มโมเดล Upscale ก่อน", "No upscale model is available yet") },
         { status: 404 }
       );
     }
@@ -85,15 +89,20 @@ export async function POST(req: NextRequest) {
       params,
     }, { inputIsOwnRender: true });
 
-    return NextResponse.json(result.error ? { ...result, error: publicErrorMessage(result.error) } : result);
+    return NextResponse.json(result.error ? { ...result, error: publicErrorMessage(result.error, locale) } : result);
   } catch (error) {
-    // Refused before charging, in Thai the customer can act on (content-tier.ts).
+    // Refused before charging, in words the customer can act on (content-tier.ts).
     if (isOrderRefused(error)) {
-      return NextResponse.json({ error: error.message, code: error.code }, { status: error.httpStatus });
+      return NextResponse.json({ error: messageFor(error, locale), code: error.code }, { status: error.httpStatus });
     }
     console.error("Upscale error:", error);
     return NextResponse.json(
-      { error: (error instanceof Error && publicErrorMessage(error.message)) || "เกิดข้อผิดพลาดในการ Upscale" },
+      {
+        error:
+          (errorMsg(error) && messageFor(error, locale)) ||
+          (error instanceof Error && publicErrorMessage(error.message, locale)) ||
+          t("เกิดข้อผิดพลาดในการ Upscale", "Upscaling failed"),
+      },
       { status: 500 }
     );
   }

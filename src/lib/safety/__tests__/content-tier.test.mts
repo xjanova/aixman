@@ -274,11 +274,13 @@ test('stored tiers are read tolerantly', () => {
   assert.equal(readContentTier(null), 'unknown');
 });
 
-test('every refusal is Thai and says no credit was taken', () => {
+test('every refusal is in Thai and English and says no credit was taken', () => {
   for (const category of ['minor-sexual', 'real-person-sexual', 'sexual-violence', 'bestiality', 'necrophilia'] as const) {
     const message = blockedMessage(category);
-    assert.match(message, /[฀-๿]/);
-    assert.match(message, /ไม่ได้หักเครดิต/);
+    assert.match(message.th, /[฀-๿]/);
+    assert.match(message.th, /ไม่ได้หักเครดิต/);
+    assert.doesNotMatch(message.en, /[฀-๿]/);
+    assert.match(message.en, /no credits? (were|was) (charged|taken)/i);
   }
 });
 

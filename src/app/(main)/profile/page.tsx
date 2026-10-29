@@ -18,22 +18,31 @@ import Link from "next/link";
 import Image from "next/image";
 import { AudioCover } from "@/components/xdreamer/audio";
 import { loginHref } from "@/lib/safe-callback";
+import { useLocale, useT } from "@/lib/i18n/client";
+import { formatDate, formatNumber, type Msg } from "@/lib/i18n/locale";
+import { creditDescription } from "@/lib/i18n/credit-text";
 
 const HUE = 70;
 
 interface CreditInfo { balance: number; totalBought: number; totalUsed: number; totalBonus: number; }
-interface Generation { id: number; type: string; status: string; prompt: string; resultUrl: string | null; thumbnailUrl: string | null; model: { name: string; provider: { name: string } }; creditsUsed: number; createdAt: string; }
+interface Generation { id: number; type: string; status: string; prompt: string; resultUrl: string | null; thumbnailUrl: string | null; model: { name: string }; creditsUsed: number; createdAt: string; }
 interface Transaction { id: number; type: string; amount: number; balanceAfter: number; description: string | null; createdAt: string; }
 
-const transactionTypeLabels: Record<string, string> = {
-  purchase: "ซื้อเครดิต", usage: "ใช้เครดิต", bonus: "โบนัส",
-  admin_adjust: "ปรับโดยแอดมิน", refund: "คืนเครดิต",
-  referral_commission: "ค่าคอมมิชชั่น",
+const transactionTypeLabels: Record<string, Msg> = {
+  purchase: { th: "ซื้อเครดิต", en: "Credits bought" },
+  usage: { th: "ใช้เครดิต", en: "Credits used" },
+  bonus: { th: "โบนัส", en: "Bonus" },
+  admin_adjust: { th: "ปรับโดยแอดมิน", en: "Adjusted by admin" },
+  refund: { th: "คืนเครดิต", en: "Refund" },
+  referral_commission: { th: "ค่าคอมมิชชั่น", en: "Commission" },
+  "api-usage": { th: "ใช้งาน API", en: "API usage" },
 };
 
 export default function ProfilePage() {
   const { data: session, status } = useSession();
   const router = useRouter();
+  const t = useT();
+  const { locale } = useLocale();
   const [credits, setCredits] = useState<CreditInfo | null>(null);
   const [generations, setGenerations] = useState<Generation[]>([]);
   const [totalGens, setTotalGens] = useState(0);
@@ -66,10 +75,10 @@ export default function ProfilePage() {
 
   // Build 4 X-DREAMER stat cards
   const statCards = [
-    { l: "เครดิตคงเหลือ", v: credits ? credits.balance.toLocaleString() : "—", d: credits ? `จาก ${credits.totalBought.toLocaleString()} ซื้อมา` : "", hue: 200 },
-    { l: "ผลงานทั้งหมด", v: totalGens > 0 ? totalGens.toLocaleString() : "—", d: "ทอด้วยจินตนาการ", hue: 160 },
-    { l: "เครดิตที่ใช้", v: credits ? credits.totalUsed.toLocaleString() : "—", d: credits ? `${usedPct.toFixed(0)}% ของที่ซื้อ` : "", hue: 290 },
-    { l: "โบนัส", v: credits ? credits.totalBonus.toLocaleString() : "—", d: "จาก referral / promo", hue: 260 },
+    { l: t("เครดิตคงเหลือ", "Credits left"), v: credits ? formatNumber(credits.balance, locale) : "—", d: credits ? t(`จาก ${formatNumber(credits.totalBought, locale)} ซื้อมา`, `of ${formatNumber(credits.totalBought, locale)} bought`) : "", hue: 200 },
+    { l: t("ผลงานทั้งหมด", "Total creations"), v: totalGens > 0 ? formatNumber(totalGens, locale) : "—", d: t("ทอด้วยจินตนาการ", "Woven from imagination"), hue: 160 },
+    { l: t("เครดิตที่ใช้", "Credits used"), v: credits ? formatNumber(credits.totalUsed, locale) : "—", d: credits ? t(`${usedPct.toFixed(0)}% ของที่ซื้อ`, `${usedPct.toFixed(0)}% of what you bought`) : "", hue: 290 },
+    { l: t("โบนัส", "Bonus"), v: credits ? formatNumber(credits.totalBonus, locale) : "—", d: t("จาก referral / promo", "From referrals and promos"), hue: 260 },
   ];
 
   return (
@@ -98,9 +107,12 @@ export default function ProfilePage() {
             }}>{initial}</div>
           </div>
           <div>
-            <div style={{ fontSize: 12, letterSpacing: "0.16em", color: "#a5f3fc", textTransform: "uppercase", marginBottom: 6 }}>· สวัสดี, {user?.name || "ผู้ทอฝัน"}</div>
+            <div style={{ fontSize: 12, letterSpacing: "0.16em", color: "#a5f3fc", textTransform: "uppercase", marginBottom: 6 }}>{t("· สวัสดี, ", "· Hello, ")}{user?.name || t("ผู้ทอฝัน", "dreamer")}</div>
             <h1 style={{ fontSize: 42, fontWeight: 300, color: "#fff", letterSpacing: "-0.02em", margin: 0 }}>
-              ปราสาทแห่งความคิด <span className="xdr-italic-th" style={{ fontStyle: "italic", color: "#c4b5fd" }}>ของคุณ</span>
+              {t(
+                <>ปราสาทแห่งความคิด <span className="xdr-italic-th" style={{ fontStyle: "italic", color: "#c4b5fd" }}>ของคุณ</span></>,
+                <>Your <span className="xdr-italic-th" style={{ fontStyle: "italic", color: "#c4b5fd" }}>castle of ideas</span></>,
+              )}
             </h1>
             <div style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>{user?.email}</div>
           </div>
@@ -110,7 +122,7 @@ export default function ProfilePage() {
           background: `linear-gradient(135deg, hsl(${160 + HUE},70%,50%), hsl(${280 + HUE},70%,55%))`,
           color: "#fff", border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", textDecoration: "none",
           boxShadow: `0 12px 30px -10px hsla(${270 + HUE},80%,50%,0.6)`,
-        }}>+ เริ่มงานใหม่</Link>
+        }}>{t("+ เริ่มงานใหม่", "+ New creation")}</Link>
       </div>
 
       {/* Stat cards (4) */}
@@ -141,8 +153,8 @@ export default function ProfilePage() {
           backdropFilter: "blur(18px)",
         }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-            <div style={{ fontSize: 15, color: "#fff", fontWeight: 500 }}>ผลงานล่าสุด</div>
-            <Link href="/gallery" style={{ fontSize: 12, color: "#a5f3fc", textDecoration: "none" }}>ดูทั้งหมด →</Link>
+            <div style={{ fontSize: 15, color: "#fff", fontWeight: 500 }}>{t("ผลงานล่าสุด", "Recent creations")}</div>
+            <Link href="/gallery" style={{ fontSize: 12, color: "#a5f3fc", textDecoration: "none" }}>{t("ดูทั้งหมด →", "View all →")}</Link>
           </div>
           {loadingGens ? (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
@@ -153,9 +165,9 @@ export default function ProfilePage() {
           ) : generations.length === 0 ? (
             <div style={{ textAlign: "center", padding: "40px 20px" }}>
               <div style={{ width: 70, height: 70, borderRadius: 18, margin: "0 auto 16px", background: `linear-gradient(135deg, hsla(${160 + HUE},60%,20%,0.4), hsla(${280 + HUE},60%,15%,0.4))`, border: "1px solid rgba(255,255,255,0.08)", display: "grid", placeItems: "center", fontSize: 28, color: `hsl(${220 + HUE},70%,75%)` }}>▧</div>
-              <p style={{ fontSize: 13, color: "rgba(203,213,225,0.6)", marginBottom: 14 }}>ยังไม่มีผลงาน</p>
+              <p style={{ fontSize: 13, color: "rgba(203,213,225,0.6)", marginBottom: 14 }}>{t("ยังไม่มีผลงาน", "No creations yet")}</p>
               <Link href="/generate" style={{ display: "inline-block", padding: "10px 22px", borderRadius: 10, background: `linear-gradient(135deg, hsl(${160 + HUE},70%,50%), hsl(${280 + HUE},70%,55%))`, color: "#fff", textDecoration: "none", fontSize: 13, fontWeight: 500 }}>
-                ✦ เริ่มสร้าง
+                {t("✦ เริ่มสร้าง", "✦ Start creating")}
               </Link>
             </div>
           ) : (
@@ -215,20 +227,20 @@ export default function ProfilePage() {
             backdropFilter: "blur(18px)",
             boxShadow: `0 30px 60px -20px hsla(${220 + HUE},70%,50%,0.35)`,
           }}>
-            <div style={{ fontSize: 11, color: "#a5f3fc", letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: 10 }}>· เครดิต</div>
+            <div style={{ fontSize: 11, color: "#a5f3fc", letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: 10 }}>{t("· เครดิต", "· Credits")}</div>
             <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
-              <div style={{ fontSize: 44, fontWeight: 200, color: "#fff", letterSpacing: "-0.02em" }}>{credits ? credits.balance.toLocaleString() : "—"}</div>
-              <div style={{ fontSize: 11, color: "#94a3b8" }}>คงเหลือ</div>
+              <div style={{ fontSize: 44, fontWeight: 200, color: "#fff", letterSpacing: "-0.02em" }}>{credits ? formatNumber(credits.balance, locale) : "—"}</div>
+              <div style={{ fontSize: 11, color: "#94a3b8" }}>{t("คงเหลือ", "left")}</div>
             </div>
             <div style={{ marginTop: 14, height: 5, borderRadius: 4, background: "rgba(255,255,255,0.08)", overflow: "hidden" }}>
               <div style={{ width: `${100 - usedPct}%`, height: "100%", background: `linear-gradient(90deg, hsl(${160 + HUE},70%,55%), hsl(${280 + HUE},70%,60%))` }} />
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#94a3b8", marginTop: 6 }}>
-              <span>ใช้ไป {usedPct.toFixed(0)}%</span>
-              <span>ทั้งหมด {credits ? credits.totalBought.toLocaleString() : "—"}</span>
+              <span>{t(`ใช้ไป ${usedPct.toFixed(0)}%`, `${usedPct.toFixed(0)}% used`)}</span>
+              <span>{t("ทั้งหมด ", "Total ")}{credits ? formatNumber(credits.totalBought, locale) : "—"}</span>
             </div>
             <Link href="/pricing" style={{ display: "block", textAlign: "center", marginTop: 16, padding: "12px 0", borderRadius: 10, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.15)", textDecoration: "none", fontSize: 13, fontWeight: 500 }}>
-              ✦ เติมเครดิต
+              {t("✦ เติมเครดิต", "✦ Top up credits")}
             </Link>
           </div>
 
@@ -237,13 +249,13 @@ export default function ProfilePage() {
             background: "rgba(15,23,42,0.5)", border: "1px solid rgba(255,255,255,0.06)",
             backdropFilter: "blur(18px)",
           }}>
-            <div style={{ fontSize: 13, color: "#fff", fontWeight: 500, marginBottom: 14 }}>เมนูด่วน</div>
+            <div style={{ fontSize: 13, color: "#fff", fontWeight: 500, marginBottom: 14 }}>{t("เมนูด่วน", "Quick links")}</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {[
-                { href: "/generate", l: "สร้างผลงานใหม่", i: "✦" },
-                { href: "/gallery", l: "ดูแกลเลอรี", i: "▧" },
-                { href: "/pricing", l: "ซื้อเครดิต", i: "💳" },
-                { href: "/referral", l: "ชวนเพื่อน รับเครดิต", i: "♢" },
+                { href: "/generate", l: t("สร้างผลงานใหม่", "Create something new"), i: "✦" },
+                { href: "/gallery", l: t("ดูแกลเลอรี", "Open your gallery"), i: "▧" },
+                { href: "/pricing", l: t("ซื้อเครดิต", "Buy credits"), i: "💳" },
+                { href: "/referral", l: t("ชวนเพื่อน รับเครดิต", "Invite friends, earn credits"), i: "♢" },
               ].map(it => (
                 <Link key={it.href} href={it.href} style={{
                   display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px",
@@ -266,7 +278,7 @@ export default function ProfilePage() {
       {/* Transaction history */}
       <div style={{ marginTop: 40 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-          <div style={{ fontSize: 15, color: "#fff", fontWeight: 500 }}>ประวัติเครดิต</div>
+          <div style={{ fontSize: 15, color: "#fff", fontWeight: 500 }}>{t("ประวัติเครดิต", "Credit history")}</div>
         </div>
         <div style={{
           padding: 8, borderRadius: 18,
@@ -282,7 +294,7 @@ export default function ProfilePage() {
           ) : transactions.length === 0 ? (
             <div style={{ textAlign: "center", padding: "40px 20px" }}>
               <div style={{ width: 60, height: 60, borderRadius: 16, margin: "0 auto 14px", background: "rgba(2,6,23,0.4)", display: "grid", placeItems: "center", fontSize: 24, color: "#475569" }}>📜</div>
-              <p style={{ fontSize: 13, color: "rgba(203,213,225,0.5)" }}>ยังไม่มีรายการ</p>
+              <p style={{ fontSize: 13, color: "rgba(203,213,225,0.5)" }}>{t("ยังไม่มีรายการ", "No transactions yet")}</p>
             </div>
           ) : (
             transactions.slice(0, 10).map(txn => {
@@ -293,17 +305,17 @@ export default function ProfilePage() {
                   padding: "14px 18px", borderBottom: "1px solid rgba(255,255,255,0.04)",
                 }}>
                   <div style={{ minWidth: 0, flex: 1 }}>
-                    <div style={{ fontSize: 13, color: "#f1f5f9", fontWeight: 500 }}>{transactionTypeLabels[txn.type] || txn.type}</div>
+                    <div style={{ fontSize: 13, color: "#f1f5f9", fontWeight: 500 }}>{transactionTypeLabels[txn.type] ? t(transactionTypeLabels[txn.type]) : txn.type}</div>
                     <div style={{ fontSize: 11, color: "#64748b", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {txn.description || "—"}
+                      {creditDescription(txn.description, locale) || "—"}
                     </div>
                   </div>
                   <div style={{ textAlign: "right", marginLeft: 16, flexShrink: 0 }}>
                     <div style={{ fontSize: 14, fontWeight: 600, color: positive ? "#34d399" : "#fca5a5" }}>
-                      {positive ? "+" : ""}{txn.amount.toLocaleString()}
+                      {positive ? "+" : ""}{formatNumber(txn.amount, locale)}
                     </div>
                     <div style={{ fontSize: 10, color: "#64748b", fontFamily: "ui-monospace,monospace" }}>
-                      {new Date(txn.createdAt).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" })}
+                      {formatDate(txn.createdAt, locale, { day: "numeric", month: "short", year: "2-digit" })}
                     </div>
                   </div>
                 </div>

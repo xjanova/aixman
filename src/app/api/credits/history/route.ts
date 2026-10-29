@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth';
 import { CreditService } from '@/lib/services/credits';
+import { withoutVendorTags } from '@/lib/public-provider';
 
 export async function GET(request: NextRequest) {
   const userId = await getCurrentUserId();
@@ -20,7 +21,8 @@ export async function GET(request: NextRequest) {
       type: txn.type,
       amount: txn.amount,
       balanceAfter: txn.balanceAfter,
-      description: txn.description,
+      // Written with the model's stored name, which may carry its vendor ("FLUX Dev (fal)").
+      description: txn.description === null ? null : withoutVendorTags(txn.description),
       createdAt: txn.createdAt,
     })),
     total: result.total,

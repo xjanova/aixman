@@ -25,14 +25,18 @@ import { signOut, useSession } from "next-auth/react";
 import { MediaTile } from "./media";
 import { XdreamerLockup } from "./logo";
 import { FAQ_ITEMS, HERO_MEDIA, PROVIDERS, SHOWCASE_ITEMS, type ShowcaseItem } from "@/lib/showcase";
+import { LocaleSwitch } from "@/components/layout/locale-switch";
+import { useT } from "@/lib/i18n/client";
+import type { Msg } from "@/lib/i18n/locale";
 
+/** A package card, already in the visitor's language (src/app/page.tsx). */
 export type Tier = {
   slug: string;
   name: string;
   badge: string | null;
-  /** "ฟรี" or "฿399" */
+  /** "ฟรี" / "Free" or "฿399" */
   price: string;
-  /** "500 + 50 โบนัส" */
+  /** "500 + 50 โบนัส" / "500 + 50 bonus" */
   credits: string;
   feats: string[];
   featured: boolean;
@@ -51,59 +55,78 @@ type ToolKey = "image" | "video" | "edit" | "lipsync" | "audio" | "model3d";
 
 interface Tool {
   key: ToolKey;
-  label: string;
-  en: string;
+  label: Msg;
+  /** The English line over the label — shown as it is in both languages. */
+  eyebrow: string;
   plate: string;
   href: string;
-  desc: string;
-  specs: { k: string; l: string }[];
-  cta: string;
+  desc: Msg;
+  specs: { k: Msg | string; l: Msg }[];
+  cta: Msg;
 }
 
 const TOOLS: Tool[] = [
   {
-    key: "image", label: "สร้างภาพ", en: "Text → Image", plate: "/studio-tabs/tab-image-v3.png", href: "/generate?tab=image",
-    desc: "พิมพ์สิ่งที่คิด ได้ภาพความละเอียดสูงในไม่กี่วินาที เลือกโมเดลเองหรือให้ระบบเลือกให้",
-    specs: [{ k: "4K", l: "ความละเอียดสูงสุด" }, { k: "~10s", l: "ต่อภาพ" }],
-    cta: "เริ่มสร้างภาพ",
+    key: "image", label: { th: "สร้างภาพ", en: "Create images" }, eyebrow: "Text → Image", plate: "/studio-tabs/tab-image-v3.png", href: "/generate?tab=image",
+    desc: {
+      th: "พิมพ์สิ่งที่คิด ได้ภาพความละเอียดสูงในไม่กี่วินาที เลือกโมเดลเองหรือให้ระบบเลือกให้",
+      en: "Type what you have in mind and get a high-resolution image in seconds. Pick the model yourself or let us choose.",
+    },
+    specs: [{ k: "4K", l: { th: "ความละเอียดสูงสุด", en: "max resolution" } }, { k: "~10s", l: { th: "ต่อภาพ", en: "per image" } }],
+    cta: { th: "เริ่มสร้างภาพ", en: "Create an image" },
   },
   {
-    key: "video", label: "สร้างวิดีโอ", en: "Text / Image → Video", plate: "/studio-tabs/tab-video-v3.png", href: "/generate?tab=video",
-    desc: "เปลี่ยนข้อความหรือภาพนิ่งให้เคลื่อนไหว กำหนดมุมกล้องและความยาวได้ พร้อมเสียงในตัวบางโมเดล",
-    specs: [{ k: "1080p", l: "ความละเอียด" }, { k: "15s", l: "ความยาวสูงสุด" }],
-    cta: "สร้างวิดีโอ",
+    key: "video", label: { th: "สร้างวิดีโอ", en: "Create videos" }, eyebrow: "Text / Image → Video", plate: "/studio-tabs/tab-video-v3.png", href: "/generate?tab=video",
+    desc: {
+      th: "เปลี่ยนข้อความหรือภาพนิ่งให้เคลื่อนไหว กำหนดมุมกล้องและความยาวได้ พร้อมเสียงในตัวบางโมเดล",
+      en: "Bring text or a still picture to life. Set the camera move and the length — some models add their own sound.",
+    },
+    specs: [{ k: "1080p", l: { th: "ความละเอียด", en: "resolution" } }, { k: "15s", l: { th: "ความยาวสูงสุด", en: "max length" } }],
+    cta: { th: "สร้างวิดีโอ", en: "Create a video" },
   },
   {
-    key: "edit", label: "แก้ไขภาพ", en: "Edit & Upscale", plate: "/studio-tabs/tab-edit-v3.png", href: "/generate?tab=edit",
-    desc: "ปรับแก้ภาพเดิมด้วย prompt หรือขยายความละเอียดให้คมขึ้นหลายเท่า โดยรักษารายละเอียดต้นฉบับไว้",
-    specs: [{ k: "2–4×", l: "ขยายภาพ" }, { k: "img2img", l: "แก้ด้วย prompt" }],
-    cta: "ลองแก้ไขภาพ",
+    key: "edit", label: { th: "แก้ไขภาพ", en: "Edit images" }, eyebrow: "Edit & Upscale", plate: "/studio-tabs/tab-edit-v3.png", href: "/generate?tab=edit",
+    desc: {
+      th: "ปรับแก้ภาพเดิมด้วย prompt หรือขยายความละเอียดให้คมขึ้นหลายเท่า โดยรักษารายละเอียดต้นฉบับไว้",
+      en: "Change an existing picture with a prompt, or upscale it several times sharper while keeping the original's detail.",
+    },
+    specs: [{ k: "2–4×", l: { th: "ขยายภาพ", en: "upscale" } }, { k: "img2img", l: { th: "แก้ด้วย prompt", en: "edit by prompt" } }],
+    cta: { th: "ลองแก้ไขภาพ", en: "Try editing" },
   },
   {
-    key: "lipsync", label: "ลิปซิงค์", en: "Portrait + Voice → Video", plate: "/studio-tabs/tab-lipsync-v3.png", href: "/generate?tab=lipsync",
-    desc: "อัปโหลดภาพใบหน้าและไฟล์เสียงพูดภาษาใดก็ได้ ได้คลิปคนในภาพพูดตามเสียงนั้น ความยาวและราคาคิดตามความยาวเสียงจริง",
-    specs: [{ k: "1–15s", l: "ความยาวเสียง" }, { k: "ทุกภาษา", l: "ปากขยับตามเสียง" }],
-    cta: "ลองลิปซิงค์",
+    key: "lipsync", label: { th: "ลิปซิงค์", en: "Lip-sync" }, eyebrow: "Portrait + Voice → Video", plate: "/studio-tabs/tab-lipsync-v3.png", href: "/generate?tab=lipsync",
+    desc: {
+      th: "อัปโหลดภาพใบหน้าและไฟล์เสียงพูดภาษาใดก็ได้ ได้คลิปคนในภาพพูดตามเสียงนั้น ความยาวและราคาคิดตามความยาวเสียงจริง",
+      en: "Upload a face and a voice recording in any language, and get a clip of that person speaking it. Length and price follow the length of the recording.",
+    },
+    specs: [{ k: "1–15s", l: { th: "ความยาวเสียง", en: "voice length" } }, { k: { th: "ทุกภาษา", en: "Any language" }, l: { th: "ปากขยับตามเสียง", en: "lips follow the voice" } }],
+    cta: { th: "ลองลิปซิงค์", en: "Try lip-sync" },
   },
   {
-    key: "audio", label: "สร้างเพลง", en: "Lyrics → Song", plate: "/studio-tabs/tab-music-v3.png", href: "/generate?tab=audio",
-    desc: "บอกแนวเพลงและใส่เนื้อร้อง ได้เพลงพร้อมเสียงร้อง หรือวางเพลงต้นฉบับเพื่อทำเวอร์ชันคัฟเวอร์",
-    specs: [{ k: "Vocal", l: "ร้องจากเนื้อที่ใส่" }, { k: "Cover", l: "จากเพลงต้นฉบับ" }],
-    cta: "แต่งเพลง",
+    key: "audio", label: { th: "สร้างเพลง", en: "Create songs" }, eyebrow: "Lyrics → Song", plate: "/studio-tabs/tab-music-v3.png", href: "/generate?tab=audio",
+    desc: {
+      th: "บอกแนวเพลงและใส่เนื้อร้อง ได้เพลงพร้อมเสียงร้อง หรือวางเพลงต้นฉบับเพื่อทำเวอร์ชันคัฟเวอร์",
+      en: "Describe the style and add lyrics to get a song with vocals — or drop in an original song to make a cover version.",
+    },
+    specs: [{ k: "Vocal", l: { th: "ร้องจากเนื้อที่ใส่", en: "sings your lyrics" } }, { k: "Cover", l: { th: "จากเพลงต้นฉบับ", en: "from an original song" } }],
+    cta: { th: "แต่งเพลง", en: "Write a song" },
   },
   {
-    key: "model3d", label: "สร้างโมเดล 3D", en: "Image → 3D Model", plate: "/studio-tabs/tab-model3d-v3.png", href: "/generate/3d",
-    desc: "อัปโหลดภาพวัตถุหรือตัวละครหนึ่งภาพ ได้โมเดล 3D พร้อมพื้นผิว PBR เป็นไฟล์ GLB หมุนดูในเว็บได้ทันที และใช้ต่อใน Blender, Godot หรือ Unity ได้",
-    specs: [{ k: "GLB", l: "ไฟล์พร้อมพื้นผิว" }, { k: "3–6 min", l: "ต่อโมเดล" }],
-    cta: "เปิด 3D Studio",
+    key: "model3d", label: { th: "สร้างโมเดล 3D", en: "Create 3D models" }, eyebrow: "Image → 3D Model", plate: "/studio-tabs/tab-model3d-v3.png", href: "/generate/3d",
+    desc: {
+      th: "อัปโหลดภาพวัตถุหรือตัวละครหนึ่งภาพ ได้โมเดล 3D พร้อมพื้นผิว PBR เป็นไฟล์ GLB หมุนดูในเว็บได้ทันที และใช้ต่อใน Blender, Godot หรือ Unity ได้",
+      en: "Upload one picture of an object or a character and get a 3D model with PBR textures as a GLB file. Turn it around in your browser right away, then carry on in Blender, Godot or Unity.",
+    },
+    specs: [{ k: "GLB", l: { th: "ไฟล์พร้อมพื้นผิว", en: "textured file" } }, { k: "3–6 min", l: { th: "ต่อโมเดล", en: "per model" } }],
+    cta: { th: "เปิด 3D Studio", en: "Open 3D Studio" },
   },
 ];
 
 /** What the hero's prompt bar can start, with a real prompt as each placeholder. */
-const PROMPT_TABS = [
-  { key: "image", label: "ภาพ", example: work("food") },
-  { key: "video", label: "วิดีโอ", example: work("dancer") },
-] as const;
+const PROMPT_TABS: readonly { key: "image" | "video"; label: Msg; example: ShowcaseItem }[] = [
+  { key: "image", label: { th: "ภาพ", en: "Image" }, example: work("food") },
+  { key: "video", label: { th: "วิดีโอ", en: "Video" }, example: work("dancer") },
+];
 type PromptTab = (typeof PROMPT_TABS)[number]["key"];
 
 /** Bar heights for the waveform drawn in the voice and song examples. */
@@ -114,7 +137,7 @@ const WAVE = [28, 46, 70, 52, 34, 62, 84, 58, 40, 72, 90, 64, 44, 30, 56, 80, 66
 export default function XdreamerLanding({ tiers }: { tiers: Tier[] }) {
   const { data: session } = useSession();
   const signedIn = Boolean(session);
-  const freeTier = tiers.find((t) => t.free) ?? null;
+  const freeTier = tiers.find((tier) => tier.free) ?? null;
 
   // The global background brightens behind the top of the home page.
   useEffect(() => {
@@ -145,14 +168,15 @@ function Reveal({ children }: { children: React.ReactNode }) {
 
 // ─── nav ─────────────────────────────────────────────────────────────────
 
-const NAV_LINKS = [
-  { href: "/generate", label: "สตูดิโอ" },
-  { href: "/generate/3d", label: "สร้างโมเดล 3D" },
-  { href: "/gallery", label: "แกลเลอรี" },
-  { href: "/pricing", label: "ราคา" },
+const NAV_LINKS: { href: string; label: Msg }[] = [
+  { href: "/generate", label: { th: "สตูดิโอ", en: "Studio" } },
+  { href: "/generate/3d", label: { th: "สร้างโมเดล 3D", en: "3D models" } },
+  { href: "/gallery", label: { th: "แกลเลอรี", en: "Gallery" } },
+  { href: "/pricing", label: { th: "ราคา", en: "Pricing" } },
 ];
 
 function Nav({ signedIn, name, email }: { signedIn: boolean; name: string; email: string }) {
+  const t = useT();
   const [solid, setSolid] = useState(false);
   const [open, setOpen] = useState(false);
 
@@ -168,24 +192,25 @@ function Nav({ signedIn, name, email }: { signedIn: boolean; name: string; email
   }, []);
 
   return (
-    <nav className="xh-nav" data-solid={solid || open ? "true" : "false"} aria-label="เมนูหลัก">
+    <nav className="xh-nav" data-solid={solid || open ? "true" : "false"} aria-label={t("เมนูหลัก", "Main menu")}>
       <div className="xh-wrap xh-nav-row">
-        <Link href="/" className="xh-brand" aria-label="X-DREAMER หน้าแรก">
+        <Link href="/" className="xh-brand" aria-label={t("X-DREAMER หน้าแรก", "X-DREAMER home")}>
           <XdreamerLockup size={36} fontSize={15} />
         </Link>
         <div className="xh-nav-links">
-          {NAV_LINKS.map((l) => <Link key={l.href} href={l.href}>{l.label}</Link>)}
+          {NAV_LINKS.map((l) => <Link key={l.href} href={l.href}>{t(l.label)}</Link>)}
         </div>
         <div className="xh-nav-end">
+          <div className="xh-hide-sm"><LocaleSwitch /></div>
           {signedIn ? (
-            <UserMenu name={name || "สมาชิก"} email={email} />
+            <UserMenu name={name || t("สมาชิก", "Member")} email={email} />
           ) : (
             <>
-              <Link href="/login" className="xh-btn xh-btn-ghost xh-hide-sm">เข้าสู่ระบบ</Link>
-              <Link href="/login?signup=1" className="xh-btn xh-btn-light xh-hide-sm">เริ่มสร้างฟรี</Link>
+              <Link href="/login" className="xh-btn xh-btn-ghost xh-hide-sm">{t("เข้าสู่ระบบ", "Sign in")}</Link>
+              <Link href="/login?signup=1" className="xh-btn xh-btn-light xh-hide-sm">{t("เริ่มสร้างฟรี", "Start free")}</Link>
             </>
           )}
-          <button type="button" className="xh-burger" aria-label={open ? "ปิดเมนู" : "เปิดเมนู"} aria-expanded={open}
+          <button type="button" className="xh-burger" aria-label={open ? t("ปิดเมนู", "Close menu") : t("เปิดเมนู", "Open menu")} aria-expanded={open}
             onClick={() => setOpen((o) => !o)}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
               {open ? <path d="M6 6l12 12M18 6L6 18" /> : <path d="M4 7h16M4 12h16M4 17h16" />}
@@ -195,11 +220,15 @@ function Nav({ signedIn, name, email }: { signedIn: boolean; name: string; email
       </div>
       {open && (
         <div className="xh-wrap xh-drawer">
-          {NAV_LINKS.map((l) => <Link key={l.href} href={l.href} onClick={() => setOpen(false)}>{l.label}</Link>)}
+          <div className="xh-drawer-lang">
+            <span>{t("ภาษา", "Language")}</span>
+            <LocaleSwitch size="lg" />
+          </div>
+          {NAV_LINKS.map((l) => <Link key={l.href} href={l.href} onClick={() => setOpen(false)}>{t(l.label)}</Link>)}
           {!signedIn && (
             <div className="xh-drawer-cta">
-              <Link href="/login" className="xh-btn xh-btn-ghost" onClick={() => setOpen(false)}>เข้าสู่ระบบ</Link>
-              <Link href="/login?signup=1" className="xh-btn xh-btn-light" onClick={() => setOpen(false)}>เริ่มสร้างฟรี</Link>
+              <Link href="/login" className="xh-btn xh-btn-ghost" onClick={() => setOpen(false)}>{t("เข้าสู่ระบบ", "Sign in")}</Link>
+              <Link href="/login?signup=1" className="xh-btn xh-btn-light" onClick={() => setOpen(false)}>{t("เริ่มสร้างฟรี", "Start free")}</Link>
             </div>
           )}
         </div>
@@ -209,6 +238,7 @@ function Nav({ signedIn, name, email }: { signedIn: boolean; name: string; email
 }
 
 function UserMenu({ name, email }: { name: string; email: string }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -235,10 +265,10 @@ function UserMenu({ name, email }: { name: string; email: string }) {
             <div>{name}</div>
             {email && <small>{email}</small>}
           </div>
-          <Link href="/generate" onClick={() => setOpen(false)}>สตูดิโอ</Link>
-          <Link href="/profile" onClick={() => setOpen(false)}>Dashboard</Link>
-          <Link href="/gallery" onClick={() => setOpen(false)}>แกลเลอรี</Link>
-          <button type="button" className="xh-signout" onClick={() => signOut({ callbackUrl: "/" })}>ออกจากระบบ</button>
+          <Link href="/generate" onClick={() => setOpen(false)}>{t("สตูดิโอ", "Studio")}</Link>
+          <Link href="/profile" onClick={() => setOpen(false)}>{t("แดชบอร์ด", "Dashboard")}</Link>
+          <Link href="/gallery" onClick={() => setOpen(false)}>{t("แกลเลอรี", "Gallery")}</Link>
+          <button type="button" className="xh-signout" onClick={() => signOut({ callbackUrl: "/" })}>{t("ออกจากระบบ", "Sign out")}</button>
         </div>
       )}
     </div>
@@ -248,6 +278,7 @@ function UserMenu({ name, email }: { name: string; email: string }) {
 // ─── hero ────────────────────────────────────────────────────────────────
 
 function Hero({ signedIn, freeTier }: { signedIn: boolean; freeTier: Tier | null }) {
+  const t = useT();
   return (
     <header className="xh-hero">
       <div className="xh-hero-media" aria-hidden="true">
@@ -260,32 +291,44 @@ function Hero({ signedIn, freeTier }: { signedIn: boolean; freeTier: Tier | null
 
       <div className="xh-wrap xh-hero-grid">
         <div className="xh-hero-copy">
-          <div className="xh-live"><span aria-hidden="true" />ภาพ · วิดีโอ · แก้ภาพ · ลิปซิงค์ · เพลง · 3D</div>
+          <div className="xh-live"><span aria-hidden="true" />{t("ภาพ · วิดีโอ · แก้ภาพ · ลิปซิงค์ · เพลง · 3D", "Image · Video · Edit · Lip-sync · Music · 3D")}</div>
           <h1 className="xh-h1">
-            ฝันไว้แบบไหน<br />
-            ก็<span className="xh-thread-word">ทอออกมา<ThreadUnderline /></span><span className="xh-nowrap">ให้เห็นได้</span>
+            {t(
+              <>
+                ฝันไว้แบบไหน<br />
+                ก็<span className="xh-thread-word">ทอออกมา<ThreadUnderline /></span><span className="xh-nowrap">ให้เห็นได้</span>
+              </>,
+              <>
+                Whatever you dream,<br />
+                we <span className="xh-thread-word">weave it<ThreadUnderline /></span> <span className="xh-nowrap">into view</span>
+              </>,
+            )}
           </h1>
           <p className="xh-lead">
-            สร้างภาพ วิดีโอ เพลง ลิปซิงค์ และโมเดล 3D จากโมเดล AI ชั้นนำหลายเจ้า ด้วยเครดิตชุดเดียว
-            งานไหนสร้างไม่สำเร็จ ระบบคืนเครดิตให้อัตโนมัติ
+            {t(
+              "สร้างภาพ วิดีโอ เพลง ลิปซิงค์ และโมเดล 3D จากโมเดล AI ชั้นนำหลายเจ้า ด้วยเครดิตชุดเดียว งานไหนสร้างไม่สำเร็จ ระบบคืนเครดิตให้อัตโนมัติ",
+              "Create images, videos, songs, lip-sync clips and 3D models with leading AI models from many makers, all on one set of credits. If a job fails, your credits are refunded automatically.",
+            )}
           </p>
           <PromptBar />
           <div className="xh-hero-cta">
             {signedIn ? (
-              <Link href="/generate" className="xh-btn xh-btn-light xh-btn-lg">เข้าสตูดิโอ</Link>
+              <Link href="/generate" className="xh-btn xh-btn-light xh-btn-lg">{t("เข้าสตูดิโอ", "Open Studio")}</Link>
             ) : (
               <Link href="/login?signup=1" className="xh-btn xh-btn-light xh-btn-lg">
-                {freeTier ? `เริ่มฟรี รับ ${freeTier.credits}` : "เริ่มสร้างฟรี"}
+                {freeTier
+                  ? t(`เริ่มฟรี รับ ${freeTier.credits}`, `Start free with ${freeTier.credits}`)
+                  : t("เริ่มสร้างฟรี", "Start creating free")}
               </Link>
             )}
-            <a href="#work" className="xh-btn xh-btn-ghost xh-btn-lg">ดูผลงานจริง</a>
-            {!signedIn && <span className="xh-note">ไม่ต้องใช้บัตรเครดิต</span>}
+            <a href="#work" className="xh-btn xh-btn-ghost xh-btn-lg">{t("ดูผลงานจริง", "See real work")}</a>
+            {!signedIn && <span className="xh-note">{t("ไม่ต้องใช้บัตรเครดิต", "No credit card needed")}</span>}
           </div>
         </div>
 
         <figure className="xh-hero-caption">
           <figcaption>
-            <div className="xh-eyebrow">ฉากนี้สร้างบน X-DREAMER</div>
+            <div className="xh-eyebrow">{t("ฉากนี้สร้างบน X-DREAMER", "Made on X-DREAMER")}</div>
             <p className="xh-mono">“{HERO_MEDIA.prompt}”</p>
             <span className="xh-chip xh-chip-violet">{HERO_MEDIA.model}</span>
           </figcaption>
@@ -312,10 +355,11 @@ function ThreadUnderline() {
 
 /** Opens the studio on the chosen tab with this prompt; empty just opens the tab. */
 function PromptBar() {
+  const t = useT();
   const router = useRouter();
   const [tab, setTab] = useState<PromptTab>("image");
   const [text, setText] = useState("");
-  const current = PROMPT_TABS.find((t) => t.key === tab) ?? PROMPT_TABS[0];
+  const current = PROMPT_TABS.find((p) => p.key === tab) ?? PROMPT_TABS[0];
 
   const go = (e: FormEvent) => {
     e.preventDefault();
@@ -327,11 +371,11 @@ function PromptBar() {
 
   return (
     <form className="xh-prompt" onSubmit={go}>
-      <div className="xh-prompt-tabs" role="radiogroup" aria-label="จะสร้างอะไร">
-        {PROMPT_TABS.map((t) => (
-          <button key={t.key} type="button" role="radio" aria-checked={tab === t.key}
-            data-active={tab === t.key ? "true" : "false"} onClick={() => setTab(t.key)}>
-            {t.label}
+      <div className="xh-prompt-tabs" role="radiogroup" aria-label={t("จะสร้างอะไร", "What to create")}>
+        {PROMPT_TABS.map((p) => (
+          <button key={p.key} type="button" role="radio" aria-checked={tab === p.key}
+            data-active={tab === p.key ? "true" : "false"} onClick={() => setTab(p.key)}>
+            {t(p.label)}
           </button>
         ))}
         <span className="xh-prompt-model">{current.example.model}</span>
@@ -348,7 +392,7 @@ function PromptBar() {
           onChange={(e) => setText(e.target.value)}
         />
         <button type="submit" className="xh-btn xh-btn-thread">
-          ทอเลย
+          {t("ทอเลย", "Weave it")}
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
         </button>
       </div>
@@ -359,14 +403,15 @@ function PromptBar() {
 // ─── facts ───────────────────────────────────────────────────────────────
 
 function Facts() {
+  const t = useT();
   return (
-    <section className="xh-facts-sec" aria-label="ข้อเท็จจริง">
+    <section className="xh-facts-sec" aria-label={t("ข้อเท็จจริง", "At a glance")}>
       <div className="xh-wrap">
         <div className="xh-facts">
-          <div><b className="xh-num">{TOOLS.length}</b><span>เครื่องมือในสตูดิโอเดียว</span></div>
-          <div><b className="xh-num">{PROVIDERS.length}</b><span>แหล่งโมเดล AI รวมเอนจินของเราเอง</span></div>
-          <div><b>ไม่หมดอายุ</b><span>เครดิตที่ซื้อแบบจ่ายครั้งเดียว</span></div>
-          <div><b>คืนอัตโนมัติ</b><span>เครดิตของงานที่สร้างไม่สำเร็จ</span></div>
+          <div><b className="xh-num">{TOOLS.length}</b><span>{t("เครื่องมือในสตูดิโอเดียว", "tools in one studio")}</span></div>
+          <div><b className="xh-num">{PROVIDERS.length}</b><span>{t("แหล่งโมเดล AI รวมเอนจินของเราเอง", "AI model sources, our own engine included")}</span></div>
+          <div><b>{t("ไม่หมดอายุ", "No expiry")}</b><span>{t("เครดิตที่ซื้อแบบจ่ายครั้งเดียว", "on credits bought with a one-time payment")}</span></div>
+          <div><b>{t("คืนอัตโนมัติ", "Auto refund")}</b><span>{t("เครดิตของงานที่สร้างไม่สำเร็จ", "of credits for any job that fails")}</span></div>
         </div>
         <p className="xh-providers">{PROVIDERS.join(" · ")}</p>
       </div>
@@ -377,19 +422,20 @@ function Facts() {
 // ─── tools ───────────────────────────────────────────────────────────────
 
 function Tools() {
+  const t = useT();
   const [key, setKey] = useState<ToolKey>("image");
-  const tool = TOOLS.find((t) => t.key === key) ?? TOOLS[0];
+  const tool = TOOLS.find((x) => x.key === key) ?? TOOLS[0];
   return (
     <section id="tools" className="xh-section">
       <div className="xh-wrap">
-        <SectionHead eyebrow="สตูดิโอ" title="หกเครื่องมือ ในสตูดิโอเดียว"
-          lead="ปุ่มชุดเดียวกับเมนูในสตูดิโอจริง กดที่ปุ่มเพื่อดูว่าแต่ละเครื่องมือทำอะไรได้" />
+        <SectionHead eyebrow={t("สตูดิโอ", "Studio")} title={t("หกเครื่องมือ ในสตูดิโอเดียว", "Six tools, one studio")}
+          lead={t("ปุ่มชุดเดียวกับเมนูในสตูดิโอจริง กดที่ปุ่มเพื่อดูว่าแต่ละเครื่องมือทำอะไรได้", "The same buttons as the studio's own menu. Tap one to see what each tool can do.")} />
         <div className="xh-tools">
           <div className="xh-rail">
-            {TOOLS.map((t) => (
-              <button key={t.key} type="button" className="xh-plate" aria-pressed={t.key === key}
-                data-active={t.key === key ? "true" : "false"} onClick={() => setKey(t.key)}>
-                <Image src={t.plate} alt={t.label} width={440} height={156} sizes="(max-width: 860px) 45vw, 340px" />
+            {TOOLS.map((x) => (
+              <button key={x.key} type="button" className="xh-plate" aria-pressed={x.key === key}
+                data-active={x.key === key ? "true" : "false"} onClick={() => setKey(x.key)}>
+                <Image src={x.plate} alt={t(x.label)} width={440} height={156} sizes="(max-width: 860px) 45vw, 340px" />
               </button>
             ))}
           </div>
@@ -398,14 +444,14 @@ function Tools() {
               <ToolExample tool={key} />
             </div>
             <div className="xh-tool-body">
-              <div className="xh-eyebrow">{tool.en}</div>
-              <h3>{tool.label}</h3>
-              <p>{tool.desc}</p>
+              <div className="xh-eyebrow">{tool.eyebrow}</div>
+              <h3>{t(tool.label)}</h3>
+              <p>{t(tool.desc)}</p>
               <div className="xh-specs">
-                {tool.specs.map((s) => <span key={s.l}><b>{s.k}</b>{s.l}</span>)}
+                {tool.specs.map((s) => <span key={s.l.en}><b>{t(s.k)}</b>{t(s.l)}</span>)}
               </div>
               <Link href={tool.href} className="xh-btn xh-btn-outline">
-                {tool.cta}
+                {t(tool.cta)}
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
               </Link>
             </div>
@@ -422,13 +468,14 @@ function Tools() {
  * out, rather than a frame that would claim to be something it is not.
  */
 function ToolExample({ tool }: { tool: ToolKey }) {
+  const t = useT();
   switch (tool) {
     case "image": {
       const w = work("food");
       return (
         <>
-          <MediaTile image={w.image} alt={w.title} sizes="(max-width: 860px) 100vw, 760px" />
-          <span className="xh-media-tag">{w.title} · {w.model}</span>
+          <MediaTile image={w.image} alt={t(w.title)} sizes="(max-width: 860px) 100vw, 760px" />
+          <span className="xh-media-tag">{t(w.title)} · {w.model}</span>
         </>
       );
     }
@@ -436,43 +483,45 @@ function ToolExample({ tool }: { tool: ToolKey }) {
       const w = work("dancer");
       return (
         <>
-          <MediaTile image={w.image} video={w.video} alt={w.title} sizes="(max-width: 860px) 100vw, 760px" />
-          <span className="xh-media-tag">{w.title} · {w.model}</span>
+          <MediaTile image={w.image} video={w.video} alt={t(w.title)} sizes="(max-width: 860px) 100vw, 760px" />
+          <span className="xh-media-tag">{t(w.title)} · {w.model}</span>
         </>
       );
     }
     case "edit":
       return (
         <>
-          <MediaTile image="/showcase/macro.jpg" alt="ภาพมาโครสร้างบน X-DREAMER" sizes="(max-width: 860px) 100vw, 760px" />
-          <span className="xh-media-tag">แก้ส่วนที่ต้องการด้วย prompt หรือขยายให้คมขึ้น 2–4 เท่า</span>
+          <MediaTile image="/showcase/macro.jpg" alt={t("ภาพมาโครสร้างบน X-DREAMER", "A macro shot made on X-DREAMER")} sizes="(max-width: 860px) 100vw, 760px" />
+          <span className="xh-media-tag">{t("แก้ส่วนที่ต้องการด้วย prompt หรือขยายให้คมขึ้น 2–4 เท่า", "Edit just the part you want with a prompt, or upscale it 2–4× sharper")}</span>
         </>
       );
     case "lipsync":
       return (
-        <Flow output="คลิปที่ปากขยับตามเสียง">
-          <FlowCard label="ภาพใบหน้า">
+        <Flow output={t("คลิปที่ปากขยับตามเสียง", "A clip with lips moving to the voice")}>
+          <FlowCard label={t("ภาพใบหน้า", "A face")}>
             <Image src={work("portrait").image} alt="" width={120} height={160} className="xh-flow-img" />
           </FlowCard>
-          <FlowCard label="เสียงพูด 1–15 วินาที"><Wave /></FlowCard>
+          <FlowCard label={t("เสียงพูด 1–15 วินาที", "1–15 s of speech")}><Wave /></FlowCard>
         </Flow>
       );
     case "audio":
       return (
-        <Flow output="เพลงพร้อมเสียงร้อง">
-          <FlowCard label="เนื้อร้อง">
-            <p className="xh-flow-lyrics">คืนนี้ดาวเต็มฟ้า<br />ฉันทอฝันไว้รอเธอ</p>
+        <Flow output={t("เพลงพร้อมเสียงร้อง", "A song with vocals")}>
+          <FlowCard label={t("เนื้อร้อง", "Lyrics")}>
+            <p className="xh-flow-lyrics">
+              {t(<>คืนนี้ดาวเต็มฟ้า<br />ฉันทอฝันไว้รอเธอ</>, <>Stars fill the sky tonight<br />I wove a dream for you</>)}
+            </p>
           </FlowCard>
-          <FlowCard label="แนวเพลง"><Wave /></FlowCard>
+          <FlowCard label={t("แนวเพลง", "Style")}><Wave /></FlowCard>
         </Flow>
       );
     case "model3d":
       return (
-        <Flow output="ไฟล์ GLB พร้อมพื้นผิว">
-          <FlowCard label="ภาพวัตถุ 1 ภาพ">
+        <Flow output={t("ไฟล์ GLB พร้อมพื้นผิว", "A textured GLB file")}>
+          <FlowCard label={t("ภาพวัตถุ 1 ภาพ", "One object photo")}>
             <Image src={work("product").image} alt="" width={150} height={150} className="xh-flow-img" />
           </FlowCard>
-          <FlowCard label="โมเดล 3D หมุนดูได้"><Cube /></FlowCard>
+          <FlowCard label={t("โมเดล 3D หมุนดูได้", "A 3D model you can turn")}><Cube /></FlowCard>
         </Flow>
       );
   }
@@ -520,24 +569,25 @@ function Cube() {
 // ─── real work ───────────────────────────────────────────────────────────
 
 function Work() {
+  const t = useT();
   return (
     <section id="work" className="xh-section xh-tint">
       <div className="xh-wrap">
         <div className="xh-head-row">
-          <SectionHead eyebrow="ผลงานจริง" title="ทุกภาพมาพร้อม prompt ที่ใช้สร้างจริง" />
-          <Link href="/gallery" className="xh-link">เปิดแกลเลอรีทั้งหมด →</Link>
+          <SectionHead eyebrow={t("ผลงานจริง", "Real work")} title={t("ทุกภาพมาพร้อม prompt ที่ใช้สร้างจริง", "Every piece comes with the prompt that made it")} />
+          <Link href="/gallery" className="xh-link">{t("เปิดแกลเลอรีทั้งหมด →", "Open the full gallery →")}</Link>
         </div>
         <div className="xh-masonry">
           {SHOWCASE_ITEMS.map((item) => (
             <figure key={item.key} className="xh-work">
               <div className="xh-work-media" style={{ aspectRatio: item.ratio } as CSSProperties}>
-                <MediaTile image={item.image} video={item.video} alt={item.title}
+                <MediaTile image={item.image} video={item.video} alt={t(item.title)}
                   sizes="(max-width: 480px) 100vw, (max-width: 860px) 50vw, 400px" />
               </div>
               <figcaption>
                 <div className="xh-work-top">
-                  <span className="xh-work-title">{item.title}</span>
-                  <span className="xh-chip">{item.mode === "video" ? "วิดีโอ" : "ภาพ"}</span>
+                  <span className="xh-work-title">{t(item.title)}</span>
+                  <span className="xh-chip">{item.mode === "video" ? t("วิดีโอ", "Video") : t("ภาพ", "Image")}</span>
                 </div>
                 <p className="xh-mono">{item.prompt}</p>
                 <span className="xh-work-model">{item.model}</span>
@@ -552,17 +602,39 @@ function Work() {
 
 // ─── steps ───────────────────────────────────────────────────────────────
 
-const STEPS = [
-  { t: "เลือกเครื่องมือ", d: "ภาพ วิดีโอ แก้ภาพ ลิปซิงค์ เพลง หรือ 3D แต่ละอย่างบอกราคาเป็นเครดิตก่อนกดสั่ง", c: "#34D399" },
-  { t: "บอกสิ่งที่ฝัน", d: "พิมพ์ prompt ภาษาไทยหรืออังกฤษ หรืออัปโหลดภาพและเสียง กดปุ่มผู้ช่วยให้ช่วยเขียน prompt ได้ฟรี", c: "#22D3EE" },
-  { t: "รับผลงาน", d: "ดาวน์โหลด เก็บในแกลเลอรี หรือสั่งต่อจากงานเดิม ถ้างานล้มเหลว เครดิตกลับเข้าบัญชีทันที", c: "#C084FC" },
+const STEPS: { title: Msg; d: Msg; c: string }[] = [
+  {
+    title: { th: "เลือกเครื่องมือ", en: "Pick a tool" },
+    d: {
+      th: "ภาพ วิดีโอ แก้ภาพ ลิปซิงค์ เพลง หรือ 3D แต่ละอย่างบอกราคาเป็นเครดิตก่อนกดสั่ง",
+      en: "Image, video, editing, lip-sync, music or 3D — each one shows its price in credits before you order.",
+    },
+    c: "#34D399",
+  },
+  {
+    title: { th: "บอกสิ่งที่ฝัน", en: "Describe your dream" },
+    d: {
+      th: "พิมพ์ prompt ภาษาไทยหรืออังกฤษ หรืออัปโหลดภาพและเสียง กดปุ่มผู้ช่วยให้ช่วยเขียน prompt ได้ฟรี",
+      en: "Type a prompt in Thai or English, or upload pictures and audio. The assistant button helps you write the prompt, for free.",
+    },
+    c: "#22D3EE",
+  },
+  {
+    title: { th: "รับผลงาน", en: "Get your work" },
+    d: {
+      th: "ดาวน์โหลด เก็บในแกลเลอรี หรือสั่งต่อจากงานเดิม ถ้างานล้มเหลว เครดิตกลับเข้าบัญชีทันที",
+      en: "Download it, keep it in your gallery, or build on it. If a job fails, the credits go straight back to your account.",
+    },
+    c: "#C084FC",
+  },
 ];
 
 function Steps() {
+  const t = useT();
   return (
     <section className="xh-section">
       <div className="xh-wrap">
-        <SectionHead eyebrow="วิธีใช้" title="สามขั้น จากความคิดถึงไฟล์" />
+        <SectionHead eyebrow={t("วิธีใช้", "How it works")} title={t("สามขั้น จากความคิดถึงไฟล์", "Three steps from idea to file")} />
         <div className="xh-steps-wrap">
           <svg className="xh-steps-thread" viewBox="0 0 1000 20" preserveAspectRatio="none" aria-hidden="true">
             <defs>
@@ -576,10 +648,10 @@ function Steps() {
           </svg>
           <ol className="xh-steps">
             {STEPS.map((s, i) => (
-              <li key={s.t}>
+              <li key={s.c}>
                 <span className="xh-knot" style={{ background: s.c, boxShadow: `0 0 0 6px var(--xh-ink), 0 0 26px ${s.c}88` }}>{i + 1}</span>
-                <h3>{s.t}</h3>
-                <p>{s.d}</p>
+                <h3>{t(s.title)}</h3>
+                <p>{t(s.d)}</p>
               </li>
             ))}
           </ol>
@@ -592,39 +664,43 @@ function Steps() {
 // ─── pricing ─────────────────────────────────────────────────────────────
 
 function Pricing({ tiers }: { tiers: Tier[] }) {
+  const t = useT();
   return (
     <section id="pricing" className="xh-section xh-tint">
       <div className="xh-wrap">
         <div className="xh-head-row">
-          <SectionHead eyebrow="แพ็กเกจเครดิต" title="จ่ายครั้งเดียว ใช้ได้ทุกเครื่องมือ" />
-          <p className="xh-head-side">เครดิตชุดเดียวใช้ได้ทั้งภาพ วิดีโอ เพลง ลิปซิงค์ และ 3D ไม่มีรายเดือน ไม่มีวันหมดอายุ</p>
+          <SectionHead eyebrow={t("แพ็กเกจเครดิต", "Credit packages")} title={t("จ่ายครั้งเดียว ใช้ได้ทุกเครื่องมือ", "Pay once, use every tool")} />
+          <p className="xh-head-side">{t("เครดิตชุดเดียวใช้ได้ทั้งภาพ วิดีโอ เพลง ลิปซิงค์ และ 3D ไม่มีรายเดือน ไม่มีวันหมดอายุ", "One set of credits covers images, video, music, lip-sync and 3D. No subscription, no expiry.")}</p>
         </div>
         <div className="xh-prices">
-          {tiers.map((t) => (
-            <div key={t.slug} className="xh-price" data-featured={t.featured ? "true" : "false"}>
+          {tiers.map((tier) => (
+            <div key={tier.slug} className="xh-price" data-featured={tier.featured ? "true" : "false"}>
               <div className="xh-price-top">
-                <span className="xh-price-name">{t.name}</span>
-                {t.badge && <span className="xh-badge">{t.badge}</span>}
+                <span className="xh-price-name">{tier.name}</span>
+                {tier.badge && <span className="xh-badge">{tier.badge}</span>}
               </div>
               <div className="xh-price-amt">
                 {/* Unbounded has no ฿: the sign comes from the Thai heading face */}
-                {t.price.startsWith("฿") ? <><span className="xh-baht">฿</span>{t.price.slice(1)}</> : t.price}
+                {tier.price.startsWith("฿") ? <><span className="xh-baht">฿</span>{tier.price.slice(1)}</> : tier.price}
               </div>
-              <div className="xh-price-credits">{t.credits}</div>
+              <div className="xh-price-credits">{tier.credits}</div>
               <ul>
-                {t.feats.map((f) => <li key={f}><span aria-hidden="true">✓</span>{f}</li>)}
+                {tier.feats.map((f) => <li key={f}><span aria-hidden="true">✓</span>{f}</li>)}
               </ul>
-              {t.free ? (
-                <Link href="/login?signup=1" className="xh-btn xh-btn-outline xh-btn-block">เริ่มฟรี</Link>
+              {tier.free ? (
+                <Link href="/login?signup=1" className="xh-btn xh-btn-outline xh-btn-block">{t("เริ่มฟรี", "Start free")}</Link>
               ) : (
-                <a href={`https://xman4289.com/checkout/ai-credits/${encodeURIComponent(t.slug)}?ref=ai`} className="xh-btn xh-btn-outline xh-btn-block">เลือกแพ็กเกจ</a>
+                <a href={`https://xman4289.com/checkout/ai-credits/${encodeURIComponent(tier.slug)}?ref=ai`} className="xh-btn xh-btn-outline xh-btn-block">{t("เลือกแพ็กเกจ", "Choose package")}</a>
               )}
             </div>
           ))}
         </div>
         <p className="xh-fine">
-          ราคาเป็นบาท ชำระผ่าน XMAN STUDIO · จำนวนภาพและคลิปเป็นค่าประมาณ ขึ้นกับโมเดลที่เลือก ·{" "}
-          <Link href="/pricing" className="xh-link">ตารางค่าเครดิตทุกโมเดล →</Link>
+          {t(
+            "ราคาเป็นบาท ชำระผ่าน XMAN STUDIO · จำนวนภาพและคลิปเป็นค่าประมาณ ขึ้นกับโมเดลที่เลือก ·",
+            "Prices in Thai baht, paid through XMAN STUDIO · Picture and clip counts are estimates and depend on the model you pick ·",
+          )}{" "}
+          <Link href="/pricing" className="xh-link">{t("ตารางค่าเครดิตทุกโมเดล →", "Credit prices for every model →")}</Link>
         </p>
       </div>
     </section>
@@ -634,15 +710,16 @@ function Pricing({ tiers }: { tiers: Tier[] }) {
 // ─── faq ─────────────────────────────────────────────────────────────────
 
 function Faq() {
+  const t = useT();
   return (
     <section className="xh-section">
       <div className="xh-wrap">
-        <SectionHead eyebrow="คำถามที่พบบ่อย" title="ก่อนเริ่มใช้" />
+        <SectionHead eyebrow={t("คำถามที่พบบ่อย", "FAQ")} title={t("ก่อนเริ่มใช้", "Before you start")} />
         <div className="xh-faq">
           {FAQ_ITEMS.map((f) => (
-            <details key={f.q}>
-              <summary>{f.q}<span className="xh-plus" aria-hidden="true">+</span></summary>
-              <p>{f.a}</p>
+            <details key={f.q.en}>
+              <summary>{t(f.q)}<span className="xh-plus" aria-hidden="true">+</span></summary>
+              <p>{t(f.a)}</p>
             </details>
           ))}
         </div>
@@ -654,7 +731,8 @@ function Faq() {
 // ─── closing + footer ────────────────────────────────────────────────────
 
 function Closing({ signedIn, freeTier }: { signedIn: boolean; freeTier: Tier | null }) {
-  const enough = freeTier?.feats.slice(0, 2).join(" หรือ ");
+  const t = useT();
+  const enough = freeTier?.feats.slice(0, 2).join(t(" หรือ ", " or "));
   return (
     <section className="xh-closing">
       <div className="xh-closing-media" aria-hidden="true">
@@ -662,32 +740,37 @@ function Closing({ signedIn, freeTier }: { signedIn: boolean; freeTier: Tier | n
         <div className="xh-closing-scrim" />
       </div>
       <div className="xh-wrap xh-closing-inner">
-        <h2 className="xh-h2">เริ่มทอความฝันของคุณวันนี้</h2>
+        <h2 className="xh-h2">{t("เริ่มทอความฝันของคุณวันนี้", "Start weaving your dreams today")}</h2>
         {!signedIn && freeTier && (
-          <p className="xh-lead">สมัครแล้วรับ {freeTier.credits}ฟรี{enough ? ` พอสำหรับ${enough}` : ""}</p>
+          <p className="xh-lead">
+            {t(
+              `สมัครแล้วรับ ${freeTier.credits}ฟรี${enough ? ` พอสำหรับ${enough}` : ""}`,
+              `Sign up and get ${freeTier.credits} free${enough ? ` — enough for ${enough}` : ""}`,
+            )}
+          </p>
         )}
         <div className="xh-closing-cta">
           {signedIn ? (
-            <Link href="/generate" className="xh-btn xh-btn-thread xh-btn-lg">เข้าสตูดิโอ</Link>
+            <Link href="/generate" className="xh-btn xh-btn-thread xh-btn-lg">{t("เข้าสตูดิโอ", "Open Studio")}</Link>
           ) : (
-            <Link href="/login?signup=1" className="xh-btn xh-btn-thread xh-btn-lg">สร้างบัญชีฟรี</Link>
+            <Link href="/login?signup=1" className="xh-btn xh-btn-thread xh-btn-lg">{t("สร้างบัญชีฟรี", "Create a free account")}</Link>
           )}
-          <Link href="/gallery" className="xh-btn xh-btn-ghost xh-btn-lg">ดูแกลเลอรี</Link>
+          <Link href="/gallery" className="xh-btn xh-btn-ghost xh-btn-lg">{t("ดูแกลเลอรี", "View gallery")}</Link>
         </div>
 
         <footer className="xh-footer">
           <div className="xh-footer-brand">
             <XdreamerLockup size={26} fontSize={12} />
-            <span>© {new Date().getFullYear()} · โดย <a href="https://xman4289.com">XMAN STUDIO</a></span>
+            <span>© {new Date().getFullYear()} · {t("โดย", "by")} <a href="https://xman4289.com">XMAN STUDIO</a></span>
           </div>
-          <nav aria-label="ลิงก์ท้ายหน้า" className="xh-footer-links">
-            <Link href="/pricing">ราคา</Link>
-            <Link href="/gallery">แกลเลอรี</Link>
-            <Link href="/about">เกี่ยวกับ</Link>
-            <Link href="/docs">นักพัฒนา</Link>
-            <Link href="/contact">ติดต่อ</Link>
-            <Link href="/terms">ข้อกำหนด</Link>
-            <Link href="/privacy">ความเป็นส่วนตัว</Link>
+          <nav aria-label={t("ลิงก์ท้ายหน้า", "Footer links")} className="xh-footer-links">
+            <Link href="/pricing">{t("ราคา", "Pricing")}</Link>
+            <Link href="/gallery">{t("แกลเลอรี", "Gallery")}</Link>
+            <Link href="/about">{t("เกี่ยวกับ", "About")}</Link>
+            <Link href="/docs">{t("นักพัฒนา", "Developers")}</Link>
+            <Link href="/contact">{t("ติดต่อ", "Contact")}</Link>
+            <Link href="/terms">{t("ข้อกำหนด", "Terms")}</Link>
+            <Link href="/privacy">{t("ความเป็นส่วนตัว", "Privacy")}</Link>
           </nav>
         </footer>
       </div>
@@ -774,6 +857,7 @@ const CSS = `
 .xh-drawer { display: flex; flex-direction: column; gap: 4px; padding-bottom: 16px; }
 .xh-drawer a { padding: 12px 14px; border-radius: 10px; color: #E2E8F0; text-decoration: none; background: rgba(255,255,255,0.04); }
 .xh-drawer-cta { display: flex; gap: 10px; margin-top: 6px; }
+.xh-drawer-lang { display: flex; align-items: center; justify-content: space-between; padding: 4px 4px 10px; font-size: 13px; color: var(--xh-muted); }
 .xh-drawer-cta .xh-btn { flex: 1; }
 .xh-user { position: relative; }
 .xh-user-btn { display: flex; align-items: center; gap: 9px; padding: 5px 12px 5px 5px; border-radius: 999px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #fff; cursor: pointer; font-family: inherit; }

@@ -6,10 +6,12 @@
  */
 
 import { useState, type ReactNode } from "react";
+import { useT } from "@/lib/i18n/client";
 
 const mono: React.CSSProperties = { fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" };
 
-export function CopyButton({ text, label = "คัดลอก" }: { text: string; label?: string }) {
+export function CopyButton({ text, label }: { text: string; label?: string }) {
+  const t = useT();
   const [done, setDone] = useState(false);
   const copy = () => {
     navigator.clipboard.writeText(text).then(
@@ -21,8 +23,8 @@ export function CopyButton({ text, label = "คัดลอก" }: { text: strin
     );
   };
   return (
-    <button type="button" onClick={copy} className="docs-copy" aria-label="คัดลอกโค้ด">
-      {done ? "คัดลอกแล้ว ✓" : label}
+    <button type="button" onClick={copy} className="docs-copy" aria-label={t("คัดลอกโค้ด", "Copy code")}>
+      {done ? t("คัดลอกแล้ว ✓", "Copied ✓") : (label ?? t("คัดลอก", "Copy"))}
     </button>
   );
 }

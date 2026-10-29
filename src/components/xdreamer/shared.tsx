@@ -19,6 +19,9 @@ import { useSession, signOut } from "next-auth/react";
 import { usePathname } from "next/navigation";
 import { XdreamerMark } from "./logo";
 import { loginHrefFor } from "@/lib/safe-callback";
+import { useLocale, useT } from "@/lib/i18n/client";
+import { formatCredits } from "@/lib/i18n/locale";
+import { LocaleSwitch } from "@/components/layout/locale-switch";
 
 export const HUE = 70;
 
@@ -234,7 +237,7 @@ export function XdrThemeStyles() {
         .rp-nav { padding:14px 18px !important; }
         .rp-nav-links { display:none !important; }
         .rp-nav-burger { display:inline-flex !important; }
-        .rp-nav-cta-ghost, .rp-nav-cta-primary { display:none !important; }
+        .rp-nav-cta-ghost, .rp-nav-cta-primary, .rp-nav-locale { display:none !important; }
         .rp-hero-logo-wrap { position:static !important;margin:0 auto 24px !important; }
         .rp-hero-logo { width:100px !important;height:100px !important; }
         .rp-container { padding:0 18px !important; }
@@ -257,16 +260,18 @@ export function XdrThemeStyles() {
 // ─── NAV ────────────────────────────────────────────────────────────────
 export function XdrNav({ creditsLabel }: { creditsLabel?: string }) {
   const { data: session } = useSession();
+  const t = useT();
+  const { locale } = useLocale();
   // Signing in from here comes back here.
   const loginLink = loginHrefFor(usePathname() ?? "/");
   const [credits, setCredits] = useState<number | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
   const links = [
-    { id: "studio", label: "สตูดิโอ", href: "/generate" },
-    { id: "movie", label: "หนัง & MV", href: "/movie" },
-    { id: "gallery", label: "Gallery", href: "/gallery" },
-    { id: "pricing", label: "Pricing", href: "/pricing" },
-    { id: "profile", label: "Dashboard", href: "/profile" },
+    { id: "studio", label: t("สตูดิโอ", "Studio"), href: "/generate" },
+    { id: "movie", label: t("หนัง & MV", "Film & MV"), href: "/movie" },
+    { id: "gallery", label: t("แกลเลอรี", "Gallery"), href: "/gallery" },
+    { id: "pricing", label: t("ราคา", "Pricing"), href: "/pricing" },
+    { id: "profile", label: t("แดชบอร์ด", "Dashboard"), href: "/profile" },
   ];
 
   // Fetch the real credit balance for logged-in users (powers the nav pill).
@@ -281,7 +286,7 @@ export function XdrNav({ creditsLabel }: { creditsLabel?: string }) {
   }, [session]);
 
   // Only surface the pill for logged-in users (avoids showing a stale balance after logout).
-  const creditPill = session ? (creditsLabel ?? (credits !== null ? `${credits.toLocaleString()} เครดิต` : null)) : null;
+  const creditPill = session ? (creditsLabel ?? (credits !== null ? formatCredits(credits, locale) : null)) : null;
 
   return (
     <nav className="rp-nav" style={{
@@ -302,6 +307,7 @@ export function XdrNav({ creditsLabel }: { creditsLabel?: string }) {
         ))}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <div className="rp-nav-locale"><LocaleSwitch /></div>
         {creditPill && (
           <Link href="/pricing" style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", borderRadius: 999, background: "rgba(165,243,252,0.08)", border: "1px solid rgba(165,243,252,0.2)", color: "#a5f3fc", fontSize: 12, textDecoration: "none" }}>
             <span style={{ fontSize: 11 }}>✦</span>{creditPill}
@@ -311,14 +317,14 @@ export function XdrNav({ creditsLabel }: { creditsLabel?: string }) {
           <UserMenu name={session.user?.name || "User"} email={session.user?.email || ""} />
         ) : (
           <>
-            <Link href={loginLink} className="rp-nav-cta-ghost" style={{ background: "transparent", color: "#e2e8f0", border: "1px solid rgba(255,255,255,0.15)", padding: "8px 16px", borderRadius: 10, fontSize: 13, fontWeight: 500, cursor: "pointer", textDecoration: "none" }}>เข้าสู่ระบบ</Link>
-            <Link href="/login?signup=1" className="rp-nav-cta-primary" style={{ background: "linear-gradient(135deg, #10b981 0%, #06b6d4 50%, #8b5cf6 100%)", color: "#fff", border: "none", padding: "9px 18px", borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: "pointer", textDecoration: "none", boxShadow: "0 8px 24px -8px rgba(139,92,246,0.6)" }}>เริ่มสร้างฟรี</Link>
+            <Link href={loginLink} className="rp-nav-cta-ghost" style={{ background: "transparent", color: "#e2e8f0", border: "1px solid rgba(255,255,255,0.15)", padding: "8px 16px", borderRadius: 10, fontSize: 13, fontWeight: 500, cursor: "pointer", textDecoration: "none" }}>{t("เข้าสู่ระบบ", "Sign in")}</Link>
+            <Link href="/login?signup=1" className="rp-nav-cta-primary" style={{ background: "linear-gradient(135deg, #10b981 0%, #06b6d4 50%, #8b5cf6 100%)", color: "#fff", border: "none", padding: "9px 18px", borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: "pointer", textDecoration: "none", boxShadow: "0 8px 24px -8px rgba(139,92,246,0.6)" }}>{t("เริ่มสร้างฟรี", "Start free")}</Link>
           </>
         )}
         {/* Hamburger — only visible < 720px (see XdrThemeStyles) */}
         <button
           className="rp-nav-burger"
-          aria-label="เมนู"
+          aria-label={t("เมนู", "Menu")}
           onClick={() => setMobileOpen(o => !o)}
           style={{ width: 40, height: 40, borderRadius: 10, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", color: "#fff", cursor: "pointer", fontSize: 18 }}
         >
@@ -334,6 +340,10 @@ export function XdrNav({ creditsLabel }: { creditsLabel?: string }) {
           borderBottom: "1px solid rgba(255,255,255,0.08)",
           padding: "12px 18px 18px", display: "flex", flexDirection: "column", gap: 4,
         }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 4px 10px" }}>
+            <span style={{ fontSize: 13, color: "#94a3b8" }}>{t("ภาษา", "Language")}</span>
+            <LocaleSwitch size="lg" />
+          </div>
           {links.map(l => (
             <Link key={l.id} href={l.href} onClick={() => setMobileOpen(false)}
               style={{ padding: "12px 14px", borderRadius: 10, color: "#e2e8f0", textDecoration: "none", fontSize: 15, background: "rgba(255,255,255,0.03)" }}>
@@ -342,13 +352,13 @@ export function XdrNav({ creditsLabel }: { creditsLabel?: string }) {
           ))}
           {session ? (
             <>
-              <Link href="/referral" onClick={() => setMobileOpen(false)} style={{ padding: "12px 14px", borderRadius: 10, color: "#e2e8f0", textDecoration: "none", fontSize: 15, background: "rgba(255,255,255,0.03)" }}>Referral</Link>
-              <button onClick={() => signOut({ callbackUrl: "/" })} style={{ padding: "12px 14px", borderRadius: 10, color: "#fca5a5", textAlign: "left", fontSize: 15, background: "transparent", border: "1px solid rgba(255,255,255,0.08)", cursor: "pointer", fontFamily: "inherit", marginTop: 4 }}>ออกจากระบบ</button>
+              <Link href="/referral" onClick={() => setMobileOpen(false)} style={{ padding: "12px 14px", borderRadius: 10, color: "#e2e8f0", textDecoration: "none", fontSize: 15, background: "rgba(255,255,255,0.03)" }}>{t("ชวนเพื่อน", "Referral")}</Link>
+              <button onClick={() => signOut({ callbackUrl: "/" })} style={{ padding: "12px 14px", borderRadius: 10, color: "#fca5a5", textAlign: "left", fontSize: 15, background: "transparent", border: "1px solid rgba(255,255,255,0.08)", cursor: "pointer", fontFamily: "inherit", marginTop: 4 }}>{t("ออกจากระบบ", "Sign out")}</button>
             </>
           ) : (
             <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
-              <Link href={loginLink} onClick={() => setMobileOpen(false)} style={{ flex: 1, textAlign: "center", padding: "12px 14px", borderRadius: 10, color: "#e2e8f0", textDecoration: "none", fontSize: 14, border: "1px solid rgba(255,255,255,0.15)" }}>เข้าสู่ระบบ</Link>
-              <Link href="/login?signup=1" onClick={() => setMobileOpen(false)} style={{ flex: 1, textAlign: "center", padding: "12px 14px", borderRadius: 10, color: "#fff", textDecoration: "none", fontSize: 14, background: "linear-gradient(135deg, #10b981, #06b6d4, #8b5cf6)" }}>เริ่มฟรี</Link>
+              <Link href={loginLink} onClick={() => setMobileOpen(false)} style={{ flex: 1, textAlign: "center", padding: "12px 14px", borderRadius: 10, color: "#e2e8f0", textDecoration: "none", fontSize: 14, border: "1px solid rgba(255,255,255,0.15)" }}>{t("เข้าสู่ระบบ", "Sign in")}</Link>
+              <Link href="/login?signup=1" onClick={() => setMobileOpen(false)} style={{ flex: 1, textAlign: "center", padding: "12px 14px", borderRadius: 10, color: "#fff", textDecoration: "none", fontSize: 14, background: "linear-gradient(135deg, #10b981, #06b6d4, #8b5cf6)" }}>{t("เริ่มฟรี", "Start free")}</Link>
             </div>
           )}
         </div>
@@ -358,6 +368,7 @@ export function XdrNav({ creditsLabel }: { creditsLabel?: string }) {
 }
 
 function UserMenu({ name, email }: { name: string; email: string }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -379,12 +390,12 @@ function UserMenu({ name, email }: { name: string; email: string }) {
             <div style={{ fontSize: 11, color: "#94a3b8" }}>{email}</div>
           </div>
           {[
-            { href: "/profile", l: "Dashboard", i: "◈" },
-            { href: "/generate", l: "สตูดิโอ", i: "✦" },
-            { href: "/gallery", l: "Gallery", i: "▧" },
-            { href: "/referral", l: "Referral", i: "♢" },
-            { href: "/developer", l: "API นักพัฒนา", i: "⌘" },
-            { href: "/docs", l: "คู่มือ API & MCP", i: "§" },
+            { href: "/profile", l: t("แดชบอร์ด", "Dashboard"), i: "◈" },
+            { href: "/generate", l: t("สตูดิโอ", "Studio"), i: "✦" },
+            { href: "/gallery", l: t("แกลเลอรี", "Gallery"), i: "▧" },
+            { href: "/referral", l: t("ชวนเพื่อน", "Referral"), i: "♢" },
+            { href: "/developer", l: t("API นักพัฒนา", "Developer API"), i: "⌘" },
+            { href: "/docs", l: t("คู่มือ API & MCP", "API & MCP guide"), i: "§" },
           ].map(it => (
             <Link key={it.href} href={it.href} onClick={() => setOpen(false)} className="xdr-menu-item">
               <span style={{ color: "#a5f3fc", width: 14, display: "inline-block" }}>{it.i}</span>{it.l}
@@ -392,7 +403,7 @@ function UserMenu({ name, email }: { name: string; email: string }) {
           ))}
           <div style={{ height: 1, background: "rgba(255,255,255,0.06)", margin: "6px 0" }} />
           <button onClick={() => signOut({ callbackUrl: "/" })} className="xdr-menu-item" style={{ width: "100%", textAlign: "left", background: "transparent", border: "none", color: "#fca5a5", fontFamily: "inherit", cursor: "pointer" }}>
-            <span style={{ width: 14, display: "inline-block" }}>⎋</span>ออกจากระบบ
+            <span style={{ width: 14, display: "inline-block" }}>⎋</span>{t("ออกจากระบบ", "Sign out")}
           </button>
         </div>
       )}

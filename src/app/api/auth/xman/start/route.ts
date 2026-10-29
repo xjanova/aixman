@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimit, clientIp } from '@/lib/rate-limit';
+import { requestLocale, translator } from '@/lib/i18n/locale';
 import {
   SSO_COOKIE,
   SSO_COOKIE_MAX_AGE,
@@ -26,8 +27,9 @@ const ATTEMPTS = 20;
 export async function GET(request: NextRequest) {
   const limit = rateLimit(`xman-sso-start:${clientIp(request.headers)}`, ATTEMPTS, WINDOW_MS);
   if (!limit.ok) {
+    const t = translator(requestLocale(request));
     return NextResponse.json(
-      { error: 'ทำรายการบ่อยเกินไป กรุณารอสักครู่', retryAfter: limit.retryAfter },
+      { error: t('ทำรายการบ่อยเกินไป กรุณารอสักครู่', 'Too many attempts. Please wait a moment.'), retryAfter: limit.retryAfter },
       { status: 429, headers: { 'Retry-After': String(limit.retryAfter) } }
     );
   }

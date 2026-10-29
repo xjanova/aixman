@@ -4,6 +4,7 @@ import prisma from '@/lib/db';
 import { daysUntil } from '@/lib/services/retention';
 import { publicErrorMessage, publicModelName, publicProvider } from '@/lib/public-provider';
 import type { Prisma } from '@/generated/prisma/client';
+import { requestLocale } from '@/lib/i18n/locale';
 
 /**
  * The settings an order was placed with, for the studio's "use these settings
@@ -29,6 +30,7 @@ function remixParams(params: unknown): Record<string, unknown> | null {
 }
 
 export async function GET(request: NextRequest) {
+  const locale = requestLocale(request);
   const userId = await getCurrentUserId();
   if (!userId) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -126,7 +128,7 @@ export async function GET(request: NextRequest) {
       // leaving the customer to work out whether they were charged.
       creditsRefunded: g.creditsRefunded,
       processingMs: g.processingMs,
-      errorMessage: publicErrorMessage(g.errorMessage),
+      errorMessage: publicErrorMessage(g.errorMessage, locale),
       // Retention: how long this file will still be here, and whether it has
       // already gone. Surfaced on every item so nobody discovers the policy by
       // losing something.
@@ -137,7 +139,7 @@ export async function GET(request: NextRequest) {
       isFavorited: g.favorites.length > 0,
       favoritesCount: g._count.favorites,
       model: {
-        name: publicModelName(g.model.modelId, g.model.name),
+        name: publicModelName(g.model.modelId, g.model.name, locale),
         // In-house models show our brand, not the rented hardware behind them.
         provider: publicProvider(g.model.provider).name,
         providerSlug: publicProvider(g.model.provider).slug,

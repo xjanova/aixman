@@ -851,7 +851,7 @@ from before the first open.
 
 ## Coding Conventions
 
-- UI text: Thai, code: English
+- UI text: Thai **and English** (customer side), code: English. See "Two languages" below.
 - Dark mode only, glassmorphism theme
 - CSS utilities: `glass`, `glass-light`, `gradient-text`, `glow`
 - Auth: `getCurrentUserId()`, `isAdmin()` from `@/lib/auth`
@@ -865,3 +865,47 @@ from before the first open.
   `publicErrorMessage` (vendor account trouble → "busy"). The studio branches on
   `asyncApi` / `latinPromptOnly`, never on a provider slug. Catalogue names and
   descriptions must name no vendor (a test checks KIE's). Admin pages may.
+
+### Two languages (Thai default, English) — `src/lib/i18n/`
+
+Every customer page, component and customer-facing API message exists in Thai
+and English. No dependency, no URL prefix: the language is a cookie.
+- **Which language.** Pages: cookie `aixman-locale`, else the browser's
+  Accept-Language, else Thai (`getLocale()` in `i18n/server.ts`). APIs:
+  `requestLocale(request)` — cookie, else an `X-Locale` header, else Thai;
+  never Accept-Language, so the mobile app stays Thai. The navbar's
+  `LocaleSwitch` writes the cookie and refreshes; `<html lang>` follows.
+- **Adding a string.** Client components: `const t = useT();` then
+  `t('ไทย', 'English')`. Server components: `const t = await getT();`. API
+  routes: `const t = translator(requestLocale(request));`. A value kept in
+  state, a constant or a table is a `Msg` (`{ th, en }`) rendered with `t(msg)`,
+  so a switch re-renders it. Never ship a Thai-only or English-only customer
+  string; admin pages (`/admin`) are still Thai-only.
+- **Trap:** `{ th, en }` objects whose `en` is *prompt text sent to a model*
+  (studio prompt chips, music tags, reference roles) are not translations —
+  name that field something else (`prompt`, `tag`, `line`), never pass it to `t()`.
+- **Errors a customer reads.** Throw `UserMessageError({ th, en })` or
+  `OrderRefusedError({ th, en }, code, status)`; routes answer
+  `messageFor(error, locale)` / `generationErrorResponse(error, locale)`.
+  `.message` stays the Thai, for logs and `.includes` checks. Thai-only
+  refusals still thrown as strings by GenerationService get their English from
+  `i18n/refusal-en.ts` (a test fails when a new literal has none — add it there
+  or throw a pair). "Insufficient credits. Need N, have M" stays English: the
+  studios and the app parse the figures.
+- **Stored messages** (`ai_generations.error_message`, story shot errors) are
+  written with `packMsg({ th, en })` — Thai, `\n⟦en⟧ `, English — and read with
+  `readStoredMessage(value, locale)` (customers, via `publicErrorMessage`) or
+  `storedMessageThai` (admin). Older Thai-only rows translate through
+  `registerStoredMsgs`.
+- **Model text.** Names stay as they are; English descriptions, quality modes,
+  tiers and voices live in `i18n/model-text.ts`, keyed by the real `model_id`,
+  and `/api/models` sends them already in the visitor's language. A new KIE or
+  GPU catalogue entry needs its English there (`model-text.test.mts` fails
+  otherwise). Package names/badges/features typed in Thai on xmanstudio's
+  shared table go through `i18n/package-text.ts`; credit-history lines through
+  `i18n/credit-text.ts`.
+- **Formats.** `formatNumber`, `formatDate`, `formatDateTime`, `formatThb`,
+  `formatCredits` from `i18n/locale.ts`: Thai keeps the Buddhist year
+  (`th-TH`), English uses `en-GB` ("29 Oct 2026"). Never hard-code `'th-TH'`.
+- English is plain and short (buttons fit a phone), names no vendor (the same
+  rule as above), and keeps product names (X-DREAMER, XMAN Studio, TPIX) as they are.

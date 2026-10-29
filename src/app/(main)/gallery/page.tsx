@@ -21,8 +21,19 @@ import { downloadGeneration, extensionOf, saveFavorite } from "@/lib/client-acti
 import { AudioCover } from "@/components/xdreamer/audio";
 import { ModelViewer } from "@/components/xdreamer/model-viewer";
 import { loginHref } from "@/lib/safe-callback";
+import { useLocale, useT } from "@/lib/i18n/client";
+import { formatCredits, formatDate, formatDateTime, type Msg } from "@/lib/i18n/locale";
 
 const HUE = 70;
+
+/** What a creation is, for the detail view's tag. */
+const TYPE_LABEL: Record<string, Msg> = {
+  image: { th: "ภาพ", en: "Image" },
+  edit: { th: "แก้ไขภาพ", en: "Image edit" },
+  video: { th: "วิดีโอ", en: "Video" },
+  audio: { th: "เสียง", en: "Audio" },
+  model3d: { th: "โมเดล 3D", en: "3D model" },
+};
 
 interface Generation {
   id: number;
@@ -37,7 +48,8 @@ interface Generation {
   processingMs: number | null;
   isFavorited: boolean;
   favoritesCount: number;
-  model: { name: string; provider: string; providerSlug: string };
+  /** The model's public name, already in the visitor's language. No provider is ever shown. */
+  model: { name: string };
   createdAt: string;
   /** Retention — how long the file is still available, and whether it is gone. */
   expiresAt: string | null;
@@ -79,6 +91,8 @@ export default function GalleryPage() {
   const { data: session } = useSession();
   const router = useRouter();
   const { toast } = useToast();
+  const t = useT();
+  const { locale } = useLocale();
   const [filter, setFilter] = useState<"all" | "image" | "video" | "audio" | "favorites">("all");
   const [sort, setSort] = useState<"trending" | "newest" | "top">("newest");
   const [search, setSearch] = useState("");
@@ -137,7 +151,7 @@ export default function GalleryPage() {
 
   const toggleFavorite = async (gen: Generation, e?: React.MouseEvent) => {
     e?.stopPropagation();
-    if (!(await saveFavorite(gen.id, !gen.isFavorited))) { toast("error", "เกิดข้อผิดพลาด"); return; }
+    if (!(await saveFavorite(gen.id, !gen.isFavorited))) { toast("error", t("เกิดข้อผิดพลาด", "Something went wrong")); return; }
     setGenerations(prev => prev.map(g => g.id === gen.id ? { ...g, isFavorited: !g.isFavorited } : g));
     if (selectedItem?.id === gen.id) setSelectedItem({ ...gen, isFavorited: !gen.isFavorited });
   };
@@ -147,14 +161,14 @@ export default function GalleryPage() {
     if (!gen.resultUrl) return;
     const fallback = gen.type === "video" ? "mp4" : gen.type === "audio" ? "flac" : gen.type === "model3d" ? "glb" : "webp";
     const ok = await downloadGeneration(gen.id, gen.resultUrl, `xdreamer-${gen.id}.${extensionOf(gen.resultUrl, fallback)}`);
-    if (ok) toast("success", "ดาวน์โหลดสำเร็จ");
-    else toast("error", "ดาวน์โหลดไม่สำเร็จ");
+    if (ok) toast("success", t("ดาวน์โหลดสำเร็จ", "Downloaded"));
+    else toast("error", t("ดาวน์โหลดไม่สำเร็จ", "Download failed"));
   };
 
   const handleUpscale = async (gen: Generation) => {
     const result = await requestUpscale(gen.id);
-    if (!result.ok) { toast("error", "Upscale ไม่สำเร็จ", result.error); return; }
-    toast("info", "กำลัง Upscale...", "ผลลัพธ์จะปรากฏในแกลเลอรี");
+    if (!result.ok) { toast("error", t("Upscale ไม่สำเร็จ", "Upscale failed"), result.error); return; }
+    toast("info", t("กำลัง Upscale...", "Upscaling…"), t("ผลลัพธ์จะปรากฏในแกลเลอรี", "The result will appear in your gallery."));
   };
 
   if (!session) return null;
@@ -162,28 +176,32 @@ export default function GalleryPage() {
   const displayGenerations: Generation[] = generations;
 
   const filterOpts = [
-    { key: "all" as const, label: "ทั้งหมด" },
-    { key: "image" as const, label: "Image" },
-    { key: "video" as const, label: "Video" },
-    { key: "audio" as const, label: "♫ เพลง" },
-    { key: "favorites" as const, label: "♥ โปรด" },
+    { key: "all" as const, label: t("ทั้งหมด", "All") },
+    { key: "image" as const, label: t("ภาพ", "Images") },
+    { key: "video" as const, label: t("วิดีโอ", "Videos") },
+    { key: "audio" as const, label: t("♫ เพลง", "♫ Audio") },
+    { key: "favorites" as const, label: t("♥ โปรด", "♥ Favourites") },
   ];
+  // `trending` ranks the last 7 days by hearts; `top` ranks all time.
   const sortOpts = [
-    { key: "newest" as const, label: "ใหม่ล่าสุด" },
-    { key: "trending" as const, label: "trending" },
-    { key: "top" as const, label: "top week" },
+    { key: "newest" as const, label: t("ใหม่ล่าสุด", "Newest") },
+    { key: "trending" as const, label: t("มาแรง", "Trending") },
+    { key: "top" as const, label: t("ยอดนิยม", "Top") },
   ];
 
   return (
     <div style={{ padding: "30px 48px 80px", maxWidth: 1500, margin: "0 auto", color: "#f1f5f9" }}>
       {/* Hero header */}
       <div style={{ textAlign: "center", marginBottom: 48 }}>
-        <div style={{ fontSize: 12, letterSpacing: "0.16em", color: "#a5f3fc", textTransform: "uppercase", marginBottom: 14 }}>· แกลเลอรี</div>
+        <div style={{ fontSize: 12, letterSpacing: "0.16em", color: "#a5f3fc", textTransform: "uppercase", marginBottom: 14 }}>{t("· แกลเลอรี", "· Gallery")}</div>
         <h1 style={{ fontSize: "clamp(48px, 6vw, 80px)", fontWeight: 300, color: "#fff", letterSpacing: "-0.02em", lineHeight: 1.05, margin: 0 }}>
-          ปราสาท<span className="xdr-italic-th" style={{ fontStyle: "italic", color: "#c4b5fd" }}> ของคุณ</span>
+          {t(
+            <>ปราสาท<span className="xdr-italic-th" style={{ fontStyle: "italic", color: "#c4b5fd" }}> ของคุณ</span></>,
+            <>Your <span className="xdr-italic-th" style={{ fontStyle: "italic", color: "#c4b5fd" }}>castle</span></>,
+          )}
         </h1>
         <p style={{ marginTop: 18, color: "rgba(203,213,225,0.7)", fontSize: 17, fontWeight: 300 }}>
-          ผลงานทั้งหมดที่คุณทอขึ้น · สำรวจ บันทึก แชร์
+          {t("ผลงานทั้งหมดที่คุณทอขึ้น · สำรวจ บันทึก แชร์", "Everything you’ve woven · explore, save, share")}
         </p>
       </div>
 
@@ -203,10 +221,10 @@ export default function GalleryPage() {
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
             <span style={{ position: "absolute", left: 12, fontSize: 13, color: "#64748b", pointerEvents: "none" }}>⌕</span>
-            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ค้นหา prompt..."
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t("ค้นหา prompt...", "Search prompts…")}
               style={{ width: 220, padding: "8px 14px 8px 32px", borderRadius: 10, background: "rgba(2,6,23,0.5)", color: "#f1f5f9", border: "1px solid rgba(255,255,255,0.1)", fontSize: 13, outline: "none", fontFamily: "inherit" }} />
             {search && (
-              <button onClick={() => setSearch("")} title="ล้าง"
+              <button onClick={() => setSearch("")} title={t("ล้าง", "Clear")}
                 style={{ position: "absolute", right: 6, width: 22, height: 22, borderRadius: 6, background: "rgba(255,255,255,0.06)", color: "#94a3b8", border: "none", cursor: "pointer", fontSize: 11 }}>×</button>
             )}
           </div>
@@ -220,20 +238,20 @@ export default function GalleryPage() {
               }}>{s.label}</button>
           ))}
           <div style={{ display: "flex", gap: 0, padding: 3, background: "rgba(2,6,23,0.5)", borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)" }}>
-            <button onClick={() => setView("grid")} title="Grid view"
+            <button onClick={() => setView("grid")} title={t("มุมมองตาราง", "Grid view")}
               style={{
                 padding: "5px 10px", borderRadius: 7, fontSize: 13, cursor: "pointer",
                 background: view === "grid" ? "rgba(255,255,255,0.1)" : "transparent",
                 color: view === "grid" ? "#fff" : "#94a3b8",
                 border: "none", display: "flex", alignItems: "center", gap: 4,
-              }}>▦ <span style={{ fontSize: 11 }}>Grid</span></button>
-            <button onClick={() => setView("list")} title="List view"
+              }}>▦ <span style={{ fontSize: 11 }}>{t("ตาราง", "Grid")}</span></button>
+            <button onClick={() => setView("list")} title={t("มุมมองรายการ", "List view")}
               style={{
                 padding: "5px 10px", borderRadius: 7, fontSize: 13, cursor: "pointer",
                 background: view === "list" ? "rgba(255,255,255,0.1)" : "transparent",
                 color: view === "list" ? "#fff" : "#94a3b8",
                 border: "none", display: "flex", alignItems: "center", gap: 4,
-              }}>☰ <span style={{ fontSize: 11 }}>List</span></button>
+              }}>☰ <span style={{ fontSize: 11 }}>{t("รายการ", "List")}</span></button>
           </div>
         </div>
       </div>
@@ -256,21 +274,27 @@ export default function GalleryPage() {
           // should read as "no match", not as a showpiece.
           image={filter === "all" && !debouncedSearch ? "/showcase/gallery-empty.jpg" : undefined}
           emblem={filter === "all" && !debouncedSearch}
-          title={filter === "favorites" ? "ยังไม่มีรายการโปรด" : debouncedSearch ? "ไม่พบผลลัพธ์" : filter === "audio" ? "ยังไม่มีเพลง" : "ปราสาทของคุณยังว่างอยู่"}
+          title={filter === "favorites"
+            ? t("ยังไม่มีรายการโปรด", "No favourites yet")
+            : debouncedSearch
+              ? t("ไม่พบผลลัพธ์", "No results")
+              : filter === "audio"
+                ? t("ยังไม่มีเพลง", "No audio yet")
+                : t("ปราสาทของคุณยังว่างอยู่", "Your castle is still empty")}
           sub={
             filter === "favorites"
-              ? "กดหัวใจในผลงานเพื่อบันทึกไว้ที่นี่"
+              ? t("กดหัวใจในผลงานเพื่อบันทึกไว้ที่นี่", "Tap the heart on a creation to keep it here.")
               : debouncedSearch
-                ? "ลองค้นหาด้วยคำอื่น หรือล้างคำค้นเพื่อดูผลงานทั้งหมด"
+                ? t("ลองค้นหาด้วยคำอื่น หรือล้างคำค้นเพื่อดูผลงานทั้งหมด", "Try another word, or clear the search to see all your work.")
                 : filter === "audio"
-                  ? "เปิดแท็บ “สร้างเพลง” ในสตูดิโอ แล้วเพลงแรกของคุณจะมาอยู่ที่นี่"
-                  : "ทุกภาพ วิดีโอ และเพลงที่คุณสร้างจะมาเรียงอยู่ที่นี่ — เริ่มทอความฝันแรกของคุณได้เลย"
+                  ? t("เปิดแท็บ “สร้างเพลง” ในสตูดิโอ แล้วเพลงแรกของคุณจะมาอยู่ที่นี่", "Open the music tab in the Studio and your first song will appear here.")
+                  : t("ทุกภาพ วิดีโอ และเพลงที่คุณสร้างจะมาเรียงอยู่ที่นี่ — เริ่มทอความฝันแรกของคุณได้เลย", "Every image, video and song you create lands here — start weaving your first dream.")
           }
         >
           <button onClick={() => router.push("/generate")} className="xdr-cta-primary" style={{ border: "none", cursor: "pointer", fontFamily: "inherit" }}>
-            ✦ เริ่มสร้างเลย
+            {t("✦ เริ่มสร้างเลย", "✦ Start creating")}
           </button>
-          <Link href="/pricing" className="xdr-cta-ghost">ดูแพ็กเกจเครดิต</Link>
+          <Link href="/pricing" className="xdr-cta-ghost">{t("ดูแพ็กเกจเครดิต", "See credit packages")}</Link>
         </EmptyState>
       ) : (
         <>
@@ -304,7 +328,7 @@ export default function GalleryPage() {
                       )}
                       {gen.type !== "image" && (
                         <span style={{ position: "absolute", top: 10, right: 10, padding: "3px 8px", borderRadius: 999, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", fontSize: 9, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase" }}>
-                          {gen.type === "video" ? "▶ video" : gen.type === "audio" ? "♫ เพลง" : gen.type === "model3d" ? "◆ 3D" : "✦ edit"}
+                          {gen.type === "video" ? t("▶ วิดีโอ", "▶ video") : gen.type === "audio" ? t("♫ เพลง", "♫ audio") : gen.type === "model3d" ? "◆ 3D" : t("✦ แก้ไข", "✦ edit")}
                         </span>
                       )}
                       {showFavCount && (
@@ -316,7 +340,7 @@ export default function GalleryPage() {
                     <div style={{ padding: "10px 14px 12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                       <div style={{ minWidth: 0, flex: 1 }}>
                         <div style={{ fontSize: 12, color: "#fff", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{gen.prompt}</div>
-                        <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 2 }}>@{gen.model?.provider}</div>
+                        <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{gen.model?.name}</div>
                       </div>
                       <div style={{ display: "flex", gap: 4, marginLeft: 8 }}>
                         <button onClick={(e) => toggleFavorite(gen, e)}
@@ -377,14 +401,12 @@ export default function GalleryPage() {
                     </div>
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontSize: 14, color: "#fff", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 4 }}>
-                        {gen.prompt || "(ไม่มี prompt)"}
+                        {gen.prompt || t("(ไม่มี prompt)", "(no prompt)")}
                       </div>
                       <div style={{ display: "flex", gap: 12, fontSize: 11, color: "#94a3b8", flexWrap: "wrap" }}>
-                        <span>@{gen.model?.provider}</span>
-                        <span>·</span>
                         <span>{gen.model?.name}</span>
                         <span>·</span>
-                        <span>{new Date(gen.createdAt).toLocaleDateString("th-TH", { year: "numeric", month: "short", day: "numeric" })}</span>
+                        <span>{formatDate(gen.createdAt, locale)}</span>
                       </div>
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, fontSize: 11, color: "#64748b" }}>
@@ -392,14 +414,14 @@ export default function GalleryPage() {
                           the only signal is a red badge and the customer is left
                           to guess whether they paid for nothing. */}
                       {gen.creditsRefunded > 0
-                        ? <span style={{ color: "#86efac" }}>↩ คืน {gen.creditsRefunded} เครดิต</span>
+                        ? <span style={{ color: "#86efac" }}>{t(`↩ คืน ${gen.creditsRefunded} เครดิต`, `↩ ${formatCredits(gen.creditsRefunded, locale)} refunded`)}</span>
                         : <span>✦ {gen.creditsUsed}</span>}
                       {gen.favoritesCount > 0 && <span style={{ color: "#fca5a5" }}>♥ {gen.favoritesCount}</span>}
                       {gen.mediaDeleted ? (
-                        <span style={{ color: "#94a3b8" }}>ไฟล์หมดอายุแล้ว</span>
+                        <span style={{ color: "#94a3b8" }}>{t("ไฟล์หมดอายุแล้ว", "File expired")}</span>
                       ) : gen.daysLeft != null && gen.daysLeft <= 7 ? (
                         <span style={{ color: gen.daysLeft <= 3 ? "#fca5a5" : "#fbbf24" }}>
-                          เหลือ {Math.max(0, gen.daysLeft)} วัน
+                          {t(`เหลือ ${Math.max(0, gen.daysLeft)} วัน`, `${Math.max(0, gen.daysLeft)} ${Math.max(0, gen.daysLeft) === 1 ? "day" : "days"} left`)}
                         </span>
                       ) : null}
                     </div>
@@ -409,7 +431,7 @@ export default function GalleryPage() {
                       color: gen.status === "completed" ? "#86efac" : "#fca5a5",
                       border: `1px solid ${gen.status === "completed" ? "hsla(150,60%,50%,0.25)" : "hsla(0,60%,55%,0.25)"}`,
                     }}>
-                      {gen.status === "completed" ? "สำเร็จ" : "ล้มเหลว"}
+                      {gen.status === "completed" ? t("สำเร็จ", "Done") : t("ล้มเหลว", "Failed")}
                     </span>
                     <div style={{ display: "flex", gap: 6 }}>
                       <button onClick={(e) => toggleFavorite(gen, e)}
@@ -431,7 +453,7 @@ export default function GalleryPage() {
             <div style={{ textAlign: "center", marginTop: 40 }}>
               <button onClick={() => fetchData(page + 1, true)} disabled={loadingMore}
                 style={{ padding: "14px 28px", borderRadius: 12, background: "rgba(255,255,255,0.06)", color: "#fff", border: "1px solid rgba(255,255,255,0.12)", fontSize: 14, cursor: loadingMore ? "wait" : "pointer", opacity: loadingMore ? 0.6 : 1 }}>
-                {loadingMore ? "⟳ กำลังโหลด..." : "โหลดเพิ่ม ↓"}
+                {loadingMore ? t("⟳ กำลังโหลด...", "⟳ Loading…") : t("โหลดเพิ่ม ↓", "Load more ↓")}
               </button>
             </div>
           )}
@@ -447,11 +469,11 @@ export default function GalleryPage() {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
               <div>
                 <span style={{ display: "inline-block", padding: "3px 10px", borderRadius: 999, background: `hsla(${220 + HUE},60%,50%,0.2)`, color: "#a5f3fc", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-                  {selectedItem.model?.provider}
+                  {TYPE_LABEL[selectedItem.type] ? t(TYPE_LABEL[selectedItem.type]) : selectedItem.type}
                 </span>
                 <div style={{ fontSize: 18, color: "#fff", fontWeight: 500, marginTop: 6 }}>{selectedItem.model?.name}</div>
               </div>
-              <button onClick={() => setSelectedItem(null)} style={{ width: 32, height: 32, borderRadius: 8, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", color: "#94a3b8", cursor: "pointer", fontSize: 16 }}>×</button>
+              <button onClick={() => setSelectedItem(null)} aria-label={t("ปิด", "Close")} style={{ width: 32, height: 32, borderRadius: 8, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", color: "#94a3b8", cursor: "pointer", fontSize: 16 }}>×</button>
             </div>
 
             <div style={{ borderRadius: 14, overflow: "hidden", marginBottom: 16, border: "1px solid rgba(255,255,255,0.06)" }}>
@@ -478,24 +500,24 @@ export default function GalleryPage() {
             <p style={{ fontSize: 14, color: "rgba(203,213,225,0.85)", lineHeight: 1.55, margin: "0 0 12px" }}>{selectedItem.prompt}</p>
 
             <div style={{ display: "flex", flexWrap: "wrap", gap: 14, fontSize: 11, color: "#64748b", marginBottom: 18 }}>
-              <span>✦ {selectedItem.creditsUsed} เครดิต</span>
+              <span>✦ {formatCredits(selectedItem.creditsUsed, locale)}</span>
               {selectedItem.processingMs && <span>⌚ {(selectedItem.processingMs / 1000).toFixed(1)}s</span>}
-              <span>📅 {new Date(selectedItem.createdAt).toLocaleString("th-TH")}</span>
+              <span>📅 {formatDateTime(selectedItem.createdAt, locale)}</span>
             </div>
 
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <button onClick={() => handleDownload(selectedItem)}
                 style={{ padding: "10px 18px", borderRadius: 10, background: `linear-gradient(135deg, hsl(${160 + HUE},70%,50%), hsl(${280 + HUE},70%,55%))`, color: "#fff", border: "none", fontSize: 13, fontWeight: 500, cursor: "pointer" }}>
-                ↓ ดาวน์โหลด
+                {t("↓ ดาวน์โหลด", "↓ Download")}
               </button>
               <button onClick={() => toggleFavorite(selectedItem)}
                 style={{ padding: "10px 18px", borderRadius: 10, background: "rgba(255,255,255,0.06)", color: selectedItem.isFavorited ? "#fca5a5" : "#fff", border: "1px solid rgba(255,255,255,0.12)", fontSize: 13, fontWeight: 500, cursor: "pointer" }}>
-                {selectedItem.isFavorited ? "♥ บันทึกแล้ว" : "♡ บันทึก"}
+                {selectedItem.isFavorited ? t("♥ บันทึกแล้ว", "♥ Saved") : t("♡ บันทึก", "♡ Save")}
               </button>
               {selectedItem.type === "model3d" && (
                 <Link href={`/generate/3d?id=${selectedItem.id}`}
                   style={{ padding: "10px 18px", borderRadius: 10, background: "rgba(255,255,255,0.06)", color: "#a5f3fc", border: "1px solid rgba(165,243,252,0.25)", fontSize: 13, fontWeight: 500, textDecoration: "none" }}>
-                  ◆ เปิดใน 3D Studio
+                  {t("◆ เปิดใน 3D Studio", "◆ Open in 3D Studio")}
                 </Link>
               )}
               {selectedItem.type !== "video" && selectedItem.type !== "audio" && selectedItem.type !== "model3d" && (

@@ -4,6 +4,7 @@ import { GenerationService } from '@/lib/services/generation';
 import { generationErrorResponse } from '@/lib/services/generation-errors';
 import { publicErrorMessage } from '@/lib/public-provider';
 import { keyFromPublicUrl } from '@/lib/storage/r2';
+import { requestLocale, translator } from '@/lib/i18n/locale';
 import type { GenerationRequest } from '@/types';
 
 const MAX_PROMPT_LENGTH = 10000;
@@ -13,6 +14,8 @@ const VALID_TYPES = ['image', 'video', 'edit', 'audio', 'model3d'];
 const MAX_LYRICS_LENGTH = 3000;
 
 export async function POST(request: NextRequest) {
+  const locale = requestLocale(request);
+  const t = translator(locale);
   const userId = await getCurrentUserId();
   if (!userId) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -53,7 +56,7 @@ export async function POST(request: NextRequest) {
       const value = genRequest[field];
       if (value !== undefined && (typeof value !== 'string' || !keyFromPublicUrl(value))) {
         return NextResponse.json(
-          { error: 'ไฟล์ที่แนบไม่ถูกต้อง กรุณาอัปโหลดใหม่' },
+          { error: t('ไฟล์ที่แนบไม่ถูกต้อง กรุณาอัปโหลดใหม่', 'The attached file isn’t valid. Please upload it again.') },
           { status: 400 }
         );
       }
@@ -82,7 +85,7 @@ export async function POST(request: NextRequest) {
 
     const lyrics = genRequest.params?.lyrics;
     if (lyrics !== undefined && (typeof lyrics !== 'string' || lyrics.length > MAX_LYRICS_LENGTH)) {
-      return NextResponse.json({ error: `เนื้อเพลงยาวได้ไม่เกิน ${MAX_LYRICS_LENGTH} ตัวอักษร` }, { status: 400 });
+      return NextResponse.json({ error: t(`เนื้อเพลงยาวได้ไม่เกิน ${MAX_LYRICS_LENGTH} ตัวอักษร`, `Lyrics can be at most ${MAX_LYRICS_LENGTH} characters.`) }, { status: 400 });
     }
 
     // Cap numOutputs
@@ -97,9 +100,9 @@ export async function POST(request: NextRequest) {
     });
 
     // A vendor's failure text names the vendor; customers get it without.
-    return NextResponse.json(result.error ? { ...result, error: publicErrorMessage(result.error) } : result);
+    return NextResponse.json(result.error ? { ...result, error: publicErrorMessage(result.error, locale) } : result);
   } catch (error) {
-    const known = generationErrorResponse(error);
+    const known = generationErrorResponse(error, locale);
     if (known) return NextResponse.json(known.body, { status: known.status });
 
     console.error('Generation error:', error);

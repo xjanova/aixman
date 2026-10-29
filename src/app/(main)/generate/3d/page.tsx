@@ -24,6 +24,8 @@ import { useSession } from "next-auth/react";
 import { useAppStore } from "@/lib/store/app-store";
 import { useToast } from "@/components/ui/toast-provider";
 import { downloadAs, downloadGeneration } from "@/lib/client-actions";
+import { useLocale, useT } from "@/lib/i18n/client";
+import { formatCredits, formatDateTime, formatNumber, type Locale, type Msg } from "@/lib/i18n/locale";
 import {
   ModelViewer,
   type LightPreset,
@@ -87,46 +89,63 @@ const PAGE_SIZE = 12;
 const POLL_MS = 4000;
 const MAX_NAME = 80;
 
-const VIEW_MODES: { id: ViewMode; label: string; hint: string }[] = [
-  { id: "textured", label: "พื้นผิว", hint: "สีและวัสดุจริงของโมเดล" },
-  { id: "clay", label: "ดินปั้น", hint: "สีเดียว ดูรูปทรงล้วน ๆ" },
-  { id: "wire", label: "โครงลวด", hint: "ดูโครงตาข่ายสามเหลี่ยม" },
-  { id: "normal", label: "นอร์มอล", hint: "ทิศของพื้นผิว ใช้ตรวจรอยต่อ" },
+const VIEW_MODES: { id: ViewMode; label: Msg; hint: Msg }[] = [
+  { id: "textured", label: { th: "พื้นผิว", en: "Textured" }, hint: { th: "สีและวัสดุจริงของโมเดล", en: "The model's own colours and materials" } },
+  { id: "clay", label: { th: "ดินปั้น", en: "Clay" }, hint: { th: "สีเดียว ดูรูปทรงล้วน ๆ", en: "One colour, shape only" } },
+  { id: "wire", label: { th: "โครงลวด", en: "Wireframe" }, hint: { th: "ดูโครงตาข่ายสามเหลี่ยม", en: "See the triangle mesh" } },
+  { id: "normal", label: { th: "นอร์มอล", en: "Normals" }, hint: { th: "ทิศของพื้นผิว ใช้ตรวจรอยต่อ", en: "Surface direction, for checking seams" } },
 ];
-const LIGHTS: { id: LightPreset; label: string }[] = [
-  { id: "studio", label: "สตูดิโอ" },
-  { id: "sunset", label: "แดดเย็น" },
-  { id: "neon", label: "นีออน" },
+const LIGHTS: { id: LightPreset; label: Msg }[] = [
+  { id: "studio", label: { th: "สตูดิโอ", en: "Studio" } },
+  { id: "sunset", label: { th: "แดดเย็น", en: "Sunset" } },
+  { id: "neon", label: { th: "นีออน", en: "Neon" } },
 ];
-const BACKDROPS: { id: Backdrop; label: string }[] = [
-  { id: "space", label: "อวกาศ" },
-  { id: "studio", label: "ขาว" },
-  { id: "void", label: "ดำ" },
+const BACKDROPS: { id: Backdrop; label: Msg }[] = [
+  { id: "space", label: { th: "อวกาศ", en: "Space" } },
+  { id: "studio", label: { th: "ขาว", en: "White" } },
+  { id: "void", label: { th: "ดำ", en: "Black" } },
 ];
-const FILTERS: { id: Filter; label: string }[] = [
-  { id: "all", label: "ทั้งหมด" },
-  { id: "done", label: "เสร็จแล้ว" },
-  { id: "active", label: "กำลังสร้าง" },
-  { id: "failed", label: "ไม่สำเร็จ" },
+const FILTERS: { id: Filter; label: Msg }[] = [
+  { id: "all", label: { th: "ทั้งหมด", en: "All" } },
+  { id: "done", label: { th: "เสร็จแล้ว", en: "Done" } },
+  { id: "active", label: { th: "กำลังสร้าง", en: "In progress" } },
+  { id: "failed", label: { th: "ไม่สำเร็จ", en: "Failed" } },
 ];
-const STEPS = ["รอคิว", "เตรียมระบบ", "ปั้นรูปทรงและลงสี", "เก็บรายละเอียด", "บันทึกไฟล์"];
+const STEPS: Msg[] = [
+  { th: "รอคิว", en: "Waiting in the queue" },
+  { th: "เตรียมระบบ", en: "Getting ready" },
+  { th: "ปั้นรูปทรงและลงสี", en: "Shaping and painting" },
+  { th: "เก็บรายละเอียด", en: "Refining details" },
+  { th: "บันทึกไฟล์", en: "Saving the file" },
+];
 const USE_WITH = ["Blender", "Godot", "Unreal", "Unity (glTFast)", "three.js", "Sketchfab", "PowerPoint"];
 
 const HUE = 70;
 
 // ─── helpers (requests return failures as values) ────────────────────────
 
-async function uploadPicture(file: File): Promise<{ url: string } | { error: string }> {
+/**
+ * A message for the customer: our own come as a { th, en } pair, shown in
+ * whichever language is current when it is drawn; the server's own text
+ * (already in the visitor's language) is a plain string.
+ */
+type Shown = string | Msg;
+
+async function uploadPicture(file: File): Promise<{ url: string } | { error: Shown }> {
   try {
     const form = new FormData();
     form.append("file", file);
     const res = await fetch("/api/uploads?kind=image", { method: "POST", body: form });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) return { error: typeof data.error === "string" ? data.error : "อัปโหลดภาพไม่สำเร็จ ลองใหม่อีกครั้ง" };
-    if (typeof data.url !== "string") return { error: "เซิร์ฟเวอร์ไม่ได้ส่งลิงก์ไฟล์กลับมา" };
+    if (!res.ok) {
+      return {
+        error: typeof data.error === "string" ? data.error : { th: "อัปโหลดภาพไม่สำเร็จ ลองใหม่อีกครั้ง", en: "Couldn't upload the picture. Please try again." },
+      };
+    }
+    if (typeof data.url !== "string") return { error: { th: "เซิร์ฟเวอร์ไม่ได้ส่งลิงก์ไฟล์กลับมา", en: "The server didn't send back a link to the file." } };
     return { url: data.url };
   } catch {
-    return { error: "อัปโหลดไม่สำเร็จ ตรวจสอบอินเทอร์เน็ตแล้วลองใหม่" };
+    return { error: { th: "อัปโหลดไม่สำเร็จ ตรวจสอบอินเทอร์เน็ตแล้วลองใหม่", en: "Upload failed. Check your connection and try again." } };
   }
 }
 
@@ -143,7 +162,7 @@ async function fetchLibrary(page: number): Promise<{ items: Model3dItem[]; pages
 
 type OrderOutcome =
   | { kind: "ok"; id: number; creditsUsed: number }
-  | { kind: "rejected"; error: string; needCredits: boolean }
+  | { kind: "rejected"; error: Shown; needCredits: boolean }
   | { kind: "network" };
 
 async function placeOrder(body: Record<string, unknown>): Promise<OrderOutcome> {
@@ -220,20 +239,30 @@ function readPictureSize(src: string): Promise<{ width: number; height: number }
   });
 }
 
-/** The server answers some refusals in English; a customer reads Thai. */
-function localizeError(message: string): string {
+function notEnoughCredits(need: number | string, have: number | string): Msg {
+  return {
+    th: `เครดิตไม่พอ — งานนี้ใช้ ${need} เครดิต แต่มีอยู่ ${have} เครดิต`,
+    en: `Not enough credits — this needs ${need} ${Number(need) === 1 ? "credit" : "credits"} and you have ${have}.`,
+  };
+}
+
+/** Some refusals come from the server in fixed English; those are put in the customer's language. */
+function localizeError(message: string): Shown {
   const credits = /Insufficient credits\. Need (\d+), have (\d+)/i.exec(message);
-  if (credits) return `เครดิตไม่พอ — งานนี้ใช้ ${credits[1]} เครดิต แต่มีอยู่ ${credits[2]} เครดิต`;
-  if (/Model not available/i.test(message)) return "บริการสร้างโมเดล 3D ปิดชั่วคราว";
-  if (/temporarily unavailable/i.test(message)) return "บริการไม่ว่างชั่วคราว ลองใหม่ในอีกสักครู่";
-  if (/Generation failed/i.test(message) || !message) return "ส่งงานไม่สำเร็จ ลองใหม่อีกครั้ง";
+  if (credits) return notEnoughCredits(credits[1], credits[2]);
+  if (/Model not available/i.test(message)) return { th: "บริการสร้างโมเดล 3D ปิดชั่วคราว", en: "3D model creation is paused for now." };
+  if (/temporarily unavailable/i.test(message)) return { th: "บริการไม่ว่างชั่วคราว ลองใหม่ในอีกสักครู่", en: "The service is busy right now. Please try again in a moment." };
+  if (/Generation failed/i.test(message) || !message) return { th: "ส่งงานไม่สำเร็จ ลองใหม่อีกครั้ง", en: "Couldn't send the job. Please try again." };
   return message;
 }
 
-function fileProblem(file: File): string | null {
-  if (!ACCEPTED.includes(file.type)) return "รองรับเฉพาะไฟล์ PNG, JPG และ WebP";
-  if (file.size > MAX_IMAGE_BYTES) return `ไฟล์ใหญ่เกิน 12 MB (ไฟล์นี้ ${(file.size / 1048576).toFixed(1)} MB)`;
-  if (file.size === 0) return "ไฟล์ว่างเปล่า ลองไฟล์อื่น";
+function fileProblem(file: File): Msg | null {
+  if (!ACCEPTED.includes(file.type)) return { th: "รองรับเฉพาะไฟล์ PNG, JPG และ WebP", en: "Only PNG, JPG and WebP files are supported." };
+  if (file.size > MAX_IMAGE_BYTES) {
+    const mb = (file.size / 1048576).toFixed(1);
+    return { th: `ไฟล์ใหญ่เกิน 12 MB (ไฟล์นี้ ${mb} MB)`, en: `The file is over 12 MB (this one is ${mb} MB).` };
+  }
+  if (file.size === 0) return { th: "ไฟล์ว่างเปล่า ลองไฟล์อื่น", en: "The file is empty. Try another one." };
   return null;
 }
 
@@ -268,10 +297,9 @@ function stepOf(live: LiveStatus | undefined): number {
   }
 }
 
-const dateFormat = new Intl.DateTimeFormat("th-TH", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-function shortDate(iso: string): string {
+function shortDate(iso: string, locale: Locale): string {
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "" : dateFormat.format(d);
+  return Number.isNaN(d.getTime()) ? "" : formatDateTime(d, locale, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
 function bytesLabel(n: number): string {
@@ -344,6 +372,8 @@ function useNow(active: boolean, intervalMs = 1000): number {
 // ─── page ────────────────────────────────────────────────────────────────
 
 export default function Model3dPage() {
+  const t = useT();
+  const { locale } = useLocale();
   const { data: session, status: authStatus } = useSession();
   const { toast } = useToast();
   const { models, fetchModels, modelsLoaded, creditBalance, creditsLoaded, fetchCredits } = useAppStore();
@@ -352,7 +382,7 @@ export default function Model3dPage() {
   const [picked, setPicked] = useState<Picked | null>(null);
   const [uploadedUrl, setUploadedUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [pickError, setPickError] = useState<string | null>(null);
+  const [pickError, setPickError] = useState<Shown | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const pickSeq = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -366,7 +396,7 @@ export default function Model3dPage() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
-  const [submitError, setSubmitError] = useState<{ message: string; needCredits: boolean } | null>(null);
+  const [submitError, setSubmitError] = useState<{ message: Shown; needCredits: boolean } | null>(null);
 
   // The library
   const [items, setItems] = useState<Model3dItem[]>([]);
@@ -399,12 +429,12 @@ export default function Model3dPage() {
   const quality = modes.find((q) => q.id === qualityId) ?? modes.find((q) => q.isDefault) ?? modes[0] ?? null;
   const unitCost = model3d?.creditsPerUnit ?? 0;
   const cost = Math.ceil(unitCost * (quality?.creditsMultiplier ?? 1));
-  const blockedReason = !modelsLoaded
+  const blockedReason: Shown | null = !modelsLoaded
     ? null
     : !model3d
-      ? "บริการสร้างโมเดล 3D ยังไม่เปิดให้ใช้งาน"
+      ? { th: "บริการสร้างโมเดล 3D ยังไม่เปิดให้ใช้งาน", en: "3D model creation isn't open yet." }
       : model3d.canOrder === false
-        ? model3d.unavailableReason ?? model3d.tuningMessage ?? "บริการสร้างโมเดล 3D ยังใช้งานไม่ได้ในขณะนี้"
+        ? model3d.unavailableReason ?? model3d.tuningMessage ?? { th: "บริการสร้างโมเดล 3D ยังใช้งานไม่ได้ในขณะนี้", en: "3D model creation can't be used right now." }
         : null;
   const adminPreview = model3d?.status === "tuning" && model3d.canOrder !== false;
 
@@ -465,8 +495,8 @@ export default function Model3dPage() {
         } else if (r.kind === "settled") {
           settledAny = true;
           setItems((prev) => prev.map((i) => (i.id === id ? { ...i, ...r.patch } : i)));
-          if (r.patch.status === "completed") toast("success", "โมเดล 3D เสร็จแล้ว", "เปิดดูและดาวน์โหลดได้เลย");
-          else toast("error", "สร้างโมเดลไม่สำเร็จ", r.patch.errorMessage ?? "ลองใหม่อีกครั้ง");
+          if (r.patch.status === "completed") toast("success", t("โมเดล 3D เสร็จแล้ว", "Your 3D model is ready"), t("เปิดดูและดาวน์โหลดได้เลย", "Take a look and download it."));
+          else toast("error", t("สร้างโมเดลไม่สำเร็จ", "Couldn't create the model"), r.patch.errorMessage ?? t("ลองใหม่อีกครั้ง", "Please try again."));
         } else if (r.kind === "gone") {
           setItems((prev) => prev.filter((i) => i.id !== id));
         }
@@ -477,7 +507,7 @@ export default function Model3dPage() {
     run();
     const timer = setInterval(run, POLL_MS);
     return () => { alive = false; clearInterval(timer); };
-  }, [activeKey, toast, fetchCredits]);
+  }, [activeKey, toast, fetchCredits, t]);
 
   // A blob: preview is released when it is replaced or the page goes.
   useEffect(() => {
@@ -501,7 +531,7 @@ export default function Model3dPage() {
     const preview = URL.createObjectURL(file);
     const size = await readPictureSize(preview);
     if (seq !== pickSeq.current) { URL.revokeObjectURL(preview); return; }
-    if (!size) { URL.revokeObjectURL(preview); setPickError("เปิดไฟล์ภาพนี้ไม่ได้ ลองไฟล์อื่น"); return; }
+    if (!size) { URL.revokeObjectURL(preview); setPickError({ th: "เปิดไฟล์ภาพนี้ไม่ได้ ลองไฟล์อื่น", en: "This picture can't be opened. Try another file." }); return; }
     setPicked({ preview, name: file.name, width: size.width, height: size.height, bytes: file.size });
     setUploadedUrl(null);
     setUploading(true);
@@ -561,13 +591,13 @@ export default function Model3dPage() {
   const submit = async () => {
     if (submittingRef.current || !model3d || !uploadedUrl || blockedReason || uploading) return;
     if (creditsLoaded && creditBalance < cost) {
-      setSubmitError({ message: `เครดิตไม่พอ — งานนี้ใช้ ${cost} เครดิต แต่มีอยู่ ${creditBalance} เครดิต`, needCredits: true });
+      setSubmitError({ message: notEnoughCredits(cost, creditBalance), needCredits: true });
       return;
     }
     submittingRef.current = true;
     setSubmitting(true);
     setSubmitError(null);
-    const title = name.trim().slice(0, MAX_NAME) || "โมเดล 3D";
+    const title = name.trim().slice(0, MAX_NAME) || t("โมเดล 3D", "3D model");
     const outcome = await placeOrder({
       modelId: model3d.id,
       type: "model3d",
@@ -578,7 +608,10 @@ export default function Model3dPage() {
     submittingRef.current = false;
     setSubmitting(false);
     if (outcome.kind === "network") {
-      setSubmitError({ message: "ส่งงานไม่สำเร็จ ตรวจสอบอินเทอร์เน็ตแล้วลองใหม่ — ยังไม่ได้หักเครดิต", needCredits: false });
+      setSubmitError({
+        message: { th: "ส่งงานไม่สำเร็จ ตรวจสอบอินเทอร์เน็ตแล้วลองใหม่ — ยังไม่ได้หักเครดิต", en: "Couldn't send the job. Check your connection and try again — no credits were taken." },
+        needCredits: false,
+      });
       return;
     }
     if (outcome.kind === "rejected") {
@@ -605,7 +638,7 @@ export default function Model3dPage() {
     setFilter("all");
     select(item.id);
     fetchCredits();
-    toast("success", "ส่งงานแล้ว", "กำลังสร้างโมเดล 3D — ปิดหน้านี้ได้ ผลงานจะรออยู่ในคลัง");
+    toast("success", t("ส่งงานแล้ว", "Job sent"), t("กำลังสร้างโมเดล 3D — ปิดหน้านี้ได้ ผลงานจะรออยู่ในคลัง", "Creating your 3D model — you can close this page; it will be waiting in your library."));
     if (window.innerWidth < 1024) stageRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
   };
 
@@ -614,7 +647,7 @@ export default function Model3dPage() {
     setLoadingMore(true);
     const result = await fetchLibrary(page + 1);
     setLoadingMore(false);
-    if (!result) { toast("error", "โหลดเพิ่มไม่สำเร็จ", "ลองใหม่อีกครั้ง"); return; }
+    if (!result) { toast("error", t("โหลดเพิ่มไม่สำเร็จ", "Couldn't load more"), t("ลองใหม่อีกครั้ง", "Please try again.")); return; }
     setItems((prev) => [...prev, ...result.items.filter((n) => !prev.some((p) => p.id === n.id))]);
     setPages(result.pages);
     setPage(page + 1);
@@ -633,24 +666,24 @@ export default function Model3dPage() {
   const downloadModel = async () => {
     if (!selected?.resultUrl) return;
     const ok = await downloadGeneration(selected.id, selected.resultUrl, `${fileSafe(selected.prompt, selected.id)}.glb`);
-    if (!ok) toast("error", "ดาวน์โหลดไม่สำเร็จ", "ลองใหม่อีกครั้ง");
+    if (!ok) toast("error", t("ดาวน์โหลดไม่สำเร็จ", "Download failed"), t("ลองใหม่อีกครั้ง", "Please try again."));
   };
 
   const saveSnapshot = async () => {
     if (!selected) return;
     const blob = await viewerRef.current?.snapshot();
-    if (!blob) { toast("error", "ถ่ายภาพไม่สำเร็จ", "ลองใหม่อีกครั้ง"); return; }
+    if (!blob) { toast("error", t("ถ่ายภาพไม่สำเร็จ", "Couldn't take the snapshot"), t("ลองใหม่อีกครั้ง", "Please try again.")); return; }
     const href = URL.createObjectURL(blob);
     const ok = await downloadAs(href, `${fileSafe(selected.prompt, selected.id)}.png`);
     URL.revokeObjectURL(href);
-    if (!ok) toast("error", "บันทึกภาพไม่สำเร็จ", "ลองใหม่อีกครั้ง");
+    if (!ok) toast("error", t("บันทึกภาพไม่สำเร็จ", "Couldn't save the picture"), t("ลองใหม่อีกครั้ง", "Please try again."));
   };
 
   const toggleFullscreen = () => {
     const el = stageRef.current;
     if (!el) return;
     if (document.fullscreenElement) document.exitFullscreen().catch(() => undefined);
-    else el.requestFullscreen().catch(() => toast("error", "เปิดเต็มจอไม่ได้", "เบราว์เซอร์นี้ไม่อนุญาต"));
+    else el.requestFullscreen().catch(() => toast("error", t("เปิดเต็มจอไม่ได้", "Can't go full screen"), t("เบราว์เซอร์นี้ไม่อนุญาต", "This browser doesn't allow it.")));
   };
 
   // ── render ──
@@ -662,9 +695,9 @@ export default function Model3dPage() {
       <div className="m3d-wrap">
         <div className="m3d-gate">
           <Icon name="cube" size={34} />
-          <h1>สร้างโมเดล 3D จากภาพเดียว</h1>
-          <p>เข้าสู่ระบบเพื่ออัปโหลดภาพและเก็บโมเดลไว้ในคลังของคุณ</p>
-          <Link href="/login?callbackUrl=/generate/3d" className="m3d-cta">เข้าสู่ระบบ</Link>
+          <h1>{t("สร้างโมเดล 3D จากภาพเดียว", "Create a 3D model from one picture")}</h1>
+          <p>{t("เข้าสู่ระบบเพื่ออัปโหลดภาพและเก็บโมเดลไว้ในคลังของคุณ", "Sign in to upload a picture and keep your models in your library.")}</p>
+          <Link href="/login?callbackUrl=/generate/3d" className="m3d-cta">{t("เข้าสู่ระบบ", "Sign in")}</Link>
         </div>
         <style>{CSS}</style>
       </div>
@@ -673,12 +706,12 @@ export default function Model3dPage() {
 
   const smallPicture = picked?.width && picked.height ? Math.min(picked.width, picked.height) < SMALL_SIDE : false;
   const canSubmit = Boolean(model3d && uploadedUrl && !uploading && !submitting && !blockedReason && name.trim().length <= MAX_NAME);
-  const buttonLabel = blockedReason ? "ยังสั่งสร้างไม่ได้"
-    : !picked ? "เลือกภาพก่อน"
-    : uploading ? "กำลังอัปโหลดภาพ…"
-    : !uploadedUrl ? "อัปโหลดภาพไม่สำเร็จ"
-    : submitting ? "กำลังส่งงาน…"
-    : "สร้างโมเดล 3D";
+  const buttonLabel = blockedReason ? t("ยังสั่งสร้างไม่ได้", "Can't order yet")
+    : !picked ? t("เลือกภาพก่อน", "Choose a picture first")
+    : uploading ? t("กำลังอัปโหลดภาพ…", "Uploading picture…")
+    : !uploadedUrl ? t("อัปโหลดภาพไม่สำเร็จ", "Picture upload failed")
+    : submitting ? t("กำลังส่งงาน…", "Sending…")
+    : t("สร้างโมเดล 3D", "Create 3D model");
   const elapsed = selected && isActive(selected.status) ? Math.max(0, Math.round((now - new Date(selected.createdAt).getTime()) / 1000)) : 0;
   const step = stepOf(selectedLive);
 
@@ -687,33 +720,35 @@ export default function Model3dPage() {
       {/* Header */}
       <header className="m3d-head">
         <div>
-          <Link href="/generate" className="m3d-back"><Icon name="back" size={14} /> สตูดิโอภาพ/วิดีโอ</Link>
+          <Link href="/generate" className="m3d-back"><Icon name="back" size={14} /> {t("สตูดิโอภาพ/วิดีโอ", "Image & video studio")}</Link>
           <div className="m3d-eyebrow">
             <span className="m3d-eyebrow-en">3D STUDIO</span>
-            {adminPreview && <span className="m3d-eyebrow-th"> · โหมดทดสอบ (แอดมิน)</span>}
+            {adminPreview && <span className="m3d-eyebrow-th"> · {t("โหมดทดสอบ (แอดมิน)", "Test mode (admin)")}</span>}
           </div>
           <h1 className="m3d-title">
-            ภาพเดียว กลายเป็น <em>โมเดล 3D</em>
+            {t(<>ภาพเดียว กลายเป็น <em>โมเดล 3D</em></>, <>One picture, one <em>3D model</em></>)}
           </h1>
           <p className="m3d-sub">
-            อัปโหลดรูปวัตถุหรือตัวละคร ระบบตัดพื้นหลัง ปั้นรูปทรง และลงสีพื้นผิว PBR ให้อัตโนมัติ
-            ได้ไฟล์ GLB พร้อมใช้ในเกม เว็บ งานพรีเซนต์ และพิมพ์ 3D
+            {t(
+              "อัปโหลดรูปวัตถุหรือตัวละคร ระบบตัดพื้นหลัง ปั้นรูปทรง และลงสีพื้นผิว PBR ให้อัตโนมัติ ได้ไฟล์ GLB พร้อมใช้ในเกม เว็บ งานพรีเซนต์ และพิมพ์ 3D",
+              "Upload a photo of an object or a character. We remove the background, build the shape and paint PBR textures for you, and hand back a GLB file ready for games, the web, presentations and 3D printing.",
+            )}
           </p>
         </div>
-        <Link href="/pricing" className="m3d-credits" title="เติมเครดิต">
-          ✦ {creditsLoaded ? creditBalance.toLocaleString("th-TH") : "…"} <span>เครดิต</span>
+        <Link href="/pricing" className="m3d-credits" title={t("เติมเครดิต", "Top up credits")}>
+          ✦ {creditsLoaded ? formatNumber(creditBalance, locale) : "…"} <span>{t("เครดิต", creditsLoaded && creditBalance === 1 ? "credit" : "credits")}</span>
         </Link>
       </header>
 
       {blockedReason && (
-        <div className="m3d-banner" role="status"><Icon name="alert" /> {blockedReason}</div>
+        <div className="m3d-banner" role="status"><Icon name="alert" /> {t(blockedReason)}</div>
       )}
 
       <div className="m3d-grid">
         {/* ── Controls ── */}
-        <aside className="m3d-panel" id="m3d-panel" aria-label="ตั้งค่าการสร้างโมเดล">
+        <aside className="m3d-panel" id="m3d-panel" aria-label={t("ตั้งค่าการสร้างโมเดล", "Model settings")}>
           <section>
-            <div className="m3d-label"><span className="m3d-num">1</span> ภาพต้นแบบ</div>
+            <div className="m3d-label"><span className="m3d-num">1</span> {t("ภาพต้นแบบ", "Source picture")}</div>
             {!picked ? (
               <button
                 type="button"
@@ -730,27 +765,27 @@ export default function Model3dPage() {
                 }}
               >
                 <span className="m3d-drop-icon"><Icon name="upload" size={22} /></span>
-                <span className="m3d-drop-title">ลากภาพมาวาง หรือคลิกเพื่อเลือก</span>
-                <span className="m3d-drop-sub">PNG · JPG · WebP ไม่เกิน 12 MB · วางจากคลิปบอร์ดได้ (Ctrl+V)</span>
+                <span className="m3d-drop-title">{t("ลากภาพมาวาง หรือคลิกเพื่อเลือก", "Drop a picture here, or click to choose")}</span>
+                <span className="m3d-drop-sub">{t("PNG · JPG · WebP ไม่เกิน 12 MB · วางจากคลิปบอร์ดได้ (Ctrl+V)", "PNG · JPG · WebP up to 12 MB · You can paste from the clipboard (Ctrl+V)")}</span>
               </button>
             ) : (
               <div className="m3d-picked">
                 <div className="m3d-picked-img">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={picked.preview} alt="ภาพต้นแบบ" />
-                  {uploading && <div className="m3d-picked-veil"><span className="m3d-spin" /> กำลังอัปโหลด…</div>}
-                  {!uploading && uploadedUrl && <span className="m3d-picked-ok"><Icon name="check" size={12} /> พร้อม</span>}
+                  <img src={picked.preview} alt={t("ภาพต้นแบบ", "Source picture")} />
+                  {uploading && <div className="m3d-picked-veil"><span className="m3d-spin" /> {t("กำลังอัปโหลด…", "Uploading…")}</div>}
+                  {!uploading && uploadedUrl && <span className="m3d-picked-ok"><Icon name="check" size={12} /> {t("พร้อม", "Ready")}</span>}
                 </div>
                 <div className="m3d-picked-meta">
                   <span title={picked.name}>{picked.name}</span>
                   <span>
-                    {picked.width && picked.height ? `${picked.width}×${picked.height}` : "ภาพเดิมจากคลัง"}
+                    {picked.width && picked.height ? `${picked.width}×${picked.height}` : t("ภาพเดิมจากคลัง", "Picture from your library")}
                     {picked.bytes ? ` · ${bytesLabel(picked.bytes)}` : ""}
                   </span>
                 </div>
                 <div className="m3d-picked-actions">
-                  <button type="button" className="m3d-ghost" onClick={() => fileInputRef.current?.click()}>เปลี่ยนภาพ</button>
-                  <button type="button" className="m3d-ghost" onClick={clearPicture} aria-label="เอาภาพออก"><Icon name="close" size={14} /></button>
+                  <button type="button" className="m3d-ghost" onClick={() => fileInputRef.current?.click()}>{t("เปลี่ยนภาพ", "Change picture")}</button>
+                  <button type="button" className="m3d-ghost" onClick={clearPicture} aria-label={t("เอาภาพออก", "Remove picture")}><Icon name="close" size={14} /></button>
                 </div>
               </div>
             )}
@@ -765,36 +800,41 @@ export default function Model3dPage() {
                 if (file) takeFile(file);
               }}
             />
-            {pickError && <div className="m3d-error" role="alert"><Icon name="alert" size={14} /> {pickError}</div>}
+            {pickError && <div className="m3d-error" role="alert"><Icon name="alert" size={14} /> {t(pickError)}</div>}
             {smallPicture && !pickError && (
-              <div className="m3d-warn">ภาพค่อนข้างเล็ก ({picked?.width}×{picked?.height}) — รายละเอียดอาจน้อย แนะนำด้านสั้นอย่างน้อย {SMALL_SIDE} px</div>
+              <div className="m3d-warn">
+                {t(
+                  `ภาพค่อนข้างเล็ก (${picked?.width}×${picked?.height}) — รายละเอียดอาจน้อย แนะนำด้านสั้นอย่างน้อย ${SMALL_SIDE} px`,
+                  `This picture is quite small (${picked?.width}×${picked?.height}), so expect less detail. We suggest at least ${SMALL_SIDE} px on the short side.`,
+                )}
+              </div>
             )}
             <details className="m3d-tips">
-              <summary>เคล็ดลับภาพที่ได้ผลดี</summary>
+              <summary>{t("เคล็ดลับภาพที่ได้ผลดี", "Tips for pictures that work well")}</summary>
               <ul>
-                <li data-ok="true">วัตถุหรือตัวละครชิ้นเดียว เห็นครบทั้งตัว ไม่ถูกตัดขอบ</li>
-                <li data-ok="true">พื้นหลังเรียบหรือโปร่งใส แสงสม่ำเสมอ ไม่มีเงาแข็ง</li>
-                <li data-ok="true">ตัวละคร: ท่า T-pose หรือ A-pose หันหน้าตรง ได้ผลดีที่สุด</li>
-                <li data-ok="false">หลายชิ้นในภาพเดียว ภาพมืด เบลอ หรือมีตัวหนังสือทับ</li>
+                <li data-ok="true">{t("วัตถุหรือตัวละครชิ้นเดียว เห็นครบทั้งตัว ไม่ถูกตัดขอบ", "One object or character, fully in frame, nothing cut off")}</li>
+                <li data-ok="true">{t("พื้นหลังเรียบหรือโปร่งใส แสงสม่ำเสมอ ไม่มีเงาแข็ง", "A plain or transparent background, even light, no hard shadows")}</li>
+                <li data-ok="true">{t("ตัวละคร: ท่า T-pose หรือ A-pose หันหน้าตรง ได้ผลดีที่สุด", "Characters: a T-pose or A-pose facing the camera works best")}</li>
+                <li data-ok="false">{t("หลายชิ้นในภาพเดียว ภาพมืด เบลอ หรือมีตัวหนังสือทับ", "Several objects in one picture, dark or blurry shots, or text over it")}</li>
               </ul>
             </details>
           </section>
 
           <section>
-            <label className="m3d-label" htmlFor="m3d-name"><span className="m3d-num">2</span> ชื่อโมเดล <small>ไม่บังคับ</small></label>
+            <label className="m3d-label" htmlFor="m3d-name"><span className="m3d-num">2</span> {t("ชื่อโมเดล", "Model name")} <small>{t("ไม่บังคับ", "optional")}</small></label>
             <input
               id="m3d-name"
               className="m3d-input"
               value={name}
               maxLength={MAX_NAME}
-              placeholder="เช่น หุ่นยนต์ผู้พิทักษ์"
+              placeholder={t("เช่น หุ่นยนต์ผู้พิทักษ์", "e.g. Guardian robot")}
               onChange={(e) => { setName(e.target.value); setNameTouched(true); }}
             />
           </section>
 
           <section>
-            <div className="m3d-label"><span className="m3d-num">3</span> คุณภาพ</div>
-            <div className="m3d-modes" role="radiogroup" aria-label="คุณภาพ">
+            <div className="m3d-label"><span className="m3d-num">3</span> {t("คุณภาพ", "Quality")}</div>
+            <div className="m3d-modes" role="radiogroup" aria-label={t("คุณภาพ", "Quality")}>
               {(modes.length > 0 ? modes : [null]).map((m) => {
                 const id = m?.id ?? "default";
                 const active = m ? quality?.id === m.id : true;
@@ -810,11 +850,11 @@ export default function Model3dPage() {
                     onClick={() => m && setQualityId(m.id)}
                   >
                     <span className="m3d-mode-top">
-                      <span className="m3d-mode-name">{m?.label ?? "มาตรฐาน"}</span>
+                      <span className="m3d-mode-name">{m?.label ?? t("มาตรฐาน", "Standard")}</span>
                       <span className="m3d-mode-price">✦ {price}</span>
                     </span>
                     {m?.description && <span className="m3d-mode-desc">{m.description}</span>}
-                    {m?.adminOnly && <span className="m3d-mode-badge">ทดสอบ · เห็นเฉพาะแอดมิน</span>}
+                    {m?.adminOnly && <span className="m3d-mode-badge">{t("ทดสอบ · เห็นเฉพาะแอดมิน", "Test · admins only")}</span>}
                   </button>
                 );
               })}
@@ -823,13 +863,13 @@ export default function Model3dPage() {
 
           <section>
             <button type="button" className="m3d-adv-toggle" aria-expanded={showAdvanced} onClick={() => setShowAdvanced((v) => !v)}>
-              ตั้งค่าขั้นสูง <span style={{ transform: showAdvanced ? "rotate(180deg)" : "none" }}>▾</span>
+              {t("ตั้งค่าขั้นสูง", "Advanced settings")} <span style={{ transform: showAdvanced ? "rotate(180deg)" : "none" }}>▾</span>
             </button>
             {showAdvanced && (
               <div className="m3d-adv">
                 <label className="m3d-check">
                   <input type="checkbox" checked={fixedSeed} onChange={(e) => setFixedSeed(e.target.checked)} />
-                  ล็อกค่า seed (สร้างซ้ำให้ได้ผลเหมือนเดิม)
+                  {t("ล็อกค่า seed (สร้างซ้ำให้ได้ผลเหมือนเดิม)", "Lock the seed (run it again for the same result)")}
                 </label>
                 {fixedSeed && (
                   <div className="m3d-seed">
@@ -843,7 +883,7 @@ export default function Model3dPage() {
                         setSeed(Math.min(n, 2_147_483_647));
                       }}
                     />
-                    <button type="button" className="m3d-ghost" onClick={() => setSeed(randomSeed())} aria-label="สุ่ม seed"><Icon name="dice" /></button>
+                    <button type="button" className="m3d-ghost" onClick={() => setSeed(randomSeed())} aria-label={t("สุ่ม seed", "Random seed")}><Icon name="dice" /></button>
                   </div>
                 )}
               </div>
@@ -852,13 +892,13 @@ export default function Model3dPage() {
 
           <div className="m3d-order">
             <div className="m3d-order-line">
-              <span>ใช้</span>
-              <strong>✦ {cost} เครดิต</strong>
+              <span>{t("ใช้", "Cost")}</span>
+              <strong>✦ {formatCredits(cost, locale)}</strong>
             </div>
             {creditsLoaded && (
               <div className="m3d-order-line m3d-dim">
-                <span>คงเหลือหลังสั่ง</span>
-                <span>✦ {Math.max(0, creditBalance - cost).toLocaleString("th-TH")}</span>
+                <span>{t("คงเหลือหลังสั่ง", "Left after this order")}</span>
+                <span>✦ {formatNumber(Math.max(0, creditBalance - cost), locale)}</span>
               </div>
             )}
             <button type="button" className="m3d-cta m3d-go" disabled={!canSubmit} onClick={submit}>
@@ -867,11 +907,16 @@ export default function Model3dPage() {
             </button>
             {submitError && (
               <div className="m3d-error" role="alert">
-                <Icon name="alert" size={14} /> {submitError.message}
-                {submitError.needCredits && <Link href="/pricing" className="m3d-link">เติมเครดิต →</Link>}
+                <Icon name="alert" size={14} /> {t(submitError.message)}
+                {submitError.needCredits && <Link href="/pricing" className="m3d-link">{t("เติมเครดิต →", "Top up →")}</Link>}
               </div>
             )}
-            <p className="m3d-fineprint">ใช้เวลาราว 3–6 นาทีต่อโมเดล ปิดหน้านี้ได้ระหว่างรอ · สร้างไม่สำเร็จคืนเครดิตอัตโนมัติ</p>
+            <p className="m3d-fineprint">
+              {t(
+                "ใช้เวลาราว 3–6 นาทีต่อโมเดล ปิดหน้านี้ได้ระหว่างรอ · สร้างไม่สำเร็จคืนเครดิตอัตโนมัติ",
+                "About 3–6 minutes per model, and you can close this page while you wait · If it fails, your credits are refunded automatically",
+              )}
+            </p>
           </div>
         </aside>
 
@@ -891,32 +936,32 @@ export default function Model3dPage() {
             {viewerSrc && (
               <>
                 <div className="m3d-bar m3d-bar-top">
-                  <div className="m3d-seg" role="radiogroup" aria-label="มุมมอง">
+                  <div className="m3d-seg" role="radiogroup" aria-label={t("มุมมอง", "View")}>
                     {VIEW_MODES.map((v) => (
-                      <button key={v.id} type="button" role="radio" aria-checked={viewMode === v.id} title={v.hint}
-                        data-active={viewMode === v.id ? "true" : "false"} onClick={() => setViewMode(v.id)}>{v.label}</button>
+                      <button key={v.id} type="button" role="radio" aria-checked={viewMode === v.id} title={t(v.hint)}
+                        data-active={viewMode === v.id ? "true" : "false"} onClick={() => setViewMode(v.id)}>{t(v.label)}</button>
                     ))}
                   </div>
-                  <div className="m3d-seg" role="radiogroup" aria-label="แสง">
+                  <div className="m3d-seg" role="radiogroup" aria-label={t("แสง", "Lighting")}>
                     {LIGHTS.map((l) => (
                       <button key={l.id} type="button" role="radio" aria-checked={light === l.id}
-                        data-active={light === l.id ? "true" : "false"} onClick={() => setLight(l.id)}>{l.label}</button>
+                        data-active={light === l.id ? "true" : "false"} onClick={() => setLight(l.id)}>{t(l.label)}</button>
                     ))}
                   </div>
-                  <div className="m3d-seg" role="radiogroup" aria-label="ฉากหลัง">
+                  <div className="m3d-seg" role="radiogroup" aria-label={t("ฉากหลัง", "Backdrop")}>
                     {BACKDROPS.map((b) => (
                       <button key={b.id} type="button" role="radio" aria-checked={backdrop === b.id}
-                        data-active={backdrop === b.id ? "true" : "false"} onClick={() => setBackdrop(b.id)}>{b.label}</button>
+                        data-active={backdrop === b.id ? "true" : "false"} onClick={() => setBackdrop(b.id)}>{t(b.label)}</button>
                     ))}
                   </div>
                 </div>
                 <div className="m3d-bar m3d-bar-side">
-                  <button type="button" className="m3d-tool" data-active={autoRotate ? "true" : "false"} onClick={() => setAutoRotate((v) => !v)} title="หมุนอัตโนมัติ" aria-pressed={autoRotate}><Icon name="rotate" /></button>
-                  <button type="button" className="m3d-tool" data-active={grid ? "true" : "false"} onClick={() => setGrid((v) => !v)} title="กริดพื้น" aria-pressed={grid}><Icon name="grid" /></button>
-                  <button type="button" className="m3d-tool" onClick={() => viewerRef.current?.resetView()} title="กลับมุมเริ่มต้น"><Icon name="focus" /></button>
-                  <button type="button" className="m3d-tool" onClick={saveSnapshot} title="บันทึกภาพหน้าจอ (PNG พื้นโปร่งใส)"><Icon name="camera" /></button>
+                  <button type="button" className="m3d-tool" data-active={autoRotate ? "true" : "false"} onClick={() => setAutoRotate((v) => !v)} title={t("หมุนอัตโนมัติ", "Auto-rotate")} aria-pressed={autoRotate}><Icon name="rotate" /></button>
+                  <button type="button" className="m3d-tool" data-active={grid ? "true" : "false"} onClick={() => setGrid((v) => !v)} title={t("กริดพื้น", "Floor grid")} aria-pressed={grid}><Icon name="grid" /></button>
+                  <button type="button" className="m3d-tool" onClick={() => viewerRef.current?.resetView()} title={t("กลับมุมเริ่มต้น", "Reset view")}><Icon name="focus" /></button>
+                  <button type="button" className="m3d-tool" onClick={saveSnapshot} title={t("บันทึกภาพหน้าจอ (PNG พื้นโปร่งใส)", "Save a snapshot (transparent PNG)")}><Icon name="camera" /></button>
                   {fullscreenOk && (
-                    <button type="button" className="m3d-tool" onClick={toggleFullscreen} title={fullscreen ? "ออกจากเต็มจอ" : "เต็มจอ"}><Icon name={fullscreen ? "shrink" : "expand"} /></button>
+                    <button type="button" className="m3d-tool" onClick={toggleFullscreen} title={fullscreen ? t("ออกจากเต็มจอ", "Exit full screen") : t("เต็มจอ", "Full screen")}><Icon name={fullscreen ? "shrink" : "expand"} /></button>
                   )}
                 </div>
               </>
@@ -926,11 +971,11 @@ export default function Model3dPage() {
             {!selected && libState !== "loading" && (
               <div className="m3d-overlay">
                 <div className="m3d-empty">
-                  <div className="m3d-empty-title">โมเดลของคุณจะปรากฏที่นี่</div>
+                  <div className="m3d-empty-title">{t("โมเดลของคุณจะปรากฏที่นี่", "Your model will appear here")}</div>
                   <ol className="m3d-empty-steps">
-                    <li><span>1</span> อัปโหลดภาพวัตถุหรือตัวละคร</li>
-                    <li><span>2</span> เลือกคุณภาพ แล้วกดสร้าง</li>
-                    <li><span>3</span> หมุนดู ตรวจงาน และดาวน์โหลด GLB</li>
+                    <li><span>1</span> {t("อัปโหลดภาพวัตถุหรือตัวละคร", "Upload a picture of an object or character")}</li>
+                    <li><span>2</span> {t("เลือกคุณภาพ แล้วกดสร้าง", "Pick a quality and press Create")}</li>
+                    <li><span>3</span> {t("หมุนดู ตรวจงาน และดาวน์โหลด GLB", "Turn it, check it, download the GLB")}</li>
                   </ol>
                 </div>
               </div>
@@ -947,14 +992,16 @@ export default function Model3dPage() {
                     <span className="m3d-forge-scan" aria-hidden="true" />
                   </div>
                   <div className="m3d-forge-label" aria-live="polite">
-                    {selectedLive?.paused ? selectedLive.label : selectedLive?.label ?? "กำลังเตรียมงาน…"}
-                    {selectedLive?.stage === "queued" && selectedLive.queuePosition ? ` · คิวที่ ${selectedLive.queuePosition}` : ""}
+                    {selectedLive?.paused ? selectedLive.label : selectedLive?.label ?? t("กำลังเตรียมงาน…", "Preparing your job…")}
+                    {selectedLive?.stage === "queued" && selectedLive.queuePosition
+                      ? t(` · คิวที่ ${selectedLive.queuePosition}`, ` · #${selectedLive.queuePosition} in the queue`)
+                      : ""}
                   </div>
                   <ol className="m3d-forge-steps">
                     {STEPS.map((s, i) => (
-                      <li key={s} data-state={i < step ? "done" : i === step ? "now" : "next"}>
+                      <li key={s.en} data-state={i < step ? "done" : i === step ? "now" : "next"}>
                         <span className="m3d-forge-dot">{i < step ? <Icon name="check" size={11} /> : i + 1}</span>
-                        {s}
+                        {t(s)}
                       </li>
                     ))}
                   </ol>
@@ -962,7 +1009,7 @@ export default function Model3dPage() {
                     <span style={{ width: `${Math.round(Math.min(0.99, selectedLive?.progress ?? (step / STEPS.length)) * 100)}%` }} />
                   </div>
                   <div className="m3d-forge-time">
-                    ผ่านไป {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
+                    {t("ผ่านไป", "Elapsed")} {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
                     {selectedLive?.etaLabel ? ` · ${selectedLive.etaLabel}` : ""}
                   </div>
                 </div>
@@ -973,10 +1020,12 @@ export default function Model3dPage() {
               <div className="m3d-overlay">
                 <div className="m3d-failed" role="alert">
                   <Icon name="alert" size={26} />
-                  <div className="m3d-failed-title">{selected.status === "cancelled" ? "ยกเลิกงานนี้แล้ว" : "สร้างโมเดลไม่สำเร็จ"}</div>
-                  <div className="m3d-failed-msg">{selected.errorMessage ?? "ลองใหม่อีกครั้ง — ระบบคืนเครดิตให้แล้ว"}</div>
+                  <div className="m3d-failed-title">
+                    {selected.status === "cancelled" ? t("ยกเลิกงานนี้แล้ว", "This job was cancelled") : t("สร้างโมเดลไม่สำเร็จ", "Couldn't create the model")}
+                  </div>
+                  <div className="m3d-failed-msg">{selected.errorMessage ?? t("ลองใหม่อีกครั้ง — ระบบคืนเครดิตให้แล้ว", "Please try again. Your credits have been refunded.")}</div>
                   {selected.inputImageUrl && (
-                    <button type="button" className="m3d-cta" onClick={() => reusePicture(selected)}><Icon name="again" /> ใช้ภาพนี้ลองอีกครั้ง</button>
+                    <button type="button" className="m3d-cta" onClick={() => reusePicture(selected)}><Icon name="again" /> {t("ใช้ภาพนี้ลองอีกครั้ง", "Try again with this picture")}</button>
                   )}
                 </div>
               </div>
@@ -986,9 +1035,9 @@ export default function Model3dPage() {
               <div className="m3d-overlay">
                 <div className="m3d-failed">
                   <Icon name="alert" size={26} />
-                  <div className="m3d-failed-title">ไฟล์โมเดลนี้หมดอายุและถูกลบแล้ว</div>
+                  <div className="m3d-failed-title">{t("ไฟล์โมเดลนี้หมดอายุและถูกลบแล้ว", "This model file has expired and been deleted")}</div>
                   {selected.inputImageUrl && (
-                    <button type="button" className="m3d-cta" onClick={() => reusePicture(selected)}><Icon name="again" /> สร้างใหม่จากภาพเดิม</button>
+                    <button type="button" className="m3d-cta" onClick={() => reusePicture(selected)}><Icon name="again" /> {t("สร้างใหม่จากภาพเดิม", "Create again from the same picture")}</button>
                   )}
                 </div>
               </div>
@@ -1000,37 +1049,43 @@ export default function Model3dPage() {
             <div className="m3d-info">
               <div className="m3d-info-head">
                 <div style={{ minWidth: 0 }}>
-                  <div className="m3d-info-name" title={selected.prompt}>{selected.prompt || "โมเดล 3D"}</div>
+                  <div className="m3d-info-name" title={selected.prompt}>{selected.prompt || t("โมเดล 3D", "3D model")}</div>
                   <div className="m3d-info-sub">
-                    {shortDate(selected.createdAt)}
+                    {shortDate(selected.createdAt, locale)}
                     {selected.remix?.quality && modes.find((m) => m.id === selected.remix?.quality) ? ` · ${modes.find((m) => m.id === selected.remix?.quality)?.label}` : ""}
-                    {selected.processingMs ? ` · ใช้เวลา ${Math.max(1, Math.round(selected.processingMs / 60000))} นาที` : ""}
-                    {typeof selected.daysLeft === "number" ? ` · เก็บไว้อีก ${selected.daysLeft} วัน` : ""}
+                    {selected.processingMs
+                      ? t(` · ใช้เวลา ${Math.max(1, Math.round(selected.processingMs / 60000))} นาที`, ` · took ${Math.max(1, Math.round(selected.processingMs / 60000))} min`)
+                      : ""}
+                    {typeof selected.daysLeft === "number"
+                      ? t(` · เก็บไว้อีก ${selected.daysLeft} วัน`, ` · kept ${selected.daysLeft} more ${selected.daysLeft === 1 ? "day" : "days"}`)
+                      : ""}
                   </div>
                 </div>
                 <div className="m3d-info-actions">
                   {selected.inputImageUrl && (
-                    <button type="button" className="m3d-ghost" onClick={() => reusePicture(selected)} title="ใช้ภาพต้นแบบเดิมสร้างอีกครั้ง"><Icon name="again" /> สร้างอีกแบบ</button>
+                    <button type="button" className="m3d-ghost" onClick={() => reusePicture(selected)} title={t("ใช้ภาพต้นแบบเดิมสร้างอีกครั้ง", "Create again from the same source picture")}><Icon name="again" /> {t("สร้างอีกแบบ", "Make another")}</button>
                   )}
-                  <button type="button" className="m3d-cta" onClick={downloadModel}><Icon name="download" /> ดาวน์โหลด GLB</button>
+                  <button type="button" className="m3d-cta" onClick={downloadModel}><Icon name="download" /> {t("ดาวน์โหลด GLB", "Download GLB")}</button>
                 </div>
               </div>
               {stats && (
                 <dl className="m3d-stats">
-                  <div><dt>สามเหลี่ยม</dt><dd>{stats.triangles.toLocaleString("th-TH")}</dd></div>
-                  <div><dt>จุดยอด</dt><dd>{stats.vertices.toLocaleString("th-TH")}</dd></div>
-                  <div><dt>พื้นผิว</dt><dd>{stats.textureSize ? `${stats.textureSize}×${stats.textureSize}` : "—"}</dd></div>
-                  <div><dt>ขนาดไฟล์</dt><dd>{bytesLabel(stats.bytes)}</dd></div>
-                  <div><dt>สัดส่วน ก×ส×ล</dt><dd>{stats.proportions.map((n) => n.toFixed(2)).join(" × ")}</dd></div>
+                  <div><dt>{t("สามเหลี่ยม", "Triangles")}</dt><dd>{formatNumber(stats.triangles, locale)}</dd></div>
+                  <div><dt>{t("จุดยอด", "Vertices")}</dt><dd>{formatNumber(stats.vertices, locale)}</dd></div>
+                  <div><dt>{t("พื้นผิว", "Texture")}</dt><dd>{stats.textureSize ? `${stats.textureSize}×${stats.textureSize}` : "—"}</dd></div>
+                  <div><dt>{t("ขนาดไฟล์", "File size")}</dt><dd>{bytesLabel(stats.bytes)}</dd></div>
+                  <div><dt>{t("สัดส่วน ก×ส×ล", "Proportions W×H×D")}</dt><dd>{stats.proportions.map((n) => n.toFixed(2)).join(" × ")}</dd></div>
                 </dl>
               )}
               <div className="m3d-use">
-                <span>นำไปใช้ได้กับ</span>
+                <span>{t("นำไปใช้ได้กับ", "Works with")}</span>
                 {USE_WITH.map((u) => <span key={u} className="m3d-chip">{u}</span>)}
               </div>
               <p className="m3d-fineprint">
-                GLB รวมพื้นผิวไว้ในไฟล์เดียว ลากเข้า Blender หรือ Godot ได้ทันที (Unity ใช้แพ็กเกจ glTFast) · จะพิมพ์ 3D ให้ export เป็น STL จาก Blender
-                · ตัวละครยังไม่มีกระดูก ใส่ rig ต่อได้ใน Mixamo หรือ Blender
+                {t(
+                  "GLB รวมพื้นผิวไว้ในไฟล์เดียว ลากเข้า Blender หรือ Godot ได้ทันที (Unity ใช้แพ็กเกจ glTFast) · จะพิมพ์ 3D ให้ export เป็น STL จาก Blender · ตัวละครยังไม่มีกระดูก ใส่ rig ต่อได้ใน Mixamo หรือ Blender",
+                  "A GLB keeps its textures in one file: drag it straight into Blender or Godot (Unity needs the glTFast package) · For 3D printing, export an STL from Blender · Characters come without a skeleton; rig them in Mixamo or Blender",
+                )}
               </p>
             </div>
           )}
@@ -1038,14 +1093,14 @@ export default function Model3dPage() {
       </div>
 
       {/* ── Library ── */}
-      <section className="m3d-library" aria-label="โมเดล 3D ของฉัน">
+      <section className="m3d-library" aria-label={t("โมเดล 3D ของฉัน", "My 3D models")}>
         <div className="m3d-lib-head">
-          <h2>โมเดล 3D ของฉัน</h2>
+          <h2>{t("โมเดล 3D ของฉัน", "My 3D models")}</h2>
           <div className="m3d-filters" role="tablist">
             {FILTERS.map((f) => (
               <button key={f.id} type="button" role="tab" aria-selected={filter === f.id}
                 data-active={filter === f.id ? "true" : "false"} onClick={() => setFilter(f.id)}>
-                {f.label}
+                {t(f.label)}
                 {f.id === "active" && activeIds.length > 0 ? <span className="m3d-count">{activeIds.length}</span> : null}
               </button>
             ))}
@@ -1057,12 +1112,14 @@ export default function Model3dPage() {
         )}
         {libState === "error" && (
           <div className="m3d-lib-empty">
-            โหลดคลังผลงานไม่สำเร็จ <button type="button" className="m3d-ghost" onClick={retryLibrary}>ลองอีกครั้ง</button>
+            {t("โหลดคลังผลงานไม่สำเร็จ", "Couldn't load your library")} <button type="button" className="m3d-ghost" onClick={retryLibrary}>{t("ลองอีกครั้ง", "Try again")}</button>
           </div>
         )}
         {libState === "ready" && visibleItems.length === 0 && (
           <div className="m3d-lib-empty">
-            {items.length === 0 ? "ยังไม่มีโมเดล — เริ่มจากอัปโหลดภาพแรกของคุณด้านบน" : "ไม่มีโมเดลในหมวดนี้"}
+            {items.length === 0
+              ? t("ยังไม่มีโมเดล — เริ่มจากอัปโหลดภาพแรกของคุณด้านบน", "No models yet — start by uploading your first picture above.")
+              : t("ไม่มีโมเดลในหมวดนี้", "No models here.")}
           </div>
         )}
         {libState === "ready" && visibleItems.length > 0 && (
@@ -1082,14 +1139,14 @@ export default function Model3dPage() {
                     {isActive(item.status) && (
                       <span className="m3d-card-state m3d-card-busy">
                         <span className="m3d-spin" />
-                        {itemLive?.progress ? `${Math.round(itemLive.progress * 100)}%` : "กำลังสร้าง"}
+                        {itemLive?.progress ? `${Math.round(itemLive.progress * 100)}%` : t("กำลังสร้าง", "Creating")}
                       </span>
                     )}
-                    {(item.status === "failed" || item.status === "cancelled") && <span className="m3d-card-state m3d-card-fail">ไม่สำเร็จ</span>}
+                    {(item.status === "failed" || item.status === "cancelled") && <span className="m3d-card-state m3d-card-fail">{t("ไม่สำเร็จ", "Failed")}</span>}
                   </div>
                   <div className="m3d-card-meta">
-                    <span className="m3d-card-name">{item.prompt || "โมเดล 3D"}</span>
-                    <span className="m3d-card-date">{shortDate(item.createdAt)}</span>
+                    <span className="m3d-card-name">{item.prompt || t("โมเดล 3D", "3D model")}</span>
+                    <span className="m3d-card-date">{shortDate(item.createdAt, locale)}</span>
                   </div>
                 </button>
               );
@@ -1099,7 +1156,7 @@ export default function Model3dPage() {
         {libState === "ready" && page < pages && (
           <div style={{ textAlign: "center", marginTop: 16 }}>
             <button type="button" className="m3d-ghost" onClick={loadMore} disabled={loadingMore}>
-              {loadingMore ? "กำลังโหลด…" : "โหลดเพิ่ม"}
+              {loadingMore ? t("กำลังโหลด…", "Loading…") : t("โหลดเพิ่ม", "Load more")}
             </button>
           </div>
         )}

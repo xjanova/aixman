@@ -4,6 +4,8 @@ import { SessionProvider } from "@/components/layout/session-provider";
 import { ToastProvider } from "@/components/ui/toast-provider";
 import { AmbientBackground } from "@/components/ambient/ambient-background";
 import { ServiceWorkerRegister } from "@/components/pwa/sw-register";
+import { LocaleProvider } from "@/lib/i18n/client";
+import { getLocale } from "@/lib/i18n/server";
 import "./globals.css";
 
 // X-DREAMER typography — must match the reference template's font stack
@@ -44,48 +46,49 @@ export const viewport: Viewport = {
   viewportFit: "cover",
 };
 
-export const metadata: Metadata = {
-  title: {
-    default: "XMAN AI Studio — AI Image & Video Generation",
-    template: "%s | XMAN AI Studio",
-  },
-  description:
-    "Generate stunning AI images and videos with multiple providers. Powered by BytePlus, OpenAI, Stability AI, Runway, and more.",
-  keywords: [
-    "AI",
-    "image generation",
-    "video generation",
-    "AI art",
-    "Stable Diffusion",
-    "DALL-E",
-    "Sora",
-    "BytePlus",
-  ],
-  manifest: "/manifest.json",
-  appleWebApp: {
-    capable: true,
-    statusBarStyle: "black-translucent",
-    title: "XMAN AI",
-  },
-  icons: {
-    icon: "/favicon.png",
-    apple: "/apple-touch-icon.png",
-  },
-  openGraph: {
-    title: "XMAN AI Studio",
-    description: "AI Image & Video Generation Platform",
-    type: "website",
-  },
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const en = (await getLocale()) === "en";
+  // No vendor names: customers are never told which services we run on.
+  const description = en
+    ? "Create AI images, videos, music and speech in one studio — pay per piece with credits."
+    : "สร้างภาพ วิดีโอ เพลง และเสียงพูดด้วย AI ในสตูดิโอเดียว จ่ายเป็นเครดิตตามที่ใช้จริง";
+  return {
+    title: {
+      default: en ? "XMAN AI Studio — AI Image & Video Generation" : "XMAN AI Studio — สร้างภาพและวิดีโอด้วย AI",
+      template: "%s | XMAN AI Studio",
+    },
+    description,
+    keywords: ["AI", "image generation", "video generation", "AI art", "AI music", "text to speech", "สร้างภาพ AI", "สร้างวิดีโอ AI"],
+    manifest: "/manifest.json",
+    appleWebApp: {
+      capable: true,
+      statusBarStyle: "black-translucent",
+      title: "XMAN AI",
+    },
+    icons: {
+      icon: "/favicon.png",
+      apple: "/apple-touch-icon.png",
+    },
+    openGraph: {
+      title: "XMAN AI Studio",
+      description,
+      type: "website",
+      locale: en ? "en_GB" : "th_TH",
+    },
+  };
+}
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // The visitor's language (cookie, else Accept-Language, else Thai). Reading
+  // it makes every page render per request, which they mostly did already.
+  const locale = await getLocale();
   return (
     <html
-      lang="th"
+      lang={locale}
       className={`${inter.variable} ${notoSansThai.variable} ${geistMono.variable} ${unbounded.variable} h-full antialiased dark`}
     >
       {/* Body has no opaque bg — AmbientBackground (fixed, z-index 0) supplies the dark base + fiber threads. Adding `bg-background` here would cover them entirely. */}
@@ -98,11 +101,13 @@ export default function RootLayout({
             be `position: relative` show through. One layer here covers every
             route, instead of each layout remembering (admin's used to). */}
         <div className="relative z-[1] flex flex-1 flex-col">
-          <SessionProvider>
-            <ToastProvider>
-              {children}
-            </ToastProvider>
-          </SessionProvider>
+          <LocaleProvider locale={locale}>
+            <SessionProvider>
+              <ToastProvider>
+                {children}
+              </ToastProvider>
+            </SessionProvider>
+          </LocaleProvider>
         </div>
         <ServiceWorkerRegister />
       </body>

@@ -2,14 +2,14 @@ import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { LLM_CATEGORY } from '@/lib/llm/pricing';
 import { isAdmin } from '@/lib/auth';
-import { ModelReadiness, TUNING_MESSAGE } from '@/lib/services/model-readiness';
+import { ModelReadiness, TUNING_MSG } from '@/lib/services/model-readiness';
 import { accountBlock, type AccountBlock } from '@/lib/services/account-pool';
 import { getCatalogEntry, isCommunityOnlyModel, visibleVideoOptions } from '@/lib/gpu/catalog';
 import { getGpuConfig } from '@/lib/gpu/config';
 import { GpuBalance } from '@/lib/services/gpu-balance';
 import { isStorageConfigured } from '@/lib/storage/r2';
 import { isInHouse, publicDefaultParams, publicModelDescription, publicModelId, publicModelName, publicProvider } from '@/lib/public-provider';
-import { communityListing, NO_MACHINE_LISTING_TEXT } from '@/lib/gpu/community-dispatch';
+import { communityListing, NO_MACHINE_LISTING_MSG } from '@/lib/gpu/community-dispatch';
 import { communityMachineAvailable } from '@/lib/gpu/community-availability';
 import { getAllStoredWorkflows, visibleQualityModes } from '@/lib/gpu/workflow-overrides';
 import { apiVideoLipsyncRule, type ClipRule, type LipsyncBilling, type VoiceRule } from '@/lib/lipsync-rules';
@@ -19,6 +19,8 @@ import { getKieEntry, kiePriceTable, type KieEntry } from '@/lib/providers/kie-c
 import { kieQuote, readKiePriceTable, type KiePriceTable } from '@/lib/providers/kie-pricing';
 import { fallbackRefsFor, whyNotFallback } from '@/lib/providers/kie-fallback';
 import { loadFallbackSettings } from '@/lib/services/kie-route';
+import { pick, requestLocale, type Locale, type Msg } from '@/lib/i18n/locale';
+import { qualityModeText, tierLabel, voiceLabel } from '@/lib/i18n/model-text';
 
 /**
  * Public model list for the studio and the mobile app.
@@ -38,11 +40,11 @@ export const dynamic = 'force-dynamic';
 
 type Availability = 'ok' | 'not-connected' | 'busy' | 'maintenance' | 'no-machine';
 
-const UNAVAILABLE_TEXT: Record<Exclude<Availability, 'ok'>, string> = {
-  'not-connected': 'ยังไม่เปิดให้บริการ',
-  busy: 'มีผู้ใช้งานหนาแน่น ลองใหม่ในอีกสักครู่',
-  maintenance: 'ปิดปรับปรุงชั่วคราว',
-  'no-machine': NO_MACHINE_LISTING_TEXT,
+const UNAVAILABLE_TEXT: Record<Exclude<Availability, 'ok'>, Msg> = {
+  'not-connected': { th: 'ยังไม่เปิดให้บริการ', en: 'Not open yet' },
+  busy: { th: 'มีผู้ใช้งานหนาแน่น ลองใหม่ในอีกสักครู่', en: 'Very busy right now — try again in a moment' },
+  maintenance: { th: 'ปิดปรับปรุงชั่วคราว', en: 'Closed for maintenance' },
+  'no-machine': NO_MACHINE_LISTING_MSG,
 };
 
 /**
@@ -98,14 +100,14 @@ function musicOptions(modelKey: string): {
 function qualityOptions(
   modelKey: string,
   stored: Parameters<typeof visibleQualityModes>[1],
-  admin: boolean
+  admin: boolean,
+  locale: Locale
 ): { id: string; label: string; description: string; creditsMultiplier: number; isDefault: boolean; adminOnly: boolean }[] | null {
   const modes = visibleQualityModes(getCatalogEntry(modelKey), stored, admin);
   if (modes.length === 0) return null;
   return modes.map((m) => ({
     id: m.id,
-    label: m.label,
-    description: m.description,
+    ...qualityModeText(modelKey, m, locale),
     creditsMultiplier: m.creditsMultiplier,
     isDefault: m.isDefault === true,
     // Lets the studio mark a mode only an admin can see as a test.
@@ -118,7 +120,7 @@ function qualityOptions(
  * credits table its sync wrote: tiers as the quality or resolution chips the
  * studio already has, the clip's frames, the music panel, the voice rule.
  */
-function kieOptions(entry: KieEntry, table: KiePriceTable) {
+function kieOptions(entry: KieEntry, table: KiePriceTable, locale: Locale) {
   const tiers = table.tiers;
   const base = kieQuote(table, {});
   return {
@@ -129,7 +131,7 @@ function kieOptions(entry: KieEntry, table: KiePriceTable) {
             lastFrame: entry.lastFrame === true,
             resolutions:
               table.tierParam === 'resolution'
-                ? tiers.map((t) => ({ id: t.id, label: t.label, aspects: [...STUDIO_ASPECTS], isDefault: t.isDefault === true }))
+                ? tiers.map((t) => ({ id: t.id, label: tierLabel(t.label, locale), aspects: [...STUDIO_ASPECTS], isDefault: t.isDefault === true }))
                 : undefined,
           }
         : null,
@@ -137,7 +139,7 @@ function kieOptions(entry: KieEntry, table: KiePriceTable) {
       table.tierParam === 'quality' && tiers.length > 1
         ? tiers.map((t) => ({
             id: t.id,
-            label: t.label,
+            label: tierLabel(t.label, locale),
             description: '',
             // Display only: the studio prices KIE rows from `priceTable`.
             creditsMultiplier: Math.round((kieQuote(table, { tier: t.id }) / base) * 100) / 100,
@@ -152,7 +154,7 @@ function kieOptions(entry: KieEntry, table: KiePriceTable) {
     // The speech tab's voice picker and character limit.
     speech: entry.speech
       ? {
-          voices: entry.speech.voices,
+          voices: entry.speech.voices.map((v) => ({ ...v, label: voiceLabel(v.id, v.label, locale) })),
           maxChars: entry.speech.maxChars,
           style: entry.speech.style === true,
           tags: entry.speech.tags === true,
@@ -176,7 +178,9 @@ function fromAccounts(blocks: (AccountBlock | null)[]): Availability {
   return 'maintenance';
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  // Names, descriptions, labels and reasons in the visitor's language (cookie, else X-Locale, else Thai).
+  const locale = requestLocale(request);
   const now = new Date();
   const [models, admin, accounts, gpuCfg, workflows] = await Promise.all([
     prisma.aiModel.findMany({
@@ -290,7 +294,7 @@ export async function GET() {
       const inHouse = isInHouse(m.provider.slug);
       const kieEntry = m.provider.slug === 'kie' ? getKieEntry(m.modelId) : undefined;
       const kieTable = kieEntry ? readKiePriceTable(m.defaultParams) ?? kiePriceTable(kieEntry) : null;
-      const kie = kieEntry && kieTable ? kieOptions(kieEntry, kieTable) : null;
+      const kie = kieEntry && kieTable ? kieOptions(kieEntry, kieTable, locale) : null;
       const own = pausedModels.has(m.modelId)
         ? 'maintenance'
         : inHouse && isCommunityOnlyModel(m.modelId)
@@ -300,20 +304,21 @@ export async function GET() {
       const avail: Availability = own !== 'ok' && m.provider.isActive && kieEntry && fallbackServes(m.modelId) ? 'ok' : own;
       const readinessOk = ModelReadiness.canOrder(m.readiness, admin);
       const status = avail !== 'ok' ? 'unavailable' : m.readiness === 'tuning' ? 'tuning' : readinessOk ? 'ready' : 'unavailable';
-      const reason =
+      const reasonMsg =
         avail !== 'ok'
           ? UNAVAILABLE_TEXT[avail]
           : m.readiness === 'tuning'
-            ? TUNING_MESSAGE
+            ? TUNING_MSG
             : readinessOk
               ? null
               : UNAVAILABLE_TEXT.maintenance;
+      const reason = reasonMsg ? pick(reasonMsg, locale) : null;
       return {
         id: m.id,
         // Customers never see which vendor serves a model (public-provider.ts).
         modelId: publicModelId(m.modelId),
-        name: publicModelName(m.modelId, m.name),
-        description: publicModelDescription(m.modelId, m.description),
+        name: publicModelName(m.modelId, m.name, locale),
+        description: publicModelDescription(m.modelId, m.description, locale),
         category: m.category,
         subcategory: m.subcategory,
         thumbnail: m.thumbnail,
@@ -363,7 +368,7 @@ export async function GET() {
         // Quality modes the studio may offer (Qwen-Image เร็ว / คุณภาพสูง), each
         // with the multiplier GenerationService prices it at. Null when the
         // model has none; admin-only modes reach admins only.
-        quality: inHouse ? qualityOptions(m.modelId, workflows.get(m.modelId) ?? null, admin) : kie ? kie.quality : null,
+        quality: inHouse ? qualityOptions(m.modelId, workflows.get(m.modelId) ?? null, admin, locale) : kie ? kie.quality : null,
         // A KIE.ai row's credits by tier, length and pictures (kie-pricing.ts),
         // the table GenerationService charges from. Credits only — never the
         // vendor's price. Null for every other model.

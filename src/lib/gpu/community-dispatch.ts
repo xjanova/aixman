@@ -15,6 +15,7 @@
  * GpuQueue carry them out.
  */
 
+import type { Msg } from '@/lib/i18n/locale';
 import { isCommunitySafe, type ContentTier } from '@/lib/safety/content-tier';
 
 /** Providers whose rows are community machines rather than rentals (exposure `pool-relay`). */
@@ -801,19 +802,27 @@ export function communityOrderRefusal(order: {
   return null;
 }
 
-const COMMUNITY_REFUSAL_MESSAGE: Record<CommunityOrderRefusal, string> = {
-  adult:
-    'โมเดลนี้ประมวลผลบนเครื่องของผู้ร่วมแบ่งปัน (GPUxMINE) จึงรับเฉพาะงานเนื้อหาทั่วไป — คำสั่งนี้มีเนื้อหาสำหรับผู้ใหญ่ กรุณาเลือกโมเดลอื่น ระบบไม่ได้หักเครดิต',
-  unreadable:
-    'โมเดลนี้ประมวลผลบนเครื่องของผู้ร่วมแบ่งปัน (GPUxMINE) จึงรับเฉพาะคำสั่งที่ระบบตรวจได้ว่าเป็นเนื้อหาทั่วไป — กรุณาเขียนคำสั่งเป็นภาษาไทยหรืออังกฤษ หรือเลือกโมเดลอื่น ระบบไม่ได้หักเครดิต',
-  'input-media':
-    'โมเดลนี้ประมวลผลบนเครื่องของผู้ร่วมแบ่งปัน (GPUxMINE) จึงไม่รับไฟล์ที่อัปโหลด เพื่อไม่ให้ภาพหรือข้อมูลส่วนตัวของคุณออกไปนอกเครื่องที่เราดูแลเอง — กรุณาเอาไฟล์แนบออก หรือเลือกโมเดลอื่น ระบบไม่ได้หักเครดิต',
-  'no-machine':
-    'ตอนนี้ยังไม่มีเครื่องชุมชนออนไลน์รับงานโมเดลนี้ กรุณาลองใหม่ภายหลัง หรือเลือกโมเดลอื่น ระบบไม่ได้หักเครดิต',
+const COMMUNITY_REFUSAL_MESSAGE: Record<CommunityOrderRefusal, Msg> = {
+  adult: {
+    th: 'โมเดลนี้ประมวลผลบนเครื่องของผู้ร่วมแบ่งปัน (GPUxMINE) จึงรับเฉพาะงานเนื้อหาทั่วไป — คำสั่งนี้มีเนื้อหาสำหรับผู้ใหญ่ กรุณาเลือกโมเดลอื่น ระบบไม่ได้หักเครดิต',
+    en: 'This model runs on community members’ machines (GPUxMINE), so it only takes general-audience work — this prompt has adult content. Please choose another model. No credits were charged.',
+  },
+  unreadable: {
+    th: 'โมเดลนี้ประมวลผลบนเครื่องของผู้ร่วมแบ่งปัน (GPUxMINE) จึงรับเฉพาะคำสั่งที่ระบบตรวจได้ว่าเป็นเนื้อหาทั่วไป — กรุณาเขียนคำสั่งเป็นภาษาไทยหรืออังกฤษ หรือเลือกโมเดลอื่น ระบบไม่ได้หักเครดิต',
+    en: 'This model runs on community members’ machines (GPUxMINE), so it only takes prompts we can confirm are general-audience — please write the prompt in Thai or English, or choose another model. No credits were charged.',
+  },
+  'input-media': {
+    th: 'โมเดลนี้ประมวลผลบนเครื่องของผู้ร่วมแบ่งปัน (GPUxMINE) จึงไม่รับไฟล์ที่อัปโหลด เพื่อไม่ให้ภาพหรือข้อมูลส่วนตัวของคุณออกไปนอกเครื่องที่เราดูแลเอง — กรุณาเอาไฟล์แนบออก หรือเลือกโมเดลอื่น ระบบไม่ได้หักเครดิต',
+    en: 'This model runs on community members’ machines (GPUxMINE), so it doesn’t take uploads — your pictures and personal data never leave machines we run ourselves. Please remove the attachment or choose another model. No credits were charged.',
+  },
+  'no-machine': {
+    th: 'ตอนนี้ยังไม่มีเครื่องชุมชนออนไลน์รับงานโมเดลนี้ กรุณาลองใหม่ภายหลัง หรือเลือกโมเดลอื่น ระบบไม่ได้หักเครดิต',
+    en: 'No community machine is online for this model right now. Please try again later or choose another model. No credits were charged.',
+  },
 };
 
-/** Thai for the customer whose order for a community-only model was refused. */
-export function communityRefusalMessage(refusal: CommunityOrderRefusal): string {
+/** What the customer whose order for a community-only model was refused reads, in both languages. */
+export function communityRefusalMessage(refusal: CommunityOrderRefusal): Msg {
   return COMMUNITY_REFUSAL_MESSAGE[refusal];
 }
 
@@ -840,4 +849,8 @@ export function communityListing(s: {
 }
 
 /** The model list's reason for 'no-machine': the order refusal's words, less "no credit was taken". */
-export const NO_MACHINE_LISTING_TEXT = 'ยังไม่มีเครื่องชุมชนออนไลน์รับงานโมเดลนี้ กรุณาลองใหม่ภายหลัง หรือเลือกโมเดลอื่น';
+export const NO_MACHINE_LISTING_MSG: Msg = {
+  th: 'ยังไม่มีเครื่องชุมชนออนไลน์รับงานโมเดลนี้ กรุณาลองใหม่ภายหลัง หรือเลือกโมเดลอื่น',
+  en: 'No community machine is online for this model yet. Please try again later or choose another model.',
+};
+export const NO_MACHINE_LISTING_TEXT = NO_MACHINE_LISTING_MSG.th;

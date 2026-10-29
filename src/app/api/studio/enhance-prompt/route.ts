@@ -3,6 +3,7 @@ import prisma from '@/lib/db';
 import { getCurrentUserId, isAdmin } from '@/lib/auth';
 import { rateLimit } from '@/lib/rate-limit';
 import { enhancePrompt, getEnhancerConfig, type EnhanceKind } from '@/lib/services/prompt-enhancer';
+import { requestLocale, translator } from '@/lib/i18n/locale';
 
 /**
  * POST /api/studio/enhance-prompt — the studio's "✨ ปรับพรอมต์ด้วย AI".
@@ -21,26 +22,32 @@ const KINDS: EnhanceKind[] = ['image', 'video', 'audio', 'edit', 'lipsync'];
 const MAX_PROMPT = 4000;
 
 export async function POST(request: NextRequest) {
+  const t = translator(requestLocale(request));
   const userId = await getCurrentUserId();
-  if (!userId) return NextResponse.json({ error: 'กรุณาเข้าสู่ระบบ' }, { status: 401 });
+  if (!userId) return NextResponse.json({ error: t('กรุณาเข้าสู่ระบบ', 'Please sign in') }, { status: 401 });
 
   const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
   const prompt = typeof body?.prompt === 'string' ? body.prompt.trim() : '';
-  if (!prompt) return NextResponse.json({ error: 'พิมพ์ไอเดียสั้น ๆ ก่อน แล้วค่อยให้ AI ช่วยขยาย' }, { status: 400 });
+  if (!prompt) return NextResponse.json({ error: t('พิมพ์ไอเดียสั้น ๆ ก่อน แล้วค่อยให้ AI ช่วยขยาย', 'Type a short idea first, then let the AI expand it') }, { status: 400 });
   if (prompt.length > MAX_PROMPT) {
-    return NextResponse.json({ error: `พรอมต์ยาวเกิน ${MAX_PROMPT.toLocaleString()} ตัวอักษร` }, { status: 400 });
+    return NextResponse.json({ error: t(`พรอมต์ยาวเกิน ${MAX_PROMPT.toLocaleString('en-US')} ตัวอักษร`, `The prompt is longer than ${MAX_PROMPT.toLocaleString('en-US')} characters`) }, { status: 400 });
   }
   const kind = KINDS.includes(body?.tab as EnhanceKind) ? (body?.tab as EnhanceKind) : 'image';
 
   const [admin, cfg] = await Promise.all([isAdmin(), getEnhancerConfig()]);
   if (!admin) {
     if (cfg.hourlyLimit === 0) {
-      return NextResponse.json({ error: 'ผู้ช่วยเขียนพรอมต์ปิดอยู่ในขณะนี้' }, { status: 403 });
+      return NextResponse.json({ error: t('ผู้ช่วยเขียนพรอมต์ปิดอยู่ในขณะนี้', 'The prompt assistant is switched off right now') }, { status: 403 });
     }
     const limit = rateLimit(`enhance:${userId}`, cfg.hourlyLimit, 60 * 60_000);
     if (!limit.ok) {
       return NextResponse.json(
-        { error: `ใช้ผู้ช่วย AI ครบ ${cfg.hourlyLimit} ครั้งในชั่วโมงนี้แล้ว ลองใหม่ในอีก ${Math.ceil(limit.retryAfter / 60)} นาที` },
+        {
+          error: t(
+            `ใช้ผู้ช่วย AI ครบ ${cfg.hourlyLimit} ครั้งในชั่วโมงนี้แล้ว ลองใหม่ในอีก ${Math.ceil(limit.retryAfter / 60)} นาที`,
+            `You’ve used the AI assistant ${cfg.hourlyLimit} times this hour. Try again in ${Math.ceil(limit.retryAfter / 60)} min.`
+          ),
+        },
         { status: 429, headers: { 'Retry-After': String(limit.retryAfter) } }
       );
     }

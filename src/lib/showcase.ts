@@ -12,10 +12,12 @@
  * better but wasn't used.
  */
 
+import type { Msg } from "@/lib/i18n/locale";
+
 export type ShowcaseItem = {
   key: string;
-  /** Thai display title */
-  title: string;
+  /** Display title, in both languages */
+  title: Msg;
   /** The prompt that actually produced this frame (trimmed for display) */
   prompt: string;
   model: string;
@@ -54,7 +56,7 @@ export const HERO_MEDIA = {
 export const SHOWCASE_ITEMS: ShowcaseItem[] = [
   {
     key: "portrait",
-    title: "แสงในเส้นผม",
+    title: { th: "แสงในเส้นผม", en: "Light in her hair" },
     prompt:
       "She breathes and blinks once, the fibre-optic filaments woven through her hair glowing in slow waves. Nothing else moves",
     model: "Kling 2.5",
@@ -66,7 +68,7 @@ export const SHOWCASE_ITEMS: ShowcaseItem[] = [
   },
   {
     key: "city",
-    title: "มหานครกลางสายฝน",
+    title: { th: "มหานครกลางสายฝน", en: "Megacity in the rain" },
     prompt:
       "Rain falls through the megacity canyon, the holographic ribbon between the towers shimmering, slow push in down the centre of the street",
     model: "Kling 2.5",
@@ -78,7 +80,7 @@ export const SHOWCASE_ITEMS: ShowcaseItem[] = [
   },
   {
     key: "product",
-    title: "ขวดน้ำหอมออบซิเดียน",
+    title: { th: "ขวดน้ำหอมออบซิเดียน", en: "Obsidian perfume bottle" },
     prompt:
       "A ribbon of liquid cyan light flows continuously around the obsidian bottle as it rotates, specular highlights travelling across the facets",
     model: "Kling 2.5",
@@ -90,7 +92,7 @@ export const SHOWCASE_ITEMS: ShowcaseItem[] = [
   },
   {
     key: "anime",
-    title: "ศาลเจ้าลอยฟ้า",
+    title: { th: "ศาลเจ้าลอยฟ้า", en: "Shrine in the sky" },
     prompt:
       "Ribbons of glowing cyan thread spiral upward from the hero's raised hand into the violet cloudscape, coat and hair whipping in the wind",
     model: "Kling 2.5",
@@ -102,7 +104,7 @@ export const SHOWCASE_ITEMS: ShowcaseItem[] = [
   },
   {
     key: "temple",
-    title: "โคมลอยในพระวิหาร",
+    title: { th: "โคมลอยในพระวิหาร", en: "Lanterns in the temple hall" },
     prompt:
       "Thousands of candle-lanterns drift steadily upward between the temple columns, their glow shifting from warm gold to cyan as they rise",
     // Poster is the 2K still; the clip was generated from it as start frame,
@@ -116,7 +118,7 @@ export const SHOWCASE_ITEMS: ShowcaseItem[] = [
   },
   {
     key: "food",
-    title: "ก๋วยเตี๋ยวเรือ",
+    title: { th: "ก๋วยเตี๋ยวเรือ", en: "Thai boat noodles" },
     prompt:
       "Thai boat noodles macro, volumetric steam, chilli oil beading, chopsticks lifting noodles, 100mm f/4",
     model: "Seedream 5 Pro",
@@ -127,7 +129,7 @@ export const SHOWCASE_ITEMS: ShowcaseItem[] = [
   },
   {
     key: "creature",
-    title: "ผู้พิทักษ์ป่าเรืองแสง",
+    title: { th: "ผู้พิทักษ์ป่าเรืองแสง", en: "Glowing forest guardian" },
     prompt:
       "The forest guardian breathes slowly, cyan filaments pulsing through its root-woven body as it turns its antlered head toward camera",
     model: "Kling 2.5",
@@ -139,7 +141,7 @@ export const SHOWCASE_ITEMS: ShowcaseItem[] = [
   },
   {
     key: "coast",
-    title: "ชายฝั่งทรายดำ",
+    title: { th: "ชายฝั่งทรายดำ", en: "Black-sand coast" },
     prompt:
       "Top-down drone over volcanic black-sand coast at blue hour, turquoise surf braiding into foam channels",
     model: "Seedream 5 Pro",
@@ -150,7 +152,7 @@ export const SHOWCASE_ITEMS: ShowcaseItem[] = [
   },
   {
     key: "dancer",
-    title: "เส้นทางของการเคลื่อนไหว",
+    title: { th: "เส้นทางของการเคลื่อนไหว", en: "The path of movement" },
     prompt:
       "The dancer completes the leap as trailing arcs of cyan and violet light draw the path of the movement, braiding and fading like ribbon",
     model: "Kling 2.5",
@@ -163,47 +165,83 @@ export const SHOWCASE_ITEMS: ShowcaseItem[] = [
 ];
 
 /**
- * Providers wired into the platform. Kept factual — these are the adapters
- * that exist under `src/lib/providers/` plus our in-house engine. How the
- * in-house models run is not advertised (see lib/public-provider.ts).
+ * Model makers whose models the platform serves, plus our in-house engine.
+ * Resellers and hosts we reach them through (BytePlus, Replicate, fal…) are
+ * never named to customers (see lib/public-provider.ts).
  */
 export const PROVIDERS = [
-  "BytePlus",
   "OpenAI",
   "Stability AI",
   "Runway",
-  "Replicate",
-  "fal.ai",
   "Kling",
   "Luma",
   "Leonardo",
   "X-DREAMER Engine",
 ] as const;
 
-/** Straight answers to the things that stop people from paying. */
-export const FAQ_ITEMS = [
+/**
+ * Straight answers to the things that stop people from paying. The English
+ * names no service we run on (Stripe is the payment processor, not a model).
+ */
+export const FAQ_ITEMS: { q: Msg; a: Msg }[] = [
   {
-    q: "ผลงานที่สร้างเป็นของใคร ใช้เชิงพาณิชย์ได้ไหม",
-    a: "ผลงานที่คุณสร้างเป็นของคุณ ใช้ในงานเชิงพาณิชย์ได้ ทั้งนี้ยังต้องอยู่ภายใต้เงื่อนไขของผู้ให้บริการโมเดลที่คุณเลือกใช้ในงานนั้น ๆ ซึ่งเราแสดงไว้ที่หน้าเลือกโมเดล",
+    q: {
+      th: "ผลงานที่สร้างเป็นของใคร ใช้เชิงพาณิชย์ได้ไหม",
+      en: "Who owns what I create? Can I use it commercially?",
+    },
+    a: {
+      th: "ผลงานที่คุณสร้างเป็นของคุณ ใช้ในงานเชิงพาณิชย์ได้ ทั้งนี้ยังต้องอยู่ภายใต้เงื่อนไขของผู้ให้บริการโมเดลที่คุณเลือกใช้ในงานนั้น ๆ ซึ่งเราแสดงไว้ที่หน้าเลือกโมเดล",
+      en: "What you create is yours, and you can use it commercially. It is still subject to the terms of the model you chose for that piece, which we show where you pick the model.",
+    },
   },
   {
-    q: "ถ้าสร้างไม่สำเร็จ เครดิตหายไหม",
-    a: "ไม่หาย ระบบคืนเครดิตอัตโนมัติทุกครั้งที่งานล้มเหลว คุณตรวจสอบรายการคืนย้อนหลังได้ในหน้าโปรไฟล์ → ประวัติเครดิต",
+    q: {
+      th: "ถ้าสร้างไม่สำเร็จ เครดิตหายไหม",
+      en: "If a job fails, do I lose my credits?",
+    },
+    a: {
+      th: "ไม่หาย ระบบคืนเครดิตอัตโนมัติทุกครั้งที่งานล้มเหลว คุณตรวจสอบรายการคืนย้อนหลังได้ในหน้าโปรไฟล์ → ประวัติเครดิต",
+      en: "No. Your credits are refunded automatically every time a job fails. You can look back over every refund in your dashboard → Credit history.",
+    },
   },
   {
-    q: "เครดิตมีวันหมดอายุไหม",
-    a: "เครดิตที่ซื้อแบบจ่ายครั้งเดียวไม่มีวันหมดอายุ อยู่ในบัญชีจนกว่าจะใช้หมด",
+    q: {
+      th: "เครดิตมีวันหมดอายุไหม",
+      en: "Do credits expire?",
+    },
+    a: {
+      th: "เครดิตที่ซื้อแบบจ่ายครั้งเดียวไม่มีวันหมดอายุ อยู่ในบัญชีจนกว่าจะใช้หมด",
+      en: "Credits bought with a one-time payment never expire. They stay in your account until you use them up.",
+    },
   },
   {
-    q: "จ่ายเงินอย่างไร ปลอดภัยแค่ไหน",
-    a: "ชำระผ่านระบบของ XMAN STUDIO ซึ่งใช้ Stripe เป็นผู้ประมวลผลการชำระเงิน เราไม่เก็บเลขบัตรของคุณไว้ในระบบเลย",
+    q: {
+      th: "จ่ายเงินอย่างไร ปลอดภัยแค่ไหน",
+      en: "How do I pay, and is it safe?",
+    },
+    a: {
+      th: "ชำระผ่านระบบของ XMAN STUDIO ซึ่งใช้ Stripe เป็นผู้ประมวลผลการชำระเงิน เราไม่เก็บเลขบัตรของคุณไว้ในระบบเลย",
+      en: "You pay through XMAN STUDIO, which uses Stripe to process payments. We never store your card number.",
+    },
   },
   {
-    q: "ข้อมูลและภาพของฉันถูกนำไปเทรนโมเดลไหม",
-    a: "ไม่ เราไม่นำผลงานของคุณไปเทรนโมเดล ผลงานจะเป็นส่วนตัวจนกว่าคุณจะเลือกแชร์เอง",
+    q: {
+      th: "ข้อมูลและภาพของฉันถูกนำไปเทรนโมเดลไหม",
+      en: "Are my data and pictures used to train models?",
+    },
+    a: {
+      th: "ไม่ เราไม่นำผลงานของคุณไปเทรนโมเดล ผลงานจะเป็นส่วนตัวจนกว่าคุณจะเลือกแชร์เอง",
+      en: "No. We never use your work to train models, and it stays private until you choose to share it.",
+    },
   },
   {
-    q: "ทำไมต้องใช้ที่นี่แทนการสมัครแต่ละเจ้าเอง",
-    a: "เพราะได้โมเดลจากหลายผู้ให้บริการในระบบเครดิตเดียว ไม่ต้องถือหลายซับสคริปชัน และระบบหมุน API key ให้อัตโนมัติเมื่อเจ้าใดเจ้าหนึ่งติดคิวหรือล่ม",
+    q: {
+      th: "ทำไมต้องใช้ที่นี่แทนการสมัครแต่ละเจ้าเอง",
+      en: "Why use this instead of signing up with each service?",
+    },
+    a: {
+      th: "เพราะได้โมเดลจากหลายผู้ให้บริการในระบบเครดิตเดียว ไม่ต้องถือหลายซับสคริปชัน และระบบหมุน API key ให้อัตโนมัติเมื่อเจ้าใดเจ้าหนึ่งติดคิวหรือล่ม",
+      en: "You get models from many makers on one set of credits, without a pile of subscriptions — and when one service is queued up or down, we switch around it automatically.",
+    },
   },
-] as const;
+];

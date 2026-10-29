@@ -1,3 +1,4 @@
+import type { Locale } from '@/lib/i18n/locale';
 import { Prisma } from '@/generated/prisma/client';
 import prisma from '@/lib/db';
 import { getGpuConfig } from '@/lib/gpu/config';
@@ -374,13 +375,15 @@ export class GpuEta {
   }
 }
 
-/** Thai, rounded — a countdown to the second would be false precision. */
-export function formatEta(seconds: number | null): string | null {
+/** Rounded, in the customer's language — a countdown to the second would be false precision. */
+export function formatEta(seconds: number | null, locale: Locale = 'th'): string | null {
   if (seconds == null || seconds <= 0) return null;
-  if (seconds < 90) return 'ไม่เกิน 1 นาที';
+  const en = locale === 'en';
+  if (seconds < 90) return en ? 'under a minute' : 'ไม่เกิน 1 นาที';
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `ประมาณ ${minutes} นาที`;
+  if (minutes < 60) return en ? `about ${minutes} min` : `ประมาณ ${minutes} นาที`;
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
+  if (en) return rest > 0 ? `about ${hours} h ${rest} min` : `about ${hours} h`;
   return rest > 0 ? `ประมาณ ${hours} ชม. ${rest} นาที` : `ประมาณ ${hours} ชม.`;
 }

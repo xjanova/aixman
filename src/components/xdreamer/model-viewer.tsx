@@ -12,6 +12,7 @@
 
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
 import { ModelStage, type LightPreset, type LoadResult, type ModelStats, type ViewMode } from "@/lib/three/model-stage";
+import { useT } from "@/lib/i18n/client";
 
 export type { LightPreset, ModelStats, ViewMode };
 
@@ -46,6 +47,7 @@ export function ModelViewer({
   onStats?: (stats: ModelStats | null) => void;
   ref?: Ref<ModelViewerHandle>;
 }) {
+  const t = useT();
   const hostRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<ModelStage | null>(null);
   const onStatsRef = useRef(onStats);
@@ -115,8 +117,8 @@ export function ModelViewer({
         <div className="m3v-center">
           <div className="m3v-card">
             <div style={{ fontSize: 22, marginBottom: 6 }}>⬡</div>
-            เบราว์เซอร์นี้แสดงภาพ 3D ไม่ได้ (WebGL ถูกปิดอยู่)
-            <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>ยังดาวน์โหลดไฟล์ GLB ไปเปิดในโปรแกรมอื่นได้ตามปกติ</div>
+            {t("เบราว์เซอร์นี้แสดงภาพ 3D ไม่ได้ (WebGL ถูกปิดอยู่)", "This browser can't show 3D (WebGL is turned off).")}
+            <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>{t("ยังดาวน์โหลดไฟล์ GLB ไปเปิดในโปรแกรมอื่นได้ตามปกติ", "You can still download the GLB file and open it in another app.")}</div>
           </div>
         </div>
       )}
@@ -125,7 +127,7 @@ export function ModelViewer({
         <div className="m3v-center" aria-live="polite">
           <div className="m3v-card">
             <span className="m3v-spin" aria-hidden="true" />
-            กำลังโหลดโมเดล…
+            {t("กำลังโหลดโมเดล…", "Loading model…")}
           </div>
         </div>
       )}
@@ -133,16 +135,16 @@ export function ModelViewer({
       {error && (
         <div className="m3v-center" role="alert">
           <div className="m3v-card">
-            {error}
-            <button type="button" className="m3v-retry" onClick={() => setAttempt((n) => n + 1)}>ลองอีกครั้ง</button>
+            {t(error)}
+            <button type="button" className="m3v-retry" onClick={() => setAttempt((n) => n + 1)}>{t("ลองอีกครั้ง", "Try again")}</button>
           </div>
         </div>
       )}
 
       {current?.ok && !hinted && (
         <div className="m3v-hint" aria-hidden="true">
-          <span className="m3v-hint-desk">ลากเพื่อหมุน · สกรอลล์เพื่อซูม · คลิกขวาลากเพื่อเลื่อน</span>
-          <span className="m3v-hint-touch">ลากนิ้วเพื่อหมุน · จีบนิ้วเพื่อซูม · สองนิ้วเพื่อเลื่อน</span>
+          <span className="m3v-hint-desk">{t("ลากเพื่อหมุน · สกรอลล์เพื่อซูม · คลิกขวาลากเพื่อเลื่อน", "Drag to turn · Scroll to zoom · Right-drag to pan")}</span>
+          <span className="m3v-hint-touch">{t("ลากนิ้วเพื่อหมุน · จีบนิ้วเพื่อซูม · สองนิ้วเพื่อเลื่อน", "Drag to turn · Pinch to zoom · Two fingers to pan")}</span>
         </div>
       )}
 

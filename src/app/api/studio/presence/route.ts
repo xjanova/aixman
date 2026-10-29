@@ -4,6 +4,7 @@ import { getCurrentUserId } from '@/lib/auth';
 import { getGpuProvider } from '@/lib/gpu';
 import { rateLimit } from '@/lib/rate-limit';
 import { isArrival, notePrewarmDemand, touchStudioPresence } from '@/lib/services/studio-presence';
+import { requestLocale, translator } from '@/lib/i18n/locale';
 
 /**
  * POST /api/studio/presence — "I am on the studio with this model selected."
@@ -52,6 +53,7 @@ async function modelInfo(modelId: number): Promise<ModelInfo> {
 }
 
 export async function POST(request: NextRequest) {
+  const t = translator(requestLocale(request));
   const userId = await getCurrentUserId();
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -63,7 +65,7 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}));
   const modelId = Number((body as { modelId?: unknown }).modelId);
   if (!Number.isInteger(modelId) || modelId <= 0) {
-    return NextResponse.json({ error: 'modelId ไม่ถูกต้อง' }, { status: 400 });
+    return NextResponse.json({ error: t('modelId ไม่ถูกต้อง', 'Invalid modelId') }, { status: 400 });
   }
 
   try {

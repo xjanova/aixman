@@ -54,7 +54,9 @@ import {
   type EffectiveWorkflow,
 } from '@/lib/gpu/workflow-overrides';
 import { GpuWorkerManager } from './gpu-worker';
-import { GpuBalance, INSUFFICIENT_BALANCE_GRACE_MS, RENDERING_PAUSED_MESSAGE } from './gpu-balance';
+import { GpuBalance, INSUFFICIENT_BALANCE_GRACE_MS, RENDERING_PAUSED_MSG } from './gpu-balance';
+import { packMsg, registerStoredMsgs } from '@/lib/i18n/messages';
+import type { Msg } from '@/lib/i18n/locale';
 import { maybeSendDailyReport } from './gpu-report';
 import { raiseAlert } from '@/lib/notify/alerts';
 import { isCustomerInputFault } from '@/lib/gpu/input-fault';
@@ -1507,9 +1509,10 @@ export class GpuQueue {
     });
     await prisma.aiGeneration.update({
       where: { id: job.generationId },
-      // The generation's message is shown verbatim in the UI, so it carries the
-      // Thai summary; the raw technical text stays on the job row for admins.
-      data: { status: 'failed', errorMessage: userFacingError(message), completedAt: now },
+      // The generation's message is shown in the UI, so it carries the
+      // customer's summary in both languages (readStoredMessage picks one);
+      // the raw technical text stays on the job row for admins.
+      data: { status: 'failed', errorMessage: packMsg(userFacingError(message)), completedAt: now },
     });
 
     if (generation && generation.creditsUsed > 0) {
@@ -1797,15 +1800,58 @@ export class GpuQueue {
   }
 }
 
+/** What a failed render tells the customer, in both languages — every path refunds. */
+const FAILURE = {
+  communityBusy: {
+    th: 'ตอนนี้ไม่มีเครื่องชุมชนว่างรับงานโมเดลนี้ กรุณาลองใหม่ภายหลัง หรือเลือกโมเดลอื่น',
+    en: 'No community machine is free for this model right now. Please try again later or choose another model.',
+  },
+  communityPrivate: {
+    th: 'โมเดลเครื่องชุมชนรับเฉพาะงานเนื้อหาทั่วไปที่ไม่มีไฟล์แนบ กรุณาเลือกโมเดลอื่น',
+    en: 'Community-machine models only take general-audience work without attachments. Please choose another model.',
+  },
+  queueTimeout: { th: 'คิวหนาแน่นเกินเวลาที่กำหนด กรุณาลองใหม่ภายหลัง', en: 'The queue was too long to finish in time. Please try again later.' },
+  adminStopped: {
+    th: 'ผู้ดูแลระบบหยุดระบบสร้างงานชั่วคราว กรุณาลองใหม่ภายหลัง',
+    en: 'Creating was paused by an administrator. Please try again later.',
+  },
+  noFace: {
+    th: 'ไม่พบใบหน้าในบางช่วงของคลิป ทุกเฟรมต้องเห็นหน้าคนชัดเจน ลองตัดช่วงที่ไม่มีหน้าหรือหันข้างมากออกแล้วสั่งใหม่',
+    en: 'No face was found in part of the clip — every frame needs a clearly visible face. Cut the parts without one (or where the head turns away) and order again.',
+  },
+  badClip: {
+    th: 'อ่านไฟล์คลิปที่อัปโหลดไม่ได้ กรุณาแปลงเป็น MP4 แล้วอัปโหลดใหม่',
+    en: 'The uploaded clip couldn’t be read. Please convert it to MP4 and upload it again.',
+  },
+  crashed: { th: 'ระบบขัดข้องระหว่างสร้างงาน กรุณาลองใหม่อีกครั้ง', en: 'Something went wrong while creating. Please try again.' },
+  tooLong: {
+    th: 'ใช้เวลาสร้างนานเกินกำหนด กรุณาลองใหม่หรือลดความยาวคลิป',
+    en: 'It took longer than allowed. Please try again or make the clip shorter.',
+  },
+  notSetUp: {
+    th: 'โมเดลนี้ยังตั้งค่าไม่เสร็จ กรุณาติดต่อผู้ดูแลระบบ',
+    en: 'This model isn’t fully set up yet. Please contact support.',
+  },
+  saveFailed: { th: 'บันทึกไฟล์ผลลัพธ์ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง', en: 'The result couldn’t be saved. Please try again.' },
+  busy: { th: 'ระบบไม่ว่างอยู่ในขณะนี้ กรุณาลองใหม่ภายหลัง', en: 'We’re busy right now. Please try again later.' },
+  queueFull: { th: 'คิวเต็มอยู่ในขณะนี้ กรุณาลองใหม่ภายหลัง', en: 'The queue is full right now. Please try again later.' },
+  failed: { th: 'สร้างผลงานไม่สำเร็จ กรุณาลองใหม่อีกครั้ง', en: 'Creating failed. Please try again.' },
+} satisfies Record<string, Msg>;
+const REFUNDED: Msg = { th: '(คืนเครดิตแล้ว)', en: '(credits refunded)' };
+
+// Rows failed before messages were stored in both languages hold "<Thai> (คืนเครดิตแล้ว)".
+registerStoredMsgs(...Object.values(FAILURE), RENDERING_PAUSED_MSG, REFUNDED);
+
 /**
- * Translate an internal failure into Thai UI copy.
+ * Translate an internal failure into what the customer reads, in both
+ * languages (stored packed on the generation, read per visitor).
  *
  * Raw messages carry endpoints, provider names and stack detail — useful to an
  * admin, but noise to a user and needless attack-surface disclosure. Credits are
  * always refunded on these paths, so every message says so.
  */
-function userFacingError(technical: string): string {
-  const REFUNDED = ' (คืนเครดิตแล้ว)';
+function userFacingError(technical: string): Msg {
+  const refunded = (m: Msg): Msg => ({ th: `${m.th} ${REFUNDED.th}`, en: `${m.en} ${REFUNDED.en}` });
 
   // How the work is run is not the customer's concern (and is a trade
   // secret): no message here names machines, GPUs, renting or providers.
@@ -1813,51 +1859,29 @@ function userFacingError(technical: string): string {
   // An empty vendor balance first: "queue too busy" was false — nothing was
   // queued ahead, rendering had simply stopped until someone paid.
   if (technical.startsWith(RENDERING_PAUSED_PREFIX) || /balance too low/i.test(technical)) {
-    return RENDERING_PAUSED_MESSAGE + REFUNDED;
+    return refunded(RENDERING_PAUSED_MSG);
   }
   // A community-only model (its name says เครื่องชุมชน, so saying so here
   // gives nothing away): no home PC took the job, or the job was never one a
   // home PC may be given.
-  if (technical.startsWith(NO_COMMUNITY_MACHINE_PREFIX)) {
-    return 'ตอนนี้ไม่มีเครื่องชุมชนว่างรับงานโมเดลนี้ กรุณาลองใหม่ภายหลัง หรือเลือกโมเดลอื่น' + REFUNDED;
-  }
-  if (technical.startsWith(PRIVATE_FOR_COMMUNITY_PREFIX)) {
-    return 'โมเดลเครื่องชุมชนรับเฉพาะงานเนื้อหาทั่วไปที่ไม่มีไฟล์แนบ กรุณาเลือกโมเดลอื่น' + REFUNDED;
-  }
+  if (technical.startsWith(NO_COMMUNITY_MACHINE_PREFIX)) return refunded(FAILURE.communityBusy);
+  if (technical.startsWith(PRIVATE_FOR_COMMUNITY_PREFIX)) return refunded(FAILURE.communityPrivate);
   // Checked before the rest: it quotes the last vendor reason, which can itself
   // contain "timeout" or "budget" and would otherwise be misread below.
-  if (/^No suitable GPU available within/i.test(technical)) {
-    return 'คิวหนาแน่นเกินเวลาที่กำหนด กรุณาลองใหม่ภายหลัง' + REFUNDED;
-  }
-  if (/^Stopped by admin/i.test(technical)) {
-    return 'ผู้ดูแลระบบหยุดระบบสร้างงานชั่วคราว กรุณาลองใหม่ภายหลัง' + REFUNDED;
-  }
+  if (/^No suitable GPU available within/i.test(technical)) return refunded(FAILURE.queueTimeout);
+  if (/^Stopped by admin/i.test(technical)) return refunded(FAILURE.adminStopped);
   // The customer's own file: say what to change, or they will order it again.
-  if (/Face not detected/i.test(technical)) {
-    return 'ไม่พบใบหน้าในบางช่วงของคลิป ทุกเฟรมต้องเห็นหน้าคนชัดเจน ลองตัดช่วงที่ไม่มีหน้าหรือหันข้างมากออกแล้วสั่งใหม่' + REFUNDED;
-  }
-  if (/AIXMAN_INPUT:/.test(technical)) {
-    return 'อ่านไฟล์คลิปที่อัปโหลดไม่ได้ กรุณาแปลงเป็น MP4 แล้วอัปโหลดใหม่' + REFUNDED;
-  }
-  if (/terminated mid-render|worker was terminated|no longer exists/i.test(technical)) {
-    return 'ระบบขัดข้องระหว่างสร้างงาน กรุณาลองใหม่อีกครั้ง' + REFUNDED;
-  }
-  if (/exceeded \d+ min|timed out|timeout/i.test(technical)) {
-    return 'ใช้เวลาสร้างนานเกินกำหนด กรุณาลองใหม่หรือลดความยาวคลิป' + REFUNDED;
-  }
+  if (/Face not detected/i.test(technical)) return refunded(FAILURE.noFace);
+  if (/AIXMAN_INPUT:/.test(technical)) return refunded(FAILURE.badClip);
+  if (/terminated mid-render|worker was terminated|no longer exists/i.test(technical)) return refunded(FAILURE.crashed);
+  if (/exceeded \d+ min|timed out|timeout/i.test(technical)) return refunded(FAILURE.tooLong);
   if (/no container image|workflow|invalid nodes|profile|R2 storage is not configured|No active API key/i.test(technical)) {
-    return 'โมเดลนี้ยังตั้งค่าไม่เสร็จ กรุณาติดต่อผู้ดูแลระบบ' + REFUNDED;
+    return refunded(FAILURE.notSetUp);
   }
-  if (/Failed to save render/i.test(technical)) {
-    return 'บันทึกไฟล์ผลลัพธ์ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง' + REFUNDED;
-  }
-  if (/budget|capacity/i.test(technical)) {
-    return 'ระบบไม่ว่างอยู่ในขณะนี้ กรุณาลองใหม่ภายหลัง' + REFUNDED;
-  }
-  if (/no .* GPU available|No available/i.test(technical)) {
-    return 'คิวเต็มอยู่ในขณะนี้ กรุณาลองใหม่ภายหลัง' + REFUNDED;
-  }
-  return 'สร้างผลงานไม่สำเร็จ กรุณาลองใหม่อีกครั้ง' + REFUNDED;
+  if (/Failed to save render/i.test(technical)) return refunded(FAILURE.saveFailed);
+  if (/budget|capacity/i.test(technical)) return refunded(FAILURE.busy);
+  if (/no .* GPU available|No available/i.test(technical)) return refunded(FAILURE.queueFull);
+  return refunded(FAILURE.failed);
 }
 
 /**

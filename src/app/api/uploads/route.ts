@@ -4,6 +4,7 @@ import { isStorageConfigured, uploadBuffer } from '@/lib/storage/r2';
 import { MAX_BYTES, isUploadKind, maxBytesLabel, sniff, uploadKey, type UploadKind } from '@/lib/uploads';
 import { audioDurationSeconds } from '@/lib/audio-duration';
 import { probeVideoBuffer } from '@/lib/video-probe';
+import { requestLocale, translator } from '@/lib/i18n/locale';
 
 /**
  * Accept an input file for a generation and return a URL the model can fetch.
@@ -49,6 +50,7 @@ function overRateLimit(userId: number): boolean {
 }
 
 export async function POST(request: NextRequest) {
+  const t = translator(requestLocale(request));
   const userId = await getCurrentUserId();
   if (!userId) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -59,13 +61,13 @@ export async function POST(request: NextRequest) {
     // generic failure here would send the operator hunting through the model
     // config instead of the environment.
     return NextResponse.json(
-      { error: 'ระบบยังไม่ได้ตั้งค่าที่เก็บไฟล์ กรุณาติดต่อผู้ดูแลระบบ' },
+      { error: t('ระบบยังไม่ได้ตั้งค่าที่เก็บไฟล์ กรุณาติดต่อผู้ดูแลระบบ', 'File storage isn’t set up yet. Please contact support.') },
       { status: 503 }
     );
   }
 
   if (overRateLimit(userId)) {
-    return NextResponse.json({ error: 'อัปโหลดถี่เกินไป กรุณารอสักครู่แล้วลองใหม่' }, { status: 429 });
+    return NextResponse.json({ error: t('อัปโหลดถี่เกินไป กรุณารอสักครู่แล้วลองใหม่', 'Too many uploads. Please wait a moment and try again.') }, { status: 429 });
   }
 
   const kindParam = request.nextUrl.searchParams.get('kind');
@@ -81,7 +83,7 @@ export async function POST(request: NextRequest) {
   const declared = Number(request.headers.get('content-length') ?? 0);
   if (Number.isFinite(declared) && declared > limit) {
     return NextResponse.json(
-      { error: `ไฟล์ใหญ่เกินไป (สูงสุด ${maxBytesLabel(kind)})` },
+      { error: t(`ไฟล์ใหญ่เกินไป (สูงสุด ${maxBytesLabel(kind)})`, `The file is too large (max ${maxBytesLabel(kind)})`) },
       { status: 413 }
     );
   }
@@ -100,12 +102,12 @@ export async function POST(request: NextRequest) {
   }
 
   if (file.size === 0) {
-    return NextResponse.json({ error: 'ไฟล์ว่างเปล่า' }, { status: 400 });
+    return NextResponse.json({ error: t('ไฟล์ว่างเปล่า', 'The file is empty') }, { status: 400 });
   }
 
   if (file.size > limit) {
     return NextResponse.json(
-      { error: `ไฟล์ใหญ่เกินไป (สูงสุด ${maxBytesLabel(kind)})` },
+      { error: t(`ไฟล์ใหญ่เกินไป (สูงสุด ${maxBytesLabel(kind)})`, `The file is too large (max ${maxBytesLabel(kind)})`) },
       { status: 413 }
     );
   }
@@ -117,7 +119,7 @@ export async function POST(request: NextRequest) {
   const detected = sniff(buffer, kind);
   if (!detected) {
     return NextResponse.json(
-      { error: 'ไม่รองรับไฟล์ชนิดนี้ กรุณาใช้ไฟล์รูปแบบมาตรฐาน' },
+      { error: t('ไม่รองรับไฟล์ชนิดนี้ กรุณาใช้ไฟล์รูปแบบมาตรฐาน', 'This file type isn’t supported. Please use a standard format.') },
       { status: 415 }
     );
   }
@@ -145,6 +147,6 @@ export async function POST(request: NextRequest) {
     // The S3 client's message can carry the bucket name and endpoint. Log it,
     // return nothing that describes our storage layout.
     console.error('[uploads] failed to store file:', error);
-    return NextResponse.json({ error: 'อัปโหลดไม่สำเร็จ กรุณาลองใหม่' }, { status: 500 });
+    return NextResponse.json({ error: t('อัปโหลดไม่สำเร็จ กรุณาลองใหม่', 'Upload failed. Please try again.') }, { status: 500 });
   }
 }

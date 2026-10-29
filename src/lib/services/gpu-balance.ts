@@ -1,3 +1,4 @@
+import type { Msg } from '@/lib/i18n/locale';
 import prisma from '@/lib/db';
 import type { GpuBudgetConfig } from '@/lib/gpu/config';
 import { isCommunityOnlyModel } from '@/lib/gpu/catalog';
@@ -77,7 +78,11 @@ const BALANCE_STALE_MS = 30 * 60_000;
 export const INSUFFICIENT_BALANCE_GRACE_MS = 15 * 60_000;
 
 /** Customer copy when rendering is paused. Names no machine, GPU or vendor. */
-export const RENDERING_PAUSED_MESSAGE = 'ระบบสร้างงานปิดให้บริการชั่วคราว กรุณาลองใหม่ภายหลัง';
+export const RENDERING_PAUSED_MSG: Msg = {
+  th: 'ระบบสร้างงานปิดให้บริการชั่วคราว กรุณาลองใหม่ภายหลัง',
+  en: 'Creating is paused for the moment. Please try again later.',
+};
+export const RENDERING_PAUSED_MESSAGE = RENDERING_PAUSED_MSG.th;
 
 async function load(): Promise<Stored | null> {
   const row = await prisma.aiSetting.findUnique({ where: { key: SETTING_KEY } });

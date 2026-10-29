@@ -1,3 +1,4 @@
+import type { Msg } from '@/lib/i18n/locale';
 /**
  * What kind of content an order asks for, read from its words before any
  * credit moves (owner decision D4, 2026-09-18).
@@ -404,17 +405,33 @@ export function readContentTier(value: unknown): ContentTier {
 }
 
 const NOT_CHARGED = 'ระบบไม่ได้หักเครดิต';
+const NOT_CHARGED_EN = 'No credits were charged.';
 
-const BLOCKED_MESSAGES: Record<BlockedCategory, string> = {
-  'minor-sexual': `คำสั่งนี้เข้าข่ายเนื้อหาทางเพศหรือยั่วยุทางเพศที่เกี่ยวข้องกับเด็กหรือผู้เยาว์ ซึ่งผิดกฎหมายและห้ามสร้างเด็ดขาด (ข้อกำหนดการใช้งาน ข้อ 6) — ${NOT_CHARGED}`,
-  'real-person-sexual': `คำสั่งนี้เข้าข่ายการสร้างเนื้อหาทางเพศของบุคคลจริง เช่น คนดัง คนรู้จัก หรือการถอดเสื้อผ้าจากภาพที่แนบมา ซึ่งห้ามสร้างบนแพลตฟอร์มนี้ (ข้อกำหนดการใช้งาน ข้อ 6) — ${NOT_CHARGED}`,
-  'sexual-violence': `คำสั่งนี้เข้าข่ายเนื้อหาความรุนแรงทางเพศ ซึ่งห้ามสร้างบนแพลตฟอร์มนี้ (ข้อกำหนดการใช้งาน ข้อ 6) — ${NOT_CHARGED}`,
-  bestiality: `คำสั่งนี้เข้าข่ายเนื้อหาต้องห้ามตามข้อกำหนดการใช้งาน ข้อ 6 ระบบจึงไม่สร้างให้ — ${NOT_CHARGED}`,
-  necrophilia: `คำสั่งนี้เข้าข่ายเนื้อหาต้องห้ามตามข้อกำหนดการใช้งาน ข้อ 6 ระบบจึงไม่สร้างให้ — ${NOT_CHARGED}`,
+const BLOCKED_MESSAGES: Record<BlockedCategory, Msg> = {
+  'minor-sexual': {
+    th: `คำสั่งนี้เข้าข่ายเนื้อหาทางเพศหรือยั่วยุทางเพศที่เกี่ยวข้องกับเด็กหรือผู้เยาว์ ซึ่งผิดกฎหมายและห้ามสร้างเด็ดขาด (ข้อกำหนดการใช้งาน ข้อ 6) — ${NOT_CHARGED}`,
+    en: `This prompt falls under sexual or sexually suggestive content involving children or minors, which is illegal and strictly forbidden (Terms of Service, section 6). ${NOT_CHARGED_EN}`,
+  },
+  'real-person-sexual': {
+    th: `คำสั่งนี้เข้าข่ายการสร้างเนื้อหาทางเพศของบุคคลจริง เช่น คนดัง คนรู้จัก หรือการถอดเสื้อผ้าจากภาพที่แนบมา ซึ่งห้ามสร้างบนแพลตฟอร์มนี้ (ข้อกำหนดการใช้งาน ข้อ 6) — ${NOT_CHARGED}`,
+    en: `This prompt falls under sexual content of a real person — a celebrity, someone you know, or removing clothes from an attached picture — which is not allowed on this platform (Terms of Service, section 6). ${NOT_CHARGED_EN}`,
+  },
+  'sexual-violence': {
+    th: `คำสั่งนี้เข้าข่ายเนื้อหาความรุนแรงทางเพศ ซึ่งห้ามสร้างบนแพลตฟอร์มนี้ (ข้อกำหนดการใช้งาน ข้อ 6) — ${NOT_CHARGED}`,
+    en: `This prompt falls under sexual violence, which is not allowed on this platform (Terms of Service, section 6). ${NOT_CHARGED_EN}`,
+  },
+  bestiality: {
+    th: `คำสั่งนี้เข้าข่ายเนื้อหาต้องห้ามตามข้อกำหนดการใช้งาน ข้อ 6 ระบบจึงไม่สร้างให้ — ${NOT_CHARGED}`,
+    en: `This prompt falls under content forbidden by the Terms of Service, section 6, so it won’t be created. ${NOT_CHARGED_EN}`,
+  },
+  necrophilia: {
+    th: `คำสั่งนี้เข้าข่ายเนื้อหาต้องห้ามตามข้อกำหนดการใช้งาน ข้อ 6 ระบบจึงไม่สร้างให้ — ${NOT_CHARGED}`,
+    en: `This prompt falls under content forbidden by the Terms of Service, section 6, so it won’t be created. ${NOT_CHARGED_EN}`,
+  },
 };
 
-/** Thai for the customer whose order was refused. */
-export function blockedMessage(category: BlockedCategory): string {
+/** What the customer whose order was refused reads, in both languages. */
+export function blockedMessage(category: BlockedCategory): Msg {
   return BLOCKED_MESSAGES[category];
 }
 

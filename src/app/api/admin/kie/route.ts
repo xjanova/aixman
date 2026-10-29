@@ -20,6 +20,7 @@ import { fallbackRowOf, loadFallbackSettings, type ModelWithProvider } from '@/l
 import { kieBasis } from '@/lib/providers/kie-sync';
 import { accountBlock } from '@/lib/services/account-pool';
 import { periodStarts } from '@/lib/llm/key-limits';
+import { storedMessageThai } from '@/lib/i18n/messages';
 
 /**
  * Admin → KIE.ai (/admin/kie): the primary provider's own control room.
@@ -263,7 +264,7 @@ export async function GET() {
     failures: failures.map((f) => ({
       id: f.id,
       model: rowById.get(f.modelId)?.name ?? `#${f.modelId}`,
-      error: (f.errorMessage ?? '').slice(0, 300),
+      error: (storedMessageThai(f.errorMessage) ?? '').slice(0, 300),
       refunded: f.creditsRefunded,
       at: f.createdAt.toISOString(),
       route: routeOf(f.params),

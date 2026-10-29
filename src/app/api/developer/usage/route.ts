@@ -2,15 +2,17 @@ import { NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth';
 import prisma from '@/lib/db';
 import { listModels } from '@/lib/llm/gateway';
+import { requestLocale, translator } from '@/lib/i18n/locale';
 
 export const dynamic = 'force-dynamic';
 
 const DAYS = 30;
 
 /** The caller's last 30 days of API use, per model, plus the price list. */
-export async function GET() {
+export async function GET(request: Request) {
+  const t = translator(requestLocale(request));
   const userId = await getCurrentUserId();
-  if (!userId) return NextResponse.json({ error: 'กรุณาเข้าสู่ระบบ' }, { status: 401 });
+  if (!userId) return NextResponse.json({ error: t('กรุณาเข้าสู่ระบบ', 'Please sign in') }, { status: 401 });
   const since = new Date(Date.now() - DAYS * 86_400_000);
   const [byModel, recent, models, credit] = await Promise.all([
     prisma.aiApiUsage.groupBy({

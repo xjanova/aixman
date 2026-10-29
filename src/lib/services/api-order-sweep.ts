@@ -16,6 +16,8 @@
 
 import prisma from '@/lib/db';
 import { GenerationService } from './generation';
+import { packMsg, registerStoredMsgs } from '@/lib/i18n/messages';
+import type { Msg } from '@/lib/i18n/locale';
 
 /** Past every provider's own wait, with room for the result to be stored. */
 const STALL_MINUTES = 60;
@@ -23,7 +25,12 @@ const SWEEP_INTERVAL_MS = 5 * 60_000;
 const STARTUP_DELAY_MS = 120_000;
 const BATCH = 50;
 
-export const STALLED_MESSAGE = 'ไม่ได้รับผลจากผู้ให้บริการภายในเวลาที่กำหนด ระบบคืนเครดิตให้แล้ว กรุณาลองใหม่อีกครั้ง';
+export const STALLED_MSG: Msg = {
+  th: 'ไม่ได้รับผลจากผู้ให้บริการภายในเวลาที่กำหนด ระบบคืนเครดิตให้แล้ว กรุณาลองใหม่อีกครั้ง',
+  en: 'The result didn’t arrive in time. Your credits have been refunded — please try again.',
+};
+// Rows failed before messages were stored in both languages hold the Thai alone.
+registerStoredMsgs(STALLED_MSG);
 
 export const ApiOrderSweep = {
   async sweep(now = new Date()): Promise<number> {
@@ -43,7 +50,7 @@ export const ApiOrderSweep = {
     for (const order of stalled) {
       const claimed = await prisma.aiGeneration.updateMany({
         where: { id: order.id, status: { in: ['pending', 'processing'] } },
-        data: { status: 'failed', errorMessage: STALLED_MESSAGE, completedAt: now },
+        data: { status: 'failed', errorMessage: packMsg(STALLED_MSG), completedAt: now },
       });
       if (claimed.count === 0) continue;
       // Idempotent per generation: a refund already written is not repeated.

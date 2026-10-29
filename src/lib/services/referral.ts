@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { translator, type Locale, type Msg } from "@/lib/i18n/locale";
 
 const DEFAULT_COMMISSION_RATE = 10; // 10% of purchased credits
 const REFERRER_BONUS = 50; // bonus credits for referrer when someone signs up
@@ -34,33 +35,51 @@ export class ReferralService {
   /**
    * Apply a referral code for a new user
    */
-  async applyCode(userId: number, code: string): Promise<{ success: boolean; error?: string }> {
+  async applyCode(userId: number, code: string): Promise<{ success: true } | { success: false; error: Msg }> {
     const referral = await prisma.aiReferral.findUnique({
       where: { referralCode: code },
     });
 
-    if (!referral) return { success: false, error: "รหัสชวนเพื่อนไม่ถูกต้อง" };
-    if (referral.referrerId === userId) return { success: false, error: "ไม่สามารถใช้รหัสของตัวเองได้" };
+    if (!referral) return { success: false, error: { th: "รหัสชวนเพื่อนไม่ถูกต้อง", en: "This referral code is not valid." } };
+    if (referral.referrerId === userId) {
+      return { success: false, error: { th: "ไม่สามารถใช้รหัสของตัวเองได้", en: "You can't use your own code." } };
+    }
 
     // Anti-abuse: only genuinely new accounts may redeem a code.
     const user = await prisma.user.findUnique({ where: { id: userId }, select: { createdAt: true } });
-    if (!user) return { success: false, error: "ไม่พบบัญชีผู้ใช้" };
+    if (!user) return { success: false, error: { th: "ไม่พบบัญชีผู้ใช้", en: "Account not found." } };
     const accountAgeMs = Date.now() - new Date(user.createdAt).getTime();
     if (accountAgeMs > REFERRAL_ELIGIBLE_DAYS * 24 * 60 * 60 * 1000) {
-      return { success: false, error: `เฉพาะสมาชิกใหม่ (ภายใน ${REFERRAL_ELIGIBLE_DAYS} วัน) เท่านั้นที่ใช้รหัสชวนเพื่อนได้` };
+      return {
+        success: false,
+        error: {
+          th: `เฉพาะสมาชิกใหม่ (ภายใน ${REFERRAL_ELIGIBLE_DAYS} วัน) เท่านั้นที่ใช้รหัสชวนเพื่อนได้`,
+          en: `Only new members (within ${REFERRAL_ELIGIBLE_DAYS} days of joining) can use a referral code.`,
+        },
+      };
     }
 
     // Must not have purchased before (prevents established users farming bonuses)
     const hasPurchase = await prisma.aiCreditTransaction.findFirst({
       where: { userId, type: "purchase" },
     });
-    if (hasPurchase) return { success: false, error: "บัญชีนี้มีประวัติการซื้อแล้ว ไม่สามารถใช้รหัสชวนเพื่อนได้" };
+    if (hasPurchase) {
+      return {
+        success: false,
+        error: {
+          th: "บัญชีนี้มีประวัติการซื้อแล้ว ไม่สามารถใช้รหัสชวนเพื่อนได้",
+          en: "This account has already made a purchase, so it can't use a referral code.",
+        },
+      };
+    }
 
     // Check if user already has a referral
     const alreadyReferred = await prisma.aiReferral.findFirst({
       where: { referredId: userId },
     });
-    if (alreadyReferred) return { success: false, error: "บัญชีนี้ถูกชวนแล้ว" };
+    if (alreadyReferred) {
+      return { success: false, error: { th: "บัญชีนี้ถูกชวนแล้ว", en: "This account has already used a referral code." } };
+    }
 
     // Create new referral link
     await prisma.aiReferral.create({
@@ -74,6 +93,7 @@ export class ReferralService {
     });
 
     // Give bonus credits to both users
+    // Credit-history lines stay Thai in the table; src/lib/i18n/credit-text.ts reads these shapes in English
     await this.addBonusCredits(referral.referrerId, REFERRER_BONUS, `โบนัสชวนเพื่อน (รหัส: ${code})`);
     await this.addBonusCredits(userId, REFERRED_BONUS, `โบนัสจากรหัสชวนเพื่อน: ${code}`);
 
@@ -129,7 +149,8 @@ export class ReferralService {
   /**
    * Get referral stats for a user
    */
-  async getStats(userId: number) {
+  async getStats(userId: number, locale: Locale = "th") {
+    const t = translator(locale);
     const code = await this.getOrCreateCode(userId);
 
     const referrals = await prisma.aiReferral.findMany({
@@ -159,7 +180,7 @@ export class ReferralService {
       commissionRate: DEFAULT_COMMISSION_RATE,
       referrals: referrals.map((r) => ({
         id: r.id,
-        referredName: r.referred?.name || "ผู้ใช้",
+        referredName: r.referred?.name || t("ผู้ใช้", "User"),
         referredEmail: r.referred?.email || "",
         joinedAt: r.createdAt,
         totalCommission: r.commissions.reduce((s, c) => s + c.creditAmount, 0),

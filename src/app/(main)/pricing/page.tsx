@@ -39,6 +39,9 @@ import {
   type WorkKind,
 } from "@/lib/pricing-display";
 import { TPIX_CAMPAIGN_DISCOUNT } from "@/lib/tpix/chain";
+import { useLocale, useT } from "@/lib/i18n/client";
+import { formatCredits, formatNumber, formatThb, type Locale, type Msg, type Translate } from "@/lib/i18n/locale";
+import { packageFeatures, packageLabel } from "@/lib/i18n/package-text";
 
 const XMAN_URL = process.env.NEXT_PUBLIC_XMAN_URL || "https://xman4289.com";
 
@@ -87,69 +90,95 @@ type PurchaseResult =
  * cannot have (see `confirmWalletPurchase`), so the caller needs no error
  * handling — and therefore no `finally` — of its own.
  */
-async function purchasePackage(slug: string, idempotencyKey: string): Promise<PurchaseResult> {
+async function purchasePackage(slug: string, idempotencyKey: string, t: Translate): Promise<PurchaseResult> {
   try {
     const res = await fetch("/api/credits/purchase", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ packageSlug: slug, idempotencyKey }),
     });
-    if (res.status === 401) return { status: "error", message: "เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่แล้วลองอีกครั้ง" };
+    if (res.status === 401) {
+      return { status: "error", message: t("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่แล้วลองอีกครั้ง", "Your session has expired. Please sign in again and retry.") };
+    }
     const data = await res.json();
-    if (!res.ok) return { status: "error", message: data.error || "ซื้อไม่สำเร็จ" };
+    if (!res.ok) return { status: "error", message: data.error || t("ซื้อไม่สำเร็จ", "Purchase failed") };
     if (data.duplicate) return { status: "duplicate" };
     return { status: "ok", credits: data.credits, walletBalance: data.walletBalance };
   } catch {
-    return { status: "error", message: "เกิดข้อผิดพลาด กรุณาลองใหม่" };
+    return { status: "error", message: t("เกิดข้อผิดพลาด กรุณาลองใหม่", "Something went wrong. Please try again.") };
   }
 }
 
-const fmt = (n: number) => Math.round(n).toLocaleString("th-TH");
+const fmtNum = (n: number, locale: Locale) => formatNumber(Math.round(n), locale);
 const checkoutHref = (slug: string) => `${XMAN_URL}/checkout/ai-credits/${encodeURIComponent(slug)}?ref=ai`;
 
-const WORK: { kind: WorkKind; label: string; unit: string; icon: string }[] = [
-  { kind: "image", label: "ภาพ", unit: "ภาพ", icon: "/studio/ic-image-v1.webp" },
-  { kind: "video", label: "วิดีโอ", unit: "คลิป", icon: "/studio/ic-video-v1.webp" },
-  { kind: "audio", label: "เพลง", unit: "เพลง", icon: "/studio/ic-music-v1.webp" },
+/** `unit.en` is the singular; every one of them takes a plain -s. */
+const WORK: { kind: WorkKind; label: Msg; unit: Msg; icon: string }[] = [
+  { kind: "image", label: { th: "ภาพ", en: "Images" }, unit: { th: "ภาพ", en: "image" }, icon: "/studio/ic-image-v1.webp" },
+  { kind: "video", label: { th: "วิดีโอ", en: "Videos" }, unit: { th: "คลิป", en: "clip" }, icon: "/studio/ic-video-v1.webp" },
+  { kind: "audio", label: { th: "เพลง", en: "Music" }, unit: { th: "เพลง", en: "song" }, icon: "/studio/ic-music-v1.webp" },
 ];
 
-const CATEGORY_INFO: Record<string, { label: string; icon: string }> = {
-  image: { label: "สร้างภาพ", icon: "/studio/ic-image-v1.webp" },
-  video: { label: "สร้างวิดีโอ", icon: "/studio/ic-video-v1.webp" },
-  lipsync: { label: "พากย์ทับคลิป / ลิปซิงก์", icon: "/studio/ic-lipsync-v1.webp" },
-  audio: { label: "เพลงและเสียง", icon: "/studio/ic-music-v1.webp" },
-  edit: { label: "แก้ไขภาพ", icon: "/studio/ic-edit-v1.webp" },
-  model3d: { label: "โมเดล 3D", icon: "/studio/ic-3d-v1.webp" },
+const workUnit = (unit: Msg, n: number, t: Translate) => t(unit.th, n === 1 ? unit.en : `${unit.en}s`);
+
+const CATEGORY_INFO: Record<string, { label: Msg; icon: string }> = {
+  image: { label: { th: "สร้างภาพ", en: "Images" }, icon: "/studio/ic-image-v1.webp" },
+  video: { label: { th: "สร้างวิดีโอ", en: "Videos" }, icon: "/studio/ic-video-v1.webp" },
+  lipsync: { label: { th: "พากย์ทับคลิป / ลิปซิงก์", en: "Dubbing / lip-sync" }, icon: "/studio/ic-lipsync-v1.webp" },
+  audio: { label: { th: "เพลงและเสียง", en: "Music & audio" }, icon: "/studio/ic-music-v1.webp" },
+  edit: { label: { th: "แก้ไขภาพ", en: "Image editing" }, icon: "/studio/ic-edit-v1.webp" },
+  model3d: { label: { th: "โมเดล 3D", en: "3D models" }, icon: "/studio/ic-3d-v1.webp" },
 };
 
-const FAQ: { q: string; a: string }[] = [
+const FAQ: { q: Msg; a: Msg }[] = [
   {
-    q: "เครดิตมีวันหมดอายุไหม?",
-    a: "ไม่มีครับ เครดิตอยู่ในบัญชีจนกว่าจะใช้ ซื้อแพ็กเกจเป็นการจ่ายครั้งเดียว ไม่มีรอบบิลรายเดือน และไม่มีการตัดเงินอัตโนมัติ ซื้อเพิ่มเมื่อไรก็รวมกับยอดเดิมทันที",
+    q: { th: "เครดิตมีวันหมดอายุไหม?", en: "Do credits expire?" },
+    a: {
+      th: "ไม่มีครับ เครดิตอยู่ในบัญชีจนกว่าจะใช้ ซื้อแพ็กเกจเป็นการจ่ายครั้งเดียว ไม่มีรอบบิลรายเดือน และไม่มีการตัดเงินอัตโนมัติ ซื้อเพิ่มเมื่อไรก็รวมกับยอดเดิมทันที",
+      en: "No. Credits stay in your account until you use them. A package is a one-time payment: no monthly billing and no automatic charges. Whatever you buy later is added to your balance straight away.",
+    },
   },
   {
-    q: "ชำระเงินได้ช่องทางไหนบ้าง?",
-    a: "กด “ซื้อแพ็กเกจนี้” เพื่อชำระผ่านระบบของ XMAN Studio ด้วย PromptPay หรือโอนผ่านธนาคารแล้วแนบสลิป หรือถ้ามียอดใน Wallet ของ XMAN Studio อยู่แล้ว เข้าสู่ระบบแล้วกด “ซื้อด้วย Wallet” ได้ทันทีบนหน้านี้",
+    q: { th: "ชำระเงินได้ช่องทางไหนบ้าง?", en: "How can I pay?" },
+    a: {
+      th: "กด “ซื้อแพ็กเกจนี้” เพื่อชำระผ่านระบบของ XMAN Studio ด้วย PromptPay หรือโอนผ่านธนาคารแล้วแนบสลิป หรือถ้ามียอดใน Wallet ของ XMAN Studio อยู่แล้ว เข้าสู่ระบบแล้วกด “ซื้อด้วย Wallet” ได้ทันทีบนหน้านี้",
+      en: "Tap “Buy this package” to pay through XMAN Studio with PromptPay or a bank transfer with your slip attached. If you already have a balance in your XMAN Studio Wallet, sign in and tap “Buy with Wallet” right here on this page.",
+    },
   },
   {
-    q: "จ่ายแล้วเครดิตเข้าเมื่อไร?",
-    a: "ซื้อด้วย Wallet เครดิตเข้าทันที ส่วน PromptPay และโอนธนาคาร เครดิตจะเข้าบัญชีอัตโนมัติเมื่อยืนยันยอดชำระแล้ว ดูสถานะคำสั่งซื้อได้ที่ xman4289.com และดูยอดเครดิตได้ที่หน้าโปรไฟล์",
+    q: { th: "จ่ายแล้วเครดิตเข้าเมื่อไร?", en: "When do my credits arrive?" },
+    a: {
+      th: "ซื้อด้วย Wallet เครดิตเข้าทันที ส่วน PromptPay และโอนธนาคาร เครดิตจะเข้าบัญชีอัตโนมัติเมื่อยืนยันยอดชำระแล้ว ดูสถานะคำสั่งซื้อได้ที่ xman4289.com และดูยอดเครดิตได้ที่หน้าโปรไฟล์",
+      en: "With Wallet, instantly. With PromptPay or a bank transfer, credits are added automatically once the payment is confirmed. Track your order at xman4289.com and see your credit balance on your profile.",
+    },
   },
   {
-    q: "ถ้าสร้างงานไม่สำเร็จ เสียเครดิตไหม?",
-    a: "ไม่เสียครับ งานที่ล้มเหลวหรือหมดเวลา ระบบคืนเครดิตให้อัตโนมัติ ดูรายการคืนได้ในประวัติเครดิต",
+    q: { th: "ถ้าสร้างงานไม่สำเร็จ เสียเครดิตไหม?", en: "Do I lose credits if a creation fails?" },
+    a: {
+      th: "ไม่เสียครับ งานที่ล้มเหลวหรือหมดเวลา ระบบคืนเครดิตให้อัตโนมัติ ดูรายการคืนได้ในประวัติเครดิต",
+      en: "No. When a job fails or times out, your credits are refunded automatically. You can see every refund in your credit history.",
+    },
   },
   {
-    q: "เครดิตใช้กับอะไรได้บ้าง?",
-    a: "ทุกโมเดลในสตูดิโอ ทั้งภาพ วิดีโอ เพลง พากย์ทับคลิป และ 3D รวมถึงโหมดหนัง/MV และ API สำหรับนักพัฒนา แต่ละโมเดลใช้เครดิตต่างกัน ดูได้จากตารางด้านบนและในหน้าสตูดิโอก่อนกดสร้าง",
+    q: { th: "เครดิตใช้กับอะไรได้บ้าง?", en: "What can I use credits for?" },
+    a: {
+      th: "ทุกโมเดลในสตูดิโอ ทั้งภาพ วิดีโอ เพลง พากย์ทับคลิป และ 3D รวมถึงโหมดหนัง/MV และ API สำหรับนักพัฒนา แต่ละโมเดลใช้เครดิตต่างกัน ดูได้จากตารางด้านบนและในหน้าสตูดิโอก่อนกดสร้าง",
+      en: "Every model in the Studio: images, video, music, dubbing and 3D, plus Movie/MV mode and the developer API. Each model uses a different number of credits; see the table above, and the Studio shows the price before you create.",
+    },
   },
   {
-    q: "ต้องสมัครบัญชีใหม่ไหม?",
-    a: "ใช้บัญชีเดียวกับ XMAN Studio (xman4289.com) ถ้ายังไม่มี สมัครฟรีที่นั่น แล้วเข้าสู่ระบบที่นี่ด้วยอีเมลและรหัสผ่านเดียวกัน สมาชิกใหม่ได้รับเครดิตต้อนรับเมื่อเข้าใช้ครั้งแรก",
+    q: { th: "ต้องสมัครบัญชีใหม่ไหม?", en: "Do I need a new account?" },
+    a: {
+      th: "ใช้บัญชีเดียวกับ XMAN Studio (xman4289.com) ถ้ายังไม่มี สมัครฟรีที่นั่น แล้วเข้าสู่ระบบที่นี่ด้วยอีเมลและรหัสผ่านเดียวกัน สมาชิกใหม่ได้รับเครดิตต้อนรับเมื่อเข้าใช้ครั้งแรก",
+      en: "No. You use the same account as XMAN Studio (xman4289.com). If you don't have one yet, sign up there for free, then sign in here with the same email and password. New members get welcome credits on their first visit.",
+    },
   },
 ];
 
 export default function PricingPage() {
+  const t = useT();
+  const { locale } = useLocale();
+  const fmt = (n: number) => fmtNum(n, locale);
   const [currency, setCurrency] = useState<"thb" | "usd">("thb");
   const [packages, setPackages] = useState<Package[]>([]);
   const [models, setModels] = useState<Model[]>([]);
@@ -243,10 +272,12 @@ export default function PricingPage() {
       .map(k => ({
         key: k,
         ...CATEGORY_INFO[k],
-        range: groups[k].min === groups[k].max ? fmt(groups[k].min) : `${fmt(groups[k].min)}–${fmt(groups[k].max)}`,
+        range: groups[k].min === groups[k].max
+          ? fmtNum(groups[k].min, locale)
+          : `${fmtNum(groups[k].min, locale)}–${fmtNum(groups[k].max, locale)}`,
         names: groups[k].names.join(" · "),
       }));
-  }, [models]);
+  }, [models, locale]);
 
   const paid = packages
     .map((p, i) => ({ p, i }))
@@ -257,7 +288,7 @@ export default function PricingPage() {
   const selectedPkg = packages.find(p => p.slug === selected && priceOf(p) > 0) ?? null;
 
   const priceLabel = (p: Package) =>
-    currency === "thb" ? `฿${fmt(priceOf(p))}` : `$${Number(p.priceUsd || 0).toFixed(2)}`;
+    currency === "thb" ? formatThb(Math.round(priceOf(p)), locale) : `$${Number(p.priceUsd || 0).toFixed(2)}`;
   const perCreditLabel = (p: Package) => {
     const per = currency === "thb"
       ? pricePerCredit(priceOf(p), totalCredits(p))
@@ -288,7 +319,7 @@ export default function PricingPage() {
     // function containing `finally` and silently gives up on the **whole**
     // component, costing this page its auto-memoization and turning off every
     // compiler-based lint rule for the file, with no diagnostic to say so.
-    const result = await purchasePackage(pkg.slug, key);
+    const result = await purchasePackage(pkg.slug, key, t);
     inFlight.current = false;
     setBuying(null);
     setConfirming(null);
@@ -298,10 +329,16 @@ export default function PricingPage() {
       return;
     }
     if (result.status === "duplicate") {
-      setNotice({ ok: true, text: "รายการนี้ถูกดำเนินการไปแล้ว" });
+      setNotice({ ok: true, text: t("รายการนี้ถูกดำเนินการไปแล้ว", "This purchase has already gone through.") });
       return;
     }
-    setNotice({ ok: true, text: `ซื้อ ${pkg.name} สำเร็จ! ยอดเครดิตคงเหลือ ${fmt(Number(result.credits))} เครดิต` });
+    setNotice({
+      ok: true,
+      text: t(
+        `ซื้อ ${pkg.name} สำเร็จ! ยอดเครดิตคงเหลือ ${fmt(Number(result.credits))} เครดิต`,
+        `${packageLabel(pkg.name, locale)} purchased! Your balance is now ${formatCredits(Math.round(Number(result.credits)), locale)}.`,
+      ),
+    });
     setWallet(w => (w ? { ...w, balance: result.walletBalance, credits: result.credits } : w));
   };
 
@@ -318,33 +355,36 @@ export default function PricingPage() {
     <div className="prc-root">
       <PageHero
         image="/pricing-art/hero-v1.webp"
-        eyebrow="· แพ็กเกจเครดิต X-DREAMER"
-        title="ปลดล็อกพลังสร้างสรรค์"
-        emphasis="ระดับพรีเมียม"
+        eyebrow={t("· แพ็กเกจเครดิต X-DREAMER", "· X-DREAMER credit packages")}
+        title={t("ปลดล็อกพลังสร้างสรรค์", "Unlock premium")}
+        emphasis={t("ระดับพรีเมียม", "creative power")}
         hue={315}
         objectPosition="72% center"
-        sub="เครดิตเดียว ใช้ได้ทุกโมเดล ทั้งภาพ วิดีโอ เพลง และ 3D — จ่ายครั้งเดียว ไม่มีวันหมดอายุ งานไหนสร้างไม่สำเร็จ คืนเครดิตอัตโนมัติ"
+        sub={t(
+          "เครดิตเดียว ใช้ได้ทุกโมเดล ทั้งภาพ วิดีโอ เพลง และ 3D — จ่ายครั้งเดียว ไม่มีวันหมดอายุ งานไหนสร้างไม่สำเร็จ คืนเครดิตอัตโนมัติ",
+          "One credit balance for every model: images, video, music and 3D. Pay once, never expires, and any creation that fails is refunded automatically.",
+        )}
       >
         <div className="prc-hero-row">
-          <a href="#packages" className="prc-btn prc-btn-gold prc-btn-inline">ดูแพ็กเกจ</a>
+          <a href="#packages" className="prc-btn prc-btn-gold prc-btn-inline">{t("ดูแพ็กเกจ", "See packages")}</a>
           {wallet ? (
             <span className="prc-chip prc-chip-strong">
-              <span className="prc-dot" /> เครดิตของคุณ <b>{fmt(wallet.credits)}</b>
-              {wallet.hasWallet && <> · Wallet <b>฿{fmt(wallet.balance)}</b></>}
+              <span className="prc-dot" /> {t("เครดิตของคุณ", "Your credits")} <b>{fmt(wallet.credits)}</b>
+              {wallet.hasWallet && <> · Wallet <b>{formatThb(Math.round(wallet.balance), locale)}</b></>}
             </span>
           ) : (
-            <Link href="/login?callbackUrl=%2Fpricing" className="prc-btn prc-btn-glass prc-btn-inline">เข้าสู่ระบบ</Link>
+            <Link href="/login?callbackUrl=%2Fpricing" className="prc-btn prc-btn-glass prc-btn-inline">{t("เข้าสู่ระบบ", "Sign in")}</Link>
           )}
         </div>
       </PageHero>
 
       <div className="prc-wrap" data-bar={selectedPkg ? "true" : undefined}>
         {/* Trust strip */}
-        <ul className="prc-trust" aria-label="จุดเด่น">
-          <li><span>∞</span>ไม่มีวันหมดอายุ</li>
-          <li><span>↺</span>สร้างไม่สำเร็จ คืนเครดิตอัตโนมัติ</li>
-          <li><span>◈</span>ชำระผ่าน XMAN Studio</li>
-          <li><span>✦</span>บัญชีเดียว ใช้ได้ทุกโมเดล</li>
+        <ul className="prc-trust" aria-label={t("จุดเด่น", "Highlights")}>
+          <li><span>∞</span>{t("ไม่มีวันหมดอายุ", "Never expires")}</li>
+          <li><span>↺</span>{t("สร้างไม่สำเร็จ คืนเครดิตอัตโนมัติ", "Failed creations refunded automatically")}</li>
+          <li><span>◈</span>{t("ชำระผ่าน XMAN Studio", "Pay through XMAN Studio")}</li>
+          <li><span>✦</span>{t("บัญชีเดียว ใช้ได้ทุกโมเดล", "One account, every model")}</li>
         </ul>
 
         {/* TPIX partner campaign: paying in coin lives on its own page, so this one stays simple */}
@@ -355,25 +395,38 @@ export default function PricingPage() {
           </span>
           <span className="prc-tpix-copy">
             <span className="prc-tpix-eyebrow">
-              แคมเปญพาร์ทเนอร์ · XMAN AI × TPIX Chain
-              {tpix && !tpix.canBuy && <em>เปิดเร็ว ๆ นี้</em>}
+              {t("แคมเปญพาร์ทเนอร์", "Partner campaign")} · XMAN AI × TPIX Chain
+              {tpix && !tpix.canBuy && <em>{t("เปิดเร็ว ๆ นี้", "Coming soon")}</em>}
             </span>
             <b>
-              จ่ายด้วยเหรียญ <span className="prc-tpix-grad">TPIX</span>
-              {tpixOff > 0 && <> <span className="prc-tpix-nw">ลดทันที <span className="prc-tpix-grad">{tpixOff}%</span></span></>}
+              {t("จ่ายด้วยเหรียญ", "Pay with")} <span className="prc-tpix-grad">TPIX</span>
+              {tpixOff > 0 && (
+                <>
+                  {" "}
+                  {t(
+                    <span className="prc-tpix-nw">ลดทันที <span className="prc-tpix-grad">{tpixOff}%</span></span>,
+                    <span className="prc-tpix-nw"><span className="prc-tpix-grad">{tpixOff}%</span> off instantly</span>,
+                  )}
+                </>
+              )}
             </b>
-            <span className="prc-tpix-sub">ทุกแพ็กเกจ · เชื่อมกระเป๋าแล้วจ่ายบน TPIX Chain · ค่าแก๊ส 0 · เครดิตเข้าอัตโนมัติ</span>
+            <span className="prc-tpix-sub">
+              {t(
+                "ทุกแพ็กเกจ · เชื่อมกระเป๋าแล้วจ่ายบน TPIX Chain · ค่าแก๊ส 0 · เครดิตเข้าอัตโนมัติ",
+                "Every package · Connect your wallet and pay on TPIX Chain · Zero gas fees · Credits arrive automatically",
+              )}
+            </span>
           </span>
-          <span className="prc-tpix-cta">ซื้อด้วย TPIX <i aria-hidden="true">→</i></span>
+          <span className="prc-tpix-cta">{t("ซื้อด้วย TPIX", "Buy with TPIX")} <i aria-hidden="true">→</i></span>
         </Link>
 
         {/* Section head + currency */}
         <div className="prc-head" id="packages">
           <div>
-            <div className="prc-eyebrow">เลือกระดับของคุณ</div>
-            <h2 className="prc-h2">แพ็กเกจ<span className="prc-gold-text">เครดิต</span></h2>
+            <div className="prc-eyebrow">{t("เลือกระดับของคุณ", "Choose your tier")}</div>
+            <h2 className="prc-h2">{t(<>แพ็กเกจ<span className="prc-gold-text">เครดิต</span></>, <>Credit <span className="prc-gold-text">packages</span></>)}</h2>
           </div>
-          <div className="prc-toggle" role="group" aria-label="สกุลเงิน">
+          <div className="prc-toggle" role="group" aria-label={t("สกุลเงิน", "Currency")}>
             {([["thb", "฿ THB"], ["usd", "$ USD"]] as const).map(([key, label]) => (
               <button key={key} type="button" aria-pressed={currency === key}
                 className={currency === key ? "on" : undefined} onClick={() => setCurrency(key)}>{label}</button>
@@ -381,7 +434,7 @@ export default function PricingPage() {
           </div>
         </div>
         {currency === "usd" && (
-          <p className="prc-note">ราคา USD แสดงเพื่อเทียบเท่านั้น การชำระเงินจริงเรียกเก็บเป็นบาท</p>
+          <p className="prc-note">{t("ราคา USD แสดงเพื่อเทียบเท่านั้น การชำระเงินจริงเรียกเก็บเป็นบาท", "USD prices are for comparison only. You are charged in Thai baht.")}</p>
         )}
 
         {/* Packages */}
@@ -391,9 +444,13 @@ export default function PricingPage() {
           </div>
         ) : packages.length === 0 ? (
           <div className="prc-empty">
-            <p>{loadFailed ? "โหลดแพ็กเกจไม่สำเร็จ กรุณาลองใหม่อีกครั้ง" : "ยังไม่มีแพ็กเกจเปิดขายในขณะนี้"}</p>
+            <p>
+              {loadFailed
+                ? t("โหลดแพ็กเกจไม่สำเร็จ กรุณาลองใหม่อีกครั้ง", "Couldn't load the packages. Please try again.")
+                : t("ยังไม่มีแพ็กเกจเปิดขายในขณะนี้", "No packages are on sale right now.")}
+            </p>
             <button type="button" className="prc-btn prc-btn-glass prc-btn-inline"
-              onClick={() => { setLoading(true); setLoadFailed(false); setReloadKey(k => k + 1); }}>โหลดใหม่</button>
+              onClick={() => { setLoading(true); setLoadFailed(false); setReloadKey(k => k + 1); }}>{t("โหลดใหม่", "Reload")}</button>
           </div>
         ) : (
           <>
@@ -404,7 +461,7 @@ export default function PricingPage() {
                 const isSel = selected === pkg.slug;
                 const total = totalCredits(pkg);
                 const per = perCreditLabel(pkg);
-                const features = extraFeatures(parseFeatures(pkg.features), hasEstimates);
+                const features = packageFeatures(extraFeatures(parseFeatures(pkg.features), hasEstimates), locale);
                 const ws = walletState(pkg);
                 return (
                   <article
@@ -425,21 +482,21 @@ export default function PricingPage() {
                       </>
                     )}
                     {(pkg.badge || isRec) && (
-                      <div className="prc-ribbon">{isRec ? "✦ " : ""}{pkg.badge || "แนะนำ"}</div>
+                      <div className="prc-ribbon">{isRec ? "✦ " : ""}{packageLabel(pkg.badge, locale) || t("แนะนำ", "Recommended")}</div>
                     )}
-                    {isSel && <div className="prc-check" aria-hidden>✓ เลือกแล้ว</div>}
+                    {isSel && <div className="prc-check" aria-hidden>✓ {t("เลือกแล้ว", "Selected")}</div>}
 
                     <div className="prc-emblem">
                       <Image src={`/pricing-art/tier-${tier + 1}.webp`} alt="" width={132} height={132} sizes="132px" />
                     </div>
-                    <h3 className="prc-name">{pkg.name}</h3>
+                    <h3 className="prc-name">{packageLabel(pkg.name, locale)}</h3>
 
                     <div className="prc-credits">
                       <b>{fmt(total)}</b>
-                      <span>เครดิต</span>
+                      <span>{t("เครดิต", total === 1 ? "credit" : "credits")}</span>
                     </div>
                     {pkg.bonusCredits > 0 ? (
-                      <div className="prc-bonus">{fmt(pkg.credits)} + โบนัส {fmt(pkg.bonusCredits)}</div>
+                      <div className="prc-bonus">{t(`${fmt(pkg.credits)} + โบนัส ${fmt(pkg.bonusCredits)}`, `${fmt(pkg.credits)} + ${fmt(pkg.bonusCredits)} bonus`)}</div>
                     ) : (
                       // Keeps the prices of every card on one line.
                       <div className="prc-bonus prc-bonus-none" aria-hidden>&nbsp;</div>
@@ -447,23 +504,26 @@ export default function PricingPage() {
 
                     <div className="prc-price">
                       <b>{priceLabel(pkg)}</b>
-                      <span>จ่ายครั้งเดียว</span>
+                      <span>{t("จ่ายครั้งเดียว", "one-time")}</span>
                     </div>
-                    {per && <div className="prc-per">เฉลี่ย {per} ต่อเครดิต</div>}
+                    {per && <div className="prc-per">{t(`เฉลี่ย ${per} ต่อเครดิต`, `${per} per credit`)}</div>}
 
                     <div className="prc-rule" aria-hidden><span>◆</span></div>
 
                     {hasEstimates && (
                       <div className="prc-yield">
-                        <div className="prc-yield-h">ใช้ได้ประมาณ</div>
-                        {WORK.filter(w => costs[w.kind]).map(w => (
-                          <div key={w.kind} className="prc-yield-row">
-                            <Image src={w.icon} alt="" width={26} height={26} />
-                            <span>{w.label}</span>
-                            <b>≈ {fmt(howMany(total, costs[w.kind]!))}</b>
-                            <em>{w.unit}</em>
-                          </div>
-                        ))}
+                        <div className="prc-yield-h">{t("ใช้ได้ประมาณ", "Enough for about")}</div>
+                        {WORK.filter(w => costs[w.kind]).map(w => {
+                          const n = howMany(total, costs[w.kind]!);
+                          return (
+                            <div key={w.kind} className="prc-yield-row">
+                              <Image src={w.icon} alt="" width={26} height={26} />
+                              <span>{t(w.label)}</span>
+                              <b>≈ {fmt(n)}</b>
+                              <em>{workUnit(w.unit, n, t)}</em>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
 
@@ -477,19 +537,23 @@ export default function PricingPage() {
                       <a href={checkoutHref(pkg.slug)}
                         className={`prc-btn ${isRec || isSel ? "prc-btn-gold" : "prc-btn-glass"}`}
                         onClick={e => e.stopPropagation()}>
-                        ซื้อแพ็กเกจนี้ <span aria-hidden>→</span>
+                        {t("ซื้อแพ็กเกจนี้", "Buy this package")} <span aria-hidden>→</span>
                       </a>
                       {ws === "short" && (
                         <a href={`${XMAN_URL}/wallet/topup`} target="_blank" rel="noopener noreferrer"
                           className="prc-btn prc-btn-line" onClick={e => e.stopPropagation()}>
-                          Wallet ไม่พอ · เติมเงิน
+                          {t("Wallet ไม่พอ · เติมเงิน", "Wallet too low · Top up")}
                         </a>
                       )}
                       {(ws === "ok" || ws === "suspended") && (
                         <button type="button" className="prc-btn prc-btn-line"
                           disabled={ws === "suspended" || buying !== null}
                           onClick={e => { e.stopPropagation(); setSelected(pkg.slug); askWalletPurchase(pkg); }}>
-                          {buying === pkg.slug ? "กำลังซื้อ…" : ws === "suspended" ? "Wallet ถูกระงับ" : `ซื้อด้วย Wallet ฿${fmt(priceOf(pkg))}`}
+                          {buying === pkg.slug
+                            ? t("กำลังซื้อ…", "Buying…")
+                            : ws === "suspended"
+                              ? t("Wallet ถูกระงับ", "Wallet suspended")
+                              : t(`ซื้อด้วย Wallet ${formatThb(Math.round(priceOf(pkg)), locale)}`, `Buy with Wallet ${formatThb(Math.round(priceOf(pkg)), locale)}`)}
                         </button>
                       )}
                     </div>
@@ -499,26 +563,27 @@ export default function PricingPage() {
             </div>
 
             {free.map(({ p: pkg, i }) => {
-              const features = extraFeatures(parseFeatures(pkg.features), hasEstimates);
+              const features = packageFeatures(extraFeatures(parseFeatures(pkg.features), hasEstimates), locale);
               return (
                 <div key={pkg.id} className="prc-trial" style={{ "--h": TIER_HUE[emblems[i]] } as CSSProperties}>
                   <Image src={`/pricing-art/tier-${emblems[i] + 1}.webp`} alt="" width={76} height={76} className="prc-trial-emblem" />
                   <div className="prc-trial-copy">
                     <div className="prc-trial-title">
-                      {pkg.name} <span className="prc-gold-text">{fmt(totalCredits(pkg))} เครดิต</span>
-                      {pkg.badge && <span className="prc-trial-badge">{pkg.badge}</span>}
+                      {packageLabel(pkg.name, locale)}{" "}
+                      <span className="prc-gold-text">{t(`${fmt(totalCredits(pkg))} เครดิต`, formatCredits(Math.round(totalCredits(pkg)), locale))}</span>
+                      {pkg.badge && <span className="prc-trial-badge">{packageLabel(pkg.badge, locale)}</span>}
                     </div>
                     <div className="prc-trial-sub">
-                      {features.length ? features.join(" · ") : "ลองสร้างงานได้ทันที ไม่ต้องผูกบัตร"}
+                      {features.length ? features.join(" · ") : t("ลองสร้างงานได้ทันที ไม่ต้องผูกบัตร", "Start creating right away, no card needed")}
                     </div>
                   </div>
                   <div className="prc-trial-cta">
                     <Link href={wallet ? "/generate" : "/login?callbackUrl=%2Fgenerate"} className="prc-btn prc-btn-glass prc-btn-inline">
-                      เริ่มใช้ฟรี →
+                      {t("เริ่มใช้ฟรี →", "Start free →")}
                     </Link>
                     {!wallet && (
                       <a href={`${XMAN_URL}/register`} target="_blank" rel="noopener noreferrer" className="prc-link">
-                        ยังไม่มีบัญชี? สมัครฟรี
+                        {t("ยังไม่มีบัญชี? สมัครฟรี", "No account yet? Sign up free")}
                       </a>
                     )}
                   </div>
@@ -528,9 +593,15 @@ export default function PricingPage() {
 
             {hasEstimates && (
               <p className="prc-note">
-                จำนวนภาพ/คลิป/เพลงเป็นค่าประมาณ คิดจากราคากลางของโมเดลที่เปิดให้ใช้ตอนนี้
-                ({WORK.filter(w => costs[w.kind]).map(w => `${w.label} ${fmt(costs[w.kind]!)} เครดิต`).join(" · ")})
-                — งานที่ยาวขึ้นหรือโมเดลระดับพรีเมียมใช้เครดิตมากกว่านี้
+                {t(
+                  "จำนวนภาพ/คลิป/เพลงเป็นค่าประมาณ คิดจากราคากลางของโมเดลที่เปิดให้ใช้ตอนนี้",
+                  "Image, clip and song counts are estimates, based on the typical price of the models open right now",
+                )}{" "}
+                ({WORK.filter(w => costs[w.kind]).map(w => t(
+                  `${w.label.th} ${fmt(costs[w.kind]!)} เครดิต`,
+                  `${formatCredits(Math.round(costs[w.kind]!), locale)} per ${w.unit.en}`,
+                )).join(" · ")}){" "}
+                {t("— งานที่ยาวขึ้นหรือโมเดลระดับพรีเมียมใช้เครดิตมากกว่านี้", "— longer work and premium models use more.")}
               </p>
             )}
           </>
@@ -538,23 +609,28 @@ export default function PricingPage() {
 
         {/* How it works */}
         <section className="prc-section">
-          <div className="prc-eyebrow">ซื้อง่าย 3 ขั้นตอน</div>
-          <h2 className="prc-h2">จากเลือกแพ็กเกจ <span className="prc-gold-text">ถึงงานชิ้นแรก</span></h2>
+          <div className="prc-eyebrow">{t("ซื้อง่าย 3 ขั้นตอน", "3 easy steps")}</div>
+          <h2 className="prc-h2">
+            {t(
+              <>จากเลือกแพ็กเกจ <span className="prc-gold-text">ถึงงานชิ้นแรก</span></>,
+              <>From package <span className="prc-gold-text">to first creation</span></>,
+            )}
+          </h2>
           <ol className="prc-steps">
             <li>
               <b>1</b>
-              <h3>เลือกแพ็กเกจ</h3>
-              <p>เลือกระดับที่เหมาะกับงานของคุณ เครดิตจากทุกแพ็กเกจรวมเป็นยอดเดียว</p>
+              <h3>{t("เลือกแพ็กเกจ", "Choose a package")}</h3>
+              <p>{t("เลือกระดับที่เหมาะกับงานของคุณ เครดิตจากทุกแพ็กเกจรวมเป็นยอดเดียว", "Pick the tier that fits your work. Credits from every package add up to one balance.")}</p>
             </li>
             <li>
               <b>2</b>
-              <h3>ชำระเงิน</h3>
-              <p>PromptPay หรือโอนผ่านธนาคารที่ XMAN Studio หรือหักจาก Wallet ได้ทันทีบนหน้านี้</p>
+              <h3>{t("ชำระเงิน", "Pay")}</h3>
+              <p>{t("PromptPay หรือโอนผ่านธนาคารที่ XMAN Studio หรือหักจาก Wallet ได้ทันทีบนหน้านี้", "PromptPay or a bank transfer at XMAN Studio, or pay from your Wallet right here on this page.")}</p>
             </li>
             <li>
               <b>3</b>
-              <h3>เริ่มสร้างงาน</h3>
-              <p>เครดิตเข้าบัญชีอัตโนมัติเมื่อยืนยันยอด แล้วเปิดสตูดิโอสร้างภาพ วิดีโอ หรือเพลงได้เลย</p>
+              <h3>{t("เริ่มสร้างงาน", "Start creating")}</h3>
+              <p>{t("เครดิตเข้าบัญชีอัตโนมัติเมื่อยืนยันยอด แล้วเปิดสตูดิโอสร้างภาพ วิดีโอ หรือเพลงได้เลย", "Credits are added automatically once your payment is confirmed. Then open the Studio and create images, video or music.")}</p>
             </li>
           </ol>
         </section>
@@ -562,17 +638,22 @@ export default function PricingPage() {
         {/* Credit costs */}
         {creditTable.length > 0 && (
           <section className="prc-section">
-            <div className="prc-eyebrow">ตารางเครดิต</div>
-            <h2 className="prc-h2">แต่ละงานใช้<span className="prc-gold-text">กี่เครดิต</span></h2>
-            <p className="prc-lead">ราคาต่อครั้งของโมเดลที่เปิดให้ใช้ตอนนี้ — เห็นราคาจริงอีกครั้งในสตูดิโอก่อนกดสร้างทุกครั้ง</p>
+            <div className="prc-eyebrow">{t("ตารางเครดิต", "Credit costs")}</div>
+            <h2 className="prc-h2">
+              {t(
+                <>แต่ละงานใช้<span className="prc-gold-text">กี่เครดิต</span></>,
+                <>How many credits <span className="prc-gold-text">each creation uses</span></>,
+              )}
+            </h2>
+            <p className="prc-lead">{t("ราคาต่อครั้งของโมเดลที่เปิดให้ใช้ตอนนี้ — เห็นราคาจริงอีกครั้งในสตูดิโอก่อนกดสร้างทุกครั้ง", "The price per creation of the models open right now. The Studio always shows the exact price again before you create.")}</p>
             <div className="prc-costs">
               {creditTable.map(row => (
                 <div key={row.key} className="prc-cost">
                   <Image src={row.icon} alt="" width={44} height={44} />
                   <div className="prc-cost-body">
                     <div className="prc-cost-top">
-                      <h3>{row.label}</h3>
-                      <span>{row.range} <small>เครดิต/ครั้ง</small></span>
+                      <h3>{t(row.label)}</h3>
+                      <span>{row.range} <small>{t("เครดิต/ครั้ง", "credits each")}</small></span>
                     </div>
                     <p>{row.names}</p>
                   </div>
@@ -584,103 +665,136 @@ export default function PricingPage() {
 
         {/* Trust */}
         <section className="prc-section">
-          <div className="prc-eyebrow">มั่นใจได้ทุกการซื้อ</div>
-          <h2 className="prc-h2">ซื้อครั้งเดียว <span className="prc-gold-text">ใช้ได้เต็มที่</span></h2>
+          <div className="prc-eyebrow">{t("มั่นใจได้ทุกการซื้อ", "Buy with confidence")}</div>
+          <h2 className="prc-h2">
+            {t(
+              <>ซื้อครั้งเดียว <span className="prc-gold-text">ใช้ได้เต็มที่</span></>,
+              <>Buy once, <span className="prc-gold-text">use it fully</span></>,
+            )}
+          </h2>
           <div className="prc-promises">
             <div>
               <span>∞</span>
-              <h3>ไม่มีวันหมดอายุ</h3>
-              <p>เครดิตอยู่ในบัญชีจนกว่าจะใช้ ไม่มีรอบบิล ไม่มีการตัดเงินอัตโนมัติ</p>
+              <h3>{t("ไม่มีวันหมดอายุ", "Never expires")}</h3>
+              <p>{t("เครดิตอยู่ในบัญชีจนกว่าจะใช้ ไม่มีรอบบิล ไม่มีการตัดเงินอัตโนมัติ", "Credits stay in your account until you use them. No billing cycle, no automatic charges.")}</p>
             </div>
             <div>
               <span>↺</span>
-              <h3>คืนเครดิตอัตโนมัติ</h3>
-              <p>งานที่ล้มเหลวหรือหมดเวลา ระบบคืนเครดิตทันที ไม่ต้องแจ้งทีมงาน</p>
+              <h3>{t("คืนเครดิตอัตโนมัติ", "Automatic refunds")}</h3>
+              <p>{t("งานที่ล้มเหลวหรือหมดเวลา ระบบคืนเครดิตทันที ไม่ต้องแจ้งทีมงาน", "When a job fails or times out, your credits come back at once. No need to contact us.")}</p>
             </div>
             <div>
               <span>◈</span>
-              <h3>ชำระผ่าน XMAN Studio</h3>
-              <p>คำสั่งซื้อและการยืนยันยอดชำระทั้งหมดอยู่บนระบบของ xman4289.com</p>
+              <h3>{t("ชำระผ่าน XMAN Studio", "Pay through XMAN Studio")}</h3>
+              <p>{t("คำสั่งซื้อและการยืนยันยอดชำระทั้งหมดอยู่บนระบบของ xman4289.com", "Every order and payment confirmation runs on xman4289.com.")}</p>
             </div>
             <div>
               <span>✦</span>
-              <h3>บัญชีเดียวกัน</h3>
-              <p>ใช้บัญชี XMAN Studio เข้าได้ทันที เครดิตใช้ได้ทั้งสตูดิโอ โหมดหนัง/MV และ API</p>
+              <h3>{t("บัญชีเดียวกัน", "One account")}</h3>
+              <p>{t("ใช้บัญชี XMAN Studio เข้าได้ทันที เครดิตใช้ได้ทั้งสตูดิโอ โหมดหนัง/MV และ API", "Sign in with your XMAN Studio account. Credits work across the Studio, Movie/MV mode and the API.")}</p>
             </div>
           </div>
 
           <div className="prc-wallet">
             <Image src="/pricing-art/tier-2.webp" alt="" width={64} height={64} />
             <div>
-              <h3>จ่ายด้วย Wallet ของ XMAN Studio</h3>
+              <h3>{t("จ่ายด้วย Wallet ของ XMAN Studio", "Pay with your XMAN Studio Wallet")}</h3>
               {wallet ? (
                 <p>
                   {wallet.hasWallet
-                    ? <>ยอด Wallet คงเหลือ <b>฿{fmt(wallet.balance)}</b> · เครดิต AI <b>{fmt(wallet.credits)}</b></>
-                    : <>บัญชีนี้ยังไม่มี Wallet · เครดิต AI <b>{fmt(wallet.credits)}</b></>}
-                  {wallet.hasWallet && !wallet.isActive && <span className="prc-warn"> · Wallet ถูกระงับ</span>}
-                  <br />กด “ซื้อด้วย Wallet” ที่แพ็กเกจ เพื่อหักเงินและรับเครดิตทันที
+                    ? t(
+                      <>ยอด Wallet คงเหลือ <b>{formatThb(Math.round(wallet.balance), locale)}</b> · เครดิต AI <b>{fmt(wallet.credits)}</b></>,
+                      <>Wallet balance <b>{formatThb(Math.round(wallet.balance), locale)}</b> · AI credits <b>{fmt(wallet.credits)}</b></>,
+                    )
+                    : t(
+                      <>บัญชีนี้ยังไม่มี Wallet · เครดิต AI <b>{fmt(wallet.credits)}</b></>,
+                      <>This account has no Wallet yet · AI credits <b>{fmt(wallet.credits)}</b></>,
+                    )}
+                  {wallet.hasWallet && !wallet.isActive && <span className="prc-warn"> · {t("Wallet ถูกระงับ", "Wallet suspended")}</span>}
+                  <br />
+                  {t("กด “ซื้อด้วย Wallet” ที่แพ็กเกจ เพื่อหักเงินและรับเครดิตทันที", "Tap “Buy with Wallet” on a package to pay and get your credits at once.")}
                 </p>
               ) : (
                 <p>
-                  เติมเงินเข้า Wallet ที่ <a href={XMAN_URL} target="_blank" rel="noopener noreferrer">xman4289.com</a> แล้ว{" "}
-                  <Link href="/login?callbackUrl=%2Fpricing">เข้าสู่ระบบ</Link> เพื่อซื้อเครดิตได้ทันทีบนหน้านี้
+                  {t(
+                    <>
+                      เติมเงินเข้า Wallet ที่ <a href={XMAN_URL} target="_blank" rel="noopener noreferrer">xman4289.com</a> แล้ว{" "}
+                      <Link href="/login?callbackUrl=%2Fpricing">เข้าสู่ระบบ</Link> เพื่อซื้อเครดิตได้ทันทีบนหน้านี้
+                    </>,
+                    <>
+                      Top up your Wallet at <a href={XMAN_URL} target="_blank" rel="noopener noreferrer">xman4289.com</a>, then{" "}
+                      <Link href="/login?callbackUrl=%2Fpricing">sign in</Link> to buy credits right here.
+                    </>,
+                  )}
                 </p>
               )}
             </div>
             <a href={`${XMAN_URL}/wallet/topup`} target="_blank" rel="noopener noreferrer" className="prc-btn prc-btn-glass prc-btn-inline">
-              เติมเงิน Wallet
+              {t("เติมเงิน Wallet", "Top up Wallet")}
             </a>
           </div>
         </section>
 
         {/* FAQ */}
         <section className="prc-section">
-          <div className="prc-eyebrow">คำถามที่พบบ่อย</div>
-          <h2 className="prc-h2">มีคำถาม<span className="prc-gold-text">ก่อนซื้อ?</span></h2>
+          <div className="prc-eyebrow">{t("คำถามที่พบบ่อย", "FAQ")}</div>
+          <h2 className="prc-h2">
+            {t(
+              <>มีคำถาม<span className="prc-gold-text">ก่อนซื้อ?</span></>,
+              <>Questions <span className="prc-gold-text">before you buy?</span></>,
+            )}
+          </h2>
           <div className="prc-faq">
             {FAQ.map((f, n) => (
-              <details key={f.q} open={n === 0}>
-                <summary>{f.q}</summary>
-                <p>{f.a}</p>
+              <details key={f.q.th} open={n === 0}>
+                <summary>{t(f.q)}</summary>
+                <p>{t(f.a)}</p>
               </details>
             ))}
           </div>
           <p className="prc-note">
-            ยังมีข้อสงสัย? <Link href="/contact">ติดต่อทีมงาน</Link> หรืออ่าน{" "}
-            <Link href="/terms">เงื่อนไขการใช้งาน</Link>
+            {t(
+              <>
+                ยังมีข้อสงสัย? <Link href="/contact">ติดต่อทีมงาน</Link> หรืออ่าน{" "}
+                <Link href="/terms">เงื่อนไขการใช้งาน</Link>
+              </>,
+              <>
+                Still have questions? <Link href="/contact">Contact us</Link> or read the{" "}
+                <Link href="/terms">terms of service</Link>.
+              </>,
+            )}
           </p>
         </section>
 
         {/* Closing CTA */}
         <section className="prc-final">
           <Image src="/pricing-art/tier-6.webp" alt="" width={120} height={120} className="prc-final-emblem" />
-          <h2>พร้อมสร้างผลงานชิ้นต่อไปแล้วหรือยัง?</h2>
-          <p>เลือกแพ็กเกจที่ใช่ แล้วเริ่มสร้างภาพ วิดีโอ และเพลงด้วย AI ระดับโลกได้ในไม่กี่นาที</p>
+          <h2>{t("พร้อมสร้างผลงานชิ้นต่อไปแล้วหรือยัง?", "Ready for your next creation?")}</h2>
+          <p>{t("เลือกแพ็กเกจที่ใช่ แล้วเริ่มสร้างภาพ วิดีโอ และเพลงด้วย AI ระดับโลกได้ในไม่กี่นาที", "Pick the right package and start creating images, video and music with world-class AI in minutes.")}</p>
           <div className="prc-final-row">
-            <a href="#packages" className="prc-btn prc-btn-gold prc-btn-inline">เลือกแพ็กเกจ</a>
-            <Link href="/generate" className="prc-btn prc-btn-glass prc-btn-inline">เปิดสตูดิโอ</Link>
+            <a href="#packages" className="prc-btn prc-btn-gold prc-btn-inline">{t("เลือกแพ็กเกจ", "Choose a package")}</a>
+            <Link href="/generate" className="prc-btn prc-btn-glass prc-btn-inline">{t("เปิดสตูดิโอ", "Open Studio")}</Link>
           </div>
         </section>
       </div>
 
       {/* Phone: the chosen package stays in reach while scrolling */}
       {selectedPkg && (
-        <div className="prc-bar" role="region" aria-label="แพ็กเกจที่เลือก">
+        <div className="prc-bar" role="region" aria-label={t("แพ็กเกจที่เลือก", "Selected package")}>
           <Image src={`/pricing-art/tier-${emblems[packages.indexOf(selectedPkg)] + 1}.webp`} alt="" width={44} height={44} />
           <div className="prc-bar-copy">
-            <b>{selectedPkg.name}</b>
-            <span>{fmt(totalCredits(selectedPkg))} เครดิต · {priceLabel(selectedPkg)}</span>
+            <b>{packageLabel(selectedPkg.name, locale)}</b>
+            <span>{t(`${fmt(totalCredits(selectedPkg))} เครดิต`, formatCredits(Math.round(totalCredits(selectedPkg)), locale))} · {priceLabel(selectedPkg)}</span>
           </div>
-          <a href={checkoutHref(selectedPkg.slug)} className="prc-btn prc-btn-gold prc-btn-inline">ซื้อเลย</a>
-          <button type="button" className="prc-bar-x" aria-label="ปิด" onClick={() => setSelected(null)}>×</button>
+          <a href={checkoutHref(selectedPkg.slug)} className="prc-btn prc-btn-gold prc-btn-inline">{t("ซื้อเลย", "Buy now")}</a>
+          <button type="button" className="prc-bar-x" aria-label={t("ปิด", "Close")} onClick={() => setSelected(null)}>×</button>
         </div>
       )}
 
       {notice && (
         <div className="prc-toast" role="status" data-ok={notice.ok || undefined} data-bar={selectedPkg ? "true" : undefined}>
           <span>{notice.text}</span>
-          <button type="button" aria-label="ปิดข้อความ" onClick={() => setNotice(null)}>×</button>
+          <button type="button" aria-label={t("ปิดข้อความ", "Dismiss")} onClick={() => setNotice(null)}>×</button>
         </div>
       )}
 
@@ -689,17 +803,32 @@ export default function PricingPage() {
           <div className="prc-modal-card" role="dialog" aria-modal="true" aria-labelledby="prc-modal-title"
             onClick={e => e.stopPropagation()}>
             <Image src={`/pricing-art/tier-${emblems[packages.indexOf(confirming.pkg)] + 1}.webp`} alt="" width={96} height={96} className="prc-modal-emblem" />
-            <h3 id="prc-modal-title">ยืนยันซื้อด้วย Wallet</h3>
+            <h3 id="prc-modal-title">{t("ยืนยันซื้อด้วย Wallet", "Confirm Wallet purchase")}</h3>
             <dl>
-              <div><dt>แพ็กเกจ</dt><dd>{confirming.pkg.name}</dd></div>
-              <div><dt>เครดิตที่ได้รับ</dt><dd>{fmt(totalCredits(confirming.pkg))} เครดิต{confirming.pkg.bonusCredits > 0 && <small> (รวมโบนัส {fmt(confirming.pkg.bonusCredits)})</small>}</dd></div>
-              <div><dt>หักจาก Wallet</dt><dd className="prc-gold-text">฿{fmt(priceOf(confirming.pkg))}</dd></div>
-              {wallet && <div><dt>Wallet คงเหลือหลังซื้อ</dt><dd>฿{fmt(wallet.balance - priceOf(confirming.pkg))}</dd></div>}
+              <div><dt>{t("แพ็กเกจ", "Package")}</dt><dd>{packageLabel(confirming.pkg.name, locale)}</dd></div>
+              <div>
+                <dt>{t("เครดิตที่ได้รับ", "Credits you get")}</dt>
+                <dd>
+                  {t(`${fmt(totalCredits(confirming.pkg))} เครดิต`, formatCredits(Math.round(totalCredits(confirming.pkg)), locale))}
+                  {confirming.pkg.bonusCredits > 0 && (
+                    <small>{t(` (รวมโบนัส ${fmt(confirming.pkg.bonusCredits)})`, ` (incl. ${fmt(confirming.pkg.bonusCredits)} bonus)`)}</small>
+                  )}
+                </dd>
+              </div>
+              <div><dt>{t("หักจาก Wallet", "Paid from Wallet")}</dt><dd className="prc-gold-text">{formatThb(Math.round(priceOf(confirming.pkg)), locale)}</dd></div>
+              {wallet && (
+                <div>
+                  <dt>{t("Wallet คงเหลือหลังซื้อ", "Wallet after purchase")}</dt>
+                  <dd>{formatThb(Math.round(wallet.balance - priceOf(confirming.pkg)), locale)}</dd>
+                </div>
+              )}
             </dl>
             <div className="prc-modal-row">
-              <button type="button" className="prc-btn prc-btn-glass" disabled={buying !== null} onClick={() => setConfirming(null)}>ยกเลิก</button>
+              <button type="button" className="prc-btn prc-btn-glass" disabled={buying !== null} onClick={() => setConfirming(null)}>{t("ยกเลิก", "Cancel")}</button>
               <button type="button" className="prc-btn prc-btn-gold" autoFocus disabled={buying !== null} onClick={confirmWalletPurchase}>
-                {buying ? "กำลังซื้อ…" : `ยืนยัน ชำระ ฿${fmt(priceOf(confirming.pkg))}`}
+                {buying
+                  ? t("กำลังซื้อ…", "Buying…")
+                  : t(`ยืนยัน ชำระ ${formatThb(Math.round(priceOf(confirming.pkg)), locale)}`, `Confirm · pay ${formatThb(Math.round(priceOf(confirming.pkg)), locale)}`)}
               </button>
             </div>
           </div>

@@ -16,6 +16,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import type { Msg } from '@/lib/i18n/locale';
 
 export type ViewMode = 'textured' | 'clay' | 'wire' | 'normal';
 export type LightPreset = 'studio' | 'sunset' | 'neon';
@@ -35,7 +36,8 @@ export interface ModelStats {
 export type LoadResult =
   | { ok: true; stats: ModelStats }
   | { ok: false; aborted: true }
-  | { ok: false; aborted: false; error: string };
+  /** `error` is shown to the customer, so it comes in both languages. */
+  | { ok: false; aborted: false; error: Msg };
 
 /** The model's longest side, in scene units. Lights and shadows are set for it. */
 const FIT_SIZE = 2;
@@ -249,16 +251,20 @@ export class ModelStage {
     try {
       const res = await fetch(url, { signal: ctrl.signal });
       if (!res.ok) {
-        const error =
-          res.status === 410 ? 'ไฟล์โมเดลนี้หมดอายุและถูกลบแล้ว'
-          : res.status === 429 ? 'เปิดโมเดลบ่อยเกินไป กรุณารอสักครู่แล้วลองใหม่'
-          : 'โหลดไฟล์โมเดลไม่สำเร็จ';
+        const error: Msg =
+          res.status === 410 ? { th: 'ไฟล์โมเดลนี้หมดอายุและถูกลบแล้ว', en: 'This model file has expired and been deleted.' }
+          : res.status === 429 ? { th: 'เปิดโมเดลบ่อยเกินไป กรุณารอสักครู่แล้วลองใหม่', en: 'Too many models opened. Please wait a moment and try again.' }
+          : { th: 'โหลดไฟล์โมเดลไม่สำเร็จ', en: "Couldn't load the model file." };
         return { ok: false, aborted: false, error };
       }
       buffer = await res.arrayBuffer();
     } catch {
       if (ctrl.signal.aborted || seq !== this.loadSeq) return { ok: false, aborted: true };
-      return { ok: false, aborted: false, error: 'โหลดไฟล์โมเดลไม่สำเร็จ ตรวจสอบอินเทอร์เน็ตแล้วลองใหม่' };
+      return {
+        ok: false,
+        aborted: false,
+        error: { th: 'โหลดไฟล์โมเดลไม่สำเร็จ ตรวจสอบอินเทอร์เน็ตแล้วลองใหม่', en: "Couldn't load the model file. Check your connection and try again." },
+      };
     }
     if (seq !== this.loadSeq || this.disposed) return { ok: false, aborted: true };
 
@@ -267,7 +273,7 @@ export class ModelStage {
       root = (await new GLTFLoader().parseAsync(buffer, '')).scene;
     } catch {
       if (seq !== this.loadSeq || this.disposed) return { ok: false, aborted: true };
-      return { ok: false, aborted: false, error: 'ไฟล์โมเดลเสียหรือเปิดไม่ได้' };
+      return { ok: false, aborted: false, error: { th: 'ไฟล์โมเดลเสียหรือเปิดไม่ได้', en: 'The model file is damaged or cannot be opened.' } };
     }
     if (seq !== this.loadSeq || this.disposed) {
       this.disposeObject(root);

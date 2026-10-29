@@ -1,4 +1,7 @@
 import { getGpuProvider } from '@/lib/gpu';
+import { pick, type Locale, type Msg } from '@/lib/i18n/locale';
+import { readStoredMessage, registerStoredMsgs } from '@/lib/i18n/messages';
+import { modelDescription, modelName } from '@/lib/i18n/model-text';
 
 /**
  * How the services behind a model are shown to customers: not at all.
@@ -47,8 +50,14 @@ export function matchesModelId(modelId: string, wanted: string): boolean {
 }
 
 /** Rows whose stored copy describes the vendor rather than the model. */
-const PUBLIC_COPY: Record<string, { name: string; description: string }> = {
-  flux: { name: 'FLUX ฟรี', description: 'สร้างภาพฟรี • คิวและความละเอียดจำกัด • เหมาะลองไอเดียเร็ว ๆ' },
+const PUBLIC_COPY: Record<string, { name: Msg; description: Msg }> = {
+  flux: {
+    name: { th: 'FLUX ฟรี', en: 'FLUX Free' },
+    description: {
+      th: 'สร้างภาพฟรี • คิวและความละเอียดจำกัด • เหมาะลองไอเดียเร็ว ๆ',
+      en: 'Free pictures • limited queue and resolution • good for trying ideas quickly',
+    },
+  },
 };
 
 const VENDOR = String.raw`(?:kie(?:\.ai)?|fal(?:\.ai)?|replicate|pollinations|byteplus|simplepod|runpod|vast(?:\.ai)?|verda)`;
@@ -56,13 +65,23 @@ const VENDOR_TAG = new RegExp(String.raw`\s*\(\s*${VENDOR}\s*\)`, 'gi');
 const VIA_VENDOR = new RegExp(String.raw`\s*(?:ผ่าน|via|on|from)\s+${VENDOR}\b`, 'gi');
 const VENDOR_WORD = new RegExp(String.raw`\b${VENDOR}\b`, 'gi');
 
-export function publicModelName(modelId: string, name: string): string {
-  return PUBLIC_COPY[modelId]?.name ?? (name.replace(VENDOR_TAG, '').trim() || name);
+/** Free text that may carry a model's stored name ("FLUX Dev (fal) - image generation"), without the vendor tag. */
+export function withoutVendorTags(text: string): string {
+  return text.replace(VENDOR_TAG, '').replace(VIA_VENDOR, '');
 }
 
-export function publicModelDescription(modelId: string, description: string | null): string | null {
-  if (PUBLIC_COPY[modelId]) return PUBLIC_COPY[modelId].description;
-  return description === null ? null : description.replace(VIA_VENDOR, '').replace(VENDOR_TAG, '');
+/** A model's name for customers in `locale` (English from `i18n/model-text.ts` when the row's has Thai). */
+export function publicModelName(modelId: string, name: string, locale: Locale = 'th'): string {
+  const copy = PUBLIC_COPY[modelId];
+  if (copy) return pick(copy.name, locale);
+  return modelName(modelId, name.replace(VENDOR_TAG, '').trim() || name, locale);
+}
+
+export function publicModelDescription(modelId: string, description: string | null, locale: Locale = 'th'): string | null {
+  const copy = PUBLIC_COPY[modelId];
+  if (copy) return pick(copy.description, locale);
+  const text = modelDescription(modelId, description, locale);
+  return text === null ? null : text.replace(VIA_VENDOR, '').replace(VENDOR_TAG, '');
 }
 
 /**
@@ -80,17 +99,26 @@ export function publicDefaultParams<T>(params: T): T {
 const ACCOUNT_TROUBLE =
   /\b(?:401|402|403|429|455)\b|api[ _-]?key|insufficient|rate[ _-]?limit|quota|balance|no available api accounts|unauthori[sz]ed/i;
 
-export const BUSY_MESSAGE = 'ระบบไม่ว่างชั่วคราว — คืนเครดิตให้แล้ว ลองสั่งใหม่อีกครั้งในอีกสักครู่';
+const BUSY_MSG: Msg = {
+  th: 'ระบบไม่ว่างชั่วคราว — คืนเครดิตให้แล้ว ลองสั่งใหม่อีกครั้งในอีกสักครู่',
+  en: 'We’re busy for the moment — your credits have been refunded. Please order again in a little while.',
+};
+const FAILED_MSG: Msg = { th: 'สร้างงานไม่สำเร็จ — คืนเครดิตให้แล้ว', en: 'Creating failed — your credits have been refunded.' };
+registerStoredMsgs(BUSY_MSG, FAILED_MSG);
+
+export const BUSY_MESSAGE = BUSY_MSG.th;
 
 /**
- * A failed order's message as the customer may read it. Our own Thai refusals
- * pass through; a vendor's message keeps its reason (a refused prompt says why)
- * with the vendor's name, task ids and URLs taken out, and an account problem of
- * ours becomes a plain "busy".
+ * A failed order's message as the customer may read it, in `locale`. Our own
+ * refusals pass through (stored in both languages, or a known Thai one); a
+ * vendor's message keeps its reason (a refused prompt says why) with the
+ * vendor's name, task ids and URLs taken out, and an account problem of ours
+ * becomes a plain "busy".
  */
-export function publicErrorMessage(message: string | null | undefined): string | null {
-  if (!message) return null;
-  if (ACCOUNT_TROUBLE.test(message)) return BUSY_MESSAGE;
+export function publicErrorMessage(stored: string | null | undefined, locale: Locale = 'th'): string | null {
+  if (!stored) return null;
+  const message = readStoredMessage(stored, locale) ?? stored;
+  if (ACCOUNT_TROUBLE.test(message)) return pick(BUSY_MSG, locale);
   const cleaned = message
     .replace(/https?:\/\/\S+/gi, '')
     .replace(/\btask\s+[\w-]{6,}/gi, 'task')
@@ -99,5 +127,5 @@ export function publicErrorMessage(message: string | null | undefined): string |
     .replace(/\s{2,}/g, ' ')
     .replace(/^[\s:·,-]+/, '')
     .trim();
-  return cleaned || 'สร้างงานไม่สำเร็จ — คืนเครดิตให้แล้ว';
+  return cleaned || pick(FAILED_MSG, locale);
 }

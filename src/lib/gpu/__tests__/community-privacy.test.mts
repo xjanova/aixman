@@ -129,11 +129,13 @@ test('the model list offers a community-only model only while a machine could ta
   assert.doesNotMatch(NO_MACHINE_LISTING_TEXT, /หักเครดิต/);
 });
 
-test('every refusal is Thai and says no credit was taken', () => {
+test('every refusal is in Thai and English and says no credit was taken', () => {
   for (const refusal of ['adult', 'unreadable', 'input-media', 'no-machine'] as const) {
     const message = communityRefusalMessage(refusal);
-    assert.match(message, /[฀-๿]/);
-    assert.match(message, /ไม่ได้หักเครดิต/);
+    assert.match(message.th, /[฀-๿]/);
+    assert.match(message.th, /ไม่ได้หักเครดิต/);
+    assert.doesNotMatch(message.en, /[฀-๿]/);
+    assert.match(message.en, /no credits? (were|was) (charged|taken)/i);
   }
 });
 

@@ -14,6 +14,7 @@
  * xmanstudio already uses for the credit webhook (its AIXMAN_WEBHOOK_SECRET).
  */
 import { createHash, createHmac } from "crypto";
+import type { Locale, Msg } from "@/lib/i18n/locale";
 
 const USER_AGENT = "XmanAI-TpixCampaign/1.0 (+https://ai.xman4289.com/tpix)";
 const TIMEOUT_MS = 15_000;
@@ -30,19 +31,45 @@ export function signTpixRequest(secret: string, timestamp: number, method: strin
     .digest("hex");
 }
 
+type XmanAction = "orders" | "payments/status" | "payments/tx";
+
 export type XmanCall =
   | { ok: true; data: Record<string, unknown> }
-  | { ok: false; status: number; message: string };
+  | { ok: false; status: number; message: Msg };
 
 /** What the customer sees when xmanstudio cannot be asked; its own Thai refusals pass through. */
-const UNAVAILABLE = "ระบบชำระด้วย TPIX ยังไม่พร้อมในขณะนี้ กรุณาลองใหม่อีกครั้ง";
+const UNAVAILABLE: Msg = {
+  th: "ระบบชำระด้วย TPIX ยังไม่พร้อมในขณะนี้ กรุณาลองใหม่อีกครั้ง",
+  en: "TPIX payments aren't available right now. Please try again later.",
+};
+
+/** Thai letters (not the baht sign, which English text uses too). */
+const THAI_TEXT = /[\u0E01-\u0E3A\u0E40-\u0E5B]/;
+
+/**
+ * xmanstudio words its refusals, labels and messages for the customer in Thai
+ * only. In English such a text is replaced by `en` — ours, less specific, but
+ * readable — or left out when `en` is empty; text that is not Thai is kept.
+ */
+export function xmanText(text: string, locale: Locale, en = ""): string {
+  return locale === "en" && THAI_TEXT.test(text) ? en : text;
+}
+
+/** Our English for a refusal xmanstudio worded in Thai. */
+function refusalEn(action: XmanAction, status: number): string {
+  if (status === 429) return "Too many requests. Please wait a moment and try again.";
+  if (status === 404) return action === "orders" ? "This package was not found." : "This payment was not found.";
+  if (action === "orders") return "This package can't be paid with TPIX right now. Please try again later.";
+  if (action === "payments/tx") return "This transaction couldn't be accepted for this payment. Please check it and try again.";
+  return "We couldn't check this payment right now. Please try again.";
+}
 
 /**
  * POST to `/api/aixman/tpix/{action}`. A refusal xmanstudio worded for the
  * customer (422, 429) is passed on; anything about our own credentials (401,
  * 503) or the network is not — the customer gets a plain "not available".
  */
-export async function callXmanTpix(action: "orders" | "payments/status" | "payments/tx", payload: Record<string, unknown>): Promise<XmanCall> {
+export async function callXmanTpix(action: XmanAction, payload: Record<string, unknown>): Promise<XmanCall> {
   const secret = process.env.XMAN_WEBHOOK_SECRET || "";
   if (!secret) return { ok: false, status: 503, message: UNAVAILABLE };
 
@@ -83,7 +110,7 @@ export async function callXmanTpix(action: "orders" | "payments/status" | "payme
 
   const theirs = json && typeof json.message === "string" ? json.message : null;
   if ((res.status === 422 || res.status === 429 || res.status === 404) && theirs) {
-    return { ok: false, status: res.status, message: theirs };
+    return { ok: false, status: res.status, message: { th: theirs, en: xmanText(theirs, "en", refusalEn(action, res.status)) } };
   }
   console.error("[tpix] xmanstudio refused", { action, status: res.status });
   return { ok: false, status: 503, message: UNAVAILABLE };

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth';
 import prisma from '@/lib/db';
 import { rateLimit } from '@/lib/rate-limit';
+import { requestLocale, translator } from '@/lib/i18n/locale';
 
 /**
  * GET /api/generate/[id]/download?i=<index>
@@ -36,6 +37,7 @@ export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const t = translator(requestLocale(request));
   const userId = await getCurrentUserId();
   if (!userId) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -45,7 +47,7 @@ export async function GET(
   const limit = rateLimit(`gen-download:${userId}`, 60, 10 * 60 * 1000);
   if (!limit.ok) {
     return NextResponse.json(
-      { error: 'ดาวน์โหลดบ่อยเกินไป กรุณารอสักครู่' },
+      { error: t('ดาวน์โหลดบ่อยเกินไป กรุณารอสักครู่', 'Too many downloads. Please wait a moment.') },
       { status: 429, headers: { 'Retry-After': String(limit.retryAfter) } }
     );
   }
@@ -64,7 +66,7 @@ export async function GET(
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
   if (generation.mediaDeletedAt) {
-    return NextResponse.json({ error: 'ไฟล์นี้หมดอายุและถูกลบแล้ว' }, { status: 410 });
+    return NextResponse.json({ error: t('ไฟล์นี้หมดอายุและถูกลบแล้ว', 'This file has expired and been deleted') }, { status: 410 });
   }
 
   const index = Number(new URL(request.url).searchParams.get('i'));
@@ -75,7 +77,7 @@ export async function GET(
     ? urls[index]
     : generation.resultUrl;
   if (!source || !/^https?:\/\//i.test(source)) {
-    return NextResponse.json({ error: 'ไม่พบไฟล์ของผลงานนี้' }, { status: 404 });
+    return NextResponse.json({ error: t('ไม่พบไฟล์ของผลงานนี้', 'This creation’s file wasn’t found') }, { status: 404 });
   }
 
   // The timeout covers reaching the file, not sending it: a phone on a slow
@@ -87,12 +89,12 @@ export async function GET(
   try {
     upstream = await fetch(source, { redirect: 'follow', signal: connect.signal });
   } catch {
-    return NextResponse.json({ error: 'ดาวน์โหลดไฟล์ไม่สำเร็จ' }, { status: 502 });
+    return NextResponse.json({ error: t('ดาวน์โหลดไฟล์ไม่สำเร็จ', 'Download failed') }, { status: 502 });
   } finally {
     clearTimeout(timer);
   }
   if (!upstream.ok || !upstream.body) {
-    return NextResponse.json({ error: 'ดาวน์โหลดไฟล์ไม่สำเร็จ' }, { status: 502 });
+    return NextResponse.json({ error: t('ดาวน์โหลดไฟล์ไม่สำเร็จ', 'Download failed') }, { status: 502 });
   }
 
   const contentType = upstream.headers.get('content-type')?.split(';')[0].trim().toLowerCase() || 'application/octet-stream';

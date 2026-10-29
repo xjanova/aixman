@@ -1,5 +1,6 @@
 import prisma from '@/lib/db';
 import { raiseAlert } from '@/lib/notify/alerts';
+import type { Msg } from '@/lib/i18n/locale';
 
 /**
  * Readiness of a model on *this* deployment.
@@ -23,8 +24,12 @@ const DEMOTE_AFTER_FAILURES = 3;
 /** readinessNote of a model we demoted — how recordSuccess tells it from a new one. */
 const DEMOTED_NOTE_PREFIX = 'ล้มเหลวติดกัน';
 
-export const TUNING_MESSAGE =
-  'โมเดลนี้กำลังปรับแต่งอยู่ ยังใช้งานไม่ได้ กรุณาลองใหม่ภายหลัง';
+export const TUNING_MSG: Msg = {
+  th: 'โมเดลนี้กำลังปรับแต่งอยู่ ยังใช้งานไม่ได้ กรุณาลองใหม่ภายหลัง',
+  en: 'This model is being fine-tuned and can’t take orders yet. Please try again later.',
+};
+/** The Thai alone, for code that throws or compares a plain message. */
+export const TUNING_MESSAGE = TUNING_MSG.th;
 
 export class ModelReadiness {
   /**
