@@ -107,7 +107,7 @@ export type TrimState = "saving" | "saved" | "failed";
 
 export function AudioTrimmer({
   file, buffer, range, maxSeconds, minSeconds = 1, onChange, onDragging,
-  accept, onPick, onClear, state, onRetry, note,
+  accept, onPick, onClear, state, onRetry, note, marker,
 }: {
   file: File;
   buffer: AudioBuffer;
@@ -124,6 +124,8 @@ export function AudioTrimmer({
   onRetry: () => void;
   /** The price line, or a rule the selection breaks. */
   note?: React.ReactNode;
+  /** A second of the file drawn on the wave — where an extension picks up. */
+  marker?: number | null;
 }) {
   const t = useT();
   const gradientId = useId();
@@ -287,6 +289,9 @@ export function AudioTrimmer({
             aria-valuemin={0} aria-valuemax={Math.round(duration * 10) / 10} aria-valuenow={range.end}
             aria-valuetext={clock(range.end, true)} onKeyDown={onGripKey("r")}><i /></span>
         </div>
+        {marker !== undefined && marker !== null && marker >= 0 && marker <= duration && (
+          <span className="mkr" style={{ left: `${pct(marker)}%` }} aria-hidden="true" />
+        )}
         {head !== null && <span className="phd" style={{ left: `${pct(head)}%` }} aria-hidden="true" />}
       </div>
       <div className="atime mono" aria-hidden="true">{ticks.map((tick, i) => <span key={i}>{tick}</span>)}</div>
@@ -379,6 +384,14 @@ export function AudioTrimmer({
         .phd {
           position: absolute; top: 3px; bottom: 3px; width: 2px; margin-left: -1px; border-radius: 2px;
           background: #fff; box-shadow: 0 0 8px #fff; pointer-events: none;
+        }
+        .mkr {
+          position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; border-radius: 2px;
+          background: #fbbf24; box-shadow: 0 0 8px rgba(251,191,36,0.8); pointer-events: none;
+        }
+        .mkr::before {
+          content: ""; position: absolute; top: 0; left: -4px;
+          border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid #fbbf24;
         }
         .atime { display: flex; justify-content: space-between; margin-top: 5px; font-size: 10px; color: #475569; }
         .abar { display: flex; align-items: center; gap: 10px; margin-top: 9px; }

@@ -1,5 +1,6 @@
 import { randomBytes } from 'crypto';
 import { S3Client, PutObjectCommand, DeleteObjectsCommand } from '@aws-sdk/client-s3';
+import { assetType } from './media-type';
 
 /**
  * Cloudflare R2 storage (S3-compatible).
@@ -69,21 +70,6 @@ function getClient(): S3Client {
   return cachedClient;
 }
 
-const MIME_EXT: Record<string, string> = {
-  'image/png': 'png',
-  'image/jpeg': 'jpg',
-  'image/jpg': 'jpg',
-  'image/webp': 'webp',
-  'image/gif': 'gif',
-  'video/mp4': 'mp4',
-  'video/webm': 'webm',
-  'video/quicktime': 'mov',
-};
-
-function extFromMime(mime: string): string {
-  return MIME_EXT[mime.toLowerCase()] || 'bin';
-}
-
 interface FetchedAsset {
   buffer: Buffer;
   contentType: string;
@@ -95,15 +81,13 @@ async function resolveAsset(src: string): Promise<FetchedAsset> {
   if (src.startsWith('data:')) {
     const match = src.match(/^data:([^;]+);base64,([\s\S]*)$/);
     if (!match) throw new Error('Invalid data URI');
-    const contentType = match[1];
-    return { buffer: Buffer.from(match[2], 'base64'), contentType, ext: extFromMime(contentType) };
+    return { buffer: Buffer.from(match[2], 'base64'), ...assetType(match[1], src) };
   }
 
   const res = await fetch(src);
   if (!res.ok) throw new Error(`Failed to fetch asset (${res.status})`);
-  const contentType = res.headers.get('content-type')?.split(';')[0] || 'application/octet-stream';
   const buffer = Buffer.from(await res.arrayBuffer());
-  return { buffer, contentType, ext: extFromMime(contentType) };
+  return { buffer, ...assetType(res.headers.get('content-type'), src) };
 }
 
 /** Upload raw bytes to R2 and return the public URL. */

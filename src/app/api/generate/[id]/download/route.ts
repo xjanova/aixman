@@ -99,7 +99,8 @@ export async function GET(
 
   const contentType = upstream.headers.get('content-type')?.split(';')[0].trim().toLowerCase() || 'application/octet-stream';
   const fromPath = /\.([a-z0-9]{2,5})$/i.exec(new URL(source).pathname)?.[1]?.toLowerCase();
-  const ext = fromPath ?? EXT_BY_TYPE[contentType] ?? 'bin';
+  // `.bin` is a copy named before audio types had extensions; its stored type says what it is.
+  const ext = (fromPath !== 'bin' ? fromPath : undefined) ?? EXT_BY_TYPE[contentType] ?? fromPath ?? 'bin';
   const suffix = urls.length > 1 && source !== generation.resultUrl ? `-${index + 1}` : '';
   // fetch() has already undone any content-encoding, so a compressed
   // upstream's length would no longer describe the bytes sent on.

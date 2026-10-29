@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId, isAdmin } from '@/lib/auth';
 import prisma from '@/lib/db';
 import { requestLocale, translator } from '@/lib/i18n/locale';
+import { streamAudio } from '@/lib/audio-stream';
 
 /**
  * Serve a generated song from our own origin.
@@ -13,17 +14,11 @@ import { requestLocale, translator } from '@/lib/i18n/locale';
  *
  * It is not a public mirror: the row has to belong to the caller, or the caller
  * has to be an admin. The upstream URL is never handed back, only its contents,
- * so a signed or private object stays private.
+ * so a signed or private object stays private. A song copied in as `.bin`
+ * (before audio types had names) is served by the type it was stored with.
+ * Any other file of the caller's — a version or a stem — goes through
+ * /api/studio/audio/file.
  */
-
-const AUDIO_TYPE: Record<string, string> = {
-  flac: 'audio/flac',
-  mp3: 'audio/mpeg',
-  wav: 'audio/wav',
-  ogg: 'audio/ogg',
-  opus: 'audio/opus',
-  m4a: 'audio/mp4',
-};
 
 export async function GET(
   request: NextRequest,
@@ -53,44 +48,5 @@ export async function GET(
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  const ext = (generation.resultUrl.split('?')[0].split('.').pop() || '').toLowerCase();
-  const contentType = AUDIO_TYPE[ext];
-  if (!contentType) {
-    return NextResponse.json({ error: t('ไฟล์นี้ไม่ใช่ไฟล์เสียง', 'This isn’t an audio file') }, { status: 400 });
-  }
-
-  // Pass a Range through so seeking still works for anything that streams from
-  // here rather than downloading the whole object first.
-  const range = request.headers.get('range');
-  let upstream: Response;
-  try {
-    upstream = await fetch(generation.resultUrl, {
-      headers: range ? { range } : undefined,
-      cache: 'no-store',
-    });
-  } catch {
-    return NextResponse.json({ error: t('ดึงไฟล์จากที่เก็บไม่สำเร็จ', 'Couldn’t fetch the file from storage') }, { status: 502 });
-  }
-
-  if (!upstream.ok || !upstream.body) {
-    return NextResponse.json({ error: t('ดึงไฟล์จากที่เก็บไม่สำเร็จ', 'Couldn’t fetch the file from storage') }, { status: 502 });
-  }
-
-  const headers = new Headers({
-    'content-type': contentType,
-    'accept-ranges': 'bytes',
-    // Private: this is one customer's song behind an auth check, so a shared
-    // cache must never keep it. The browser may, which is what lets the player
-    // decode the bytes without paying for the download twice.
-    'cache-control': 'private, max-age=3600',
-  });
-  for (const h of ['content-length', 'content-range', 'etag', 'last-modified']) {
-    const v = upstream.headers.get(h);
-    if (v) headers.set(h, v);
-  }
-  if (request.nextUrl.searchParams.get('download') === '1') {
-    headers.set('content-disposition', `attachment; filename="song-${genId}.${ext}"`);
-  }
-
-  return new NextResponse(upstream.body, { status: upstream.status, headers });
+  return streamAudio(request, generation.resultUrl, t, `song-${genId}`);
 }

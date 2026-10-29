@@ -46,6 +46,7 @@ import { nextQueueProgress, shownFraction, type QueueProgress, type QueueReading
 import { AUDIO_EXT, AudioCover, AudioResult } from "@/components/xdreamer/audio";
 import { SongLyrics } from "@/components/xdreamer/song-lyrics";
 import { AudioTracks, type AudioTrack } from "@/components/xdreamer/audio-tracks";
+import { TrackWave } from "@/components/xdreamer/track-wave";
 import { loadAudio } from "@/components/xdreamer/audio-wave";
 import { AudioTrimmer, coversWhole, cutAudio, initialTrim, trimKey, type TrimRange } from "@/components/xdreamer/audio-trim";
 import { ModeOrb, type OrbItem } from "@/components/xdreamer/mode-orb";
@@ -2050,6 +2051,13 @@ export default function GeneratePage() {
   const sunoSummary = sunoPicks === "" ? t("อัตโนมัติ", "Auto") : sunoPicks;
   const setSunoField = <K extends keyof SunoChoices>(key: K, value: SunoChoices[K]) =>
     setSuno((c) => ({ ...c, [key]: value }));
+  /** Where an extension picks up, in seconds of the track as ordered: the second chosen, else its last whole second. */
+  const extendLast = sunoTool === "extend" && inputAudioSeconds !== null && inputAudioSeconds >= 2 ? Math.max(1, Math.floor(inputAudioSeconds) - 1) : null;
+  const extendFrom = extendLast === null ? null : suno.continueAt !== undefined && suno.continueAt <= extendLast ? suno.continueAt : extendLast;
+  /** A second picked on the waveform, kept inside the track. */
+  const pickExtendFrom = (second: number) => {
+    if (extendLast !== null) setSunoField("continueAt", Math.min(extendLast, Math.max(1, second)));
+  };
 
   /** Longest part of a picked track this tab may keep. */
   const trimMax = tab === "lipsync" ? lipsyncAudioMax : coverSourceSeconds;
@@ -4179,7 +4187,9 @@ export default function GeneratePage() {
                     <AudioTrimmer file={trimSrc.file} buffer={trimSrc.buffer} range={trimSel} maxSeconds={coverSourceSeconds}
                       onChange={setTrimSel} onDragging={setTrimDragging} accept={AUDIO_ACCEPT}
                       onPick={(e) => handleMediaUpload(e, "audio", coverSourceSeconds)} onClear={clearAudio}
-                      state={trimState} onRetry={() => setTrimFailed(null)} note={trimTooLongNote} />
+                      state={trimState} onRetry={() => setTrimFailed(null)} note={trimTooLongNote}
+                      // The extension's start, in the file: the cut begins at the selection.
+                      marker={extendFrom !== null ? trimSel.start + extendFrom : null} />
                   ) : (
                     <>
                       {/* `coverSourceSeconds` is what a cover may start *from* —
@@ -4201,31 +4211,31 @@ export default function GeneratePage() {
                         onPick={(e) => handleMediaUpload(e, "audio", coverSourceSeconds)}
                         onClear={clearAudio}
                       />
-                      {/* The song of a reopened cover. No waveform: R2 sends no
-                          CORS header, so the browser can play it but not read it. */}
+                      {/* The song of a reopened order, or a track carried on from a
+                          result: its waveform, read through our own route (R2 sends
+                          no CORS header), with an extension's start marked on it. */}
                       {inputAudio && (inputAudio === openedInputs?.inputAudio || inputAudio === carriedAudio) && (
-                        <audio src={inputAudio} controls preload="metadata"
+                        <TrackWave key={inputAudio} url={inputAudio} label={inputAudioName ?? t("เพลงต้นฉบับ", "Original song")}
+                          height={44} marker={extendFrom}
+                          onPickMarker={extendLast !== null ? pickExtendFrom : undefined}
+                          pickLabel={(at) => t(`📍 ต่อจาก ${at}`, `📍 Continue from ${at}`)}
                           // Its length, for an extension's start and the checks below.
-                          onLoadedMetadata={(e) => {
-                            const d = e.currentTarget.duration;
-                            if (Number.isFinite(d) && d > 0) setAudioLengths((m) => (inputAudio in m ? m : { ...m, [inputAudio]: d }));
-                          }}
+                          onDuration={(d) => setAudioLengths((m) => (inputAudio in m ? m : { ...m, [inputAudio]: d }))}
                           onError={() => dropExpiredInput(inputAudio, clearAudio)}
-                          style={{ width: "100%", height: 36, marginTop: 10 }} />
+                          style={{ marginTop: 10 }} />
                       )}
                     </>
                   )}
                   {/* Where an extension picks up: a second inside the track, the end by default. */}
-                  {sunoTool === "extend" && inputAudioSeconds !== null && inputAudioSeconds >= 2 && (
+                  {extendLast !== null && extendFrom !== null && (
                     <div className="rp-slider" style={{ marginTop: 12 }}>
                       <div>
                         <span>{t("ต่อจากวินาทีที่", "Continue from")}</span>
                         <b className="rp-mono">
-                          {suno.continueAt !== undefined && suno.continueAt < inputAudioSeconds ? clock(suno.continueAt) : `${clock(Math.max(1, Math.floor(inputAudioSeconds) - 1))} ${t("(ท้ายเพลง)", "(the end)")}`}
+                          {extendFrom < extendLast ? clock(extendFrom) : `${clock(extendLast)} ${t("(ท้ายเพลง)", "(the end)")}`}
                         </b>
                       </div>
-                      <input type="range" min={1} max={Math.max(1, Math.floor(inputAudioSeconds) - 1)} step={1}
-                        value={suno.continueAt !== undefined && suno.continueAt < inputAudioSeconds ? suno.continueAt : Math.max(1, Math.floor(inputAudioSeconds) - 1)}
+                      <input type="range" min={1} max={extendLast} step={1} value={extendFrom}
                         onChange={(e) => setSunoField("continueAt", +e.target.value)} aria-label={t("ต่อจากวินาทีที่", "Continue from")} />
                     </div>
                   )}

@@ -7,12 +7,14 @@
  * ticked and fetched together, and any file can be carried on to the next
  * tool (cover it, add a band to the vocals …).
  *
- * Plain <audio> players: R2 sends no CORS header, so nothing here reads the
- * bytes; the downloads go through the caller (the generation's download route).
+ * Each file draws its real waveform (TrackWave, read through our own origin
+ * since R2 sends no CORS header); the downloads go through the caller (the
+ * generation's download route).
  */
 
 import { useRef, useState } from "react";
 import { AudioCover } from "./audio";
+import { TrackWave } from "./track-wave";
 import { useT } from "@/lib/i18n/client";
 
 export interface AudioTrack {
@@ -134,9 +136,9 @@ export function AudioTracks({ tracks, title, kind, onDownload, actions, onAction
                       color: "#e0f2fe", background: `hsla(${hue},70%,50%,0.16)`, border: `1px solid hsla(${hue},80%,65%,0.32)`,
                     }}>{tr("↓ โหลด", "↓ Save")}</button>
                 </div>
-                <audio ref={(el) => { players.current[i] = el; }} src={t.url} controls preload="none"
-                  onPlay={() => onPlay(i)} onPause={() => setPlaying((p) => (p === i ? null : p))} onEnded={() => setPlaying((p) => (p === i ? null : p))}
-                  style={{ width: "100%", height: 32 }} />
+                <TrackWave url={t.url} label={t.label} hue={hue} height={34}
+                  audioRef={(el) => { players.current[i] = el; }}
+                  onPlay={() => onPlay(i)} onStop={() => setPlaying((p) => (p === i ? null : p))} />
               </div>
             </li>
           );

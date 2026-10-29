@@ -9,6 +9,18 @@
  * `react-hooks/todo` in eslint.config.mjs is what now reports that.
  */
 
+/** What a file saved as `.bin` really is, by the type it came with (files copied in before audio types had names). */
+const BIN_AS: Record<string, string> = {
+  "audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/wav": "wav", "audio/x-wav": "wav", "audio/flac": "flac",
+  "audio/x-flac": "flac", "audio/ogg": "ogg", "audio/opus": "opus", "audio/mp4": "m4a", "audio/x-m4a": "m4a",
+};
+
+/** `filename` with a `.bin` ending replaced by what `type` says the bytes are. */
+export function namedByType(filename: string, type: string): string {
+  const ext = BIN_AS[type.split(";")[0].trim().toLowerCase()];
+  return ext && /\.bin$/i.test(filename) ? filename.replace(/\.bin$/i, `.${ext}`) : filename;
+}
+
 /** Fetch a file and hand it to the browser as a download. */
 export async function downloadAs(url: string, filename: string): Promise<boolean> {
   try {
@@ -19,7 +31,7 @@ export async function downloadAs(url: string, filename: string): Promise<boolean
     const href = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = href;
-    a.download = filename;
+    a.download = namedByType(filename, blob.type);
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(href);
     return true;

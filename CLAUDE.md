@@ -198,6 +198,17 @@ against the free `/api/v1/chat/credit` → encrypted pool row, daily quota 0 →
   `resultLabels` on the order and gallery APIs; the studio lists several
   audio files as tracks (`AudioTracks`) and carries any one on to the next tool.
   MCP's `generate_music` does not offer the tools that need a track.
+- **Waveforms on every audio file** (`TrackWave`, `track-wave.tsx`): each track,
+  each stem, a carried or reopened source song (with an extension's start
+  marked; `AudioTrimmer` marks it too), the gallery. Bytes come through
+  `/api/studio/audio/file?src=` — the caller's own keys only
+  (`own-audio.ts isOwnAudioKey`: `uploads/<id>/audio/…`, `generations/<id>/…`),
+  decided from the key, no row read. Peaks are decoded at 8 kHz, one file at a
+  time, then dropped (12 stems must not hold 12 decoded songs).
+- **R2 names copies by type** (`storage/media-type.ts assetType`). Audio was
+  missing from the table until 2026-10-29, so API audio results before then are
+  `….bin` (stored type still `audio/mpeg`): the audio routes serve a `.bin` by
+  its stored audio type, downloads are renamed (`namedByType`).
 - Not yet exercised against the live API (no key on 2026-10-29): input field
   names come from docs.kie.ai — a family that 422s needs its `build()` fixed.
 

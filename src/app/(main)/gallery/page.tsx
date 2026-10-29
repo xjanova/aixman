@@ -19,6 +19,9 @@ import { useToast } from "@/components/ui/toast-provider";
 import { EmptyState } from "@/components/xdreamer/page-hero";
 import { downloadGeneration, extensionOf, saveFavorite } from "@/lib/client-actions";
 import { AUDIO_EXT, AudioCover } from "@/components/xdreamer/audio";
+import { AudioWave } from "@/components/xdreamer/audio-wave";
+import { AudioTracks, type AudioTrack } from "@/components/xdreamer/audio-tracks";
+import { stemLabelText } from "@/lib/i18n/suno-text";
 import { SongLyrics } from "@/components/xdreamer/song-lyrics";
 import { AquaChordHandoff } from "@/components/xdreamer/aquachord";
 import { ModelViewer } from "@/components/xdreamer/model-viewer";
@@ -43,6 +46,10 @@ interface Generation {
   status: string;
   prompt: string;
   resultUrl: string;
+  /** Every file an order delivered (a song's versions, a split's stems). */
+  resultUrls?: string[] | null;
+  /** A name per file when the order names them (a split's stems), same order. */
+  resultLabels?: string[] | null;
   /** A song's words, one per delivered track (output-lyrics.ts). */
   resultLyrics?: string[] | null;
   thumbnailUrl: string;
@@ -169,11 +176,30 @@ export default function GalleryPage() {
     else toast("error", t("ดาวน์โหลดไม่สำเร็จ", "Download failed"));
   };
 
+  /** One file of a song's versions or a split's stems, named after it. */
+  const downloadTrack = async (gen: Generation, track: AudioTrack, index: number) => {
+    const named = track.label.replace(/[\\/:*?"<>|()\s]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+    const ok = await downloadGeneration(gen.id, track.url, `xdreamer-${gen.id}-${named || index + 1}.${extensionOf(track.url, "mp3")}`, index);
+    if (!ok) toast("error", t("ดาวน์โหลดไม่สำเร็จ", "Download failed"));
+    return ok;
+  };
+
+  /** An audio item's files as tracks, when it has several; null for one file. */
+  const tracksOf = (gen: Generation): AudioTrack[] | null => {
+    const urls = Array.isArray(gen.resultUrls) ? gen.resultUrls.filter((u): u is string => typeof u === "string") : [];
+    if (urls.length < 2) return null;
+    const labels = gen.resultLabels?.length === urls.length ? gen.resultLabels : null;
+    return urls.map((url, i) => ({ url, label: labels ? stemLabelText(labels[i], locale) : t(`เวอร์ชัน ${i + 1}`, `Version ${i + 1}`) }));
+  };
+
   const handleUpscale = async (gen: Generation) => {
     const result = await requestUpscale(gen.id);
     if (!result.ok) { toast("error", t("Upscale ไม่สำเร็จ", "Upscale failed"), result.error); return; }
     toast("info", t("กำลัง Upscale...", "Upscaling…"), t("ผลลัพธ์จะปรากฏในแกลเลอรี", "The result will appear in your gallery."));
   };
+
+  // An expired order's files are gone: it shows the single "expired" card instead.
+  const selectedTracks = selectedItem?.type === "audio" && !selectedItem.mediaDeleted ? tracksOf(selectedItem) : null;
 
   if (!session) return null;
 
@@ -481,11 +507,24 @@ export default function GalleryPage() {
             </div>
 
             <div style={{ borderRadius: 14, overflow: "hidden", marginBottom: 16, border: "1px solid rgba(255,255,255,0.06)" }}>
-              {selectedItem.type === "audio" ? (
+              {selectedItem.type === "audio" && selectedTracks ? (
+                // A song's two versions or a split's stems: every file, each with its waveform and its own download.
+                <AudioTracks key={selectedItem.id} tracks={selectedTracks} title={selectedItem.prompt}
+                  kind={selectedItem.resultLabels?.length === selectedTracks.length ? "stems" : "versions"}
+                  onDownload={(track, i) => downloadTrack(selectedItem, track, i)} />
+              ) : selectedItem.type === "audio" ? (
                 // The prompt is printed just below, so the cover goes without a title.
+                // The waveform reads the song through our own route (R2 sends no CORS header).
                 <>
-                  <AudioCover seed={selectedItem.prompt} animated style={{ aspectRatio: "16/7" }} />
-                  <audio src={selectedItem.resultUrl} controls autoPlay style={{ width: "100%", display: "block", background: "rgba(2,6,23,0.6)" }} />
+                  <AudioCover seed={selectedItem.prompt} animated={!selectedItem.mediaDeleted} style={{ aspectRatio: "16/7" }} />
+                  <div style={{ padding: "12px 14px", background: "rgba(2,6,23,0.6)" }}>
+                    {selectedItem.mediaDeleted ? (
+                      <div style={{ fontSize: 13, color: "#94a3b8" }}>{t("ไฟล์หมดอายุและถูกลบแล้ว", "This file has expired and been deleted")}</div>
+                    ) : (
+                      <AudioWave key={selectedItem.id} source={`/api/studio/audio/${selectedItem.id}`} height={64}
+                        downloadName={`xdreamer-${selectedItem.id}`} originalExt={extensionOf(selectedItem.resultUrl, "mp3")} autoPlay />
+                    )}
+                  </div>
                 </>
               ) : selectedItem.type === "model3d" ? (
                 // A GLB is a scene, not a picture: turned around in the viewer,
