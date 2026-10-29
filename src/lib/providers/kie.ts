@@ -123,7 +123,7 @@ export class KieProvider extends BaseProvider {
     }
     try {
       const result = await this.pollForResult(
-        () => this.readTask(params.apiKey, taskId, started, entry.suno === 'stems'),
+        () => this.readTask(params.apiKey, taskId, started, entry.suno === 'stems', params.onState),
         pollAttempts(params.maxWaitSeconds ?? entry.maxWaitSeconds, this.pollIntervalMs),
         this.pollIntervalMs
       );
@@ -258,7 +258,8 @@ export class KieProvider extends BaseProvider {
     apiKey: string,
     taskId: string,
     started: number,
-    stems = false
+    stems = false,
+    onState?: (state: string) => void
   ): Promise<{ done: boolean; result?: ProviderResponse }> {
     let res: Response;
     try {
@@ -280,6 +281,7 @@ export class KieProvider extends BaseProvider {
       return { done: true, result: failure(code, describe(body?.msg)) };
     }
     const data = body?.data ?? {};
+    if (typeof data.state === 'string') onState?.(data.state);
     if (data.state === 'success') {
       const urls = outputUrls(data);
       if (urls.length === 0) {

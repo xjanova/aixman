@@ -173,6 +173,22 @@ test('the task id reaches the order before the wait, so a restart can still coll
   assert.equal(calls.filter((c) => RECORD.test(c.url)).length, 1);
 });
 
+test('every stage KIE reports reaches the order, for the studio’s queue and percentage', async () => {
+  const stages: string[] = [];
+  stubFetch([
+    [CREATE, created],
+    [RECORD, [state('waiting'), state('queuing'), state('generating'), succeeded({ resultUrls: ['https://tempfile.kie.test/k4.mp4'] })]],
+  ]);
+  const result = await new FastKie().generateVideo({
+    modelId: 'kie/kling-4',
+    prompt: 'p',
+    apiKey: 'k',
+    onState: (s) => stages.push(s),
+  });
+  assert.equal(result.success, true);
+  assert.deepEqual(stages, ['waiting', 'queuing', 'generating', 'success']);
+});
+
 test('an order whose task id could not be stored still waits for its clip', async () => {
   stubFetch([[CREATE, created], [RECORD, succeeded({ resultUrls: ['https://tempfile.kie.test/k4.mp4'] })]]);
   const result = await new FastKie().generateVideo({

@@ -195,6 +195,8 @@ export interface ProviderGenerateParams {
    * cuts the wait off can still collect the result (ApiOrderSweep).
    */
   onTaskCreated?: (taskId: string) => Promise<void>;
+  /** Each stage the vendor reports while the order waits (KIE: waiting, queuing, generating). */
+  onState?: (state: string) => void;
 }
 
 // Admin types

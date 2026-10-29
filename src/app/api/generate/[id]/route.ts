@@ -11,6 +11,8 @@ import { GpuBalance, INSUFFICIENT_BALANCE_GRACE_MS } from '@/lib/services/gpu-ba
 import { getGpuConfig } from '@/lib/gpu/config';
 import { publicErrorMessage, publicModelName, publicProvider } from '@/lib/public-provider';
 import { startupPlaces } from '@/lib/queue-progress';
+import { apiQueueBlock } from '@/lib/api-queue';
+import { ApiProgress, paramDuration } from '@/lib/services/api-progress';
 import { pick, requestLocale, type Locale, type Msg } from '@/lib/i18n/locale';
 
 /**
@@ -151,6 +153,22 @@ export async function GET(
         etaBasis: eta.basis,
       };
     }
+  } else if (generation.status === 'processing' && generation.startedAt) {
+    // An API order: the vendor's own queue, then the render — its percentage
+    // timed from the moment the vendor starts on it (api-queue.ts).
+    const eta = await ApiProgress.eta(generation.modelId, generation.type, paramDuration(generation.params));
+    const elapsed = (Date.now() - generation.startedAt.getTime()) / 1000;
+    const block = apiQueueBlock(ApiProgress.get(generation.id), elapsed, eta.seconds, Date.now());
+    gpu = {
+      stage: block.stage,
+      label: pick(block.stage === 'queued' ? QUEUE_LABELS.queued : QUEUE_LABELS.rendering, locale),
+      queuePosition: null,
+      etaSeconds: block.etaSeconds,
+      etaLabel: formatEta(block.etaSeconds, locale),
+      etaBasis: eta.basis,
+      progress: block.progress,
+      phase: null,
+    };
   }
 
   return NextResponse.json({

@@ -1439,7 +1439,8 @@ function GeneratingOverlay({ progress }: { progress: QueueProgress | null }) {
             </>
           ) : (
             <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: "0.04em" }}>
-              {progress?.paused ? t("หยุดชั่วคราว", "Paused") : t("กำลังสร้าง", "Creating")}
+              {/* A queue with no number to show (an API order): still a queue, not "creating". */}
+              {progress?.paused ? t("หยุดชั่วคราว", "Paused") : progress?.stage === "queued" ? t("รอคิว", "Queued") : t("กำลังสร้าง", "Creating")}
             </div>
           )}
         </div>
@@ -4987,6 +4988,7 @@ export default function GeneratePage() {
                           : j.id < 0 ? t("กำลังส่ง…", "Sending…")
                             : j.progress?.stage === "queued" && (j.progress.position ?? 0) > 0
                               ? t(`รอคิว ${j.progress.position}`, `Queued #${j.progress.position}`)
+                              : j.progress?.stage === "queued" ? t("รอคิว…", "Queued…")
                               : fraction != null ? t(`กำลังสร้าง ${Math.floor(fraction * 100)}%`, `Creating ${Math.floor(fraction * 100)}%`) : t("กำลังสร้าง…", "Creating…")}
                     </span>
                   </span>

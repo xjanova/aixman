@@ -6,6 +6,7 @@ import { KieProvider } from '@/lib/providers/kie';
 import { decrypt } from '@/lib/utils/encryption';
 import { getGpuProvider } from '@/lib/gpu';
 import { AccountPoolManager } from './account-pool';
+import { ApiProgress } from './api-progress';
 import { ModelReadiness, TUNING_MESSAGE } from './model-readiness';
 import { persistAssetSafe, isStorageConfigured, keyFromPublicUrl } from '@/lib/storage/r2';
 import { referenceCaps } from '@/lib/reference-caps';
@@ -678,6 +679,7 @@ export class GenerationService {
       return await this.executeApiOrder(run);
     } finally {
       runningOrders.delete(run.generationId);
+      ApiProgress.clear(run.generationId);
     }
   }
 
@@ -1068,6 +1070,8 @@ export class GenerationService {
               });
             }
           : undefined,
+      // The vendor's queue and render stages, for the studio's queue and percentage.
+      onState: (state: string) => ApiProgress.report(run.generationId, state),
     };
 
     switch (request.type) {
