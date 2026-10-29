@@ -117,6 +117,19 @@ function qualityOptions(
   }));
 }
 
+/** The credits table as sent: its tier names in the visitor's language, the credits as they are. */
+function publicPriceTable(table: KiePriceTable, locale: Locale): KiePriceTable {
+  if (locale === 'th') return table;
+  return {
+    ...table,
+    tiers: table.tiers.map((t) => ({
+      ...t,
+      label: tierLabel(t.label, locale),
+      ...(t.description === undefined ? {} : { description: tierDescription(t.description, locale) }),
+    })),
+  };
+}
+
 /** A Suno tool's music panel, its stem picker in the visitor's language. */
 function sunoMusicOptions(tool: Parameters<typeof sunoStudioOptions>[0], locale: Locale) {
   const options = sunoStudioOptions(tool);
@@ -384,7 +397,7 @@ export async function GET(request: Request) {
         // A KIE.ai row's credits by tier, length and pictures (kie-pricing.ts),
         // the table GenerationService charges from. Credits only — never the
         // vendor's price. Null for every other model.
-        priceTable: kieTable,
+        priceTable: kieTable && publicPriceTable(kieTable, locale),
         // Text-to-speech voices and limit (KIE speech rows), else null.
         speech: kie ? kie.speech : null,
         // A clip to upscale or copy the motion of (KIE video tools), else null.
