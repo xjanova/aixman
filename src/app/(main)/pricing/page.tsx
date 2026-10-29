@@ -14,6 +14,9 @@
  *     `/api/webhooks/xman-credit` once the order is paid);
  *   - the shared wallet, here and now (`POST /api/credits/purchase`).
  *
+ * Paying in TPIX coin at the partner discount has its own page (/tpix); this
+ * one only carries the campaign banner that leads there.
+ *
  * Artwork in /public/pricing-art was generated with ChatGPT for this page
  * (see its CREDITS.md).
  */
@@ -35,6 +38,7 @@ import {
   typicalCosts,
   type WorkKind,
 } from "@/lib/pricing-display";
+import { TPIX_CAMPAIGN_DISCOUNT } from "@/lib/tpix/chain";
 
 const XMAN_URL = process.env.NEXT_PUBLIC_XMAN_URL || "https://xman4289.com";
 
@@ -163,6 +167,7 @@ export default function PricingPage() {
   const inFlight = useRef(false);
   const [buying, setBuying] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const [tpix, setTpix] = useState<{ canBuy: boolean; discountPercent: number | null } | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -196,6 +201,12 @@ export default function PricingPage() {
         setWallet(d.loggedIn
           ? { balance: d.wallet?.balance ?? 0, isActive: d.wallet?.isActive ?? false, hasWallet: !!d.wallet, credits: d.credits ?? 0 }
           : null);
+      })
+      .catch(() => {});
+    fetch("/api/tpix/info")
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => {
+        if (alive && d) setTpix({ canBuy: d.canBuy === true, discountPercent: typeof d.discountPercent === "number" ? d.discountPercent : null });
       })
       .catch(() => {});
     return () => { alive = false; };
@@ -301,6 +312,8 @@ export default function PricingPage() {
     return wallet.balance >= priceOf(pkg) ? "ok" : "short";
   };
 
+  const tpixOff = tpix?.discountPercent ?? TPIX_CAMPAIGN_DISCOUNT;
+
   return (
     <div className="prc-root">
       <PageHero
@@ -333,6 +346,26 @@ export default function PricingPage() {
           <li><span>◈</span>ชำระผ่าน XMAN Studio</li>
           <li><span>✦</span>บัญชีเดียว ใช้ได้ทุกโมเดล</li>
         </ul>
+
+        {/* TPIX partner campaign: paying in coin lives on its own page, so this one stays simple */}
+        <Link href="/tpix" className="prc-tpix">
+          <span className="prc-tpix-coin" aria-hidden="true">
+            <Image src="/tpix/tpix-coin.webp" alt="" width={84} height={84} />
+            {tpixOff > 0 && <span className="prc-tpix-off">-{tpixOff}%</span>}
+          </span>
+          <span className="prc-tpix-copy">
+            <span className="prc-tpix-eyebrow">
+              แคมเปญพาร์ทเนอร์ · XMAN AI × TPIX Chain
+              {tpix && !tpix.canBuy && <em>เปิดเร็ว ๆ นี้</em>}
+            </span>
+            <b>
+              จ่ายด้วยเหรียญ <span className="prc-tpix-grad">TPIX</span>
+              {tpixOff > 0 && <> <span className="prc-tpix-nw">ลดทันที <span className="prc-tpix-grad">{tpixOff}%</span></span></>}
+            </b>
+            <span className="prc-tpix-sub">ทุกแพ็กเกจ · เชื่อมกระเป๋าแล้วจ่ายบน TPIX Chain · ค่าแก๊ส 0 · เครดิตเข้าอัตโนมัติ</span>
+          </span>
+          <span className="prc-tpix-cta">ซื้อด้วย TPIX <i aria-hidden="true">→</i></span>
+        </Link>
 
         {/* Section head + currency */}
         <div className="prc-head" id="packages">
@@ -741,6 +774,55 @@ export default function PricingPage() {
           background: radial-gradient(circle at 30% 30%, rgba(243,207,122,.25), rgba(243,207,122,.04)); border: 1px solid rgba(243,207,122,.3);
         }
 
+        /* TPIX partner campaign banner (its own palette: the coin's, not the gold) */
+        .prc-tpix {
+          position: relative; isolation: isolate; overflow: hidden; display: flex; align-items: center; gap: 24px;
+          margin: -24px 0 56px; padding: 20px 24px 20px 22px; border-radius: 22px; color: inherit; text-decoration: none;
+          background:
+            radial-gradient(80% 170% at 0% 50%, rgba(34,211,238,.2), transparent 55%),
+            radial-gradient(60% 170% at 100% 50%, rgba(251,146,60,.16), transparent 60%),
+            linear-gradient(180deg, rgba(16,20,40,.94), rgba(8,10,24,.94)) padding-box,
+            linear-gradient(110deg, #22d3ee, #3b82f6 30%, #a855f7 60%, #d946ef 80%, #fb923c) border-box;
+          border: 1px solid transparent; box-shadow: 0 24px 60px -26px rgba(168,85,247,.6);
+          transition: transform .25s ease, box-shadow .25s ease;
+        }
+        .prc-tpix::before {
+          content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+          background: linear-gradient(105deg, transparent 35%, rgba(255,255,255,.08) 50%, transparent 65%);
+          transform: translateX(-100%); animation: prc-tpix-sheen 6s ease-in-out infinite;
+        }
+        .prc-tpix:hover { transform: translateY(-2px); box-shadow: 0 30px 70px -24px rgba(168,85,247,.8); }
+        .prc-tpix:focus-visible { outline: 2px solid #a5f3fc; outline-offset: 3px; }
+        .prc-tpix-coin { position: relative; flex-shrink: 0; width: 84px; height: 84px; }
+        .prc-tpix-coin::before {
+          content: ""; position: absolute; inset: -16px; border-radius: 50%; filter: blur(8px);
+          background: radial-gradient(circle, rgba(168,85,247,.55), rgba(34,211,238,.25) 45%, transparent 70%);
+          animation: prc-tpix-pulse 3.2s ease-in-out infinite;
+        }
+        .prc-tpix-coin img { position: relative; display: block; width: 100%; height: 100%; animation: prc-tpix-float 4.2s ease-in-out infinite; }
+        .prc-tpix-off {
+          position: absolute; top: -8px; right: -14px; padding: 4px 8px; border-radius: 999px; transform: rotate(10deg);
+          font-size: 12px; font-weight: 800; color: #fff; background: linear-gradient(135deg, #ec4899, #fb923c);
+          box-shadow: 0 6px 16px rgba(236,72,153,.45);
+        }
+        .prc-tpix-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+        .prc-tpix-eyebrow { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 12.5px; font-weight: 600; color: #a5f3fc; }
+        .prc-tpix-eyebrow em { font-style: normal; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; color: #fdba74; background: rgba(251,146,60,.16); }
+        .prc-tpix-copy b { font-size: clamp(20px, 2.4vw, 28px); font-weight: 800; color: #fff; line-height: 1.3; }
+        .prc-tpix-grad { background: linear-gradient(90deg, #22d3ee, #a855f7 55%, #fb923c); -webkit-background-clip: text; background-clip: text; color: transparent; }
+        .prc-tpix-nw { white-space: nowrap; }
+        .prc-tpix-sub { font-size: 13.5px; line-height: 1.6; color: #b8c3d9; }
+        .prc-tpix-cta {
+          flex-shrink: 0; display: inline-flex; align-items: center; gap: 8px; padding: 13px 22px; border-radius: 14px;
+          font-size: 15px; font-weight: 800; color: #fff; white-space: nowrap;
+          background: linear-gradient(110deg, #22d3ee, #3b82f6 35%, #a855f7 70%, #fb923c); box-shadow: 0 12px 30px -10px rgba(168,85,247,.75);
+        }
+        .prc-tpix-cta i { font-style: normal; transition: transform .2s ease; }
+        .prc-tpix:hover .prc-tpix-cta i { transform: translateX(3px); }
+        @keyframes prc-tpix-sheen { 0%, 55% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+        @keyframes prc-tpix-pulse { 50% { opacity: .55; transform: scale(.9); } }
+        @keyframes prc-tpix-float { 50% { transform: translateY(-4px) rotate(-5deg); } }
+
         /* Section heads */
         .prc-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 44px; scroll-margin-top: 96px; }
         .prc-eyebrow { font-size: 12px; letter-spacing: .18em; text-transform: uppercase; color: var(--gold-2); margin-bottom: 10px; }
@@ -985,6 +1067,11 @@ export default function PricingPage() {
           .prc-wrap[data-bar] { padding-bottom: 110px; }
           .prc-trust { justify-content: flex-start; gap: 10px 18px; margin-bottom: 40px; }
           .prc-trust li { font-size: 12.5px; flex: 1 1 45%; }
+          .prc-tpix { flex-wrap: wrap; gap: 14px 16px; margin: -16px 0 40px; padding: 18px 16px; }
+          .prc-tpix-coin { width: 60px; height: 60px; }
+          .prc-tpix-off { top: auto; bottom: -12px; right: 50%; transform: translateX(50%) rotate(-4deg); font-size: 11px; padding: 3px 7px; }
+          .prc-tpix-copy { flex: 1 1 calc(100% - 80px); }
+          .prc-tpix-cta { flex: 1 1 100%; justify-content: center; }
           .prc-head { margin-bottom: 34px; }
           .prc-grid { grid-template-columns: 1fr; row-gap: 34px; }
           .prc-card[data-rec], .prc-card[data-rec]:hover { transform: none; }
@@ -1012,8 +1099,8 @@ export default function PricingPage() {
           .prc-toast[data-bar] { bottom: 96px; }
         }
         @media (prefers-reduced-motion: reduce) {
-          .prc-emblem, .prc-final-emblem, .prc-skel { animation: none; }
-          .prc-card, .prc-btn { transition: none; }
+          .prc-emblem, .prc-final-emblem, .prc-skel, .prc-tpix::before, .prc-tpix-coin::before, .prc-tpix-coin img { animation: none; }
+          .prc-card, .prc-btn, .prc-tpix { transition: none; }
         }
       `}</style>
     </div>
