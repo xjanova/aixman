@@ -106,6 +106,12 @@ export async function uploadBuffer(buffer: Buffer, key: string, contentType: str
   return `${base}/${fullKey}`;
 }
 
+/** The public URL `uploadBuffer(…, key, …)` returns, without uploading; null when storage is not set up. */
+export function publicUrlFor(key: string): string | null {
+  if (!isStorageConfigured()) return null;
+  return `${process.env.R2_PUBLIC_URL!.replace(/\/+$/, '')}/${keyPrefix()}${key}`;
+}
+
 /**
  * Recover the object key from a public URL we handed out.
  *

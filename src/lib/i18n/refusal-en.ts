@@ -37,6 +37,8 @@ const EXACT: Record<string, string> = {
   'ต้องอัปโหลดดนตรีบรรเลงที่จะใส่เสียงร้องก่อน': 'Upload the instrumental to add vocals to first.',
   'ต้องอัปโหลดเสียงร้องที่จะใส่ดนตรีก่อน': 'Upload the vocals to add music to first.',
   'ต้องอัปโหลดเพลงที่จะแยกสเต็มก่อน': 'Upload the song to split into stems first.',
+  'ต้องอัปโหลดเพลงที่จะแก้ท่อนก่อน': 'Upload the song whose part you want to change first.',
+  'ต้องอัปโหลดเพลงแรกที่จะมิกซ์ก่อน': 'Upload the first song to mash up first.',
   'ต้องอัปโหลดเพลงก่อน': 'Upload the song first.',
   'ไฟล์เพลงใหญ่เกิน 20 MB — แปลงเป็น MP3 หรือเลือกช่วงให้สั้นลงก่อน': 'The song file is over 20 MB. Convert it to MP3 or pick a shorter part first.',
 };

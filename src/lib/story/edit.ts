@@ -11,6 +11,7 @@
  * column, so the edit needs no migration.
  */
 import { ASPECTS, LIMITS, LOOKS, MOODS, type StoryMode } from './cinematic';
+import { DEFAULT_KARAOKE_LOOK, parseKaraokeLook, type KaraokeLook } from '@/lib/lyrics/karaoke-look';
 
 export type MusicSource = 'off' | 'song' | 'generate';
 
@@ -30,6 +31,14 @@ export interface EditSettings {
   titleCard: boolean;
   /** MV: a shot with a finished lip-sync dub is cut from the dub (lipsync.ts). */
   lipsync: boolean;
+  /**
+   * MV: the lyrics swept word by word as they are sung (lyrics/karaoke-ass.ts),
+   * from the song's karaoke timing, in place of the per-shot subtitles.
+   */
+  karaoke: boolean;
+  karaokeLook: KaraokeLook;
+  /** MV karaoke: play the song as it is, or without its lead vocal (from the separation). */
+  karaokeAudio: 'song' | 'instrumental';
 }
 
 export function defaultEdit(mode: StoryMode): EditSettings {
@@ -44,6 +53,9 @@ export function defaultEdit(mode: StoryMode): EditSettings {
     transition: mode === 'mv' ? 'cut' : 'fade',
     titleCard: mode === 'film',
     lipsync: mode === 'mv',
+    karaoke: false,
+    karaokeLook: DEFAULT_KARAOKE_LOOK,
+    karaokeAudio: 'song',
   };
 }
 
@@ -73,6 +85,10 @@ export function parseEdit(raw: unknown, mode: StoryMode): EditSettings {
     titleCard: bool(r.titleCard, d.titleCard),
     // A film has no song for a singer to mouth.
     lipsync: mode === 'mv' && bool(r.lipsync, d.lipsync),
+    // Karaoke follows a song's words: an MV only.
+    karaoke: mode === 'mv' && bool(r.karaoke, d.karaoke),
+    karaokeLook: parseKaraokeLook(r.karaokeLook),
+    karaokeAudio: r.karaokeAudio === 'instrumental' ? 'instrumental' : 'song',
   };
 }
 
@@ -179,7 +195,7 @@ export function wrapLine(text: string, maxChars = 42): string[] {
   return lines.slice(0, 3);
 }
 
-function assTime(t: number): string {
+export function assTime(t: number): string {
   const cs = Math.max(0, Math.round(t * 100));
   const h = Math.floor(cs / 360000);
   const m = Math.floor((cs % 360000) / 6000);

@@ -42,7 +42,7 @@ const NEVER_FALLBACK = new Set(['kie', 'simplepod', 'gpuxmine']);
 const SHAPED = new Set([
   'lipsync', 'lipsync-portrait', 'motion', 'video-upscale', 'speech', 'music',
   // Suno's tools (kie-suno.ts): a stem split or a cover is not "a song".
-  'music-cover', 'music-extend', 'music-add', 'music-stems', 'music-sounds',
+  'music-cover', 'music-extend', 'music-add', 'music-stems', 'music-sounds', 'music-replace', 'music-mashup',
   'upscale', 'background', 'instruct', 'inpaint', 'outpaint',
 ]);
 

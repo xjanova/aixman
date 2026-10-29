@@ -69,9 +69,10 @@ const MAX_SECONDS = 360;
  * Runs with `python -I` (no script directory or user site on the path): the
  * directory also holds the downloaded song. Reads 44.1 kHz stereo PCM that
  * ffmpeg made, with soundfile — torchaudio's backends and ffmpeg's PATH stay
- * out of it.
+ * out of it. A fourth argument also writes the song without its vocal (the
+ * other three stems summed) — the karaoke backing track.
  */
-const SEPARATE_PY = String.raw`import sys, time
+export const SEPARATE_PY = String.raw`import sys, time
 import numpy as np
 import soundfile as sf
 import torch
@@ -91,8 +92,12 @@ ref = wav.mean(0)
 mean, std = ref.mean(), ref.std() + 1e-8
 with torch.no_grad():
     sources = apply_model(model, ((wav - mean) / std)[None], shifts=1, split=True, overlap=0.25, progress=False, device="cpu")[0]
-vocals = sources[model.sources.index("vocals")] * std + mean
+vi = model.sources.index("vocals")
+vocals = sources[vi] * std + mean
 sf.write(dest, vocals.clamp(-1, 1).numpy().T, rate, subtype="PCM_16")
+if len(sys.argv) > 4:
+    rest = sum(sources[i] for i in range(len(model.sources)) if i != vi) * std + mean
+    sf.write(sys.argv[4], rest.clamp(-1, 1).numpy().T, rate, subtype="PCM_16")
 print(f"ok {time.time() - started:.1f}")
 `;
 
@@ -103,7 +108,7 @@ export function demucsPython(): string | null {
   return existsSync(venv) ? venv : null;
 }
 
-function demucsThreads(): number {
+export function demucsThreads(): number {
   const n = Number(process.env.DEMUCS_THREADS);
   return Number.isInteger(n) && n > 0 ? n : 8;
 }

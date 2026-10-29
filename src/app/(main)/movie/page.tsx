@@ -32,6 +32,8 @@ import { CameraPreview } from "@/components/camera-preview/CameraPreview";
 import { isCameraMoveId, isShotSizeId, MOVE_HINTS, SIZE_HINTS } from "@/lib/camera-shots";
 import { useLocale, useT } from "@/lib/i18n/client";
 import { formatCredits, formatDate, formatNumber, type Msg } from "@/lib/i18n/locale";
+import { KaraokeStage, karaokeProgressText, karaokeWorking, useKaraoke } from "@/components/xdreamer/karaoke";
+import { KARAOKE_POSITIONS, KARAOKE_THEMES, type KaraokeLook, type KaraokePosition, type KaraokeTheme } from "@/lib/lyrics/karaoke-look";
 
 interface Character {
   id?: number;
@@ -162,6 +164,10 @@ interface EditSettings {
   transition: "cut" | "fade";
   titleCard: boolean;
   lipsync: boolean;
+  /** MV: the lyrics swept word by word as they are sung, instead of plain subtitles. */
+  karaoke: boolean;
+  karaokeLook: KaraokeLook;
+  karaokeAudio: "song" | "instrumental";
 }
 interface Vocals {
   state: "none" | "separating" | "done" | "failed" | "stale";
@@ -194,6 +200,8 @@ interface ProjectRow {
 }
 interface Song {
   id: number;
+  /** Which take of the order (Suno makes two). */
+  track: number;
   title: string;
   url: string;
   lyrics: string;
@@ -336,11 +344,12 @@ function CharacterEditor({ value, onChange }: { value: Character[]; onChange: (n
 
 // ─── New project ────────────────────────────────────────────────────────
 
-function NewProject({ onCreated }: { onCreated: (id: number) => void }) {
+function NewProject({ onCreated, fromSong }: { onCreated: (id: number) => void; fromSong?: { id: number; track: number } | null }) {
   const { toast } = useToast();
   const t = useT();
   const { locale } = useLocale();
-  const [mode, setMode] = useState<"film" | "mv">("film");
+  // From the studio's "ทำ MV คาราโอเกะ": an MV of that song, picked once the list is in.
+  const [mode, setMode] = useState<"film" | "mv">(fromSong ? "mv" : "film");
   const [title, setTitle] = useState("");
   const [brief, setBrief] = useState("");
   const [look, setLook] = useState("film");
@@ -349,7 +358,7 @@ function NewProject({ onCreated }: { onCreated: (id: number) => void }) {
   const [aspect, setAspect] = useState("16:9");
   const [characters, setCharacters] = useState<Character[]>([{ name: "", description: "", referenceUrl: null }]);
   const [songs, setSongs] = useState<Song[] | null>(null);
-  const [song, setSong] = useState<{ kind: "upload"; url: string; name: string; seconds: number | null } | { kind: "mine"; id: number; title: string } | null>(null);
+  const [song, setSong] = useState<{ kind: "upload"; url: string; name: string; seconds: number | null } | { kind: "mine"; id: number; track: number; title: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [uploadingSong, setUploadingSong] = useState(false);
 
@@ -357,12 +366,19 @@ function NewProject({ onCreated }: { onCreated: (id: number) => void }) {
     if (mode !== "mv" || songs) return;
     let active = true;
     getJson<{ songs: Song[] }>("/api/story/songs").then((r) => {
-      if (active) setSongs(r.ok ? r.data.songs : []);
+      if (!active) return;
+      const list = r.ok ? r.data.songs : [];
+      setSongs(list);
+      const wanted = fromSong ? list.find((s) => s.id === fromSong.id && s.track === fromSong.track) : undefined;
+      if (wanted) {
+        setSong({ kind: "mine", id: wanted.id, track: wanted.track, title: wanted.title });
+        setBrief((b) => b.trim() ? b : wanted.lyrics);
+      }
     });
     return () => {
       active = false;
     };
-  }, [mode, songs]);
+  }, [mode, songs, fromSong]);
 
   const pickSong = async (file: File | undefined) => {
     if (!file) return;
@@ -374,7 +390,7 @@ function NewProject({ onCreated }: { onCreated: (id: number) => void }) {
   };
 
   const chooseMine = (s: Song) => {
-    setSong({ kind: "mine", id: s.id, title: s.title });
+    setSong({ kind: "mine", id: s.id, track: s.track, title: s.title });
     // Fill the lyrics the song was made with, but never over the customer's own.
     if (s.lyrics && !brief.trim()) setBrief(s.lyrics);
   };
@@ -395,7 +411,7 @@ function NewProject({ onCreated }: { onCreated: (id: number) => void }) {
         mood,
         aspect,
         characters: characters.filter((c) => c.name.trim() || c.referenceUrl),
-        song: song?.kind === "upload" ? { uploadUrl: song.url } : song?.kind === "mine" ? { generationId: song.id } : undefined,
+        song: song?.kind === "upload" ? { uploadUrl: song.url } : song?.kind === "mine" ? { generationId: song.id, track: song.track } : undefined,
       })
     );
     setBusy(false);
@@ -433,7 +449,7 @@ function NewProject({ onCreated }: { onCreated: (id: number) => void }) {
             <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6, maxHeight: 180, overflowY: "auto" }}>
               <span style={{ fontSize: 12, color: "#94a3b8" }}>{t("หรือเลือกเพลงที่สร้างบนเว็บ:", "Or pick a song you made here:")}</span>
               {songs.map((s) => (
-                <button key={s.id} style={{ ...chip(song?.kind === "mine" && song.id === s.id), textAlign: "left" }} onClick={() => chooseMine(s)}>
+                <button key={`${s.id}-${s.track}`} style={{ ...chip(song?.kind === "mine" && song.id === s.id && song.track === s.track), textAlign: "left" }} onClick={() => chooseMine(s)}>
                   🎵 {s.title}
                 </button>
               ))}
@@ -1304,6 +1320,8 @@ function FilmPanel({ view, busy, onEdit, onMusic, onAssemble }: {
       ) : (<>
       <div style={{ fontSize: 12, color: "#64748b" }}>{t("เปิด/ปิดได้ทุกอย่าง — ระบบนำช็อตที่เสร็จแล้วมาต่อกันตามลำดับ", "Switch anything on or off — the finished shots are joined in order")}</div>
 
+      {isMv && project.songUrl && <KaraokeCut project={project} edit={edit} onEdit={onEdit} />}
+
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <Toggle on={edit.clipAudio} onChange={(v) => onEdit({ clipAudio: v })} label={t("เสียงจากคลิป", "Sound from the clips")} hint={t("บทพูดไทยและเสียงบรรยากาศที่โมเดลสร้างมากับภาพ", "The lines and ambient sound the model made with the picture")} />
@@ -1320,9 +1338,11 @@ function FilmPanel({ view, busy, onEdit, onMusic, onAssemble }: {
           )}
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <Toggle on={edit.subtitles} onChange={(v) => onEdit({ subtitles: v })} label={isMv ? t("ซับเนื้อเพลง", "Lyric subtitles") : t("ซับไทย", "Subtitles")}
-            hint={isMv ? t("จากเนื้อเพลงของแต่ละช็อต", "From each shot's lyrics") : t("จากบทพูดของแต่ละช็อต", "From each shot's lines")}
-          />
+          {!(isMv && edit.karaoke) && (
+            <Toggle on={edit.subtitles} onChange={(v) => onEdit({ subtitles: v })} label={isMv ? t("ซับเนื้อเพลง", "Lyric subtitles") : t("ซับไทย", "Subtitles")}
+              hint={isMv ? t("จากเนื้อเพลงของแต่ละช็อต", "From each shot's lyrics") : t("จากบทพูดของแต่ละช็อต", "From each shot's lines")}
+            />
+          )}
           <Toggle on={edit.coverFakeSubs} onChange={(v) => onEdit({ coverFakeSubs: v })} label={t("เบลอตัวหนังสือมั่วที่ LTX ใส่มา", "Blur the garbled text LTX burns in")} hint={t("เฉพาะช็อตที่สร้างด้วย LTX-2.5", "Only shots made with LTX-2.5")} />
           <Toggle on={edit.transition === "fade"} onChange={(v) => onEdit({ transition: v ? "fade" : "cut" })} label={t("เฟดระหว่างช็อต", "Fade between shots")} hint={t("ปิด = ตัดชนตรง ๆ", "Off = straight cuts")} />
           <Toggle on={edit.titleCard} onChange={(v) => onEdit({ titleCard: v })} label={t("ชื่อเรื่องตอนเปิด", "Title card at the start")} hint={project.title} />
@@ -1365,6 +1385,75 @@ function FilmPanel({ view, busy, onEdit, onMusic, onAssemble }: {
         </div>
       )}
       </>)}
+    </div>
+  );
+}
+
+// ─── MV karaoke ─────────────────────────────────────────────────────────
+
+/**
+ * The karaoke switch of the cut: the song's lyrics timed word by word (free,
+ * on our server, the same timing the studio makes), how they look, and
+ * whether the film plays the song or its minus-one. Plain lyric subtitles give
+ * way to it.
+ */
+function KaraokeCut({ project, edit, onEdit }: { project: Project; edit: EditSettings; onEdit: (patch: Partial<EditSettings>) => void }) {
+  const t = useT();
+  const k = useKaraoke(edit.karaoke ? { kind: "story", projectId: project.id, lyrics: project.brief } : null);
+  const status = k.status;
+  const doc = status?.state === "done" ? status.doc : null;
+  const look = edit.karaokeLook;
+  const setLook = (patch: Partial<KaraokeLook>) => onEdit({ karaokeLook: { ...look, ...patch } });
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: 12, borderRadius: 12, background: "rgba(2,6,23,0.4)", border: edit.karaoke ? "1px solid rgba(250,204,21,0.35)" : "1px solid transparent" }}>
+      <Toggle on={edit.karaoke} onChange={(v) => onEdit({ karaoke: v })} label={t("🎤 MV คาราโอเกะ", "🎤 Karaoke MV")}
+        hint={t("เนื้อร้องภาษาไทยวิ่งทีละคำตามเสียงร้องจริง ใช้ฟอนต์ของเราเอง ไม่มีตัวสี่เหลี่ยม · แทนซับเนื้อเพลงธรรมดา", "Thai lyrics light up word by word with the real vocal, in our own font — no boxes · replaces the plain lyric subtitles")} />
+      {edit.karaoke && (
+        <>
+          {status && karaokeWorking(status) && <div style={{ fontSize: 13, color: "#fbbf24" }}>{karaokeProgressText(status, t)}</div>}
+          {status?.state === "failed" && <div style={{ fontSize: 13, color: "#fca5a5" }}>{status.error}</div>}
+          {k.error && <div style={{ fontSize: 13, color: "#fca5a5" }}>{k.error}</div>}
+          {!doc && !karaokeWorking(status) && (
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <button style={{ ...primary, opacity: k.starting || !k.available ? 0.6 : 1 }} disabled={k.starting || !k.available} onClick={() => k.start(status?.state === "failed")}>
+                {k.starting ? t("กำลังเริ่ม…", "Starting…") : t("🎯 จับจังหวะเนื้อร้อง (ฟรี)", "🎯 Time the lyrics (free)")}
+              </button>
+              <span style={{ fontSize: 12, color: "#94a3b8" }}>
+                {k.available
+                  ? t("ใช้เนื้อเพลงของโปรเจกต์ (ต้องตรงกับที่ร้อง) · ราว 2–5 นาที ปิดหน้านี้ได้", "Uses the project's lyrics (they must match what is sung) · about 2–5 minutes; you can close this page")
+                  : t("ตัวจับจังหวะยังไม่เปิดให้ใช้", "Karaoke timing isn't open yet")}
+              </span>
+            </div>
+          )}
+          {doc && (
+            <KaraokeStage key={doc.songUrl} src={project.songUrl!} timing={doc.timing} theme={look.theme} onTheme={(theme) => setLook({ theme })} onSave={k.save} />
+          )}
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+            <span style={{ fontSize: 12, color: "#94a3b8", minWidth: 70 }}>{t("ตำแหน่ง", "Position")}</span>
+            {(Object.keys(KARAOKE_POSITIONS) as KaraokePosition[]).map((p) => (
+              <button key={p} style={chip(look.position === p)} onClick={() => setLook({ position: p })}>{t(KARAOKE_POSITIONS[p])}</button>
+            ))}
+          </div>
+          {!doc && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+              <span style={{ fontSize: 12, color: "#94a3b8", minWidth: 70 }}>{t("สี", "Colours")}</span>
+              {(Object.keys(KARAOKE_THEMES) as KaraokeTheme[]).map((k2) => (
+                <button key={k2} style={{ ...chip(look.theme === k2), color: KARAOKE_THEMES[k2].sung }} onClick={() => setLook({ theme: k2 })}>● {t(KARAOKE_THEMES[k2].label)}</button>
+              ))}
+            </div>
+          )}
+          <Toggle on={look.nextLine} onChange={(v) => setLook({ nextLine: v })} label={t("โชว์บรรทัดถัดไปรอไว้", "Show the next line waiting")} hint={t("สองแถวสลับกันแบบตู้คาราโอเกะ", "Two rows taking turns, like a karaoke box")} />
+          <Toggle on={look.countdown} onChange={(v) => setLook({ countdown: v })} label={t("จุดนับถอยหลังก่อนร้อง", "Count-in dots before singing")} hint={t("หลังช่วงดนตรียาว ๆ", "After a long instrumental gap")} />
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+            <span style={{ fontSize: 12, color: "#94a3b8", minWidth: 70 }}>{t("เสียงใน MV", "MV audio")}</span>
+            <button style={chip(edit.karaokeAudio === "song")} onClick={() => onEdit({ karaokeAudio: "song" })}>{t("เพลงเต็ม", "The full song")}</button>
+            <button style={{ ...chip(edit.karaokeAudio === "instrumental"), opacity: doc && !doc.instrumentalUrl ? 0.5 : 1 }} disabled={!!doc && !doc.instrumentalUrl}
+              onClick={() => onEdit({ karaokeAudio: "instrumental" })}>
+              {t("ดนตรีไม่มีเสียงร้อง (ร้องเอง)", "Backing track only (sing it yourself)")}
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -2014,8 +2103,14 @@ function MovieStudio() {
   const router = useRouter();
   const search = useSearchParams();
   const openId = Number(search.get("p")) || null;
+  const songId = Number(search.get("song"));
+  const songTrack = Number(search.get("track") ?? 0);
+  const fromSong =
+    search.get("new") === "mv" && Number.isInteger(songId) && songId > 0 && Number.isInteger(songTrack) && songTrack >= 0
+      ? { id: songId, track: songTrack }
+      : null;
   const [projects, setProjects] = useState<ProjectRow[] | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState(fromSong !== null);
 
   useEffect(() => {
     if (session === null) router.push(loginHref());
@@ -2065,7 +2160,7 @@ function MovieStudio() {
         ) : creating ? (
           <>
             <button style={{ ...btn, alignSelf: "flex-start" }} onClick={() => setCreating(false)}>{t("← กลับ", "← Back")}</button>
-            <NewProject onCreated={(id) => open(id)} />
+            <NewProject onCreated={(id) => open(id)} fromSong={fromSong} />
           </>
         ) : (
           <>

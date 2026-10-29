@@ -1,7 +1,8 @@
 /**
  * Suno, as the music tab sells it: songs, covers, extensions, vocals or a band
- * added to a track, stems, and short sounds — seven tools, each its own row in
- * the KIE catalogue (kie-catalog.ts), all built here.
+ * added to a track, stems, short sounds, one part of a song sung anew, and two
+ * songs mashed into one — nine tools, each its own row in the KIE catalogue
+ * (kie-catalog.ts), all built here.
  *
  * Field names and limits are from docs.kie.ai/suno-api (2026-10-29):
  * - only V6, V6_MINI and V6_WILD are current (V4 … V5_5 are discontinued) and
@@ -19,9 +20,10 @@
  *
  * Pure, so the studio can import the labels and limits it shows.
  */
+import type { Msg } from '@/lib/i18n/locale';
 import type { KiePriceTier } from './kie-pricing';
 
-export type SunoTool = 'song' | 'cover' | 'extend' | 'add-vocals' | 'add-instrumental' | 'stems' | 'sounds';
+export type SunoTool = 'song' | 'cover' | 'extend' | 'add-vocals' | 'add-instrumental' | 'stems' | 'sounds' | 'replace' | 'mashup';
 
 /** The row each tool lives on: its subcategory gives the music tab's mode. */
 export const SUNO_SUBCATEGORY: Record<SunoTool, string> = {
@@ -32,6 +34,8 @@ export const SUNO_SUBCATEGORY: Record<SunoTool, string> = {
   'add-instrumental': 'music-add',
   stems: 'music-stems',
   sounds: 'music-sounds',
+  replace: 'music-replace',
+  mashup: 'music-mashup',
 };
 
 /** The versions on sale, each a tier on the studio's chips. One price for all three. */
@@ -94,6 +98,15 @@ export const SUNO_SOURCE_MAX_SECONDS = 8 * 60;
 /** What a stem split may start from (KIE: 20 MB). Our upload cap is lower; a song made here can be larger. */
 export const SUNO_STEMS_MAX_BYTES = 20 * 1024 * 1024;
 
+/**
+ * Replace Section (KIE `replace-section`): the part sung anew is at least 10 s
+ * and at most half the track, given to two decimals.
+ */
+export const SUNO_REPLACE_MIN_SECONDS = 10;
+export const SUNO_REPLACE_MAX_SHARE = 0.5;
+/** The most words one order carries: a song's (`lyrics`) or, for Replace Section, the whole song's after the change (`full_lyrics`). */
+export const SUNO_LYRICS_MAX = 5000;
+
 /** Which tools work on a track the customer brings. */
 export function sunoTakesSource(tool: SunoTool): boolean {
   return tool !== 'song' && tool !== 'sounds';
@@ -128,6 +141,27 @@ export interface SunoParams {
   loop?: boolean;
   tempo?: number;
   key?: string;
+  /** Replace Section: the part sung anew, seconds into the track. */
+  replaceFrom?: number;
+  replaceTo?: number;
+  /** Replace Section: the whole song's words with the new part in place. */
+  fullLyrics?: string;
+  /** Mashup: the second track (ours, checked before charging like the first). */
+  mashWith?: string;
+}
+
+/**
+ * Thai as Suno should read it: Unicode-composed, invisible characters out,
+ * and the two common mistypings mended — "ํา" (nikhahit + sara aa, also with
+ * the tone mark between them) is "ำ", "เเ" (sara e twice) is "แ". A model
+ * reads those as other letters and sings them wrong.
+ */
+export function thaiForSinging(text: string): string {
+  return text
+    .normalize('NFC')
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
+    .replace(/\u0E4D([\u0E48-\u0E4B]?)\u0E32/g, '$1\u0E33')
+    .replace(/\u0E40\u0E40/g, '\u0E41');
 }
 
 function text(v: unknown, max: number): string | undefined {
@@ -180,6 +214,21 @@ export function sanitizeSunoParams(raw: unknown): SunoParams {
   const tempo = whole(r.tempo, 1, 300);
   if (tempo !== undefined) out.tempo = tempo;
   if (typeof r.key === 'string' && (SUNO_KEYS as readonly string[]).includes(r.key) && r.key !== 'Any') out.key = r.key;
+  const at = (v: unknown) => {
+    const n = typeof v === 'number' || typeof v === 'string' ? Number(v) : NaN;
+    return Number.isFinite(n) && n >= 0 ? Math.round(Math.min(n, SUNO_SOURCE_MAX_SECONDS) * 100) / 100 : undefined;
+  };
+  const replaceFrom = at(r.replaceFrom);
+  const replaceTo = at(r.replaceTo);
+  if (replaceFrom !== undefined && replaceTo !== undefined && replaceTo > replaceFrom) {
+    out.replaceFrom = replaceFrom;
+    out.replaceTo = replaceTo;
+  }
+  if (typeof r.fullLyrics === 'string') {
+    const full = r.fullLyrics.replace(/\r\n?/g, '\n').replace(/[\u0000-\u0008\u000B-\u001F\u007F]+/g, ' ').trim();
+    if (full) out.fullLyrics = full.slice(0, SUNO_LYRICS_MAX);
+  }
+  if (typeof r.mashWith === 'string' && r.mashWith.length <= 2000 && /^https:\/\/\S+$/i.test(r.mashWith)) out.mashWith = r.mashWith;
   return out;
 }
 
@@ -196,7 +245,7 @@ export interface SunoSourceFacts {
 
 export type SunoSourceCheck =
   | { ok: true; continueAt?: number }
-  | { ok: false; code: string; message: string };
+  | { ok: false; code: string; message: string | Msg };
 
 // Whole seconds first, rounded up: 539.6 s is 9:00, never 8:60, and a song
 // refused for passing 8 minutes never reads as 8:00.
@@ -206,14 +255,85 @@ const minutes = (s: number) => {
 };
 
 /**
+ * Whether [from, to] may be sung anew in a track of `seconds` — the rules
+ * KIE refuses after charging: inside the track, at least 10 s, at most half
+ * of it. The studio checks the same before the button is pressed.
+ */
+export function sunoReplaceWindow(
+  seconds: number,
+  from: number | undefined,
+  to: number | undefined
+): { ok: true } | { ok: false; code: string; message: Msg } {
+  if (from === undefined || to === undefined || !(to > from)) {
+    return { ok: false, code: 'replace-window', message: { th: 'เลือกช่วงที่จะร้องใหม่ก่อน', en: 'Pick the part to sing anew first.' } };
+  }
+  if (to > seconds + 0.05) {
+    return {
+      ok: false,
+      code: 'replace-window',
+      message: { th: `ช่วงที่เลือกเลยท้ายเพลง (${minutes(seconds)} นาที) — เลือกใหม่`, en: `The part runs past the end of the song (${minutes(seconds)}) — pick it again.` },
+    };
+  }
+  if (to - from < SUNO_REPLACE_MIN_SECONDS - 0.005) {
+    return {
+      ok: false,
+      code: 'replace-too-short',
+      message: { th: `ช่วงที่ร้องใหม่ต้องยาวอย่างน้อย ${SUNO_REPLACE_MIN_SECONDS} วินาที`, en: `The part to sing anew must be at least ${SUNO_REPLACE_MIN_SECONDS} seconds long.` },
+    };
+  }
+  const most = Math.floor(seconds * SUNO_REPLACE_MAX_SHARE * 100) / 100;
+  if (to - from > most + 0.005) {
+    return {
+      ok: false,
+      code: 'replace-too-long',
+      message: {
+        th: `ช่วงที่ร้องใหม่ยาวได้ไม่เกินครึ่งเพลง (${most.toFixed(1)} วินาที)`,
+        en: `The part to sing anew can be at most half the song (${most.toFixed(1)} seconds).`,
+      },
+    };
+  }
+  return { ok: true };
+}
+
+/**
  * Whether the track fits the tool, read from the stored file before charging
  * — KIE refuses a long one after it has taken the order. An extension also
  * gets its start fixed here: inside the track, else a second before its end.
  */
-export function checkSunoSource(tool: SunoTool, facts: SunoSourceFacts, params: SunoParams): SunoSourceCheck {
+export function checkSunoSource(tool: SunoTool, facts: SunoSourceFacts, params: SunoParams, second?: SunoSourceFacts): SunoSourceCheck {
   if (!sunoTakesSource(tool)) return { ok: true };
   if (!(facts.seconds > 0)) {
     return { ok: false, code: 'voice-unreadable', message: 'อ่านความยาวของเพลงไม่ได้ กรุณาใช้ไฟล์ MP3, WAV หรือ M4A' };
+  }
+  if (tool === 'mashup') {
+    if (!second) return { ok: false, code: 'missing-audio', message: { th: 'ต้องเลือกเพลงที่สองที่จะมิกซ์ก่อน', en: 'Pick the second song to mash up first.' } };
+    if (!(second.seconds > 0)) {
+      return {
+        ok: false,
+        code: 'voice-unreadable',
+        message: { th: 'อ่านความยาวของเพลงที่สองไม่ได้ กรุณาใช้ไฟล์ MP3, WAV หรือ M4A', en: 'We couldn’t read the second song’s length. Please use an MP3, WAV or M4A file.' },
+      };
+    }
+    const longest = Math.max(facts.seconds, second.seconds);
+    if (longest > SUNO_SOURCE_MAX_SECONDS) {
+      return {
+        ok: false,
+        code: 'song-too-long',
+        message: { th: `เพลงที่จะมิกซ์ยาว ${minutes(longest)} นาที — ใช้ได้เพลงละไม่เกิน 8 นาที`, en: `A song to mash up runs ${minutes(longest)}. Each can be up to 8 minutes.` },
+      };
+    }
+    return { ok: true };
+  }
+  if (tool === 'replace') {
+    if (facts.seconds > SUNO_SOURCE_MAX_SECONDS) {
+      return { ok: false, code: 'song-too-long', message: `เพลงต้นฉบับยาว ${minutes(facts.seconds)} นาที — ใช้ได้ไม่เกิน 8 นาที เลือกช่วงให้สั้นลงก่อน` };
+    }
+    const window = sunoReplaceWindow(facts.seconds, params.replaceFrom, params.replaceTo);
+    if (!window.ok) return window;
+    if (!params.fullLyrics) {
+      return { ok: false, code: 'missing-text', message: { th: 'ต้องมีเนื้อเพลงทั้งเพลงหลังแก้ท่อนนี้', en: 'The whole song’s lyrics, with this part changed, are needed.' } };
+    }
+    return { ok: true };
   }
   if (tool === 'stems') {
     if (facts.bytes > SUNO_STEMS_MAX_BYTES) {
@@ -295,8 +415,8 @@ function tuning(o: SunoOrder): Record<string, unknown> {
 /** The words to sing, or none: an instrumental sends neither lyrics nor a voice. */
 function voiceOf(o: SunoOrder): { lyrics?: string; vocal_gender?: 'm' | 'f' } {
   if (o.instrumental) return {};
-  const lyrics = (o.lyrics ?? '').trim();
-  return { lyrics: lyrics ? cut(lyrics, 5000) : undefined, vocal_gender: o.vocalGender };
+  const lyrics = thaiForSinging(o.lyrics ?? '').trim();
+  return { lyrics: lyrics ? cut(lyrics, SUNO_LYRICS_MAX) : undefined, vocal_gender: o.vocalGender };
 }
 
 /** The style line, never empty where KIE requires one. */
@@ -406,6 +526,44 @@ export function buildSunoTask(tool: SunoTool, o: SunoOrder): SunoTask {
           stem_name: o.tier === 'one' ? o.suno.stem ?? SUNO_STEMS[0].id : undefined,
         }),
       };
+    case 'replace':
+      // Our own file: upload_url + model, never KIE's task_id / audio_id.
+      return {
+        model: 'ai-music-api/replace-section',
+        input: clean({
+          upload_url: o.audio,
+          model: o.tier,
+          prompt: cut(o.prompt.trim() || o.style.trim() || 'Sing this part anew', 3000),
+          tags: styleOf(o, 'pop'),
+          title: titleOf(o, 100),
+          infill_start_s: o.suno.replaceFrom,
+          infill_end_s: o.suno.replaceTo,
+          full_lyrics: o.suno.fullLyrics ? cut(thaiForSinging(o.suno.fullLyrics), SUNO_LYRICS_MAX) : undefined,
+          ...voiceOf({ ...o, instrumental: false }),
+          negative_tags: excludeOf(o),
+          ...tuning({ ...o, instrumental: false }),
+        }),
+      };
+    case 'mashup': {
+      const voice = voiceOf({ ...o, instrumental: false });
+      // Both tracks or none: checkSunoSource refuses an order without the second before charging.
+      const tracks = [o.audio, o.suno.mashWith].filter((u): u is string => !!u);
+      return {
+        model: 'ai-music-api/mashup',
+        input: clean({
+          upload_url_list: tracks.length > 0 ? tracks : undefined,
+          model: o.tier,
+          style: styleOf(o, 'pop mashup'),
+          title: titleOf(o, 100),
+          ...voice,
+          // KIE takes `lyrics` over `prompt`: the description goes only when there are no words.
+          prompt: !voice.lyrics && o.prompt.trim() ? cut(o.prompt.trim(), SUNO_LYRICS_MAX) : undefined,
+          duration: o.suno.length,
+          negative_tags: excludeOf(o),
+          ...tuning({ ...o, instrumental: false }),
+        }),
+      };
+    }
     case 'sounds':
       return {
         model: 'ai-music-api/sounds',
@@ -499,6 +657,10 @@ export function sunoMissingSource(tool: SunoTool): string {
       return 'ต้องอัปโหลดเสียงร้องที่จะใส่ดนตรีก่อน';
     case 'stems':
       return 'ต้องอัปโหลดเพลงที่จะแยกสเต็มก่อน';
+    case 'replace':
+      return 'ต้องอัปโหลดเพลงที่จะแก้ท่อนก่อน';
+    case 'mashup':
+      return 'ต้องอัปโหลดเพลงแรกที่จะมิกซ์ก่อน';
     default:
       return 'ต้องอัปโหลดเพลงก่อน';
   }
@@ -522,6 +684,10 @@ export function sunoStudioOptions(tool: SunoTool) {
       maxSourceBytes: tool === 'stems' ? SUNO_STEMS_MAX_BYTES : null,
       stems: tool === 'stems' ? SUNO_STEMS : null,
       keys: tool === 'sounds' ? [...SUNO_KEYS] : null,
+      /** Replace Section: the part to sing anew, picked by line (karaoke timing) or by seconds. */
+      replace: tool === 'replace' ? { minSeconds: SUNO_REPLACE_MIN_SECONDS, maxShare: SUNO_REPLACE_MAX_SHARE } : null,
+      /** Mashup: a second track. */
+      secondSong: tool === 'mashup',
     },
   };
 }

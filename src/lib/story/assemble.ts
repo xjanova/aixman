@@ -15,8 +15,11 @@ import {
   type CutShot,
   type EditSettings,
 } from './edit';
-import type { StoryMode } from './cinematic';
+import { ASPECTS, type StoryMode } from './cinematic';
 import { StoryJobError, download, enqueueJob, hasAudio, runFfmpeg } from './media';
+import { buildKaraokeAss } from '@/lib/lyrics/karaoke-ass';
+import { KaraokeError, findKaraoke, type KaraokeDoc } from '@/lib/lyrics/karaoke-job';
+import type { KaraokeTiming } from '@/lib/lyrics/karaoke';
 import { usableDub } from './sing';
 import type { Msg } from '@/lib/i18n/locale';
 import { packMsg, registerStoredMsgs } from '@/lib/i18n/messages';
@@ -147,6 +150,34 @@ async function refundWithin(tx: Tx, userId: number, amount: number, projectId: n
   });
 }
 
+/**
+ * The MV's karaoke timing for a cut with the karaoke switch on: its song timed
+ * to its lyrics as they are now. Refused (before any charge, by the route)
+ * when it has not been made, and when the backing track is asked for but the
+ * timing has none.
+ */
+export async function karaokeForCut(project: { userId: number; songUrl: string | null; brief: string | null }, edit: EditSettings): Promise<KaraokeDoc> {
+  if (!project.songUrl) {
+    throw new StoryJobError({ th: 'โปรเจกต์นี้ไม่มีเพลง ปิดคาราโอเกะหรือเลือกเพลงใหม่', en: 'This project has no song. Turn karaoke off or pick a new song.' });
+  }
+  const found = await findKaraoke({ userId: project.userId, songUrl: project.songUrl, lyrics: project.brief ?? '' }).catch((e) => {
+    throw e instanceof KaraokeError ? new StoryJobError(e.msg) : e;
+  });
+  if (found.status.state !== 'done') {
+    throw new StoryJobError({
+      th: 'ยังไม่ได้จับจังหวะคาราโอเกะของเนื้อเพลงนี้ — กด “จับจังหวะเนื้อร้อง” ก่อน หรือปิดคาราโอเกะ',
+      en: "The karaoke for these lyrics isn't timed yet — press “Time the lyrics” first, or turn karaoke off.",
+    });
+  }
+  if (edit.karaokeAudio === 'instrumental' && edit.music === 'song' && !found.status.doc.instrumentalUrl) {
+    throw new StoryJobError({
+      th: 'ยังไม่มีเพลงแบบไม่มีเสียงร้อง — จับจังหวะใหม่ หรือเลือกเล่นเพลงเต็ม',
+      en: "There's no backing track without vocals yet — time the lyrics again, or play the full song.",
+    });
+  }
+  return found.status.doc;
+}
+
 /** True when an assembly claim is old enough to count as dead. */
 export function assemblyStale(updatedAt: Date): boolean {
   return Date.now() - updatedAt.getTime() > STALE_MS;
@@ -204,6 +235,9 @@ async function assemble(projectId: number): Promise<void> {
     }
     musicUrl = gen.resultUrl;
   }
+  // Karaoke: the words swept in song time, over the song or its backing track.
+  const karaoke = mode === 'mv' && edit.karaoke ? await karaokeForCut(project, edit) : null;
+  if (karaoke && musicUrl && edit.karaokeAudio === 'instrumental') musicUrl = karaoke.instrumentalUrl;
 
   const dir = await mkdtemp(path.join(tmpdir(), 'aixman-film-'));
   try {
@@ -221,6 +255,7 @@ async function assemble(projectId: number): Promise<void> {
       edit,
       music: musicUrl ? 'music.bin' : null,
       title: edit.titleCard ? project.title : undefined,
+      karaoke: karaoke?.timing ?? null,
     });
     const size = (await stat(out)).size;
     if (size > MAX_OUTPUT_BYTES) throw new StoryJobError({ th: 'ไฟล์หนังใหญ่เกินไป ลดจำนวนช็อตลง', en: 'The film file is too large. Use fewer shots.' });
@@ -247,6 +282,8 @@ export async function renderFilm(opts: {
   edit: EditSettings;
   music: string | null;
   title?: string;
+  /** Song-time karaoke (the MV's music starts with the film), in place of the shot subtitles. */
+  karaoke?: KaraokeTiming | null;
 }): Promise<string> {
   const { dir, shots, edit } = opts;
   await mkdir(path.join(dir, 'fonts'), { recursive: true });
@@ -286,9 +323,13 @@ export async function renderFilm(opts: {
 
   const inputs = ['-i', 'joined.mp4'];
   if (opts.music) inputs.push('-stream_loop', '-1', '-i', opts.music);
-  const cues = edit.subtitles ? subtitleCues(shots, fade) : [];
-  const burnText = cues.length > 0 || Boolean(opts.title?.trim());
-  if (burnText) await writeFile(path.join(dir, 'film.ass'), buildAss({ aspect: opts.aspect, cues, title: opts.title, font: FONT_NAME }));
+  const cues = edit.subtitles && !opts.karaoke ? subtitleCues(shots, fade) : [];
+  const burnText = Boolean(opts.karaoke) || cues.length > 0 || Boolean(opts.title?.trim());
+  const frame = ASPECTS[opts.aspect] ?? ASPECTS['16:9'];
+  const ass = opts.karaoke
+    ? buildKaraokeAss({ width: frame.width, height: frame.height, timing: opts.karaoke, look: edit.karaokeLook, font: FONT_NAME, title: opts.title })
+    : buildAss({ aspect: opts.aspect, cues, title: opts.title, font: FONT_NAME });
+  if (burnText) await writeFile(path.join(dir, 'film.ass'), ass);
   const mix = mixFilter({
     clips: edit.clipAudio,
     music: Boolean(opts.music),

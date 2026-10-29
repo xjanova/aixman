@@ -187,7 +187,7 @@ test('a track longer than 8 minutes is refused before charging; stems also over 
   }
   const message = (seconds: number) => {
     const r = checkSunoSource('cover', { seconds, bytes: 1000 }, {});
-    return r.ok === false ? r.message : '';
+    return r.ok === false && typeof r.message === 'string' ? r.message : '';
   };
   assert.match(message(539.6), /ยาว 9:00 นาที/);
   assert.match(message(480.2), /ยาว 8:01 นาที/);
@@ -231,9 +231,12 @@ test('without origin_data, the file name’s suffix names a stem; anything else 
 
 // ---------------------------------------------------------------- catalogue and prices
 
-const SUNO_KEYS = ['kie/suno-v6', 'kie/suno-cover', 'kie/suno-extend', 'kie/suno-add-vocals', 'kie/suno-add-instrumental', 'kie/suno-stems', 'kie/suno-sounds'];
+const SUNO_KEYS = [
+  'kie/suno-v6', 'kie/suno-cover', 'kie/suno-extend', 'kie/suno-add-vocals', 'kie/suno-add-instrumental',
+  'kie/suno-stems', 'kie/suno-sounds', 'kie/suno-replace', 'kie/suno-mashup',
+];
 
-test('seven Suno rows, each with its tool, a version picker (stems: the split) and a builder', () => {
+test('nine Suno rows, each with its tool, a version picker (stems: the split) and a builder', () => {
   for (const key of SUNO_KEYS) {
     const e = getKieEntry(key);
     assert.ok(e, key);
@@ -241,7 +244,7 @@ test('seven Suno rows, each with its tool, a version picker (stems: the split) a
     assert.equal(e!.tierParam, 'quality', key);
     assert.deepEqual(e!.tiers, e!.suno === 'stems' ? SUNO_STEM_TIERS : SUNO_VERSIONS, key);
   }
-  assert.equal(KIE_CATALOG.filter((e) => e.suno).length, 7);
+  assert.equal(KIE_CATALOG.filter((e) => e.suno).length, 9);
 });
 
 test('prices at the default basis: 12 a song or edit, stems 10 / 47 / 19, a sound 3', () => {
@@ -254,6 +257,8 @@ test('prices at the default basis: 12 a song or edit, stems 10 / 47 / 19, a soun
   assert.equal(price('kie/suno-stems', 'one'), 19);
   assert.equal(price('kie/suno-stems'), 10, 'the default split is the cheapest');
   assert.equal(price('kie/suno-sounds'), 3);
+  assert.equal(price('kie/suno-replace'), 5);
+  assert.equal(price('kie/suno-mashup'), 12);
 });
 
 test('nothing a customer reads names the vendor', () => {
@@ -267,7 +272,7 @@ test('nothing a customer reads names the vendor', () => {
   }
   for (const tool of ['cover', 'extend', 'stems'] as SunoTool[]) {
     const r = checkSunoSource(tool, { seconds: 9999, bytes: 99e6 }, {});
-    assert.doesNotMatch(r.ok ? '' : r.message, VENDOR);
+    assert.doesNotMatch(r.ok ? '' : JSON.stringify(r.message), VENDOR);
   }
 });
 

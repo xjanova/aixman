@@ -67,6 +67,10 @@ export const MODEL_TEXT_EN: Record<string, ModelEn> = {
   'kie/suno-add-vocals': { description: 'Sings over your instrumental — your own lyrics, or let the AI write them.' },
   'kie/suno-add-instrumental': { description: 'Writes the music for your bare vocal, in the genre you pick — works with vocals split into stems.' },
   'kie/suno-stems': { description: 'Splits a song into stems: vocals/music, every instrument, or one instrument · download only the files you want.' },
+  'kie/suno-replace': {
+    description: 'Sings one part of your song anew — pick the lines (timed to the voice, Thai included) and write their new words · the rest stays as it is.',
+  },
+  'kie/suno-mashup': { description: 'Mashes two of your songs into one new track in the style you pick · your own lyrics or a description · each song up to 8 min.' },
   'kie/suno-sounds': { description: 'Sound effects and short music loops — ambience, effects, beats · set BPM and key, loop seamlessly.' },
   'kie/elevenlabs-v3': {
     description: 'Natural-sounding speech from text, speaks Thai; add emotion with tags like [laughs] [whispers]. Up to 5,000 characters.',

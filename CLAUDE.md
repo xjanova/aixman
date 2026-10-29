@@ -198,6 +198,19 @@ against the free `/api/v1/chat/credit` → encrypted pool row, daily quota 0 →
   `resultLabels` on the order and gallery APIs; the studio lists several
   audio files as tracks (`AudioTracks`) and carries any one on to the next tool.
   MCP's `generate_music` does not offer the tools that need a track.
+- **Replace Section / Mashup** (modes แก้ท่อนเพลง / มิกซ์ 2 เพลง, subcategory
+  `music-replace` / `music-mashup`). Replace sends `infill_start_s`,
+  `infill_end_s` and `full_lyrics` (the whole song's words after the change),
+  never a `task_id`/`audio_id`; the part is ≥ 10 s and ≤ half the track
+  (`sunoReplaceWindow`, checked in the studio and again by `checkSunoSource`).
+  The customer picks it **by lines** of the song's karaoke timing
+  (`replace-section.tsx` → `lyrics/replace.ts`): `replaceSpan` puts the edges
+  in the breaths between lines and, short of 10 s, takes in whole neighbouring
+  lines (shown to the customer); `replacedLyrics` swaps exactly those lines
+  in the original words. By time is the fallback (the customer types the whole
+  new lyrics). Mashup sends `upload_url_list: [first, params.suno.mashWith]`;
+  the second track is held to the first one's rules (ours, readable, ≤ 8 min) —
+  in our bucket, not checked as the caller's own, like `inputAudio`.
 - **Waveforms on every audio file** (`TrackWave`, `track-wave.tsx`): each track,
   each stem, a carried or reopened source song (with an extension's start
   marked; `AudioTrimmer` marks it too), the gallery. Bytes come through
@@ -835,6 +848,49 @@ Code: `src/lib/story/{cinematic,service,http}.ts`, `/api/story/*`.
   claimed. `lipsync_source_url` pins the clip the dub came from: a re-render
   makes it stale and the cut falls back to the clip. The cut uses a dub only
   when `edit.lipsync` and the shot's own `lipsync_use` are on.
+
+## Thai karaoke (`src/lib/lyrics/`) — our own timing, our own font
+
+Suno's own karaoke shows Thai as tofu boxes and times it badly, so we time and
+draw it ourselves. Free to the customer; studio (🎤 under a song with lyrics),
+Replace Section's line picker and the MV cut all share one timing per song and
+lyrics.
+- **Timing** (`karaoke-job.ts`): Demucs separates the vocal (the same venv and
+  queue as MV lip-sync, `enqueueJob`), then `aligner.ts` runs
+  `airesearch/wav2vec2-large-xlsr-53-th` (CC-BY-SA-4.0) on this host's CPU,
+  int8, CTC forced alignment with a free "star" token for sung words the
+  lyrics do not say. `karaoke.ts` turns letters into Thai dictionary words
+  (`Intl.Segmenter`) and lines; a line the aligner could not place is
+  estimated and flagged (≈ in the UI). Prod measured: 20 s of vocal in ~12 s,
+  ~2.3 GB RSS. ≤ 8 min songs (`KARAOKE_MAX_SECONDS`).
+- **Setup on the host:** `transformers<5` in `~/venvs/demucs`; weights in
+  `~/models/wav2vec2-large-xlsr-53-th` converted once to `model.safetensors`
+  (transformers refuses the repo's `.bin` on torch < 2.6). Overrides:
+  `LYRICS_ALIGN_PYTHON`, `LYRICS_ALIGN_MODEL`, `LYRICS_ALIGN_THREADS`.
+  `karaokeReady()` false → the UI says it is unavailable, nothing is charged.
+- **Stored** as `karaoke/<userId>/<id>.json` in R2 (with the minus-one mp3 from
+  the same separation); `id` = HMAC of user, song key and sung lines, so the
+  studio and an MV of the same song and words find the same doc. The customer's
+  moved lines (`moveLine`, `shiftTiming`) are saved over it (PUT). Retention
+  does not delete `karaoke/` (nothing does yet).
+- **Routes:** `/api/studio/karaoke` (POST start / `peek`, GET `?id=`, PUT
+  timing; the song must be the caller's own, `isOwnAudioKey`) and
+  `/api/story/[id]/karaoke` (the MV's song + brief). Starts are rate-limited
+  per hour. In-process job state — correct only under PM2 `instances: 1`.
+- **Drawn in the browser** (`components/xdreamer/karaoke.tsx`): one span per
+  word filled by a `background-clip: text` gradient at the word's progress;
+  `padding: 0.3em 0` keeps tone marks and upper vowels inside the painted box,
+  and the glow is on an inner wrapper (a filter on the box clips them). Two rows
+  take turns (LEAD 2.5 s, TAIL 0.45 s), count-in dots before a ≥ 5 s gap.
+- **MV karaoke** (`edit.karaoke`, `karaokeLook`, `karaokeAudio` in
+  `script_json.edit`; MV only): the cut burns `karaoke-ass.ts` (Sarabun Bold,
+  `\kf` per word, glow layer, lines cut only between words) in place of the
+  shot subtitles, on song time; `karaokeAudio: 'instrumental'` plays the
+  minus-one. "🎬 ทำ MV คาราโอเกะ" opens `/movie?new=mv&song=<id>&track=<i>`.
+- **Which take:** a Suno order holds two songs. `output-lyrics.ts songTracks`
+  gives one `{url, lyrics}` per take (a stem split: one, the typed words);
+  `/api/story/songs` lists each take, `resolveSong` takes `track`.
+- Latin lines align poorly (the model's vocabulary is Thai letters only).
 
 ## Developer guide (`/docs`)
 Public, static (`src/app/(main)/docs/page.tsx`, interactive bits in `parts.tsx`):

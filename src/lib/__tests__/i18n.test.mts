@@ -148,7 +148,7 @@ test('every Thai refusal GenerationService throws as a literal has an English', 
 test('every refusal the Suno tools give before charging has an English', async () => {
   const { hasRefusalEn } = await import('@/lib/i18n/refusal-en');
   const { checkSunoSource, sunoMissingSource } = await import('@/lib/providers/kie-suno');
-  const tools = ['song', 'cover', 'extend', 'add-vocals', 'add-instrumental', 'stems', 'sounds'] as const;
+  const tools = ['song', 'cover', 'extend', 'add-vocals', 'add-instrumental', 'stems', 'sounds', 'replace', 'mashup'] as const;
   const shapes = [
     { seconds: 0, bytes: 1 }, // unreadable
     { seconds: 60, bytes: 30 * 1024 * 1024 }, // too large to split
@@ -160,7 +160,8 @@ test('every refusal the Suno tools give before charging has an English', async (
     if (!hasRefusalEn(sunoMissingSource(tool))) missing.push(sunoMissingSource(tool));
     for (const facts of shapes) {
       const check = checkSunoSource(tool, facts, {});
-      if (!check.ok && !hasRefusalEn(check.message)) missing.push(check.message);
+      // A { th, en } pair carries its own English.
+      if (!check.ok && typeof check.message === 'string' && !hasRefusalEn(check.message)) missing.push(check.message);
     }
   }
   assert.deepEqual(missing, [], 'add these to src/lib/i18n/refusal-en.ts');

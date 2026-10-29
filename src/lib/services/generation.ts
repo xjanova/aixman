@@ -204,7 +204,11 @@ export class GenerationService {
       if (!isAcceptedAudioSource(request.inputAudio)) {
         throw new OrderRefusedError(sunoMissingSource(kie.suno), 'missing-audio', 422);
       }
-      const fits = checkSunoSource(kie.suno, await this.voiceFacts(request.inputAudio), suno ?? {});
+      // A mashup's second track is held to the first one's rules: ours, readable, not too long.
+      const mashWith = kie.suno === 'mashup' ? suno?.mashWith : undefined;
+      if (mashWith && !keyFromPublicUrl(mashWith)) throw new OrderRefusedError('ไฟล์ที่แนบไม่ถูกต้อง กรุณาอัปโหลดใหม่', 'invalid-input', 422);
+      const second = mashWith ? await this.voiceFacts(mashWith) : undefined;
+      const fits = checkSunoSource(kie.suno, await this.voiceFacts(request.inputAudio), suno ?? {}, second);
       if (!fits.ok) throw new OrderRefusedError(fits.message, fits.code, 422);
       if (fits.continueAt !== undefined) suno = { ...suno, continueAt: fits.continueAt };
     }

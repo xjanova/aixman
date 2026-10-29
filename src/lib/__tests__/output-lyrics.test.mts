@@ -5,7 +5,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { songLyrics, sunoTrackLyrics } from '@/lib/output-lyrics';
+import { songLyrics, songTracks, sunoTrackLyrics } from '@/lib/output-lyrics';
 
 const A = 'https://cdn.kie.test/a.mp3';
 const B = 'https://cdn.kie.test/b.mp3';
@@ -48,4 +48,17 @@ test('no words, a stem split, or no params → nothing to show', () => {
   assert.equal(songLyrics({ lyrics: '   ' }, [A]), null);
   assert.equal(songLyrics({ lyrics: 'mine', outputLabels: ['เสียงร้อง', 'กลอง'] }, [A, B]), null);
   assert.equal(songLyrics(null, [A]), null);
+});
+
+test('songTracks: each take is a song with what it sings; a stem split is one song', () => {
+  assert.deepEqual(songTracks({ lyrics: 'mine', outputLyrics: ['sung 1', 'sung 2'] }, A, [A, B]), [
+    { url: A, lyrics: 'sung 1' },
+    { url: B, lyrics: 'sung 2' },
+  ]);
+  // Suno wrote the words itself: the typed lyrics are empty, the takes still sing.
+  assert.deepEqual(songTracks({ lyrics: '', outputLyrics: ['a', 'b'] }, A, [A, B]).map((x) => x.lyrics), ['a', 'b']);
+  assert.deepEqual(songTracks({ lyrics: 'mine' }, A, null), [{ url: A, lyrics: 'mine' }]);
+  assert.deepEqual(songTracks({ lyrics: 'mine', outputLabels: ['เสียงร้อง', 'กลอง'] }, A, [A, B]), [{ url: A, lyrics: 'mine' }]);
+  assert.deepEqual(songTracks({}, null, null), []);
+  assert.deepEqual(songTracks(null, A, [A, 7]), [{ url: A, lyrics: '' }]);
 });

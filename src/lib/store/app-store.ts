@@ -68,7 +68,7 @@ interface AIModel {
     controls?: boolean;
     /** One of Suno's tools (kie-suno.ts `sunoStudioOptions`): its mode of the music tab. */
     suno?: {
-      tool: "song" | "cover" | "extend" | "add-vocals" | "add-instrumental" | "stems" | "sounds";
+      tool: "song" | "cover" | "extend" | "add-vocals" | "add-instrumental" | "stems" | "sounds" | "replace" | "mashup";
       /** Whether the "เพลงบรรเลง" switch means anything for this tool. */
       instrumental: boolean;
       maxSourceBytes: number | null;
@@ -76,6 +76,10 @@ interface AIModel {
       stems: { id: string; label: string }[] | null;
       /** Sounds: the keys on offer. */
       keys: string[] | null;
+      /** Replace Section: how long the part sung anew may be. */
+      replace?: { minSeconds: number; maxShare: number } | null;
+      /** Mashup: takes a second track. */
+      secondSong?: boolean;
     };
   } | null;
   /**

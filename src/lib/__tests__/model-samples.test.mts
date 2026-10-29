@@ -31,6 +31,7 @@ const LIVE_IDS = [
   'kie/seedance-2-fast', 'kie/seedance-2-mini', 'kie/seedance-2-5', 'kie/minimax-h3', 'kie/wan-3', 'kie/grok-imagine-video',
   'kie/pixverse-v6-max', 'kie/kling-avatar', 'kie/infinitalk', 'kie/volcengine-lipsync', 'kie/suno-v6',
   'kie/suno-cover', 'kie/suno-extend', 'kie/suno-add-vocals', 'kie/suno-add-instrumental', 'kie/suno-stems', 'kie/suno-sounds',
+  'kie/suno-replace', 'kie/suno-mashup',
   'kie/elevenlabs-v3', 'kie/gemini-3-8-flash-tts', 'kie/topaz-video-upscale', 'kie/kling-3-motion-control',
 ];
 

@@ -46,6 +46,10 @@ import { nextQueueProgress, shownFraction, type QueueProgress, type QueueReading
 import { AUDIO_EXT, AudioCover, AudioResult } from "@/components/xdreamer/audio";
 import { AquaChordHandoff } from "@/components/xdreamer/aquachord";
 import { SongLyrics } from "@/components/xdreamer/song-lyrics";
+import { KaraokePanel } from "@/components/xdreamer/karaoke";
+import { ReplaceSection, type ReplaceWindow } from "@/components/xdreamer/replace-section";
+import { replacedLyrics } from "@/lib/lyrics/replace";
+import { sunoReplaceWindow } from "@/lib/providers/kie-suno";
 import { AudioTracks, type AudioTrack } from "@/components/xdreamer/audio-tracks";
 import { TrackWave } from "@/components/xdreamer/track-wave";
 import { loadAudio } from "@/components/xdreamer/audio-wave";
@@ -89,11 +93,13 @@ const videoToolOf = (subcategory?: string | null): VideoTool | null =>
  * track the customer brings (Suno's tools, kie-suno.ts, and the in-house
  * cover) or make short sounds. Each lists only its own models.
  */
-type MusicMode = "create" | "cover" | "extend" | "add" | "stems" | "sounds";
+type MusicMode = "create" | "cover" | "extend" | "replace" | "mashup" | "add" | "stems" | "sounds";
 const MUSIC_MODES: { key: MusicMode; label: Msg; hint: Msg }[] = [
   { key: "create", label: { th: "แต่งเพลง", en: "Write a song" }, hint: { th: "จากแนวเพลงและเนื้อร้อง", en: "From a style and lyrics" } },
   { key: "cover", label: { th: "คัฟเวอร์", en: "Cover" }, hint: { th: "ทำนองเดิม แนวใหม่", en: "Same tune, new style" } },
   { key: "extend", label: { th: "ต่อเพลง", en: "Extend" }, hint: { th: "ยาวขึ้นจากจุดที่เลือก", en: "Longer, from a point you pick" } },
+  { key: "replace", label: { th: "แก้ท่อนเพลง", en: "Replace a part" }, hint: { th: "ร้องใหม่เฉพาะบรรทัดที่เลือก", en: "Sing just the lines you pick anew" } },
+  { key: "mashup", label: { th: "มิกซ์ 2 เพลง", en: "Mashup" }, hint: { th: "รวมสองเพลงเป็นเพลงใหม่", en: "Two songs made into one" } },
   { key: "add", label: { th: "เติมเสียง", en: "Add a part" }, hint: { th: "ใส่เสียงร้อง หรือใส่ดนตรี", en: "Add vocals or music" } },
   { key: "stems", label: { th: "แยกสเต็ม", en: "Split stems" }, hint: { th: "เสียงร้อง กลอง เบส …", en: "Vocals, drums, bass …" } },
   { key: "sounds", label: { th: "เสียงประกอบ", en: "Sounds" }, hint: { th: "ลูป บีต เอฟเฟกต์", en: "Loops, beats, effects" } },
@@ -102,6 +108,8 @@ const musicModeOf = (m: { subcategory?: string | null; music?: { sourceSong: boo
   switch (m.subcategory) {
     case "music-cover": return "cover";
     case "music-extend": return "extend";
+    case "music-replace": return "replace";
+    case "music-mashup": return "mashup";
     case "music-add": return "add";
     case "music-stems": return "stems";
     case "music-sounds": return "sounds";
@@ -109,7 +117,7 @@ const musicModeOf = (m: { subcategory?: string | null; music?: { sourceSong: boo
   // The in-house cover is a song model that starts from an upload.
   return m.music?.sourceSong ? "cover" : "create";
 };
-type SunoTool = "song" | "cover" | "extend" | "add-vocals" | "add-instrumental" | "stems" | "sounds";
+type SunoTool = "song" | "cover" | "extend" | "add-vocals" | "add-instrumental" | "stems" | "sounds" | "replace" | "mashup";
 /** The customer's Suno fine-tuning (kie-suno.ts SunoParams); absent = the model's own choice. */
 interface SunoChoices {
   title?: string;
@@ -124,6 +132,12 @@ interface SunoChoices {
   loop?: boolean;
   tempo?: number;
   key?: string;
+  /** Replace Section: the part sung anew and the whole song's words after it. */
+  replaceFrom?: number;
+  replaceTo?: number;
+  fullLyrics?: string;
+  /** Mashup: the second track (our URL). */
+  mashWith?: string;
 }
 /** Only what this tool reads goes with the order. */
 function sunoParamsFor(tool: SunoTool, c: SunoChoices, tier: string | undefined): SunoChoices | undefined {
@@ -136,9 +150,24 @@ function sunoParamsFor(tool: SunoTool, c: SunoChoices, tier: string | undefined)
     weirdness: c.weirdness,
     audioWeight: c.audioWeight,
     variety: c.variety,
-    length: tool === "song" ? c.length : undefined,
+    length: tool === "song" || tool === "mashup" ? c.length : undefined,
     continueAt: tool === "extend" ? c.continueAt : undefined,
+    replaceFrom: tool === "replace" ? c.replaceFrom : undefined,
+    replaceTo: tool === "replace" ? c.replaceTo : undefined,
+    fullLyrics: tool === "replace" ? c.fullLyrics : undefined,
+    mashWith: tool === "mashup" ? c.mashWith : undefined,
   };
+}
+/** A part picked for Replace Section, with the upload and words it was picked on: stale once either changes. */
+interface ReplacePick extends ReplaceWindow {
+  src: string;
+  original: string;
+}
+/** Mashup's second track, uploaded as it is. */
+interface MashSong {
+  url: string;
+  name: string;
+  seconds: number | null;
 }
 const SUNO_VARIETY: Msg[] = [
   { th: "ตรงสไตล์", en: "On style" },
@@ -153,6 +182,8 @@ const SONG_NEXT: [MusicMode, SunoTool, Msg][] = [
   ["stems", "stems", { th: "✂ แยกสเต็ม", en: "✂ Split stems" }],
   ["cover", "cover", { th: "↻ คัฟเวอร์เป็นแนวใหม่", en: "↻ Cover in a new style" }],
   ["extend", "extend", { th: "⏩ ต่อเพลงให้ยาวขึ้น", en: "⏩ Make it longer" }],
+  ["replace", "replace", { th: "✎ แก้ท่อนเพลง", en: "✎ Replace a part" }],
+  ["mashup", "mashup", { th: "🔀 มิกซ์กับอีกเพลง", en: "🔀 Mash up with another song" }],
   ["add", "add-vocals", { th: "🎤 ใส่เสียงร้อง (ดนตรีบรรเลง)", en: "🎤 Add vocals (to an instrumental)" }],
   ["add", "add-instrumental", { th: "🎸 ใส่ดนตรี (เสียงร้องเปล่า)", en: "🎸 Add music (to a bare vocal)" }],
 ];
@@ -564,6 +595,9 @@ interface FormSnapshot {
   videoMode: VideoMode;
   musicMode: MusicMode;
   suno: SunoChoices;
+  replaceOriginal: string;
+  replacePick: ReplacePick | null;
+  mashSong: MashSong | null;
   voiceId: string | null;
   speechStyle: string;
   refs: RefPic[];
@@ -1644,6 +1678,12 @@ export default function GeneratePage() {
   const [videoMode, setVideoMode] = useState<VideoMode>("t2v");
   const [musicMode, setMusicMode] = useState<MusicMode>("create");
   const [suno, setSuno] = useState<SunoChoices>({});
+  /** Replace Section: the song's own words, and the part picked from them. */
+  const [replaceOriginal, setReplaceOriginal] = useState("");
+  const [replacePick, setReplacePick] = useState<ReplacePick | null>(null);
+  /** Mashup: the second song. */
+  const [mashSong, setMashSong] = useState<MashSong | null>(null);
+  const [mashUploading, setMashUploading] = useState(false);
   /** A finished track carried on to the next tool: played in the slot, as an upload has no player. */
   const [carriedAudio, setCarriedAudio] = useState<string | null>(null);
   /** Speech tab: the voice picked (null = the model's default) and, for a model that takes one, how to speak. */
@@ -2070,6 +2110,25 @@ export default function GeneratePage() {
   const audioStale = trimWanted !== null && trimWanted !== trimUploaded;
   const trimState: "saving" | "saved" | "failed" =
     trimTooLong || !audioStale ? "saved" : trimWanted === trimFailed ? "failed" : "saving";
+  /** Replace Section: the part picked, while it is still of this upload and these words. */
+  const replaceWindow =
+    sunoTool === "replace" && replacePick && replacePick.src === inputAudio && replacePick.original === replaceOriginal && !audioStale ? replacePick : null;
+  const replaceLines = replaceWindow && replaceWindow.first !== null && replaceWindow.last !== null ? { first: replaceWindow.first, last: replaceWindow.last } : null;
+  /** The whole song's words after the change: the original with the picked lines swapped, or as typed when set by seconds. */
+  const replaceFull = !replaceWindow
+    ? ""
+    : replaceLines ? replacedLyrics(replaceOriginal, replaceLines.first, replaceLines.last, lyrics) : replaceOriginal.trim();
+  const replaceSeconds = replaceWindow?.seconds ?? inputAudioSeconds;
+  const replaceCheck = replaceWindow && replaceSeconds ? sunoReplaceWindow(replaceSeconds, replaceWindow.from, replaceWindow.to) : null;
+  /** What Replace Section still needs — on the form and when the button is pressed — or null. */
+  const missingReplaceText =
+    sunoTool !== "replace" || !hasAudio ? null
+      : !replaceWindow ? t("เลือกท่อนที่จะร้องใหม่ก่อน", "Pick the part to sing anew first")
+        : replaceCheck && !replaceCheck.ok ? t(replaceCheck.message)
+          : !replaceFull.trim() ? t("ใส่เนื้อเพลงทั้งเพลงก่อน", "Add the whole song's lyrics first")
+            : replaceLines && !lyrics.trim() ? t("ใส่เนื้อท่อนใหม่ที่จะร้องในช่องเนื้อเพลงก่อน", "Type the new words to sing in the lyrics box first")
+              : null;
+  const missingMashText = sunoTool === "mashup" && !mashSong ? t("อัปโหลดเพลงที่สองที่จะมิกซ์ก่อน", "Upload the second song to mash up first") : null;
 
   /**
    * How many reference pictures this order may carry: what the model's adapter
@@ -2116,6 +2175,10 @@ export default function GeneratePage() {
     clipCheck?.ok === false ||
     clipVoiceCheck?.ok === false ||
     missingSourceSong ||
+    // Replace Section without its part, or a mashup without its second song.
+    missingReplaceText !== null ||
+    missingMashText !== null ||
+    mashUploading ||
     // …or, on a reopened order, without the files it was made from.
     loadingInputs ||
     // An order placed mid-upload would go out without the end frame.
@@ -2434,6 +2497,30 @@ export default function GeneratePage() {
     }
   };
 
+  /** Mashup's second song → R2 as it is; its length is checked again on the server. */
+  const pickMashSong = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    const seconds = await probeDuration(file, "audio");
+    if (seconds !== null && seconds > coverSourceSeconds + 0.25) {
+      toast(
+        "error",
+        t("ไฟล์ยาวเกินไป", "File too long"),
+        t(`เพลงที่สองยาวได้ไม่เกิน ${Math.floor(coverSourceSeconds / 60)} นาที`, `The second song can be up to ${Math.floor(coverSourceSeconds / 60)} min`),
+      );
+      return;
+    }
+    setMashUploading(true);
+    const result = await uploadMedia(file, "audio", t);
+    setMashUploading(false);
+    if (result.error || !result.url) {
+      toast("error", t("อัปโหลดไม่สำเร็จ", "Upload failed"), result.error ?? t("ลองใหม่อีกครั้ง", "Please try again"));
+      return;
+    }
+    setMashSong({ url: result.url, name: file.name, seconds: result.durationSeconds ?? seconds });
+  };
+
   /** Last frame → R2. No try/finally, for the same reason as handleMediaUpload. */
   const handleEndFrameUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -2674,6 +2761,14 @@ export default function GeneratePage() {
       );
       return;
     }
+    if (missingReplaceText) {
+      toast("error", t("ยังเลือกท่อนไม่ครบ", "The part isn't set yet"), missingReplaceText);
+      return;
+    }
+    if (missingMashText || mashUploading) {
+      toast("info", t("ยังไม่มีเพลงที่สอง", "No second song yet"), missingMashText ?? t("รอให้อัปโหลดเสร็จก่อน", "Wait for the upload to finish."));
+      return;
+    }
     if (tab === "image" && refsUploading) {
       toast("info", t("ภาพอ้างอิงยังอัปโหลดไม่เสร็จ", "Reference pictures are still uploading"), t("รอสักครู่แล้วกดอีกครั้ง", "Wait a moment, then try again."));
       return;
@@ -2817,7 +2912,13 @@ export default function GeneratePage() {
         // `[Tags]` line so every client builds the same one.
         music: musicOpts?.controls ? { ...musicStyle, instrumental: instrumentalOn } : undefined,
         // Suno's fine-tuning, only the fields this tool reads (kie-suno.ts checks them again).
-        suno: sunoTool ? sunoParamsFor(sunoTool, suno, activeQuality?.id) : undefined,
+        suno: sunoTool
+          ? sunoParamsFor(
+              sunoTool,
+              { ...suno, replaceFrom: replaceWindow?.from, replaceTo: replaceWindow?.to, fullLyrics: replaceFull || undefined, mashWith: mashSong?.url },
+              activeQuality?.id,
+            )
+          : undefined,
         // One of the model's own voices; the server falls back to its default.
         voice: tab === "speech" ? activeVoice?.id : undefined,
         speechStyle: tab === "speech" && speechRule?.style ? speechStyle.trim() || undefined : undefined,
@@ -2920,6 +3021,7 @@ export default function GeneratePage() {
   const captureForm = (): FormSnapshot => ({
     tab, modelId: selectedModelId, prompt, negativePrompt, lyrics, aspectRatio, duration, resolution,
     qualityId, numOutputs, strength, steps, guidance, musicStyle, instrumental, videoMode, musicMode, suno, voiceId, speechStyle,
+    replaceOriginal, replacePick, mashSong,
     refs: refs.filter((r) => r.url !== null), trimSrc, trimSel, trimUploaded,
     inputImage, inputImagePreview, inputImageEnd,
     inputAudio, inputAudioName, inputAudioFile, sourceVideo, sourceVideoName,
@@ -2933,6 +3035,7 @@ export default function GeneratePage() {
     setStrength(f.strength); setSteps(f.steps); setGuidance(f.guidance);
     setMusicStyle(f.musicStyle); setInstrumental(f.instrumental); setVideoMode(f.videoMode);
     setMusicMode(f.musicMode); setSuno(f.suno);
+    setReplaceOriginal(f.replaceOriginal); setReplacePick(f.replacePick); setMashSong(f.mashSong);
     setVoiceId(f.voiceId); setSpeechStyle(f.speechStyle);
     setRefs(f.refs);
     trimSeqRef.current += 1;
@@ -3159,7 +3262,7 @@ export default function GeneratePage() {
    * (stems, a cover, an extension, vocals or a band added) — no download and
    * upload in between. The file is ours on R2, which is what the server takes.
    */
-  const carrySongTo = (mode: MusicMode, tool: SunoTool, url: string, label: string) => {
+  const carrySongTo = (mode: MusicMode, tool: SunoTool, url: string, label: string, words?: string) => {
     const target =
       models.find((m) => inTab(m, "audio") && m.music?.suno?.tool === tool && m.canOrder !== false) ??
       models.find((m) => inTab(m, "audio") && musicModeOf(m) === mode && m.canOrder !== false);
@@ -3175,6 +3278,11 @@ export default function GeneratePage() {
     setTrimSrc(null); setTrimSel(null); setTrimUploaded(null); setTrimFailed(null); setTrimDragging(false);
     setInputAudio(url); setInputAudioName(label); setInputAudioFile(null); setCarriedAudio(url);
     setSunoField("continueAt", undefined);
+    // Replace Section starts from what the track sings; its part is picked anew.
+    if (tool === "replace") {
+      setReplaceOriginal(words?.trim() ?? "");
+      setReplacePick(null);
+    }
     toast("info", t(`ใส่ “${label}” แล้ว`, `Added “${label}”`), t("ปรับตั้งค่าแล้วกดทอได้เลย", "Adjust the settings, then tap Weave"));
   };
   /** Next steps a finished track may take: only tools some model here offers. */
@@ -3373,6 +3481,8 @@ export default function GeneratePage() {
         : tab === "edit" ? t("ภาพต้นฉบับ", "Original picture")
           : tab === "lipsync" ? t("ไฟล์ที่ใช้", "Your files")
             : sunoTool === "extend" ? t("เพลงที่จะต่อ", "Song to extend")
+              : sunoTool === "replace" ? t("เพลงที่จะแก้ท่อน", "Song to change a part of")
+                : sunoTool === "mashup" ? t("สองเพลงที่จะมิกซ์", "The two songs to mash up")
               : sunoTool === "add-vocals" ? t("ดนตรีบรรเลงที่จะใส่เสียงร้อง", "Instrumental to add vocals to")
                 : sunoTool === "add-instrumental" ? t("เสียงร้องที่จะใส่ดนตรี", "Vocal to add music to")
                   : sunoTool === "stems" ? t("เพลงที่จะแยกสเต็ม", "Song to split")
@@ -3812,7 +3922,7 @@ export default function GeneratePage() {
 
           {/* ── Lyrics (music) ── */}
           {showLyrics && (
-            <Field no={sectionNo(3)} label={t("เนื้อเพลง", "Lyrics")} aside={`${formatNumber(lyrics.length, locale)} / ${formatNumber(3000, locale)}`}>
+            <Field no={sectionNo(3)} label={sunoTool === "replace" ? t("เนื้อท่อนใหม่", "New words for the part") : t("เนื้อเพลง", "Lyrics")} aside={`${formatNumber(lyrics.length, locale)} / ${formatNumber(3000, locale)}`}>
               <div className="rp-lyrics-tools">
                 {SECTION_TAGS.map((tag) => (
                   <button key={tag} type="button" className="rp-sectag rp-mono" disabled={instrumentalOn}
@@ -3835,6 +3945,13 @@ export default function GeneratePage() {
               </div>
               <div className="rp-note">
                 {instrumentalOn ? t("โหมดบรรเลง — เนื้อร้องที่พิมพ์ไว้จะถูกเก็บไว้เฉย ๆ", "Instrumental — the lyrics you typed are kept, but not sung")
+                  : sunoTool === "replace"
+                    ? t(
+                        "เริ่มจากบรรทัดที่เลือกในส่วนเพลงด้านล่าง — แก้เป็นเนื้อใหม่ที่จะร้อง จำนวนบรรทัดใกล้เคียงของเดิมจะลงจังหวะดีที่สุด",
+                        "Starts as the lines picked under the song below — change them to the new words; about as many lines as before fits the beat best",
+                      )
+                  : sunoTool === "mashup"
+                    ? t("เว้นว่างได้ · ใส่เนื้อเพลงใหม่ได้ ถ้าใส่ ระบบใช้เนื้อแทนคำอธิบายสไตล์", "Optional · you can add new lyrics; when you do, they are used instead of the style description")
                   : sunoTool === "add-vocals"
                     ? t("เว้นว่างได้ — AI แต่งเนื้อให้เข้ากับดนตรี · วงเล็บเหลี่ยมบอกว่าเป็นท่อนอะไร", "Optional — the AI writes lyrics to fit the music · square brackets mark each section")
                     : sunoTool === "cover" || sunoTool === "extend"
@@ -4227,6 +4344,39 @@ export default function GeneratePage() {
                       )}
                     </>
                   )}
+                  {/* Replace Section: the part picked by its lines, from the song's karaoke timing. */}
+                  {sunoTool === "replace" && (
+                    <ReplaceSection
+                      src={inputAudio && !audioStale && uploading !== "audio" ? inputAudio : null}
+                      seconds={inputAudioSeconds}
+                      original={replaceOriginal}
+                      onOriginal={setReplaceOriginal}
+                      value={replaceWindow}
+                      onChange={(w) => setReplacePick(w && inputAudio ? { ...w, src: inputAudio, original: replaceOriginal } : null)}
+                      onWords={(words) => setLyrics(words.slice(0, 3000))}
+                    />
+                  )}
+                  {/* Mashup: the second song, uploaded as it is. */}
+                  {sunoTool === "mashup" && (
+                    <div style={{ marginTop: 12 }}>
+                      <div className="rp-sub">{t("เพลงที่สอง", "Second song")}</div>
+                      <FilePick
+                        value={mashSong?.name ?? null}
+                        busy={mashUploading}
+                        accept={AUDIO_ACCEPT}
+                        hint={t(
+                          `อัปโหลดเพลงที่สอง MP3 / WAV — ไม่เกิน ${Math.floor(coverSourceSeconds / 60)} นาที`,
+                          `Upload the second song, MP3 / WAV — up to ${Math.floor(coverSourceSeconds / 60)} min`,
+                        )}
+                        onPick={pickMashSong}
+                        onClear={() => setMashSong(null)}
+                      />
+                      {mashSong && (
+                        <TrackWave key={mashSong.url} url={mashSong.url} label={mashSong.name} height={44} hue={320}
+                          onError={() => setMashSong(null)} style={{ marginTop: 10 }} />
+                      )}
+                    </div>
+                  )}
                   {/* Where an extension picks up: a second inside the track, the end by default. */}
                   {extendLast !== null && extendFrom !== null && (
                     <div className="rp-slider" style={{ marginTop: 12 }}>
@@ -4260,6 +4410,16 @@ export default function GeneratePage() {
                       t(
                         "ใช้เสียงร้องเปล่าที่ไม่มีดนตรี (เช่น ไฟล์ “เสียงร้อง” จากการแยกสเต็ม) · บอกแนวดนตรีในช่องสไตล์",
                         "Use a bare vocal with no music (e.g. the “vocals” file from a stem split) · describe the music in the style box",
+                      )
+                    ) : sunoTool === "replace" ? (
+                      t(
+                        "ร้องใหม่เฉพาะช่วงที่เลือก ส่วนอื่นของเพลงคงเดิม ได้ 2 เวอร์ชัน · ช่วงต้องยาว 10 วินาทีขึ้นไปและไม่เกินครึ่งเพลง ถ้าบรรทัดที่เลือกสั้นไป ระบบรวมบรรทัดข้างเคียงให้ทั้งบรรทัด",
+                        "Only the part picked is sung anew; the rest of the song stays; you get 2 versions · the part must be 10 seconds or more and at most half the song — too short, and whole neighbouring lines are taken in",
+                      )
+                    ) : sunoTool === "mashup" ? (
+                      t(
+                        "รวมสองเพลงเป็นเพลงใหม่ตามสไตล์ที่พิมพ์ ได้ 2 เวอร์ชัน · แต่ละเพลงยาวไม่เกิน 8 นาที · ตั้งความยาวเพลงใหม่ได้ที่ “ปรับละเอียด”",
+                        "Two songs made into a new one in the style you typed; you get 2 versions · each song up to 8 minutes · set the new song's length under “Fine-tune”",
                       )
                     ) : sunoTool === "stems" ? (
                       t(
@@ -4931,7 +5091,7 @@ export default function GeneratePage() {
                         actions={songNext.map(([, tool, label]) => ({ id: tool, label: t(label) }))}
                         onAction={(id, track) => {
                           const next = SONG_NEXT.find(([, tool]) => tool === id);
-                          if (next) carrySongTo(next[0], next[1], track.url, track.label);
+                          if (next) carrySongTo(next[0], next[1], track.url, track.label, result.resultLyrics?.[resultTracks.indexOf(track)]);
                         }}
                       />
                       {/* Versions of one song (Suno's two takes) go to AquaChord as
@@ -4955,6 +5115,18 @@ export default function GeneratePage() {
                 {/* A song's words: what Suno sang, or the lyrics the customer typed. */}
                 {resultIsAudio && result?.resultLyrics && result.resultLyrics.length > 0 && (
                   <SongLyrics key={`lyrics-${result.id}`} lyrics={result.resultLyrics} style={{ marginBottom: 14 }} />
+                )}
+                {/* Its karaoke: timed on our server, the words lit as they are sung, on to an MV. */}
+                {resultIsAudio && canvasTab === "audio" && result?.resultUrl && result.resultLyrics?.some((l) => l.trim()) && (
+                  <KaraokePanel
+                    key={`karaoke-${result.id}`}
+                    generationId={result.id > 0 ? result.id : null}
+                    tracks={(resultTracks ?? [{ url: result.resultUrl, label: t("เพลง", "Song") }]).map((tr, i) => ({
+                      ...tr,
+                      lyrics: result.resultLyrics?.[i] ?? "",
+                    }))}
+                    style={{ marginBottom: 14 }}
+                  />
                 )}
 
                 {/* Action toolbar */}
@@ -4983,7 +5155,7 @@ export default function GeneratePage() {
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
                     <span style={{ fontSize: 11, color: "#64748b", alignSelf: "center" }}>{t("ใช้เพลงนี้ต่อ:", "Use this song:")}</span>
                     {songNext.map(([mode, tool, label]) => (
-                      <Pill key={tool} onClick={() => carrySongTo(mode, tool, result.resultUrl as string, songTitle || t("เพลงจากงานนี้", "Song from this order"))}>{t(label)}</Pill>
+                      <Pill key={tool} onClick={() => carrySongTo(mode, tool, result.resultUrl as string, songTitle || t("เพลงจากงานนี้", "Song from this order"), result.resultLyrics?.[0])}>{t(label)}</Pill>
                     ))}
                   </div>
                 )}

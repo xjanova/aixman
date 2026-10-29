@@ -40,6 +40,20 @@ export function songLyrics(params: unknown, urls: unknown): string[] | null {
   return own ? Array(count).fill(own) : null;
 }
 
+/**
+ * Each song an order delivered, with the words it sings — Suno's two takes are
+ * two songs. A stem split is one song: its first file, with the lyrics typed.
+ * Empty when the order kept no file.
+ */
+export function songTracks(params: unknown, resultUrl: string | null, resultUrls: unknown): { url: string; lyrics: string }[] {
+  const urls = Array.isArray(resultUrls) && resultUrls.length > 0 && resultUrls.every((u) => typeof u === 'string' && u) ? (resultUrls as string[]) : resultUrl ? [resultUrl] : [];
+  if (urls.length === 0) return [];
+  const p = record(params);
+  if (Array.isArray(p?.outputLabels)) return [{ url: resultUrl ?? urls[0], lyrics: typeof p.lyrics === 'string' ? clean(p.lyrics) : '' }];
+  const words = songLyrics(params, urls) ?? [];
+  return urls.map((url, i) => ({ url, lyrics: words[i] ?? '' }));
+}
+
 /** A Suno track's words: `lyric(s)` when given, else `prompt` when it reads like lyrics. */
 function trackWords(o: Record<string, unknown>): string {
   for (const key of ['lyric', 'lyrics']) {

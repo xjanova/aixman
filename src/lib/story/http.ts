@@ -3,6 +3,7 @@ import prisma from '@/lib/db';
 import { audioDurationSeconds } from '@/lib/audio-duration';
 import { generationErrorResponse } from '@/lib/services/generation-errors';
 import { keyFromPublicUrl } from '@/lib/storage/r2';
+import { songTracks } from '@/lib/output-lyrics';
 import {
   ASPECTS,
   CAMERA_MOVES,
@@ -156,15 +157,14 @@ export async function resolveSong(
   if (Number.isInteger(generationId) && generationId > 0) {
     const gen = await prisma.aiGeneration.findFirst({
       where: { id: generationId, userId, type: 'audio', status: 'completed' },
-      select: { resultUrl: true, params: true },
+      select: { resultUrl: true, resultUrls: true, params: true },
     });
-    if (!gen?.resultUrl || !keyFromPublicUrl(gen.resultUrl)) throw new StoryError({ th: 'ไม่พบเพลงนี้ในผลงานของคุณ', en: "This song isn't in your creations." }, 404);
-    const params = (gen.params ?? {}) as Record<string, unknown>;
-    return {
-      url: gen.resultUrl,
-      seconds: await songSeconds(gen.resultUrl),
-      lyrics: typeof params.lyrics === 'string' ? params.lyrics : '',
-    };
+    // One take of the order (Suno makes two), with the words it sings.
+    const tracks = gen ? songTracks(gen.params, gen.resultUrl, gen.resultUrls) : [];
+    const n = Number(s.track ?? 0);
+    const track = Number.isInteger(n) && n >= 0 ? tracks[n] : undefined;
+    if (!track || !keyFromPublicUrl(track.url)) throw new StoryError({ th: 'ไม่พบเพลงนี้ในผลงานของคุณ', en: "This song isn't in your creations." }, 404);
+    return { url: track.url, seconds: await songSeconds(track.url), lyrics: track.lyrics };
   }
   throw new StoryError({ th: 'เลือกเพลงก่อน: อัปโหลดเอง หรือเลือกเพลงที่สร้างบนเว็บ', en: 'Pick a song first: upload your own, or choose one you made here.' }, 422);
 }
@@ -492,6 +492,9 @@ export function assetInput(body: Record<string, unknown>, userId: number, existi
 export function editPatch(project: StoryProjectFull, raw: unknown): Prisma.InputJsonValue {
   const script = (project.scriptJson ?? {}) as Record<string, unknown>;
   const current = parseEdit(script.edit, project.mode as StoryMode);
-  const merged = parseEdit({ ...current, ...(raw && typeof raw === 'object' ? raw : {}) }, project.mode as StoryMode);
-  return { ...script, edit: { ...merged } } as Prisma.InputJsonValue;
+  const patch = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const look = patch.karaokeLook && typeof patch.karaokeLook === 'object' ? patch.karaokeLook : {};
+  // The karaoke look is merged field by field: a theme change keeps the position.
+  const merged = parseEdit({ ...current, ...patch, karaokeLook: { ...current.karaokeLook, ...look } }, project.mode as StoryMode);
+  return { ...script, edit: { ...merged, karaokeLook: { ...merged.karaokeLook } } } as Prisma.InputJsonValue;
 }
