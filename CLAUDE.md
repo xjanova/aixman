@@ -856,3 +856,12 @@ from before the first open.
 - CSS utilities: `glass`, `glass-light`, `gradient-text`, `glow`
 - Auth: `getCurrentUserId()`, `isAdmin()` from `@/lib/auth`
 - API keys encrypted via `encrypt()`/`decrypt()` from `@/lib/utils/encryption`
+- **Customers never learn which vendor serves a model** (owner, 2026-10-29: no
+  KIE.ai, fal, Replicate, Pollinations, rented-GPU names anywhere a customer can
+  read). Everything customer-facing goes through `src/lib/public-provider.ts`:
+  provider is always X-DREAMER, model ids lose `kie/`→`xd/` and `fal-ai/`,
+  names/descriptions lose "(fal)"/"(KIE)", `defaultParams` loses its `kie` key
+  (the table goes out as `priceTable`), error text through
+  `publicErrorMessage` (vendor account trouble → "busy"). The studio branches on
+  `asyncApi` / `latinPromptOnly`, never on a provider slug. Catalogue names and
+  descriptions must name no vendor (a test checks KIE's). Admin pages may.

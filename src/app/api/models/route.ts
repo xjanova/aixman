@@ -8,7 +8,7 @@ import { getCatalogEntry, isCommunityOnlyModel, visibleVideoOptions } from '@/li
 import { getGpuConfig } from '@/lib/gpu/config';
 import { GpuBalance } from '@/lib/services/gpu-balance';
 import { isStorageConfigured } from '@/lib/storage/r2';
-import { isInHouse, publicModelDescription, publicModelId, publicModelName, publicProvider } from '@/lib/public-provider';
+import { isInHouse, publicDefaultParams, publicModelDescription, publicModelId, publicModelName, publicProvider } from '@/lib/public-provider';
 import { communityListing, NO_MACHINE_LISTING_TEXT } from '@/lib/gpu/community-dispatch';
 import { communityMachineAvailable } from '@/lib/gpu/community-availability';
 import { getAllStoredWorkflows, visibleQualityModes } from '@/lib/gpu/workflow-overrides';
@@ -328,7 +328,7 @@ export async function GET() {
         maxHeight: m.maxHeight,
         maxDuration: m.maxDuration,
         supportedParams: m.supportedParams,
-        defaultParams: m.defaultParams,
+        defaultParams: publicDefaultParams(m.defaultParams),
         sortOrder: m.sortOrder,
         readiness: m.readiness,
         provider: publicProvider(m.provider),

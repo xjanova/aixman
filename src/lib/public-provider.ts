@@ -65,6 +65,17 @@ export function publicModelDescription(modelId: string, description: string | nu
   return description === null ? null : description.replace(VIA_VENDOR, '').replace(VENDOR_TAG, '');
 }
 
+/**
+ * A row's params as the model list sends them. The KIE price table is stored
+ * under the vendor's key; it travels as `priceTable` instead, so the key is dropped.
+ */
+export function publicDefaultParams<T>(params: T): T {
+  if (!params || typeof params !== 'object' || Array.isArray(params) || !('kie' in params)) return params;
+  const rest = { ...(params as Record<string, unknown>) };
+  delete rest.kie;
+  return rest as T;
+}
+
 /** The vendor's own account trouble — its key, balance or rate limit — which is ours to fix, not the customer's. */
 const ACCOUNT_TROUBLE =
   /\b(?:401|402|403|429|455)\b|api[ _-]?key|insufficient|rate[ _-]?limit|quota|balance|no available api accounts|unauthori[sz]ed/i;

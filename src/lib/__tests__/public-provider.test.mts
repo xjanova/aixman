@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   BUSY_MESSAGE,
+  publicDefaultParams,
   publicErrorMessage,
   publicModelDescription,
   publicModelId,
@@ -74,6 +75,13 @@ test('the catalogue names no vendor in what customers read', () => {
     assert.ok(!VENDOR.test(e.name), `${e.key} name: ${e.name}`);
     assert.ok(!VENDOR.test(e.description), `${e.key} description: ${e.description}`);
   }
+});
+
+test('the model list sends no params under a vendor key', () => {
+  assert.deepEqual(publicDefaultParams({ kie: { tiers: [] }, maxReferenceImages: 14 }), { maxReferenceImages: 14 });
+  const plain = { steps: 4 };
+  assert.equal(publicDefaultParams(plain), plain);
+  assert.equal(publicDefaultParams(null), null);
 });
 
 test('a failed order reads without the vendor, its ids or its account trouble', () => {
