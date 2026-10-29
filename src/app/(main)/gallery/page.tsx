@@ -18,7 +18,8 @@ import Link from "next/link";
 import { useToast } from "@/components/ui/toast-provider";
 import { EmptyState } from "@/components/xdreamer/page-hero";
 import { downloadGeneration, extensionOf, saveFavorite } from "@/lib/client-actions";
-import { AudioCover } from "@/components/xdreamer/audio";
+import { AUDIO_EXT, AudioCover } from "@/components/xdreamer/audio";
+import { AquaChordHandoff } from "@/components/xdreamer/aquachord";
 import { ModelViewer } from "@/components/xdreamer/model-viewer";
 import { loginHref } from "@/lib/safe-callback";
 import { useLocale, useT } from "@/lib/i18n/client";
@@ -49,7 +50,7 @@ interface Generation {
   isFavorited: boolean;
   favoritesCount: number;
   /** The model's public name, already in the visitor's language. No provider is ever shown. */
-  model: { name: string };
+  model: { name: string; subcategory?: string | null };
   createdAt: string;
   /** Retention — how long the file is still available, and whether it is gone. */
   expiresAt: string | null;
@@ -504,6 +505,14 @@ export default function GalleryPage() {
               {selectedItem.processingMs && <span>⌚ {(selectedItem.processingMs / 1000).toFixed(1)}s</span>}
               <span>📅 {formatDateTime(selectedItem.createdAt, locale)}</span>
             </div>
+
+            {/* A finished song still on storage can go to AquaChord for its chords
+                (speech has none). The gallery lists only the caller's own work,
+                which the handoff route checks again. */}
+            {selectedItem.type === "audio" && selectedItem.model?.subcategory !== "speech" && selectedItem.status === "completed"
+              && !selectedItem.mediaDeleted && AUDIO_EXT.test(selectedItem.resultUrl || "") && (
+              <AquaChordHandoff key={selectedItem.id} genId={selectedItem.id} style={{ marginBottom: 18 }} />
+            )}
 
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <button onClick={() => handleDownload(selectedItem)}

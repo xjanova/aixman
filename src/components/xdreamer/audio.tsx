@@ -9,6 +9,7 @@
 
 import { useState, type CSSProperties } from "react";
 import { AudioWave } from "./audio-wave";
+import { AquaChordHandoff } from "./aquachord";
 
 /** A result URL that is a song rather than a still or a clip. */
 export const AUDIO_EXT = /\.(flac|mp3|wav|ogg|opus|m4a)(\?|$)/i;
@@ -64,13 +65,16 @@ function fileBase(title: string): string {
  * way the browser can read them: R2 sends no CORS header, so the waveform and
  * the WAV/MP3 downloads have nothing to work with otherwise. Without an id
  * (an older row, or a URL from somewhere else) it falls back to the plain
- * player, which only ever needed to *play* the URL.
+ * player, which only ever needed to *play* the URL. The id is also what lets
+ * the song be handed to AquaChord for its chords, so that card needs one too;
+ * `chords={false}` leaves it off where there are no chords to find, such as speech.
  */
-export function AudioResult({ src, title, genId, autoPlay = true }: {
+export function AudioResult({ src, title, genId, autoPlay = true, chords = true }: {
   src: string;
   title: string;
   genId?: number;
   autoPlay?: boolean;
+  chords?: boolean;
 }) {
   // The equaliser follows what is actually coming out of the speakers. It used
   // to run forever, so a paused song still looked like it was playing.
@@ -106,6 +110,7 @@ export function AudioResult({ src, title, genId, autoPlay = true }: {
             />
           </>
         )}
+        {genId && chords ? <AquaChordHandoff key={`aquachord-${genId}`} genId={genId} style={{ marginTop: 14 }} /> : null}
       </div>
     </div>
   );

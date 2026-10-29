@@ -12,6 +12,9 @@ const projectRoot = process.cwd();
 const nextConfig: NextConfig = {
   outputFileTracingRoot: projectRoot,
   turbopack: { root: projectRoot },
+  // An AquaChord handoff link carries its token in the path; keep it out of
+  // the dev request log (production `next start` logs no requests at all).
+  logging: { incomingRequests: { ignore: [/\/api\/partner\/aquachord\/handoff\//] } },
   images: {
     remotePatterns: [
       { protocol: 'https', hostname: '**.replicate.delivery' },

@@ -4606,7 +4606,7 @@ export default function GeneratePage() {
                         }}
                       />
                     ) : resultIsAudio ? (
-                      <AudioResult src={result.resultUrl} genId={result.id}
+                      <AudioResult src={result.resultUrl} genId={result.id} chords={canvasTab !== "speech"}
                         title={viewing?.prompt || (canvasTab === "speech" ? focusedJob?.prompt || "เสียงพูด" : songTitle || "เพลงของคุณ")} />
                     ) : resultIsVideo ? (
                       <video src={result.resultUrl} controls autoPlay loop style={{ width: "100%", borderRadius: 12, maxHeight: 600, margin: "0 auto", display: "block" }} />
