@@ -5,6 +5,8 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { keyFromPublicUrl } from '@/lib/storage/r2';
+import type { Msg } from '@/lib/i18n/locale';
+import { UserMessageError } from '@/lib/i18n/messages';
 
 /**
  * The server-side media work behind โหมดหนัง / MV — the cut (assemble.ts) and
@@ -16,8 +18,11 @@ import { keyFromPublicUrl } from '@/lib/storage/r2';
  * web server keeps answering while one runs.
  */
 
-/** A failure whose message is written for the customer (Thai, no internals). */
-export class StoryJobError extends Error {}
+/**
+ * A failure whose message is written for the customer (no internals), in both
+ * languages: `message` is the Thai, `msg` the pair (UserMessageError).
+ */
+export class StoryJobError extends UserMessageError {}
 
 /**
  * FFMPEG_PATH, else the host's own static build in ~/bin (prod: ffmpeg 7.0.2
@@ -63,17 +68,20 @@ export function runFfmpeg(args: string[], cwd: string, timeoutMs: number): Promi
 
 /**
  * Fetch one of our own files to disk, capped in size. `what` names it in the
- * customer's message ("คลิปบางช็อต", "เพลง").
+ * customer's message ("คลิปบางช็อต" / "some shot clips", "เพลง" / "the song").
  */
-export async function download(url: string, dest: string, maxBytes: number, what: string): Promise<void> {
-  if (!keyFromPublicUrl(url)) throw new StoryJobError(`${what}ไม่ได้อยู่ในคลังของเรา สร้างหรืออัปโหลดใหม่`);
+export async function download(url: string, dest: string, maxBytes: number, what: Msg): Promise<void> {
+  if (!keyFromPublicUrl(url)) {
+    throw new StoryJobError({ th: `${what.th}ไม่ได้อยู่ในคลังของเรา สร้างหรืออัปโหลดใหม่`, en: `Couldn't find ${what.en} in our storage. Please create or upload again.` });
+  }
   const res = await fetch(url, { signal: AbortSignal.timeout(120_000) }).catch(() => null);
-  if (!res?.ok || !res.body) throw new StoryJobError(`ดาวน์โหลด${what}ไม่ได้ ลองใหม่อีกครั้ง`);
-  if (Number(res.headers.get('content-length') ?? 0) > maxBytes) throw new StoryJobError(`${what}ใหญ่เกินไป`);
+  if (!res?.ok || !res.body) throw new StoryJobError({ th: `ดาวน์โหลด${what.th}ไม่ได้ ลองใหม่อีกครั้ง`, en: `Couldn't download ${what.en}. Please try again.` });
+  const tooBig = { th: `${what.th}ใหญ่เกินไป`, en: `Too large to process: ${what.en}.` };
+  if (Number(res.headers.get('content-length') ?? 0) > maxBytes) throw new StoryJobError(tooBig);
   let total = 0;
   const limited = Readable.fromWeb(res.body as import('node:stream/web').ReadableStream).on('data', (chunk: Buffer) => {
     total += chunk.length;
-    if (total > maxBytes) limited.destroy(new StoryJobError(`${what}ใหญ่เกินไป`));
+    if (total > maxBytes) limited.destroy(new StoryJobError(tooBig));
   });
   await pipeline(limited, createWriteStream(dest));
 }

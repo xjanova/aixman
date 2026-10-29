@@ -2,13 +2,15 @@ import prisma from '@/lib/db';
 import { getGpuConfig } from '@/lib/gpu/config';
 import { isCommunityOnlyModel } from '@/lib/gpu/catalog';
 import { isInHouse } from '@/lib/public-provider';
-import { referenceCaps, referenceLabel } from '@/lib/reference-caps';
+import { referenceCaps, type ReferenceCaps } from '@/lib/reference-caps';
 import { GenerationService } from '@/lib/services/generation';
-import { ModelReadiness, TUNING_MESSAGE } from '@/lib/services/model-readiness';
+import { ModelReadiness, TUNING_MSG } from '@/lib/services/model-readiness';
+import type { Msg } from '@/lib/i18n/locale';
+import { packMsg, registerStoredMsgs } from '@/lib/i18n/messages';
 import { isStorageConfigured } from '@/lib/storage/r2';
 import { ASPECTS, LOOKS, MOODS, type StoryMode } from './cinematic';
 import { MAX_ASSET_PICTURES, keyframePrompt, pickReferences, type LibraryAsset, type ShotRefs } from './library';
-import { StoryError, customerMessage, idList, libraryOf, type StoryProjectFull } from './service';
+import { StoryError, customerMsg, idList, libraryOf, type StoryProjectFull } from './service';
 
 /**
  * Opening pictures for shots, and AI pictures for library items — both
@@ -30,9 +32,10 @@ export interface ImageModelOption {
   name: string;
   /** Reference pictures it takes (0 = none). */
   refs: number;
-  label: string;
+  /** What it takes, in words; the route sends the visitor's language. */
+  label: Msg;
   orderable: boolean;
-  reason: string | null;
+  reason: Msg | null;
   /** What one picture costs. */
   credits: number;
 }
@@ -61,14 +64,37 @@ export async function imageModels(admin: boolean): Promise<ImageModelOption[]> {
         key: m.modelId,
         name: m.name,
         refs: caps.images,
-        label: referenceLabel(caps),
+        label: referenceMsg(caps),
         orderable: connected && ready,
-        reason: !connected ? 'ยังไม่เปิดให้บริการ' : ready ? null : m.readiness === 'tuning' ? TUNING_MESSAGE : 'ปิดปรับปรุงชั่วคราว',
+        reason: !connected ? NOT_OPEN : ready ? null : m.readiness === 'tuning' ? TUNING_MSG : MAINTENANCE,
         credits: m.creditsPerUnit,
       };
     })
     .sort((a, b) => Number(b.orderable) - Number(a.orderable) || b.refs - a.refs);
 }
+
+const NOT_OPEN: Msg = { th: 'ยังไม่เปิดให้บริการ', en: 'Not available yet' };
+const MAINTENANCE: Msg = { th: 'ปิดปรับปรุงชั่วคราว', en: 'Temporarily down for maintenance' };
+const NOT_USABLE: Msg = { th: 'ยังใช้ไม่ได้', en: "can't be used yet" };
+
+/**
+ * reference-caps.ts referenceLabel's words, in both languages (the Thai is
+ * the same). Drop this for referenceLabel once that takes a locale.
+ */
+export function referenceMsg(caps: ReferenceCaps): Msg {
+  if (caps.images > 0) {
+    return { th: `รับภาพอ้างอิงได้ ${caps.images} ภาพ`, en: `Takes up to ${caps.images} reference ${caps.images === 1 ? 'picture' : 'pictures'}` };
+  }
+  if (caps.firstFrame && caps.lastFrame) return { th: 'รับภาพเฟรมแรกและเฟรมสุดท้าย', en: 'Takes a first and a last frame' };
+  if (caps.firstFrame) return { th: 'รับภาพเฟรมแรก 1 ภาพ', en: 'Takes 1 first-frame picture' };
+  return { th: 'ไม่รับภาพอ้างอิง', en: 'Takes no reference pictures' };
+}
+
+/** "<model>: <why it can't be ordered>", both languages. */
+const unusable = (model: ImageModelOption): Msg => ({
+  th: `${model.name}: ${(model.reason ?? NOT_USABLE).th}`,
+  en: `${model.name}: ${(model.reason ?? NOT_USABLE).en}`,
+});
 
 export interface PictureSettings {
   /** Composes the shots' opening pictures. */
@@ -115,14 +141,21 @@ export async function orderKeyframe(
   model: ImageModelOption
 ): Promise<void> {
   const shot = project.shots.find((s) => s.id === shotId);
-  if (!shot) throw new StoryError('ไม่พบช็อตนี้', 404);
-  if (model.refs === 0) throw new StoryError(`${model.name} ไม่รับภาพอ้างอิง เลือกโมเดลอื่นสำหรับภาพเปิดช็อต`, 422);
-  if (!model.orderable) throw new StoryError(`${model.name}: ${model.reason ?? 'ยังใช้ไม่ได้'}`, 409);
+  if (!shot) throw new StoryError({ th: 'ไม่พบช็อตนี้', en: 'Shot not found.' }, 404);
+  if (model.refs === 0) {
+    throw new StoryError(
+      { th: `${model.name} ไม่รับภาพอ้างอิง เลือกโมเดลอื่นสำหรับภาพเปิดช็อต`, en: `${model.name} takes no reference pictures. Pick another model for opening pictures.` },
+      422
+    );
+  }
+  if (!model.orderable) throw new StoryError(unusable(model), 409);
   const claimed = await prisma.aiStoryShot.updateMany({
     where: { id: shot.id, projectId: project.id, OR: [{ keyframeStatus: null }, { keyframeStatus: { not: 'rendering' } }] },
     data: { keyframeStatus: 'rendering', keyframeGenerationId: null, keyframeError: null },
   });
-  if (claimed.count === 0) throw new StoryError(`ภาพเปิดช็อต ${shot.shotNumber} กำลังสร้างอยู่แล้ว`, 409);
+  if (claimed.count === 0) {
+    throw new StoryError({ th: `ภาพเปิดช็อต ${shot.shotNumber} กำลังสร้างอยู่แล้ว`, en: `The opening picture for shot ${shot.shotNumber} is already being made.` }, 409);
+  }
 
   const library = libraryOf(project);
   const refsOf = shotRefsOf(shot, project);
@@ -161,7 +194,7 @@ export async function orderKeyframe(
   } catch (error) {
     await prisma.aiStoryShot.updateMany({
       where: { id: shot.id, keyframeStatus: 'rendering', keyframeGenerationId: null },
-      data: { keyframeStatus: 'failed', keyframeError: customerMessage(error) },
+      data: { keyframeStatus: 'failed', keyframeError: packMsg(customerMsg(error)) },
     });
     throw error;
   }
@@ -177,16 +210,20 @@ export async function orderAssetPicture(
   note: string
 ): Promise<void> {
   const row = project.characters.find((c) => c.id === assetId);
-  if (!row) throw new StoryError('ไม่พบรายการนี้ในคลัง', 404);
-  if (!model.orderable) throw new StoryError(`${model.name}: ${model.reason ?? 'ยังใช้ไม่ได้'}`, 409);
+  if (!row) throw new StoryError({ th: 'ไม่พบรายการนี้ในคลัง', en: "This item isn't in the library." }, 404);
+  if (!model.orderable) throw new StoryError(unusable(model), 409);
   const asset = libraryOf(project).find((a) => a.id === assetId)!;
-  if (asset.pictures.length >= MAX_ASSET_PICTURES) throw new StoryError(`มีภาพครบ ${MAX_ASSET_PICTURES} ภาพแล้ว ลบภาพเดิมก่อน`, 422);
-  if (!asset.description.trim() && !note.trim()) throw new StoryError('เขียนคำอธิบายรูปลักษณ์ก่อน AI จึงวาดได้', 422);
+  if (asset.pictures.length >= MAX_ASSET_PICTURES) {
+    throw new StoryError({ th: `มีภาพครบ ${MAX_ASSET_PICTURES} ภาพแล้ว ลบภาพเดิมก่อน`, en: `This item already has ${MAX_ASSET_PICTURES} pictures. Delete one first.` }, 422);
+  }
+  if (!asset.description.trim() && !note.trim()) {
+    throw new StoryError({ th: 'เขียนคำอธิบายรูปลักษณ์ก่อน AI จึงวาดได้', en: 'Describe how it looks first, so AI can draw it.' }, 422);
+  }
   const claimed = await prisma.aiStoryCharacter.updateMany({
     where: { id: assetId, projectId: project.id, OR: [{ imageStatus: null }, { imageStatus: { not: 'rendering' } }] },
     data: { imageStatus: 'rendering', imageGenerationId: null, imageError: null },
   });
-  if (claimed.count === 0) throw new StoryError(`กำลังวาดภาพของ ${asset.name} อยู่แล้ว`, 409);
+  if (claimed.count === 0) throw new StoryError({ th: `กำลังวาดภาพของ ${asset.name} อยู่แล้ว`, en: `A picture of ${asset.name} is already being drawn.` }, 409);
 
   // Another angle of something already pictured keeps it the same.
   const refs = model.refs > 0 ? asset.pictures.slice(0, model.refs) : [];
@@ -224,7 +261,7 @@ export async function orderAssetPicture(
   } catch (error) {
     await prisma.aiStoryCharacter.updateMany({
       where: { id: assetId, imageStatus: 'rendering', imageGenerationId: null },
-      data: { imageStatus: 'failed', imageError: customerMessage(error) },
+      data: { imageStatus: 'failed', imageError: packMsg(customerMsg(error)) },
     });
     throw error;
   }
@@ -241,7 +278,21 @@ async function generationsOf(userId: number, ids: number[]) {
   return new Map(rows.map((r) => [r.id, r]));
 }
 
-const failedText = (gen: NonNullable<GenOutcome>, what: string) => `${what}ไม่สำเร็จ${gen.creditsRefunded > 0 ? ' (คืนเครดิตแล้ว)' : ''} — ลองใหม่ได้`;
+// Failure reasons written to the rows and read back later (packMsg).
+const KEYFRAME_INCOMPLETE: Msg = { th: 'การสั่งสร้างไม่สมบูรณ์ — ลองใหม่ได้', en: "The order didn't finish — you can try again." };
+const PICTURE_INCOMPLETE: Msg = { th: 'การสั่งวาดไม่สมบูรณ์ — ลองใหม่ได้', en: "The drawing order didn't finish — you can try again." };
+const KEYFRAME_FAILED: Msg = { th: 'สร้างภาพเปิดช็อต', en: "Couldn't make the opening picture" };
+const PICTURE_FAILED: Msg = { th: 'วาดภาพ', en: "Couldn't draw the picture" };
+const failedText = (refunded: boolean, what: Msg): Msg => ({
+  th: `${what.th}ไม่สำเร็จ${refunded ? ' (คืนเครดิตแล้ว)' : ''} — ลองใหม่ได้`,
+  en: `${what.en}.${refunded ? ' Your credits have been refunded.' : ''} You can try again.`,
+});
+// Rows written before messages were stored in both languages hold these in Thai only.
+registerStoredMsgs(
+  KEYFRAME_INCOMPLETE,
+  PICTURE_INCOMPLETE,
+  ...[KEYFRAME_FAILED, PICTURE_FAILED].flatMap((what) => [failedText(true, what), failedText(false, what)])
+);
 
 /**
  * Bring opening pictures and library pictures up to date with their orders.
@@ -255,7 +306,7 @@ export async function syncPictures(project: StoryProjectFull): Promise<boolean> 
   for (const s of orphanShots) {
     const r = await prisma.aiStoryShot.updateMany({
       where: { id: s.id, keyframeStatus: 'rendering', keyframeGenerationId: null },
-      data: { keyframeStatus: 'failed', keyframeError: 'การสั่งสร้างไม่สมบูรณ์ — ลองใหม่ได้' },
+      data: { keyframeStatus: 'failed', keyframeError: packMsg(KEYFRAME_INCOMPLETE) },
     });
     changed ||= r.count > 0;
   }
@@ -263,7 +314,7 @@ export async function syncPictures(project: StoryProjectFull): Promise<boolean> 
   for (const c of orphanAssets) {
     const r = await prisma.aiStoryCharacter.updateMany({
       where: { id: c.id, imageStatus: 'rendering', imageGenerationId: null },
-      data: { imageStatus: 'failed', imageError: 'การสั่งวาดไม่สมบูรณ์ — ลองใหม่ได้' },
+      data: { imageStatus: 'failed', imageError: packMsg(PICTURE_INCOMPLETE) },
     });
     changed ||= r.count > 0;
   }
@@ -281,7 +332,7 @@ export async function syncPictures(project: StoryProjectFull): Promise<boolean> 
       const r = await prisma.aiStoryShot.updateMany({ where, data: { keyframeStatus: 'done', keyframeUrl: gen.resultUrl, keyframeError: null, keyframeUse: true } });
       changed ||= r.count > 0;
     } else if (gen.status === 'failed' || gen.status === 'cancelled') {
-      const r = await prisma.aiStoryShot.updateMany({ where, data: { keyframeStatus: 'failed', keyframeError: failedText(gen, 'สร้างภาพเปิดช็อต') } });
+      const r = await prisma.aiStoryShot.updateMany({ where, data: { keyframeStatus: 'failed', keyframeError: packMsg(failedText(gen.creditsRefunded > 0, KEYFRAME_FAILED)) } });
       changed ||= r.count > 0;
     }
   }
@@ -299,7 +350,7 @@ export async function syncPictures(project: StoryProjectFull): Promise<boolean> 
       const r = await prisma.aiStoryCharacter.updateMany({ where, data: { ...data, imageStatus: 'done', imageError: null } });
       changed ||= r.count > 0;
     } else if (gen.status === 'failed' || gen.status === 'cancelled') {
-      const r = await prisma.aiStoryCharacter.updateMany({ where, data: { imageStatus: 'failed', imageError: failedText(gen, 'วาดภาพ') } });
+      const r = await prisma.aiStoryCharacter.updateMany({ where, data: { imageStatus: 'failed', imageError: packMsg(failedText(gen.creditsRefunded > 0, PICTURE_FAILED)) } });
       changed ||= r.count > 0;
     }
   }

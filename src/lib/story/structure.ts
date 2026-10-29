@@ -58,7 +58,7 @@ function partScene(scene: SceneBrief, number: number, input: StructureInput, pro
     title: scene.title,
     summary: scene.summary,
     place: locations.find((l) => l.id === scene.locationRef)?.name ?? '',
-    time: scene.timeOfDay ? TIMES_OF_DAY[scene.timeOfDay]?.en ?? '' : '',
+    time: scene.timeOfDay ? TIMES_OF_DAY[scene.timeOfDay]?.prompt ?? '' : '',
     seconds: scene.seconds,
     cast: scene.cast.map((id) => indexOf(input.characters, id)).filter((n) => n > 0),
     props: scene.props.map((id) => indexOf(props, id)).filter((n) => n > 0),

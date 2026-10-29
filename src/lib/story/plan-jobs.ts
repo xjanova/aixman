@@ -9,8 +9,11 @@
  * restart mid-plan loses nothing but the wait; the page offers it again.
  */
 
+import { packMsg } from '@/lib/i18n/messages';
+
 interface PlanJob {
   startedAt: number;
+  /** Why it failed — a packed pair (packMsg); readStoredMessage picks the language. */
   error: string | null;
   /** Shots written, once done. */
   shots: number | null;
@@ -25,13 +28,15 @@ const STALE_MS = 10 * 60_000;
 /** A finished plan's result is shown this long, then forgotten. */
 const KEEP_MS = 30 * 60_000;
 
+const STALE_ERROR = packMsg({ th: 'การวางช็อตครั้งก่อนค้าง ลองใหม่อีกครั้ง', en: 'The last plan got stuck. Please try again.' });
+
 export type PlanJobView = { state: 'planning' | 'failed' | 'done'; error: string | null; shots: number | null; rules: boolean } | null;
 
 export function planJob(projectId: number, now = Date.now()): PlanJobView {
   const job = jobs.get(projectId);
   if (!job) return null;
   const running = job.shots === null && job.error === null;
-  if (running && now - job.startedAt > STALE_MS) return { state: 'failed', error: 'การวางช็อตครั้งก่อนค้าง ลองใหม่อีกครั้ง', shots: null, rules: false };
+  if (running && now - job.startedAt > STALE_MS) return { state: 'failed', error: STALE_ERROR, shots: null, rules: false };
   if (!running && now - job.startedAt > KEEP_MS) {
     jobs.delete(projectId);
     return null;

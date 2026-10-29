@@ -4,7 +4,8 @@ import { rateLimit } from '@/lib/rate-limit';
 import { startAssembly } from '@/lib/story/assemble';
 import { assemblePrice } from '@/lib/story/edit';
 import { StoryError, assemblePriceSettings, loadOwnedProject, readyFilmSeconds } from '@/lib/story/service';
-import { serializeProject, storyErrorReply } from '@/lib/story/http';
+import { STORY_REPLY, hourlyLimitReply, serializeProject, storyErrorReply, storyReply } from '@/lib/story/http';
+import { requestLocale } from '@/lib/i18n/locale';
 
 /**
  * POST /api/story/[id]/assemble — join the finished shots into one film with
@@ -19,29 +20,25 @@ export const dynamic = 'force-dynamic';
 
 const PER_HOUR = 10;
 
-export async function POST(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const locale = requestLocale(request);
   const userId = await getCurrentUserId();
-  if (!userId) return NextResponse.json({ error: 'กรุณาเข้าสู่ระบบ' }, { status: 401 });
+  if (!userId) return storyReply(STORY_REPLY.signIn, locale, 401);
   const id = Number((await params).id);
   const admin = await isAdmin();
   try {
     const project = await loadOwnedProject(userId, id);
-    if (!project) return NextResponse.json({ error: 'ไม่พบโปรเจกต์' }, { status: 404 });
-    if (!project.shots.some((s) => s.status === 'done' && s.mediaUrl)) throw new StoryError('ยังไม่มีช็อตที่สร้างเสร็จ', 422);
+    if (!project) return storyReply(STORY_REPLY.projectNotFound, locale, 404);
+    if (!project.shots.some((s) => s.status === 'done' && s.mediaUrl)) throw new StoryError({ th: 'ยังไม่มีช็อตที่สร้างเสร็จ', en: 'No shots are finished yet.' }, 422);
     if (!admin) {
       const limit = rateLimit(`story-assemble:${userId}`, PER_HOUR, 60 * 60_000);
-      if (!limit.ok) {
-        return NextResponse.json(
-          { error: `ตัดต่อครบ ${PER_HOUR} ครั้งในชั่วโมงนี้แล้ว ลองใหม่ในอีก ${Math.ceil(limit.retryAfter / 60)} นาที` },
-          { status: 429, headers: { 'Retry-After': String(limit.retryAfter) } }
-        );
-      }
+      if (!limit.ok) return hourlyLimitReply({ th: 'ตัดต่อ', en: 'cut a film' }, PER_HOUR, limit.retryAfter, locale);
     }
     const credits = admin ? 0 : assemblePrice(readyFilmSeconds(project), await assemblePriceSettings());
-    if (!(await startAssembly(userId, project.id, credits, project.title))) throw new StoryError('กำลังตัดต่ออยู่แล้ว', 409);
+    if (!(await startAssembly(userId, project.id, credits, project.title))) throw new StoryError({ th: 'กำลังตัดต่ออยู่แล้ว', en: 'The film is already being cut.' }, 409);
     const fresh = (await loadOwnedProject(userId, id))!;
-    return NextResponse.json(await serializeProject(fresh, admin));
+    return NextResponse.json(await serializeProject(fresh, admin, locale));
   } catch (error) {
-    return storyErrorReply(error, 'assemble');
+    return storyErrorReply(error, 'assemble', locale);
   }
 }

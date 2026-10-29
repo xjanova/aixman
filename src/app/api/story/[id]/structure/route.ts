@@ -3,7 +3,8 @@ import { getCurrentUserId, isAdmin } from '@/lib/auth';
 import prisma from '@/lib/db';
 import { STRUCTURE_LIMITS, TIMES_OF_DAY } from '@/lib/story/library';
 import { StoryError, isBusyShot, loadOwnedProject } from '@/lib/story/service';
-import { serializeProject, storyErrorReply, text } from '@/lib/story/http';
+import { STORY_REPLY, serializeProject, storyErrorReply, storyReply, text } from '@/lib/story/http';
+import { translator, requestLocale, type Msg } from '@/lib/i18n/locale';
 
 /**
  * POST /api/story/[id]/structure — acts and scenes, edited by hand.
@@ -20,13 +21,18 @@ import { serializeProject, storyErrorReply, text } from '@/lib/story/http';
 
 export const dynamic = 'force-dynamic';
 
+const ACT_NOT_FOUND: Msg = { th: 'ไม่พบองก์นี้', en: 'Act not found.' };
+const SCENE_NOT_FOUND: Msg = { th: 'ไม่พบฉากนี้', en: 'Scene not found.' };
+
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const locale = requestLocale(request);
+  const t = translator(locale);
   const userId = await getCurrentUserId();
-  if (!userId) return NextResponse.json({ error: 'กรุณาเข้าสู่ระบบ' }, { status: 401 });
+  if (!userId) return storyReply(STORY_REPLY.signIn, locale, 401);
   const id = Number((await params).id);
   try {
     const project = await loadOwnedProject(userId, id);
-    if (!project) return NextResponse.json({ error: 'ไม่พบโปรเจกต์' }, { status: 404 });
+    if (!project) return storyReply(STORY_REPLY.projectNotFound, locale, 404);
     const body = ((await request.json().catch(() => null)) ?? {}) as Record<string, unknown>;
     const act = project.acts.find((a) => a.id === Number(body.actId));
     const scene = project.scenes.find((sc) => sc.id === Number(body.sceneId));
@@ -34,13 +40,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     switch (body.action) {
       case 'add-act': {
-        if (project.acts.length >= STRUCTURE_LIMITS.acts) throw new StoryError(`องก์ได้สูงสุด ${STRUCTURE_LIMITS.acts} องก์`);
+        if (project.acts.length >= STRUCTURE_LIMITS.acts) {
+          throw new StoryError({ th: `องก์ได้สูงสุด ${STRUCTURE_LIMITS.acts} องก์`, en: `You can have up to ${STRUCTURE_LIMITS.acts} acts.` });
+        }
         const number = project.acts.length + 1;
-        await prisma.aiStoryAct.create({ data: { projectId: project.id, actNumber: number, title: text(body.title, STRUCTURE_LIMITS.title) || `องก์ ${number}` } });
+        await prisma.aiStoryAct.create({
+          data: { projectId: project.id, actNumber: number, title: text(body.title, STRUCTURE_LIMITS.title) || t(`องก์ ${number}`, `Act ${number}`) },
+        });
         break;
       }
       case 'update-act': {
-        if (!act) throw new StoryError('ไม่พบองก์นี้', 404);
+        if (!act) throw new StoryError(ACT_NOT_FOUND, 404);
         const data: Record<string, unknown> = {};
         if (body.title !== undefined) data.title = text(body.title, STRUCTURE_LIMITS.title) || act.title;
         if (body.summary !== undefined) data.summary = text(body.summary, STRUCTURE_LIMITS.summary) || null;
@@ -48,7 +58,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         break;
       }
       case 'delete-act': {
-        if (!act) throw new StoryError('ไม่พบองก์นี้', 404);
+        if (!act) throw new StoryError(ACT_NOT_FOUND, 404);
         await prisma.$transaction(async (tx) => {
           await tx.aiStoryAct.deleteMany({ where: { id: act.id, projectId: project.id } });
           const rest = project.acts.filter((a) => a.id !== act.id);
@@ -57,8 +67,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         break;
       }
       case 'add-scene': {
-        if (project.scenes.length >= STRUCTURE_LIMITS.scenes) throw new StoryError(`ฉากได้สูงสุด ${STRUCTURE_LIMITS.scenes} ฉาก`);
-        if (body.actId !== undefined && body.actId !== null && !act) throw new StoryError('ไม่พบองก์นี้', 404);
+        if (project.scenes.length >= STRUCTURE_LIMITS.scenes) {
+          throw new StoryError({ th: `ฉากได้สูงสุด ${STRUCTURE_LIMITS.scenes} ฉาก`, en: `You can have up to ${STRUCTURE_LIMITS.scenes} scenes.` });
+        }
+        if (body.actId !== undefined && body.actId !== null && !act) throw new StoryError(ACT_NOT_FOUND, 404);
         await prisma.$transaction(async (tx) => {
           // After the act's last scene, or at the end of the film; later scenes move down one.
           const ofAct = act ? project.scenes.filter((sc) => sc.actId === act.id) : [];
@@ -67,13 +79,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             if (sc.sceneNumber >= at) await tx.aiStoryScene.update({ where: { id: sc.id }, data: { sceneNumber: sc.sceneNumber + 1 } });
           }
           await tx.aiStoryScene.create({
-            data: { projectId: project.id, actId: act?.id ?? null, sceneNumber: at, title: text(body.title, STRUCTURE_LIMITS.title) || `ฉากใหม่` },
+            data: { projectId: project.id, actId: act?.id ?? null, sceneNumber: at, title: text(body.title, STRUCTURE_LIMITS.title) || t('ฉากใหม่', 'New scene') },
           });
         });
         break;
       }
       case 'update-scene': {
-        if (!scene) throw new StoryError('ไม่พบฉากนี้', 404);
+        if (!scene) throw new StoryError(SCENE_NOT_FOUND, 404);
         const data: Record<string, unknown> = {};
         if (body.title !== undefined) data.title = text(body.title, STRUCTURE_LIMITS.title) || scene.title;
         if (body.summary !== undefined) data.summary = text(body.summary, STRUCTURE_LIMITS.summary) || null;
@@ -83,17 +95,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         }
         if (body.timeOfDay !== undefined) data.timeOfDay = typeof body.timeOfDay === 'string' && body.timeOfDay in TIMES_OF_DAY ? body.timeOfDay : null;
         if (body.actId !== undefined) {
-          if (body.actId !== null && !act) throw new StoryError('ไม่พบองก์นี้', 404);
+          if (body.actId !== null && !act) throw new StoryError(ACT_NOT_FOUND, 404);
           data.actId = act?.id ?? null;
         }
         await prisma.aiStoryScene.updateMany({ where: { id: scene.id, projectId: project.id }, data });
         break;
       }
       case 'delete-scene': {
-        if (!scene) throw new StoryError('ไม่พบฉากนี้', 404);
+        if (!scene) throw new StoryError(SCENE_NOT_FOUND, 404);
         const own = project.shots.filter((sh) => sh.sceneId === scene.id);
         if (body.withShots === true && own.some(isBusyShot)) {
-          throw new StoryError('มีช็อตหรือภาพเปิดช็อตในฉากนี้กำลังสร้างอยู่ รอให้เสร็จก่อน', 409);
+          throw new StoryError({ th: 'มีช็อตหรือภาพเปิดช็อตในฉากนี้กำลังสร้างอยู่ รอให้เสร็จก่อน', en: 'A shot or opening picture in this scene is being made. Wait for it to finish first.' }, 409);
         }
         await prisma.$transaction(async (tx) => {
           if (body.withShots === true) {
@@ -110,12 +122,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         break;
       }
       default:
-        throw new StoryError('คำสั่งไม่ถูกต้อง');
+        throw new StoryError(STORY_REPLY.badAction);
     }
     const fresh = (await loadOwnedProject(userId, id))!;
-    return NextResponse.json(await serializeProject(fresh, await isAdmin()));
+    return NextResponse.json(await serializeProject(fresh, await isAdmin(), locale));
   } catch (error) {
-    return storyErrorReply(error, 'structure');
+    return storyErrorReply(error, 'structure', locale);
   }
 }
 

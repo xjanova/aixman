@@ -32,6 +32,8 @@ import { asLite, assetPictures, isAssetKind, spliceScene, type AssetKind, type L
 import { planMvSlots, planSceneShots, planStructuredFilm, type SceneBrief } from './structure';
 import { ASSEMBLE_PRICE_DEFAULTS, musicPrompt, musicSeconds } from './edit';
 import type { Prisma } from '@/generated/prisma/client';
+import type { Locale, Msg } from '@/lib/i18n/locale';
+import { UserMessageError, packMsg, registerStoredMsgs } from '@/lib/i18n/messages';
 
 /**
  * Movie and MV projects: storage, planning, and ordering shots.
@@ -154,7 +156,7 @@ export async function syncShots(project: StoryProjectFull): Promise<boolean> {
   for (const shot of stale) {
     const r = await prisma.aiStoryShot.updateMany({
       where: { id: shot.id, status: 'rendering', visualGenerationId: null },
-      data: { status: 'failed', errorMessage: 'การสั่งสร้างไม่สมบูรณ์ — ตรวจในแกลเลอรีก่อนสั่งใหม่' },
+      data: { status: 'failed', errorMessage: packMsg(ORDER_INCOMPLETE) },
     });
     changed ||= r.count > 0;
   }
@@ -175,10 +177,9 @@ export async function syncShots(project: StoryProjectFull): Promise<boolean> {
       });
       changed ||= r.count > 0;
     } else if (gen.status === 'failed' || gen.status === 'cancelled') {
-      const refunded = gen.creditsRefunded > 0 ? ' (คืนเครดิตแล้ว)' : '';
       const r = await prisma.aiStoryShot.updateMany({
         where: { id: shot.id, status: 'rendering', visualGenerationId: gen.id },
-        data: { status: 'failed', errorMessage: `สร้างช็อตไม่สำเร็จ${refunded} — ลองสร้างใหม่ได้` },
+        data: { status: 'failed', errorMessage: packMsg(shotFailed(gen.creditsRefunded > 0)) },
       });
       changed ||= r.count > 0;
     }
@@ -190,11 +191,35 @@ export async function syncShots(project: StoryProjectFull): Promise<boolean> {
 // Planning
 // ---------------------------------------------------------------------------
 
-export class StoryError extends Error {
-  constructor(message: string, readonly status = 400) {
-    super(message);
+/**
+ * A refusal the customer reads, in both languages (`message` stays the Thai),
+ * with the HTTP status the route answers with.
+ */
+export class StoryError extends UserMessageError {
+  constructor(msg: Msg, readonly status = 400) {
+    super(msg);
+    this.name = 'StoryError';
   }
 }
+
+// Failure reasons written to shot rows and read back later (packMsg).
+const ORDER_INCOMPLETE: Msg = {
+  th: 'การสั่งสร้างไม่สมบูรณ์ — ตรวจในแกลเลอรีก่อนสั่งใหม่',
+  en: "The order didn't finish — check your gallery before ordering again.",
+};
+const shotFailed = (refunded: boolean): Msg =>
+  refunded
+    ? { th: 'สร้างช็อตไม่สำเร็จ (คืนเครดิตแล้ว) — ลองสร้างใหม่ได้', en: "Couldn't make this shot. Your credits have been refunded — you can try again." }
+    : { th: 'สร้างช็อตไม่สำเร็จ — ลองสร้างใหม่ได้', en: "Couldn't make this shot — you can try again." };
+const ORDER_FAILED: Msg = { th: 'สั่งสร้างไม่สำเร็จ ลองใหม่อีกครั้ง', en: "The order didn't go through. Please try again." };
+const NO_CREDITS: Msg = { th: 'เครดิตไม่พอ เติมเครดิตแล้วลองใหม่', en: 'Not enough credits. Top up and try again.' };
+const VIDEO_BUSY: Msg = { th: 'ระบบสร้างวิดีโอไม่ว่างชั่วคราว ลองใหม่ภายหลัง', en: 'Video rendering is busy right now. Please try again later.' };
+const MODEL_OFF: Msg = { th: 'โมเดลนี้ปิดใช้งานอยู่ เลือกโมเดลอื่น', en: 'This model is switched off. Please pick another one.' };
+// Rows written before messages were stored in both languages hold these in Thai only.
+registerStoredMsgs(ORDER_INCOMPLETE, shotFailed(true), shotFailed(false), ORDER_FAILED, NO_CREDITS, VIDEO_BUSY, MODEL_OFF);
+
+/** The title a project gets when the customer leaves it blank — the plan may replace it. */
+export const NEW_PROJECT_TITLE: Msg = { th: 'โปรเจกต์ใหม่', en: 'New project' };
 
 /**
  * A long film in two steps, so no chat call has to write the whole thing: an
@@ -239,25 +264,29 @@ async function planLongFilm(input: StructureInput): Promise<{ planned: { title: 
   };
 }
 
-/** An MV song section's name as the page shows it. */
-export function sectionTitle(section: string): string {
+/**
+ * An MV song section's name as the page shows it — stored as the scene's
+ * title, in the language of whoever asked for the plan.
+ */
+export function sectionTitle(section: string, locale: Locale = 'th'): string {
   const t = section.trim().toLowerCase();
   const n = /\d+/.exec(t)?.[0];
-  const name = /pre-?chorus/.test(t)
-    ? 'ก่อนฮุก'
+  const named: Msg | null = /pre-?chorus/.test(t)
+    ? { th: 'ก่อนฮุก', en: 'Pre-chorus' }
     : /chorus|hook/.test(t)
-      ? 'ท่อนฮุก'
+      ? { th: 'ท่อนฮุก', en: 'Chorus' }
       : /verse/.test(t)
-        ? 'ท่อนร้อง'
+        ? { th: 'ท่อนร้อง', en: 'Verse' }
         : /bridge/.test(t)
-          ? 'บริดจ์'
+          ? { th: 'บริดจ์', en: 'Bridge' }
           : /intro/.test(t)
-            ? 'อินโทร'
+            ? { th: 'อินโทร', en: 'Intro' }
             : /outro|end/.test(t)
-              ? 'เอาท์โทร'
+              ? { th: 'เอาท์โทร', en: 'Outro' }
               : /inst|solo|break|interlude|drop/.test(t)
-                ? 'ดนตรี'
-                : section.trim() || 'ท่อน';
+                ? { th: 'ดนตรี', en: 'Instrumental' }
+                : null;
+  const name = named ? named[locale] : section.trim() || { th: 'ท่อน', en: 'Section' }[locale];
   return n ? `${name} ${n}` : name;
 }
 
@@ -281,7 +310,10 @@ function shotData(s: ShotDraft, projectId: number, shotNumber: number, modelId: 
   };
 }
 
-const BUSY_MESSAGE = 'มีช็อตหรือภาพเปิดช็อตกำลังสร้างอยู่ รอให้เสร็จก่อนแล้วค่อยให้ AI วางช็อตใหม่';
+export const BUSY_MESSAGE: Msg = {
+  th: 'มีช็อตหรือภาพเปิดช็อตกำลังสร้างอยู่ รอให้เสร็จก่อนแล้วค่อยให้ AI วางช็อตใหม่',
+  en: 'A shot or opening picture is still being made. Wait for it to finish, then let AI re-plan.',
+};
 /** A shot whose clip or opening picture is being made: an order in flight owns it. */
 export const isBusyShot = (s: { status: string; keyframeStatus: string | null }) => s.status === 'rendering' || s.keyframeStatus === 'rendering';
 const BUSY_WHERE = [{ status: 'rendering' }, { keyframeStatus: 'rendering' }];
@@ -299,7 +331,9 @@ const BUSY_WHERE = [{ status: 'rendering' }, { keyframeStatus: 'rendering' }];
  */
 export async function planProject(
   project: StoryProjectFull,
-  defaultModelId: number | null
+  defaultModelId: number | null,
+  /** The language of the scene titles written here (an MV's song sections). */
+  locale: Locale = 'th'
 ): Promise<{ shots: number; engine: string; fallbackReason?: string }> {
   if (project.shots.some(isBusyShot)) throw new StoryError(BUSY_MESSAGE, 409);
   const mode = project.mode as StoryMode;
@@ -313,7 +347,7 @@ export async function planProject(
   try {
     if (mode === 'mv') {
       slots = songTimeline(input.brief, input.songSeconds);
-      if (slots.length === 0) throw new StoryError('เพลงสั้นเกินไปหรือไม่มีความยาว — เลือกเพลงใหม่', 422);
+      if (slots.length === 0) throw new StoryError({ th: 'เพลงสั้นเกินไปหรือไม่มีความยาว — เลือกเพลงใหม่', en: 'The song is too short or has no length. Pick another song.' }, 422);
       const { system, user } = mvPlannerMessages(input, slots);
       const reply = await chatViaPool(system, user, { maxTokens: 8000, maxChars: 60_000 });
       planned = parseMvPlan(reply.text, input, slots);
@@ -350,7 +384,7 @@ export async function planProject(
     planned = { title: '', shots: planFromRules(input) };
     engine = 'rules';
   }
-  if (planned.shots.length === 0) throw new StoryError('เขียนเรื่องหรือเนื้อเพลงให้ยาวกว่านี้ แล้วลองใหม่', 422);
+  if (planned.shots.length === 0) throw new StoryError({ th: 'เขียนเรื่องหรือเนื้อเพลงให้ยาวกว่านี้ แล้วลองใหม่', en: 'Write a longer story or more lyrics, then try again.' }, 422);
   const shots = planned.shots;
   // An MV's shots are its slots, in order, from the planner or the rules alike.
   const sections = mode === 'mv' && slots.length === shots.length ? slots.map((sl) => sl.section) : null;
@@ -413,7 +447,7 @@ export async function planProject(
         const places = shots.slice(from, to + 1).map((sh) => sh.locationId).filter((id): id is number => typeof id === 'number');
         const place = places.sort((a, b) => places.filter((x) => x === b).length - places.filter((x) => x === a).length)[0] ?? null;
         const row = await tx.aiStoryScene.create({
-          data: { projectId: project.id, sceneNumber: ++number, title: sectionTitle(sections[from]), locationId: place },
+          data: { projectId: project.id, sceneNumber: ++number, title: sectionTitle(sections[from], locale), locationId: place },
         });
         for (let k = from; k <= to; k++) sceneOf[k] = row.id;
         from = to + 1;
@@ -426,7 +460,7 @@ export async function planProject(
         locationId: mode === 'mv' ? real('location', sh.locationId) : null,
       })),
     });
-    const isPlaceholderTitle = !project.title.trim() || project.title === 'โปรเจกต์ใหม่';
+    const isPlaceholderTitle = !project.title.trim() || project.title === NEW_PROJECT_TITLE.th || project.title === NEW_PROJECT_TITLE.en;
     if (isPlaceholderTitle && planned!.title) {
       await tx.aiStoryProject.update({ where: { id: project.id }, data: { title: planned!.title } });
     }
@@ -446,7 +480,7 @@ export async function planScenes(
   defaultModelId: number | null
 ): Promise<{ shots: number; engine: string; fallbackReason?: string }> {
   const targets = project.scenes.filter((sc) => sceneIds.includes(sc.id));
-  if (targets.length === 0) throw new StoryError('ไม่พบฉากที่จะวางใหม่', 404);
+  if (targets.length === 0) throw new StoryError({ th: 'ไม่พบฉากที่จะวางใหม่', en: "Couldn't find the scenes to re-plan." }, 404);
   const inTargets = (shot: { sceneId: number | null }) => targets.some((t) => t.id === shot.sceneId);
   if (project.shots.some((sh) => inTargets(sh) && isBusyShot(sh))) throw new StoryError(BUSY_MESSAGE, 409);
   const input = planInputOf(project);
@@ -482,9 +516,9 @@ export async function planScenes(
           section: scene.title,
           instrumental: !(sh.narration ?? '').trim(),
         }));
-        if (slots.length === 0) throw new StoryError(`ฉาก "${scene.title}" ไม่มีช่วงเพลง — วางทั้งเพลงใหม่แทน`, 422);
+        if (slots.length === 0) throw new StoryError({ th: `ฉาก "${scene.title}" ไม่มีช่วงเพลง — วางทั้งเพลงใหม่แทน`, en: `Scene "${scene.title}" has no part of the song. Re-plan the whole song instead.` }, 422);
         const shots = await planMvSlots(input, slots).catch(() => null);
-        if (!shots) throw new StoryError('ผู้ช่วย AI ไม่ว่างตอนนี้ ลองใหม่อีกครั้ง', 503);
+        if (!shots) throw new StoryError({ th: 'ผู้ช่วย AI ไม่ว่างตอนนี้ ลองใหม่อีกครั้ง', en: 'The AI assistant is busy right now. Please try again.' }, 503);
         fresh.set(scene.id, shots);
       } else {
         const maxShots = Math.min(share, Math.max(1, Math.round(all[index].seconds / 6) + 2));
@@ -538,13 +572,17 @@ export async function renderShot(
   models: MovieModel[]
 ): Promise<{ generationId: number }> {
   const shot = project.shots.find((s) => s.id === shotId);
-  if (!shot) throw new StoryError('ไม่พบช็อตนี้', 404);
+  if (!shot) throw new StoryError({ th: 'ไม่พบช็อตนี้', en: 'Shot not found.' }, 404);
   const model = models.find((m) => m.id === shot.modelId);
-  if (!model) throw new StoryError(`ช็อต ${shot.shotNumber}: เลือกโมเดลวิดีโอก่อน`, 422);
-  if (!model.orderable) throw new StoryError(`ช็อต ${shot.shotNumber}: ${model.name} ยังเปิดให้ใช้ไม่ได้ เลือกโมเดลอื่น`, 409);
-  if (!shot.visualPrompt.trim()) throw new StoryError(`ช็อต ${shot.shotNumber}: ยังไม่มีคำบรรยายภาพ`, 422);
+  if (!model) throw new StoryError({ th: `ช็อต ${shot.shotNumber}: เลือกโมเดลวิดีโอก่อน`, en: `Shot ${shot.shotNumber}: pick a video model first.` }, 422);
+  if (!model.orderable) {
+    throw new StoryError({ th: `ช็อต ${shot.shotNumber}: ${model.name} ยังเปิดให้ใช้ไม่ได้ เลือกโมเดลอื่น`, en: `Shot ${shot.shotNumber}: ${model.name} isn't available yet. Pick another model.` }, 409);
+  }
+  if (!shot.visualPrompt.trim()) throw new StoryError({ th: `ช็อต ${shot.shotNumber}: ยังไม่มีคำบรรยายภาพ`, en: `Shot ${shot.shotNumber}: describe what it shows first.` }, 422);
   // Its opening picture is on the way: the clip would start from the old one.
-  if (shot.keyframeStatus === 'rendering') throw new StoryError(`ช็อต ${shot.shotNumber}: รอภาพเปิดช็อตเสร็จก่อน`, 409);
+  if (shot.keyframeStatus === 'rendering') {
+    throw new StoryError({ th: `ช็อต ${shot.shotNumber}: รอภาพเปิดช็อตเสร็จก่อน`, en: `Shot ${shot.shotNumber}: wait for its opening picture to finish first.` }, 409);
+  }
 
   const claimed = await prisma.aiStoryShot.updateMany({
     where: { id: shot.id, projectId: project.id, status: { in: ['pending', 'failed', 'done'] } },
@@ -552,7 +590,7 @@ export async function renderShot(
     // claim with the old clip.
     data: { status: 'rendering', errorMessage: null, visualGenerationId: null },
   });
-  if (claimed.count === 0) throw new StoryError(`ช็อต ${shot.shotNumber} กำลังสร้างอยู่แล้ว`, 409);
+  if (claimed.count === 0) throw new StoryError({ th: `ช็อต ${shot.shotNumber} กำลังสร้างอยู่แล้ว`, en: `Shot ${shot.shotNumber} is already being made.` }, 409);
 
   const draft = shotDraftOf(shot);
   // The composed opening picture when the customer keeps it, else the lead's photo.
@@ -594,7 +632,7 @@ export async function renderShot(
   } catch (error) {
     await prisma.aiStoryShot.updateMany({
       where: { id: shot.id, status: 'rendering', visualGenerationId: null },
-      data: { status: 'failed', errorMessage: customerMessage(error) },
+      data: { status: 'failed', errorMessage: packMsg(customerMsg(error)) },
     });
     throw error;
   }
@@ -662,11 +700,13 @@ export async function assemblePriceSettings(): Promise<{ perMinute: number; mini
  * new order replaces the old one (whose track stays in the gallery).
  */
 export async function orderMusic(userId: number, admin: boolean, project: StoryProjectFull): Promise<{ generationId: number }> {
-  if (project.mode !== 'film') throw new StoryError('MV ใช้เพลงของ MV อยู่แล้ว');
+  if (project.mode !== 'film') throw new StoryError({ th: 'MV ใช้เพลงของ MV อยู่แล้ว', en: 'An MV already uses its own song.' });
   const seconds = filmSeconds(project);
-  if (seconds <= 0) throw new StoryError('วางช็อตก่อน ระบบสร้างเพลงยาวเท่าหนัง', 422);
+  if (seconds <= 0) throw new StoryError({ th: 'วางช็อตก่อน ระบบสร้างเพลงยาวเท่าหนัง', en: 'Plan the shots first — the music is made as long as the film.' }, 422);
   const model = await musicModel(admin);
-  if (!model?.orderable) throw new StoryError('ตัวสร้างเพลงยังไม่เปิดให้ใช้ ปิดดนตรีประกอบไว้ก่อน', 409);
+  if (!model?.orderable) {
+    throw new StoryError({ th: 'ตัวสร้างเพลงยังไม่เปิดให้ใช้ ปิดดนตรีประกอบไว้ก่อน', en: "The music generator isn't available yet. Turn background music off for now." }, 409);
+  }
   const length = musicSeconds(seconds);
   const result = await GenerationService.generate(
     userId,
@@ -681,13 +721,18 @@ export async function orderMusic(userId: number, admin: boolean, project: StoryP
   return { generationId: result.id };
 }
 
-/** What the customer may read about a refused order — never an internal message. */
-export function customerMessage(error: unknown): string {
-  if (error instanceof StoryError) return error.message;
+/**
+ * What the customer may read about a refused order — never an internal
+ * message — in both languages: answered by a route, or stored on a row
+ * (`packMsg`) and read back in whichever language the reader has by then.
+ */
+export function customerMsg(error: unknown): Msg {
+  // Our own refusals (StoryError, StoryJobError) carry their pair.
+  if (error instanceof UserMessageError) return error.msg;
   const known = generationErrorResponse(error);
-  if (!known) return 'สั่งสร้างไม่สำเร็จ ลองใหม่อีกครั้ง';
-  if (known.status === 402) return 'เครดิตไม่พอ เติมเครดิตแล้วลองใหม่';
-  if (known.status === 503) return 'ระบบสร้างวิดีโอไม่ว่างชั่วคราว ลองใหม่ภายหลัง';
-  if (known.status === 404) return 'โมเดลนี้ปิดใช้งานอยู่ เลือกโมเดลอื่น';
-  return known.body.error;
+  if (!known) return ORDER_FAILED;
+  if (known.status === 402) return NO_CREDITS;
+  if (known.status === 503) return VIDEO_BUSY;
+  if (known.status === 404) return MODEL_OFF;
+  return { th: known.body.error, en: generationErrorResponse(error, 'en')?.body.error ?? known.body.error };
 }

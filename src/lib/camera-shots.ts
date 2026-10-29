@@ -16,6 +16,8 @@
  *   - the moon hangs at (−8, 40, −60), behind the figure.
  */
 
+import type { Locale, Msg } from '@/lib/i18n/locale';
+
 export type Vec3 = [number, number, number];
 
 export const CAMERA_MOVE_IDS = [
@@ -74,47 +76,48 @@ export const isCameraMoveId = (v: unknown): v is CameraMoveId =>
 export const isShotSizeId = (v: unknown): v is ShotSizeId =>
   typeof v === 'string' && (SHOT_SIZE_IDS as readonly string[]).includes(v);
 
-/** Thai one-liners under each tile: what the camera physically does. */
-export const MOVE_HINTS: Record<CameraMoveId, string> = {
-  static: 'กล้องไม่ขยับเลย ขยับแค่ตัวละคร',
-  'push-in': 'กล้องเคลื่อนเข้าหาตัวละคร',
-  'pull-out': 'กล้องถอยห่าง เห็นฉากกว้างขึ้น',
-  'pan-left': 'กล้องอยู่กับที่ หันไปทางซ้าย',
-  'pan-right': 'กล้องอยู่กับที่ หันไปทางขวา',
-  'truck-left': 'กล้องเลื่อนข้างไปพร้อมตัวละคร',
-  'tilt-up': 'กล้องอยู่กับที่ เงยจากพื้นขึ้นฟ้า',
-  orbit: 'กล้องเดินวนรอบตัวละคร',
-  tracking: 'กล้องเดินตามหลังตัวละคร',
-  'crane-up': 'กล้องลอยสูงขึ้น เผยทั้งฉาก',
-  handheld: 'ภาพไหวนิดๆ เหมือนถือกล้องด้วยมือ',
-  pov: 'เห็นภาพผ่านสายตาตัวละคร',
-  drone: 'บินสูงผ่านเหนือฉาก',
-  'zoom-face': 'กล้องอยู่กับที่ ซูมเลนส์เข้าที่หน้า',
+/** One-liners under each tile, in both languages: what the camera physically does. */
+export const MOVE_HINTS: Record<CameraMoveId, Msg> = {
+  static: { th: 'กล้องไม่ขยับเลย ขยับแค่ตัวละคร', en: 'The camera stays still; only the character moves' },
+  'push-in': { th: 'กล้องเคลื่อนเข้าหาตัวละคร', en: 'The camera moves toward the character' },
+  'pull-out': { th: 'กล้องถอยห่าง เห็นฉากกว้างขึ้น', en: 'The camera backs away to show more of the scene' },
+  'pan-left': { th: 'กล้องอยู่กับที่ หันไปทางซ้าย', en: 'The camera stays put and turns left' },
+  'pan-right': { th: 'กล้องอยู่กับที่ หันไปทางขวา', en: 'The camera stays put and turns right' },
+  'truck-left': { th: 'กล้องเลื่อนข้างไปพร้อมตัวละคร', en: 'The camera slides sideways with the character' },
+  'tilt-up': { th: 'กล้องอยู่กับที่ เงยจากพื้นขึ้นฟ้า', en: 'The camera stays put and tilts from the ground up to the sky' },
+  orbit: { th: 'กล้องเดินวนรอบตัวละคร', en: 'The camera circles the character' },
+  tracking: { th: 'กล้องเดินตามหลังตัวละคร', en: 'The camera follows behind the character' },
+  'crane-up': { th: 'กล้องลอยสูงขึ้น เผยทั้งฉาก', en: 'The camera rises to reveal the whole scene' },
+  handheld: { th: 'ภาพไหวนิดๆ เหมือนถือกล้องด้วยมือ', en: 'A slight shake, like a camera held by hand' },
+  pov: { th: 'เห็นภาพผ่านสายตาตัวละคร', en: "Seen through the character's eyes" },
+  drone: { th: 'บินสูงผ่านเหนือฉาก', en: 'Flies high over the scene' },
+  'zoom-face': { th: 'กล้องอยู่กับที่ ซูมเลนส์เข้าที่หน้า', en: 'The camera stays put and zooms in on the face' },
 };
 
-export const SIZE_HINTS: Record<ShotSizeId, string> = {
-  'extreme-wide': 'เห็นทั้งฉาก ตัวละครเล็กนิดเดียว',
-  wide: 'ตัวละครทั้งตัวกับฉากรอบๆ',
-  full: 'ตัวละครเต็มตัวพอดีเฟรม',
-  medium: 'ตั้งแต่เอวขึ้นไป',
-  'medium-close': 'ตั้งแต่อกขึ้นไป',
-  close: 'เต็มใบหน้า',
-  'extreme-close': 'เจาะรายละเอียด เช่น ดวงตา',
+export const SIZE_HINTS: Record<ShotSizeId, Msg> = {
+  'extreme-wide': { th: 'เห็นทั้งฉาก ตัวละครเล็กนิดเดียว', en: 'The whole scene; the character is tiny' },
+  wide: { th: 'ตัวละครทั้งตัวกับฉากรอบๆ', en: 'The whole character and the scene around them' },
+  full: { th: 'ตัวละครเต็มตัวพอดีเฟรม', en: 'The whole character, just filling the frame' },
+  medium: { th: 'ตั้งแต่เอวขึ้นไป', en: 'From the waist up' },
+  'medium-close': { th: 'ตั้งแต่อกขึ้นไป', en: 'From the chest up' },
+  close: { th: 'เต็มใบหน้า', en: 'The face fills the frame' },
+  'extreme-close': { th: 'เจาะรายละเอียด เช่น ดวงตา', en: 'A close detail, such as the eyes' },
 };
 
-export const ANGLE_HINTS: Record<LensAngleId, string> = {
-  'portrait-85': 'หน้าคมชัด ฉากหลังเบลอ',
-  'wide-24': 'เห็นฉากกว้าง ระยะใกล้ดูลึก',
-  macro: 'ของชิ้นเล็กๆ ใกล้มาก',
-  aerial: 'มองลงมาจากท้องฟ้า',
-  'low-angle': 'มองขึ้นจากพื้น ดูยิ่งใหญ่',
-  'top-down': 'มองตรงลงมาจากด้านบน',
+export const ANGLE_HINTS: Record<LensAngleId, Msg> = {
+  'portrait-85': { th: 'หน้าคมชัด ฉากหลังเบลอ', en: 'Sharp face, blurred background' },
+  'wide-24': { th: 'เห็นฉากกว้าง ระยะใกล้ดูลึก', en: 'A wide view with deep perspective up close' },
+  macro: { th: 'ของชิ้นเล็กๆ ใกล้มาก', en: 'Small things, very close' },
+  aerial: { th: 'มองลงมาจากท้องฟ้า', en: 'Looking down from the sky' },
+  'low-angle': { th: 'มองขึ้นจากพื้น ดูยิ่งใหญ่', en: 'Looking up from the ground; feels grand' },
+  'top-down': { th: 'มองตรงลงมาจากด้านบน', en: 'Looking straight down from above' },
 };
 
-export function shotHint(spec: ShotSpec): string {
-  if (spec.angle) return ANGLE_HINTS[spec.angle];
-  if (spec.move) return MOVE_HINTS[spec.move];
-  if (spec.size) return SIZE_HINTS[spec.size];
+/** The hint under a preview tile; Thai unless a locale is given. */
+export function shotHint(spec: ShotSpec, locale: Locale = 'th'): string {
+  if (spec.angle) return ANGLE_HINTS[spec.angle][locale];
+  if (spec.move) return MOVE_HINTS[spec.move][locale];
+  if (spec.size) return SIZE_HINTS[spec.size][locale];
   return '';
 }
 

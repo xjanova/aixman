@@ -48,6 +48,7 @@ const SHAPES: [RegExp, (m: RegExpMatchArray) => Msg | null][] = [
   // story/assemble.ts — joining a film, and its refund
   [/^ตัดต่อหนัง: ([\s\S]*)$/, (m) => ({ th: m[0], en: `Film edit: ${m[1]}` })],
   [/^คืนเครดิต: ตัดต่อหนังไม่สำเร็จ$/, () => ({ th: 'คืนเครดิต: ตัดต่อหนังไม่สำเร็จ', en: 'Refund: film edit failed' })],
+  [/^คืนเครดิต: การตัดต่อครั้งก่อนค้าง$/, () => ({ th: 'คืนเครดิต: การตัดต่อครั้งก่อนค้าง', en: 'Refund: the previous film edit stalled' })],
 ];
 
 /** A credit transaction's description in `locale`; a line of no known shape is returned as it is. */

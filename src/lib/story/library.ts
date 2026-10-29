@@ -9,6 +9,7 @@ import {
   type PlanInput,
   type StoryMode,
 } from './cinematic';
+import type { Msg } from '@/lib/i18n/locale';
 
 /**
  * A project's reference library (characters, props, places), its acts and
@@ -22,11 +23,12 @@ import {
  * composes them into one frame first, and the clip opens on that.
  */
 
+/** `label` names the kind (a tab, a heading); `one` names one item of it (a default name). */
 export const ASSET_KINDS = {
-  character: { label: 'ตัวละคร', max: 8 },
-  prop: { label: 'ของ / อาวุธ / ยานพาหนะ', max: 12 },
-  location: { label: 'สถานที่', max: 12 },
-} as const;
+  character: { label: { th: 'ตัวละคร', en: 'Characters' }, one: { th: 'ตัวละคร', en: 'Character' }, max: 8 },
+  prop: { label: { th: 'ของ / อาวุธ / ยานพาหนะ', en: 'Props / weapons / vehicles' }, one: { th: 'ของ / อาวุธ / ยานพาหนะ', en: 'Prop' }, max: 12 },
+  location: { label: { th: 'สถานที่', en: 'Places' }, one: { th: 'สถานที่', en: 'Place' }, max: 12 },
+} as const satisfies Record<string, { label: Msg; one: Msg; max: number }>;
 export type AssetKind = keyof typeof ASSET_KINDS;
 
 export const isAssetKind = (v: unknown): v is AssetKind => typeof v === 'string' && v in ASSET_KINDS;
@@ -34,12 +36,13 @@ export const isAssetKind = (v: unknown): v is AssetKind => typeof v === 'string'
 /** Pictures per library item: the main one and up to three more angles. */
 export const MAX_ASSET_PICTURES = 4;
 
-export const TIMES_OF_DAY: Record<string, { label: string; en: string }> = {
-  dawn: { label: 'รุ่งเช้า', en: 'at dawn, soft pink first light' },
-  day: { label: 'กลางวัน', en: 'in daylight' },
-  golden: { label: 'แดดเย็น', en: 'at golden hour, warm low sun' },
-  dusk: { label: 'พลบค่ำ', en: 'at dusk, blue hour' },
-  night: { label: 'กลางคืน', en: 'at night' },
+/** `label` is what the page shows; `prompt` is the English the models read. */
+export const TIMES_OF_DAY: Record<string, { label: Msg; prompt: string }> = {
+  dawn: { label: { th: 'รุ่งเช้า', en: 'Dawn' }, prompt: 'at dawn, soft pink first light' },
+  day: { label: { th: 'กลางวัน', en: 'Daytime' }, prompt: 'in daylight' },
+  golden: { label: { th: 'แดดเย็น', en: 'Golden hour' }, prompt: 'at golden hour, warm low sun' },
+  dusk: { label: { th: 'พลบค่ำ', en: 'Dusk' }, prompt: 'at dusk, blue hour' },
+  night: { label: { th: 'กลางคืน', en: 'Night' }, prompt: 'at night' },
 };
 
 export const STRUCTURE_LIMITS = { acts: 5, scenes: 24, title: 200, summary: 1200 } as const;
@@ -141,10 +144,10 @@ export function keyframePrompt(refs: PickedRef[], ctx: KeyframeContext): string 
   const described = [...ctx.characters, ...(ctx.location ? [ctx.location] : []), ...ctx.props]
     .filter((a) => a.description.trim())
     .map((a) => `${a.name}${pictured.has(a.id) ? '' : ' (no picture)'}: ${a.description.trim()}`);
-  const when = ctx.timeOfDay ? TIMES_OF_DAY[ctx.timeOfDay]?.en : undefined;
+  const when = ctx.timeOfDay ? TIMES_OF_DAY[ctx.timeOfDay]?.prompt : undefined;
   return [
     `One still frame: the opening frame of a film shot, ${frame.width > frame.height ? 'landscape' : frame.width < frame.height ? 'portrait' : 'square'} ${ctx.aspect}.`,
-    `${style.style}. ${capital(size.en)}.`,
+    `${style.style}. ${capital(size.prompt)}.`,
     ...(lines.length ? ['References:', ...lines] : []),
     ...(described.length ? [`Who and what is in it — ${described.join('; ')}.`] : []),
     `The frame: ${ctx.visual.trim()}${when ? ` ${capital(when)}.` : ''}`,

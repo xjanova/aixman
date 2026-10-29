@@ -18,6 +18,8 @@ import {
 import type { StoryMode } from './cinematic';
 import { StoryJobError, download, enqueueJob, hasAudio, runFfmpeg } from './media';
 import { usableDub } from './sing';
+import type { Msg } from '@/lib/i18n/locale';
+import { packMsg, registerStoredMsgs } from '@/lib/i18n/messages';
 
 /**
  * Joins a project's finished shots into one film on this server's ffmpeg,
@@ -37,6 +39,14 @@ const MAX_INPUT_BYTES = 400 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 900 * 1024 * 1024;
 const FONT_FILE = 'Sarabun-Bold.ttf';
 const FONT_NAME = 'Sarabun';
+
+// The reason a cut failed, written to the project row and read back later (packMsg).
+const CUT_FAILED: Msg = { th: 'ตัดต่อไม่สำเร็จ ลองใหม่อีกครั้ง', en: "Couldn't cut the film. Please try again." };
+const REFUNDED: Msg = { th: '(คืนเครดิตแล้ว)', en: 'Your credits have been refunded.' };
+const withRefund = (msg: Msg): Msg => ({ th: `${msg.th} ${REFUNDED.th}`, en: `${msg.en} ${REFUNDED.en}` });
+const NO_READY_SHOTS: Msg = { th: 'ยังไม่มีช็อตที่สร้างเสร็จ', en: 'No shots are finished yet.' };
+// Rows written before messages were stored in both languages hold these in Thai only.
+registerStoredMsgs(CUT_FAILED, REFUNDED, NO_READY_SHOTS);
 
 // ---------------------------------------------------------------------------
 // Queue
@@ -99,14 +109,14 @@ export async function startAssembly(userId: number, projectId: number, credits: 
 
   enqueueJob(() =>
     assemble(projectId).catch(async (error) => {
-      const message = error instanceof StoryJobError ? error.message : 'ตัดต่อไม่สำเร็จ ลองใหม่อีกครั้ง';
+      const message = error instanceof StoryJobError ? error.msg : CUT_FAILED;
       if (!(error instanceof StoryJobError)) console.error(`[story] assemble ${projectId}:`, error);
       await prisma
         .$transaction(async (tx) => {
           const row = await tx.aiStoryProject.findFirst({ where: { id: projectId, status: 'assembling' }, select: { creditsCharged: true } });
           const ended = await tx.aiStoryProject.updateMany({
             where: { id: projectId, status: 'assembling' },
-            data: { status: 'draft', errorMessage: row && row.creditsCharged > 0 ? `${message} (คืนเครดิตแล้ว)` : message, creditsCharged: 0 },
+            data: { status: 'draft', errorMessage: packMsg(row && row.creditsCharged > 0 ? withRefund(message) : message), creditsCharged: 0 },
           });
           if (ended.count > 0 && row && row.creditsCharged > 0) {
             await refundWithin(tx, userId, row.creditsCharged, projectId, 'คืนเครดิต: ตัดต่อหนังไม่สำเร็จ');
@@ -158,7 +168,7 @@ async function assemble(projectId: number): Promise<void> {
   // A singing shot is cut from its lip-sync dub when the switch is on and the
   // dub was made from the clip the shot has now.
   const sources = ready.map((s) => (mode === 'mv' && edit.lipsync && usableDub(s) ? s.lipsyncUrl! : s.mediaUrl!));
-  if (ready.length === 0) throw new StoryJobError('ยังไม่มีช็อตที่สร้างเสร็จ');
+  if (ready.length === 0) throw new StoryJobError(NO_READY_SHOTS);
 
   const modelKeys = new Map(
     (await prisma.aiModel.findMany({ where: { id: { in: ready.map((s) => s.modelId ?? 0) } }, select: { id: true, modelId: true } })).map((m) => [m.id, m.modelId])
@@ -171,19 +181,27 @@ async function assemble(projectId: number): Promise<void> {
     burnsSubs: modelKeys.get(s.modelId ?? 0) !== 'minimax-h3',
   }));
   const total = shots.reduce((n, s) => n + s.seconds, 0);
-  if (total > MAX_FILM_SECONDS) throw new StoryJobError(`หนังยาวเกิน ${MAX_FILM_SECONDS / 60} นาที ลดช็อตลงก่อน`);
+  if (total > MAX_FILM_SECONDS) {
+    throw new StoryJobError({ th: `หนังยาวเกิน ${MAX_FILM_SECONDS / 60} นาที ลดช็อตลงก่อน`, en: `The film is longer than ${MAX_FILM_SECONDS / 60} minutes. Remove some shots first.` });
+  }
 
   let musicUrl: string | null = null;
   if (edit.music === 'song') {
     musicUrl = project.songUrl;
-    if (!musicUrl) throw new StoryJobError('โปรเจกต์นี้ไม่มีเพลง ปิดดนตรีประกอบหรือเลือกเพลงใหม่');
+    if (!musicUrl) {
+      throw new StoryJobError({ th: 'โปรเจกต์นี้ไม่มีเพลง ปิดดนตรีประกอบหรือเลือกเพลงใหม่', en: "This project has no song. Turn the music off or pick a new song." });
+    }
   } else if (edit.music === 'generate') {
     const state = parseMusicState(script.music);
     const gen = state
       ? await prisma.aiGeneration.findFirst({ where: { id: state.generationId, userId: project.userId }, select: { status: true, resultUrl: true } })
       : null;
-    if (!gen) throw new StoryJobError('ยังไม่ได้สร้างเพลงประกอบ — สร้างก่อน หรือปิดดนตรีประกอบ');
-    if (gen.status !== 'completed' || !gen.resultUrl) throw new StoryJobError('เพลงประกอบยังสร้างไม่เสร็จ รอสักครู่แล้วลองใหม่');
+    if (!gen) {
+      throw new StoryJobError({ th: 'ยังไม่ได้สร้างเพลงประกอบ — สร้างก่อน หรือปิดดนตรีประกอบ', en: "The background music hasn't been made yet — make it first, or turn the music off." });
+    }
+    if (gen.status !== 'completed' || !gen.resultUrl) {
+      throw new StoryJobError({ th: 'เพลงประกอบยังสร้างไม่เสร็จ รอสักครู่แล้วลองใหม่', en: "The background music isn't finished yet. Wait a moment and try again." });
+    }
     musicUrl = gen.resultUrl;
   }
 
@@ -192,9 +210,9 @@ async function assemble(projectId: number): Promise<void> {
     const files: string[] = [];
     for (const [k, url] of sources.entries()) {
       files.push(`in_${k}.mp4`);
-      await download(url, path.join(dir, files[k]), MAX_INPUT_BYTES, 'คลิปบางช็อต');
+      await download(url, path.join(dir, files[k]), MAX_INPUT_BYTES, { th: 'คลิปบางช็อต', en: 'some shot clips' });
     }
-    if (musicUrl) await download(musicUrl, path.join(dir, 'music.bin'), MAX_INPUT_BYTES, 'เพลง');
+    if (musicUrl) await download(musicUrl, path.join(dir, 'music.bin'), MAX_INPUT_BYTES, { th: 'เพลง', en: 'the music' });
     const out = await renderFilm({
       dir,
       files,
@@ -205,7 +223,7 @@ async function assemble(projectId: number): Promise<void> {
       title: edit.titleCard ? project.title : undefined,
     });
     const size = (await stat(out)).size;
-    if (size > MAX_OUTPUT_BYTES) throw new StoryJobError('ไฟล์หนังใหญ่เกินไป ลดจำนวนช็อตลง');
+    if (size > MAX_OUTPUT_BYTES) throw new StoryJobError({ th: 'ไฟล์หนังใหญ่เกินไป ลดจำนวนช็อตลง', en: 'The film file is too large. Use fewer shots.' });
     const url = await uploadBuffer(await readFile(out), `story/${project.userId}/${project.id}/${Date.now()}.mp4`, 'video/mp4');
     await prisma.aiStoryProject.updateMany({
       where: { id: project.id, status: 'assembling' },

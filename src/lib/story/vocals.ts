@@ -12,7 +12,9 @@ import { uploadBuffer } from '@/lib/storage/r2';
 import { voiceRenderSeconds } from '@/lib/voice-length';
 import { StoryJobError, download, enqueueJob, runFfmpeg, runNiced } from './media';
 import { LIPSYNC_MODEL_KEY, SILENT_MEAN_DB, meanVolumeDb, vocalsState, voiceWindow } from './sing';
-import { StoryError, customerMessage, type StoryProjectFull } from './service';
+import { StoryError, customerMsg, type StoryProjectFull } from './service';
+import type { Msg } from '@/lib/i18n/locale';
+import { packMsg, registerStoredMsgs } from '@/lib/i18n/messages';
 
 /**
  * MV lip-sync, server side: the song's lead vocal (separated here or
@@ -27,6 +29,36 @@ import { StoryError, customerMessage, type StoryProjectFull } from './service';
  */
 
 const SEPARATE_STALE_MS = 40 * 60_000;
+
+const AUTO_NOT_READY: Msg = {
+  th: 'ระบบแยกเสียงร้องอัตโนมัติยังไม่พร้อม — อัปโหลดไฟล์เสียงร้องแยกแทน',
+  en: "Automatic vocal separation isn't ready yet — upload a separate vocal track instead.",
+};
+// Failure reasons written to rows and read back later (packMsg).
+const SEPARATE_FAILED: Msg = {
+  th: 'แยกเสียงร้องไม่สำเร็จ ลองใหม่ หรืออัปโหลดไฟล์เสียงร้องแยกแทน',
+  en: "Couldn't separate the vocals. Try again, or upload a separate vocal track instead.",
+};
+const DUBBER_CLOSED: Msg = { th: 'ตัวลิปซิงก์ยังไม่เปิดให้ใช้ ลองใหม่ภายหลัง', en: "Lip-sync isn't available yet. Please try again later." };
+const NO_VOCALS: Msg = { th: 'ยังไม่มีเสียงร้องแยก', en: 'There are no separated vocals yet.' };
+const VOCALS_UNREADABLE: Msg = { th: 'อ่านไฟล์เสียงร้องไม่ได้ ลองใหม่อีกครั้ง', en: "Couldn't read the vocal file. Please try again." };
+const NO_CLIP: Msg = { th: 'ช็อตนี้ยังไม่มีคลิป', en: "This shot doesn't have a clip yet." };
+const SILENT_SLICE: Msg = {
+  th: 'ช่วงนี้ของเพลงไม่มีเสียงร้อง ไม่ต้องลิปซิงก์ (ไม่เสียเครดิต)',
+  en: 'There is no singing in this part of the song, so no lip-sync is needed (no credits used).',
+};
+const DUB_INCOMPLETE: Msg = {
+  th: 'การสั่งลิปซิงก์ไม่สมบูรณ์ — ตรวจในแกลเลอรีก่อนสั่งใหม่',
+  en: "The lip-sync order didn't finish — check your gallery before ordering again.",
+};
+const NO_FACE: Msg = {
+  th: 'ไม่พบใบหน้าในบางช่วงของช็อต — ใช้ช็อตที่เห็นหน้าชัดตลอด หรือข้ามช็อตนี้',
+  en: "No face was found in part of the shot — use a shot where the face is clear throughout, or skip this one.",
+};
+const DUB_FAILED: Msg = { th: 'ลิปซิงก์ไม่สำเร็จ ลองสั่งใหม่ได้', en: "Lip-sync didn't work — you can order it again." };
+const REFUNDED: Msg = { th: '(คืนเครดิตแล้ว)', en: 'Your credits have been refunded.' };
+// Rows written before messages were stored in both languages hold these in Thai only.
+registerStoredMsgs(AUTO_NOT_READY, SEPARATE_FAILED, DUBBER_CLOSED, NO_VOCALS, VOCALS_UNREADABLE, NO_CLIP, SILENT_SLICE, DUB_INCOMPLETE, NO_FACE, DUB_FAILED, REFUNDED);
 const SEPARATE_TIMEOUT_MS = 30 * 60_000;
 const SONG_MAX_BYTES = 80 * 1024 * 1024;
 const VOCALS_MAX_BYTES = 120 * 1024 * 1024;
@@ -91,8 +123,10 @@ const notSeparating = () => [
  * running. The claim is conditional, so a double click separates once.
  */
 export async function startSeparation(project: StoryProjectFull): Promise<boolean> {
-  if (project.mode !== 'mv' || !project.songUrl) throw new StoryError('แยกเสียงร้องได้เฉพาะ MV ที่มีเพลง', 422);
-  if (!demucsPython()) throw new StoryError('ระบบแยกเสียงร้องอัตโนมัติยังไม่พร้อม — อัปโหลดไฟล์เสียงร้องแยกแทน', 503);
+  if (project.mode !== 'mv' || !project.songUrl) {
+    throw new StoryError({ th: 'แยกเสียงร้องได้เฉพาะ MV ที่มีเพลง', en: 'Vocals can only be separated for an MV with a song.' }, 422);
+  }
+  if (!demucsPython()) throw new StoryError(AUTO_NOT_READY, 503);
   const claimed = await prisma.aiStoryProject.updateMany({
     where: { id: project.id, userId: project.userId, songUrl: project.songUrl, OR: notSeparating() },
     data: { vocalsStatus: 'separating', vocalsStartedAt: new Date(), vocalsError: null, vocalsSongUrl: project.songUrl },
@@ -100,7 +134,7 @@ export async function startSeparation(project: StoryProjectFull): Promise<boolea
   if (claimed.count === 0) return false;
   enqueueJob(() =>
     separate(project.id).catch(async (error) => {
-      const message = error instanceof StoryJobError ? error.message : 'แยกเสียงร้องไม่สำเร็จ ลองใหม่ หรืออัปโหลดไฟล์เสียงร้องแยกแทน';
+      const message = packMsg(error instanceof StoryJobError ? error.msg : SEPARATE_FAILED);
       if (!(error instanceof StoryJobError)) console.error(`[story] separate ${project.id}:`, error);
       await prisma.aiStoryProject
         .updateMany({ where: { id: project.id, vocalsStatus: 'separating' }, data: { vocalsStatus: 'failed', vocalsError: message } })
@@ -114,17 +148,17 @@ async function separate(projectId: number): Promise<void> {
   const project = await prisma.aiStoryProject.findUnique({ where: { id: projectId } });
   if (!project || project.vocalsStatus !== 'separating' || !project.songUrl) return;
   const python = demucsPython();
-  if (!python) throw new StoryJobError('ระบบแยกเสียงร้องอัตโนมัติยังไม่พร้อม — อัปโหลดไฟล์เสียงร้องแยกแทน');
+  if (!python) throw new StoryJobError(AUTO_NOT_READY);
   const songUrl = project.songUrl;
   const dir = await mkdtemp(path.join(tmpdir(), 'aixman-vocals-'));
   try {
-    await download(songUrl, path.join(dir, 'song.bin'), SONG_MAX_BYTES, 'เพลง');
+    await download(songUrl, path.join(dir, 'song.bin'), SONG_MAX_BYTES, { th: 'เพลง', en: 'the song' });
     await runFfmpeg(
       ['-y', '-hide_banner', '-loglevel', 'error', '-i', 'song.bin', '-t', String(MAX_SECONDS), '-vn', '-ac', '2', '-ar', '44100', '-c:a', 'pcm_s16le', 'in.wav'],
       dir,
       2 * 60_000
     ).catch(() => {
-      throw new StoryJobError('อ่านไฟล์เพลงไม่ได้ ใช้ไฟล์ MP3, WAV หรือ M4A');
+      throw new StoryJobError({ th: 'อ่านไฟล์เพลงไม่ได้ ใช้ไฟล์ MP3, WAV หรือ M4A', en: "Couldn't read the song. Use an MP3, WAV or M4A file." });
     });
     await writeFile(path.join(dir, 'separate.py'), SEPARATE_PY);
     const threads = demucsThreads();
@@ -152,7 +186,7 @@ export async function adoptUploadedVocals(project: StoryProjectFull, url: string
     where: { id: project.id, userId: project.userId, OR: notSeparating() },
     data: { vocalsStatus: 'done', vocalsUrl: url, vocalsSource: 'upload', vocalsSongUrl: project.songUrl, vocalsError: null, vocalsStartedAt: null },
   });
-  if (r.count === 0) throw new StoryError('กำลังแยกเสียงร้องอยู่ รอให้เสร็จก่อน', 409);
+  if (r.count === 0) throw new StoryError({ th: 'กำลังแยกเสียงร้องอยู่ รอให้เสร็จก่อน', en: 'The vocals are being separated. Wait for it to finish first.' }, 409);
 }
 
 // ---------------------------------------------------------------------------
@@ -191,8 +225,10 @@ const ORPHAN_CLAIM_MS = 10 * 60_000;
  * Ordering happens after the response (`placeLipsync`).
  */
 export async function claimLipsync(project: StoryProjectFull, shotIds: number[]): Promise<number[]> {
-  if (project.mode !== 'mv') throw new StoryError('ลิปซิงก์เสียงร้องใช้ได้เฉพาะโหมด MV');
-  if (projectVocalsState(project) !== 'done') throw new StoryError('ยังไม่มีเสียงร้องแยก — แยกเสียงร้องหรืออัปโหลดก่อน', 409);
+  if (project.mode !== 'mv') throw new StoryError({ th: 'ลิปซิงก์เสียงร้องใช้ได้เฉพาะโหมด MV', en: 'Vocal lip-sync is only for MV mode.' });
+  if (projectVocalsState(project) !== 'done') {
+    throw new StoryError({ th: 'ยังไม่มีเสียงร้องแยก — แยกเสียงร้องหรืออัปโหลดก่อน', en: 'There are no separated vocals yet — separate or upload them first.' }, 409);
+  }
   const claimed: number[] = [];
   for (const id of shotIds) {
     const shot = project.shots.find((s) => s.id === id);
@@ -224,20 +260,20 @@ export async function claimLipsync(project: StoryProjectFull, shotIds: number[])
  * that runs out stops the rest with the same message.
  */
 export async function placeLipsync(userId: number, admin: boolean, projectId: number, shotIds: number[]): Promise<void> {
-  const fail = (ids: number[], message: string) =>
+  const fail = (ids: number[], message: Msg) =>
     prisma.aiStoryShot.updateMany({
       where: { id: { in: ids }, lipsyncStatus: 'rendering', lipsyncGenerationId: null },
-      data: { lipsyncStatus: 'failed', lipsyncError: message },
+      data: { lipsyncStatus: 'failed', lipsyncError: packMsg(message) },
     });
   const project = await prisma.aiStoryProject.findFirst({ where: { id: projectId, userId }, include: { shots: true } });
   if (!project) return;
   const model = await lipsyncModel(admin);
   if (!model?.orderable) {
-    await fail(shotIds, 'ตัวลิปซิงก์ยังไม่เปิดให้ใช้ ลองใหม่ภายหลัง');
+    await fail(shotIds, DUBBER_CLOSED);
     return;
   }
   if (!project.vocalsUrl || project.vocalsStatus !== 'done') {
-    await fail(shotIds, 'ยังไม่มีเสียงร้องแยก');
+    await fail(shotIds, NO_VOCALS);
     return;
   }
 
@@ -245,16 +281,16 @@ export async function placeLipsync(userId: number, admin: boolean, projectId: nu
   const pending = [...shotIds];
   try {
     try {
-      await download(project.vocalsUrl, path.join(dir, 'vocals.bin'), VOCALS_MAX_BYTES, 'ไฟล์เสียงร้อง');
+      await download(project.vocalsUrl, path.join(dir, 'vocals.bin'), VOCALS_MAX_BYTES, { th: 'ไฟล์เสียงร้อง', en: 'the vocal file' });
     } catch (error) {
-      await fail(pending, error instanceof StoryJobError ? error.message : 'อ่านไฟล์เสียงร้องไม่ได้ ลองใหม่อีกครั้ง');
+      await fail(pending, error instanceof StoryJobError ? error.msg : VOCALS_UNREADABLE);
       return;
     }
     while (pending.length > 0) {
       const id = pending.shift()!;
       const shot = project.shots.find((s) => s.id === id);
       if (!shot?.mediaUrl) {
-        await fail([id], 'ช็อตนี้ยังไม่มีคลิป');
+        await fail([id], NO_CLIP);
         continue;
       }
       const window = voiceWindow(shot.startSec === null ? null : Number(shot.startSec), Number(shot.durationSec));
@@ -272,7 +308,7 @@ export async function placeLipsync(userId: number, admin: boolean, projectId: nu
         );
         const level = meanVolumeDb(await runFfmpeg(['-hide_banner', '-i', slice, '-af', 'volumedetect', '-f', 'null', '-'], dir, 60_000));
         if (level === null || level < SILENT_MEAN_DB) {
-          await fail([id], 'ช่วงนี้ของเพลงไม่มีเสียงร้อง ไม่ต้องลิปซิงก์ (ไม่เสียเครดิต)');
+          await fail([id], SILENT_SLICE);
           continue;
         }
         const voiceUrl = await uploadBuffer(await readFile(path.join(dir, slice)), `story/${userId}/${projectId}/sing-${id}-${Date.now()}.wav`, 'audio/wav');
@@ -286,9 +322,9 @@ export async function placeLipsync(userId: number, admin: boolean, projectId: nu
           data: { lipsyncGenerationId: result.id },
         });
       } catch (error) {
-        await fail([id], customerMessage(error));
+        await fail([id], customerMsg(error));
         if (generationErrorResponse(error)?.status === 402) {
-          await fail(pending.splice(0), customerMessage(error));
+          await fail(pending.splice(0), customerMsg(error));
         } else if (!(error instanceof StoryError) && !generationErrorResponse(error)) {
           console.error(`[story] lipsync shot ${id}:`, error);
         }
@@ -311,7 +347,7 @@ export async function syncDubs(project: StoryProjectFull): Promise<boolean> {
   for (const shot of orphans) {
     const r = await prisma.aiStoryShot.updateMany({
       where: { id: shot.id, lipsyncStatus: 'rendering', lipsyncGenerationId: null },
-      data: { lipsyncStatus: 'failed', lipsyncError: 'การสั่งลิปซิงก์ไม่สมบูรณ์ — ตรวจในแกลเลอรีก่อนสั่งใหม่' },
+      data: { lipsyncStatus: 'failed', lipsyncError: packMsg(DUB_INCOMPLETE) },
     });
     changed ||= r.count > 0;
   }
@@ -331,15 +367,14 @@ export async function syncDubs(project: StoryProjectFull): Promise<boolean> {
       });
       changed ||= r.count > 0;
     } else if (gen.status === 'failed' || gen.status === 'cancelled') {
-      const refunded = gen.creditsRefunded > 0 ? ' (คืนเครดิตแล้ว)' : '';
       // LatentSync stops when a frame has no face it can find (input-fault.ts):
-      // worth saying, or the customer orders the same shot again.
-      const reason = /ใบหน้า|Face not detected/i.test(gen.errorMessage ?? '')
-        ? 'ไม่พบใบหน้าในบางช่วงของช็อต — ใช้ช็อตที่เห็นหน้าชัดตลอด หรือข้ามช็อตนี้'
-        : 'ลิปซิงก์ไม่สำเร็จ ลองสั่งใหม่ได้';
+      // worth saying, or the customer orders the same shot again. (The Thai in
+      // the pattern matches the generation's own stored reason.)
+      const reason = /ใบหน้า|Face not detected/i.test(gen.errorMessage ?? '') ? NO_FACE : DUB_FAILED;
+      const message: Msg = gen.creditsRefunded > 0 ? { th: `${reason.th} ${REFUNDED.th}`, en: `${reason.en} ${REFUNDED.en}` } : reason;
       const r = await prisma.aiStoryShot.updateMany({
         where: { id: shot.id, lipsyncStatus: 'rendering', lipsyncGenerationId: gen.id },
-        data: { lipsyncStatus: 'failed', lipsyncError: `${reason}${refunded}` },
+        data: { lipsyncStatus: 'failed', lipsyncError: packMsg(message) },
       });
       changed ||= r.count > 0;
     }

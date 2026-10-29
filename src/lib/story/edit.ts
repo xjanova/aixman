@@ -91,7 +91,7 @@ export function parseMusicState(raw: unknown): MusicState | null {
 /** What ACE-Step is asked for: an instrumental in the film's look (no lyrics → instrumental). */
 export function musicPrompt(look: string, mood: string | null): string {
   const base = LOOKS[look]?.music ?? LOOKS.film.music;
-  const feel = mood && MOODS[mood] ? `, ${MOODS[mood].label}` : '';
+  const feel = mood && MOODS[mood] ? `, ${MOODS[mood].label.th}` : '';
   return `Cinematic film score, instrumental, no vocals. ${base}${feel}`;
 }
 

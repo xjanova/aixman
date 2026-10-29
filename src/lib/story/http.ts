@@ -19,9 +19,11 @@ import {
 } from './cinematic';
 import { assemblePrice, musicSeconds, parseEdit, parseMusicState } from './edit';
 import { assemblyStale } from './assemble';
-import { chooseModel, imageModels, pictureSettings, shotRefsOf } from './keyframes';
+import { chooseModel, imageModels, pictureSettings, referenceMsg, shotRefsOf } from './keyframes';
 import { ASSET_KINDS, MAX_ASSET_PICTURES, TIMES_OF_DAY, assetPictures, isAssetKind, pickReferences, referencesWanted } from './library';
-import { referenceCaps, referenceLabel } from '@/lib/reference-caps';
+import { referenceCaps } from '@/lib/reference-caps';
+import { pick, translator, type Locale, type Msg } from '@/lib/i18n/locale';
+import { messageFor, readStoredMessage } from '@/lib/i18n/messages';
 import { planJob } from './plan-jobs';
 import { dubState, suggestedForLipsync, voiceWindow } from './sing';
 import { demucsPython, lipsyncCredits, lipsyncModel, projectVocalsState } from './vocals';
@@ -29,7 +31,7 @@ import type { Prisma } from '@/generated/prisma/client';
 import {
   StoryError,
   assemblePriceSettings,
-  customerMessage,
+  customerMsg,
   filmSeconds,
   idList,
   libraryOf,
@@ -44,12 +46,49 @@ import {
 
 /** Shared by the /api/story routes: validation, song lookup, replies. */
 
-export function storyErrorReply(error: unknown, context: string): NextResponse {
-  if (error instanceof StoryError) return NextResponse.json({ error: error.message }, { status: error.status });
-  const known = generationErrorResponse(error);
-  if (known) return NextResponse.json({ ...known.body, error: customerMessage(error) }, { status: known.status });
+/** Replies every /api/story route gives, in both languages. */
+export const STORY_REPLY = {
+  signIn: { th: 'กรุณาเข้าสู่ระบบ', en: 'Please sign in.' },
+  projectNotFound: { th: 'ไม่พบโปรเจกต์', en: 'Project not found.' },
+  shotNotFound: { th: 'ไม่พบช็อตนี้', en: 'Shot not found.' },
+  badRequest: { th: 'ข้อมูลไม่ถูกต้อง', en: 'Invalid request.' },
+  badAction: { th: 'คำสั่งไม่ถูกต้อง', en: 'Unknown action.' },
+} satisfies Record<string, Msg>;
+
+/** A JSON error reply in the visitor's language. */
+export function storyReply(msg: Msg, locale: Locale, status: number, headers?: HeadersInit): NextResponse {
+  return NextResponse.json({ error: pick(msg, locale) }, { status, headers });
+}
+
+/**
+ * "Done N times this hour" — a 429 with Retry-After. `what` is the thing done:
+ * Thai as the sentence's subject ("ตัดต่อ"), English as a past participle
+ * phrase ("cut a film").
+ */
+export function hourlyLimitReply(what: Msg, max: number, retryAfter: number, locale: Locale): NextResponse {
+  const minutes = Math.ceil(retryAfter / 60);
+  return storyReply(
+    {
+      th: `${what.th}ครบ ${max} ครั้งในชั่วโมงนี้แล้ว ลองใหม่ในอีก ${minutes} นาที`,
+      en: `You've ${what.en} ${max} ${max === 1 ? 'time' : 'times'} this hour. Try again in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}.`,
+    },
+    locale,
+    429,
+    { 'Retry-After': String(retryAfter) }
+  );
+}
+
+/**
+ * The reply for anything a story route throws, in the visitor's language:
+ * our own refusals as they are, a refused order as the customer may read it,
+ * anything else logged and answered with a generic failure.
+ */
+export function storyErrorReply(error: unknown, context: string, locale: Locale): NextResponse {
+  if (error instanceof StoryError) return NextResponse.json({ error: messageFor(error, locale) }, { status: error.status });
+  const known = generationErrorResponse(error, locale);
+  if (known) return NextResponse.json({ ...known.body, error: pick(customerMsg(error), locale) }, { status: known.status });
   console.error(`[story] ${context}:`, error);
-  return NextResponse.json({ error: 'เกิดข้อผิดพลาด ลองใหม่อีกครั้ง' }, { status: 500 });
+  return storyReply({ th: 'เกิดข้อผิดพลาด ลองใหม่อีกครั้ง', en: 'Something went wrong. Please try again.' }, locale, 500);
 }
 
 export function text(value: unknown, max: number): string {
@@ -67,14 +106,15 @@ export function isOwnUpload(url: unknown, userId: number, kind: 'image' | 'audio
 }
 
 const SONG_FETCH_LIMIT = 40 * 1024 * 1024;
+const SONG_TOO_BIG: Msg = { th: 'ไฟล์เพลงใหญ่เกินไป', en: 'The song file is too large.' };
 
 /** Length of a song (or its vocal stem) in our bucket, read from its bytes — never from a number the client sends. */
 export async function songSeconds(url: string): Promise<number> {
   const ext = (url.split('?')[0].split('.').pop() ?? '').toLowerCase();
   const res = await fetch(url, { signal: AbortSignal.timeout(30_000) }).catch(() => null);
-  if (!res?.ok || !res.body) throw new StoryError('เปิดไฟล์เพลงไม่ได้ ลองอัปโหลดใหม่', 422);
+  if (!res?.ok || !res.body) throw new StoryError({ th: 'เปิดไฟล์เพลงไม่ได้ ลองอัปโหลดใหม่', en: "Couldn't open the song. Try uploading it again." }, 422);
   const declared = Number(res.headers.get('content-length') ?? 0);
-  if (declared > SONG_FETCH_LIMIT) throw new StoryError('ไฟล์เพลงใหญ่เกินไป', 422);
+  if (declared > SONG_FETCH_LIMIT) throw new StoryError(SONG_TOO_BIG, 422);
   const chunks: Uint8Array[] = [];
   let total = 0;
   const reader = res.body.getReader();
@@ -84,16 +124,21 @@ export async function songSeconds(url: string): Promise<number> {
     total += value.byteLength;
     if (total > SONG_FETCH_LIMIT) {
       await reader.cancel();
-      throw new StoryError('ไฟล์เพลงใหญ่เกินไป', 422);
+      throw new StoryError(SONG_TOO_BIG, 422);
     }
     chunks.push(value);
   }
   const seconds = audioDurationSeconds(Buffer.concat(chunks), ext);
-  if (!seconds) throw new StoryError('อ่านความยาวเพลงไม่ได้ ใช้ไฟล์ MP3, WAV, FLAC, OGG หรือ M4A', 422);
-  if (seconds > LIMITS.maxSongSeconds) {
-    throw new StoryError(`เพลงยาวเกิน ${LIMITS.maxSongSeconds / 60} นาที — ตัดให้สั้นลงก่อน`, 422);
+  if (!seconds) {
+    throw new StoryError({ th: 'อ่านความยาวเพลงไม่ได้ ใช้ไฟล์ MP3, WAV, FLAC, OGG หรือ M4A', en: "Couldn't read the song's length. Use an MP3, WAV, FLAC, OGG or M4A file." }, 422);
   }
-  if (seconds < LIMITS.minShotSeconds * 2) throw new StoryError('เพลงสั้นเกินไป', 422);
+  if (seconds > LIMITS.maxSongSeconds) {
+    throw new StoryError(
+      { th: `เพลงยาวเกิน ${LIMITS.maxSongSeconds / 60} นาที — ตัดให้สั้นลงก่อน`, en: `The song is longer than ${LIMITS.maxSongSeconds / 60} minutes — trim it first.` },
+      422
+    );
+  }
+  if (seconds < LIMITS.minShotSeconds * 2) throw new StoryError({ th: 'เพลงสั้นเกินไป', en: 'The song is too short.' }, 422);
   return Math.round(seconds * 100) / 100;
 }
 
@@ -104,7 +149,7 @@ export async function resolveSong(
 ): Promise<{ url: string; seconds: number; lyrics: string }> {
   const s = (source ?? {}) as Record<string, unknown>;
   if (s.uploadUrl !== undefined) {
-    if (!isOwnUpload(s.uploadUrl, userId, 'audio')) throw new StoryError('ไฟล์เพลงไม่ถูกต้อง อัปโหลดใหม่อีกครั้ง', 422);
+    if (!isOwnUpload(s.uploadUrl, userId, 'audio')) throw new StoryError({ th: 'ไฟล์เพลงไม่ถูกต้อง อัปโหลดใหม่อีกครั้ง', en: "The song file isn't valid. Please upload it again." }, 422);
     return { url: s.uploadUrl, seconds: await songSeconds(s.uploadUrl), lyrics: '' };
   }
   const generationId = Number(s.generationId);
@@ -113,7 +158,7 @@ export async function resolveSong(
       where: { id: generationId, userId, type: 'audio', status: 'completed' },
       select: { resultUrl: true, params: true },
     });
-    if (!gen?.resultUrl || !keyFromPublicUrl(gen.resultUrl)) throw new StoryError('ไม่พบเพลงนี้ในผลงานของคุณ', 404);
+    if (!gen?.resultUrl || !keyFromPublicUrl(gen.resultUrl)) throw new StoryError({ th: 'ไม่พบเพลงนี้ในผลงานของคุณ', en: "This song isn't in your creations." }, 404);
     const params = (gen.params ?? {}) as Record<string, unknown>;
     return {
       url: gen.resultUrl,
@@ -121,7 +166,7 @@ export async function resolveSong(
       lyrics: typeof params.lyrics === 'string' ? params.lyrics : '',
     };
   }
-  throw new StoryError('เลือกเพลงก่อน: อัปโหลดเอง หรือเลือกเพลงที่สร้างบนเว็บ', 422);
+  throw new StoryError({ th: 'เลือกเพลงก่อน: อัปโหลดเอง หรือเลือกเพลงที่สร้างบนเว็บ', en: 'Pick a song first: upload your own, or choose one you made here.' }, 422);
 }
 
 export interface CharacterInput {
@@ -131,16 +176,19 @@ export interface CharacterInput {
   referenceUrl: string | null;
 }
 
-export function parseCharacters(value: unknown, userId: number): CharacterInput[] {
+/** The characters a form sent; an unnamed one is named in `locale` ("ตัวละคร 2" / "Character 2"). */
+export function parseCharacters(value: unknown, userId: number, locale: Locale = 'th'): CharacterInput[] {
   if (value === undefined) return [];
-  if (!Array.isArray(value)) throw new StoryError('ข้อมูลตัวละครไม่ถูกต้อง');
-  if (value.length > LIMITS.characters) throw new StoryError(`ตัวละครได้สูงสุด ${LIMITS.characters} คน`);
+  if (!Array.isArray(value)) throw new StoryError({ th: 'ข้อมูลตัวละครไม่ถูกต้อง', en: 'Invalid character data.' });
+  if (value.length > LIMITS.characters) {
+    throw new StoryError({ th: `ตัวละครได้สูงสุด ${LIMITS.characters} คน`, en: `You can have up to ${LIMITS.characters} characters.` });
+  }
   return value.map((raw, k) => {
     const c = (raw ?? {}) as Record<string, unknown>;
-    const name = text(c.name, LIMITS.characterName) || `ตัวละคร ${k + 1}`;
+    const name = text(c.name, LIMITS.characterName) || `${pick(ASSET_KINDS.character.one, locale)} ${k + 1}`;
     const ref = c.referenceUrl === null || c.referenceUrl === undefined || c.referenceUrl === '' ? null : c.referenceUrl;
     if (ref !== null && !isOwnUpload(ref, userId, 'image')) {
-      throw new StoryError(`ภาพของ ${name} ไม่ถูกต้อง อัปโหลดใหม่อีกครั้ง`, 422);
+      throw new StoryError({ th: `ภาพของ ${name} ไม่ถูกต้อง อัปโหลดใหม่อีกครั้ง`, en: `The picture of ${name} isn't valid. Please upload it again.` }, 422);
     }
     const id = Number(c.id);
     return {
@@ -178,14 +226,14 @@ export function shotPatch(body: Record<string, unknown>, project: StoryProjectFu
   if (typeof body.keyframeUse === 'boolean') data.keyframeUse = body.keyframeUse;
   if (body.visual !== undefined) {
     const visual = text(body.visual, LIMITS.visual);
-    if (!visual) throw new StoryError('คำบรรยายภาพว่างไม่ได้');
+    if (!visual) throw new StoryError({ th: 'คำบรรยายภาพว่างไม่ได้', en: "The picture description can't be empty." });
     data.visualPrompt = visual;
   }
   if (body.line !== undefined) data.narration = text(body.line, LIMITS.line) || null;
   if (body.sound !== undefined) data.sound = text(body.sound, LIMITS.sound) || null;
   if (body.durationSec !== undefined) {
     const n = Number(body.durationSec);
-    if (!Number.isFinite(n)) throw new StoryError('ความยาวช็อตไม่ถูกต้อง');
+    if (!Number.isFinite(n)) throw new StoryError({ th: 'ความยาวช็อตไม่ถูกต้อง', en: 'Invalid shot length.' });
     data.durationSec = Math.round(Math.min(LIMITS.maxShotSeconds, Math.max(LIMITS.minShotSeconds, n)) * 100) / 100;
   }
   if (body.startSec !== undefined) {
@@ -203,7 +251,7 @@ export function shotPatch(body: Record<string, unknown>, project: StoryProjectFu
   if (typeof body.lipsyncUse === 'boolean') data.lipsyncUse = body.lipsyncUse;
   if (body.modelId !== undefined) {
     const id = Number(body.modelId);
-    if (!models.some((m) => m.id === id)) throw new StoryError('โมเดลนี้ใช้กับโหมดหนังไม่ได้');
+    if (!models.some((m) => m.id === id)) throw new StoryError({ th: 'โมเดลนี้ใช้กับโหมดหนังไม่ได้', en: "This model can't be used in the Film & MV studio." });
     data.modelId = id;
   }
   const size = body.shotSize !== undefined ? pickKey(body.shotSize, SHOT_SIZES, 'medium') : current?.shotSize ?? 'medium';
@@ -216,8 +264,12 @@ export function shotPatch(body: Record<string, unknown>, project: StoryProjectFu
   return data;
 }
 
-/** What the page gets: the project, its shots with prices, and the models it may pick. */
-export async function serializeProject(project: StoryProjectFull, admin: boolean) {
+/**
+ * What the page gets: the project, its shots with prices, and the models it
+ * may pick — labels and stored failure reasons in the visitor's language.
+ */
+export async function serializeProject(project: StoryProjectFull, admin: boolean, locale: Locale) {
+  const t = translator(locale);
   const isMv = project.mode === 'mv';
   const [models, score, price, dubber, pictureModels] = await Promise.all([
     movieModels(admin),
@@ -267,7 +319,7 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
         description: c.description,
         pictures: assetPictures(c),
         origin: c.origin,
-        image: { state: c.imageStatus, error: c.imageStatus === 'failed' ? c.imageError : null },
+        image: { state: c.imageStatus, error: c.imageStatus === 'failed' ? readStoredMessage(c.imageError, locale) : null },
       })),
       acts: project.acts.map((a) => ({ id: a.id, number: a.actNumber, title: a.title, summary: a.summary ?? '' })),
       scenes: project.scenes.map((sc) => ({
@@ -301,7 +353,7 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
             return {
               state: s.keyframeStatus,
               url: s.keyframeStatus === 'done' ? s.keyframeUrl : null,
-              error: s.keyframeStatus === 'failed' ? s.keyframeError : null,
+              error: s.keyframeStatus === 'failed' ? readStoredMessage(s.keyframeError, locale) : null,
               use: s.keyframeUse,
               // Pictures this shot's references hold, and how many the chosen model will get.
               wanted: referencesWanted(refs, library),
@@ -313,18 +365,18 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
           status: s.status,
           mediaUrl: s.mediaUrl,
           generationId: s.visualGenerationId,
-          error: s.errorMessage,
+          error: readStoredMessage(s.errorMessage, locale),
           ...(isMv
             ? {
                 lipsync: {
                   state: dubState(s),
                   url: s.lipsyncStatus === 'done' ? s.lipsyncUrl : null,
-                  error: s.lipsyncStatus === 'failed' ? s.lipsyncError : null,
+                  error: s.lipsyncStatus === 'failed' ? readStoredMessage(s.lipsyncError, locale) : null,
                   use: s.lipsyncUse,
                   // Why this shot cannot be dubbed, or null when it can.
                   blocked: (() => {
                     const w = voiceWindow(s.startSec === null ? null : Number(s.startSec), Number(s.durationSec));
-                    return w.ok ? null : w.message;
+                    return w.ok ? null : t(w.message);
                   })(),
                   credits: lipsyncCredits(dubber, Number(s.durationSec)),
                   suggested: suggestedForLipsync({ line: s.narration ?? '', characterIds: idList(s.characterIds), shotSize: s.shotSize }),
@@ -339,14 +391,14 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
       key: m.key,
       name: m.name,
       orderable: m.orderable,
-      references: referenceLabel(referenceCaps({ providerSlug: 'simplepod', modelId: m.key, category: 'video' })),
+      references: t(referenceMsg(referenceCaps({ providerSlug: 'simplepod', modelId: m.key, category: 'video' }))),
     })),
     pictures: {
       keyframeModelId: keyframeModel?.id ?? null,
       pictureModelId: pictureModel?.id ?? null,
-      models: pictureModels,
-      times: Object.fromEntries(Object.entries(TIMES_OF_DAY).map(([k, t]) => [k, t.label])),
-      kinds: Object.fromEntries(Object.entries(ASSET_KINDS).map(([k, v]) => [k, { label: v.label, max: v.max }])),
+      models: pictureModels.map((m) => ({ ...m, label: t(m.label), reason: m.reason ? t(m.reason) : null })),
+      times: Object.fromEntries(Object.entries(TIMES_OF_DAY).map(([k, time]) => [k, t(time.label)])),
+      kinds: Object.fromEntries(Object.entries(ASSET_KINDS).map(([k, v]) => [k, { label: t(v.label), one: t(v.one), max: v.max }])),
       maxPictures: MAX_ASSET_PICTURES,
     },
     edit: parseEdit(script.edit, project.mode as StoryMode),
@@ -363,7 +415,12 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
           state: projectVocalsState(project),
           source: project.vocalsSource,
           url: project.vocalsStatus === 'done' ? project.vocalsUrl : null,
-          error: project.vocalsStatus === 'failed' ? project.vocalsError : projectVocalsState(project) === 'failed' ? 'การแยกเสียงร้องครั้งก่อนค้าง ลองใหม่อีกครั้ง' : null,
+          error:
+            project.vocalsStatus === 'failed'
+              ? readStoredMessage(project.vocalsError, locale)
+              : projectVocalsState(project) === 'failed'
+                ? t('การแยกเสียงร้องครั้งก่อนค้าง ลองใหม่อีกครั้ง', 'The last vocal separation got stuck. Please try again.')
+                : null,
           // This server can separate a song itself (Demucs installed).
           auto: demucsPython() !== null,
           // The dubbing model is open to this caller.
@@ -376,10 +433,19 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
       credits: admin ? 0 : assemblePrice(readyFilmSeconds(project), price),
       url: project.finalVideoUrl,
       seconds: project.durationSec,
-      error: project.status === 'assembling' && !assembling ? 'การตัดต่อครั้งก่อนค้าง ลองกดตัดต่อใหม่' : project.errorMessage,
+      error:
+        project.status === 'assembling' && !assembling
+          ? t('การตัดต่อครั้งก่อนค้าง ลองกดตัดต่อใหม่', 'The last cut got stuck. Try cutting the film again.')
+          : readStoredMessage(project.errorMessage, locale),
     },
-    planning: planJob(project.id),
+    planning: planningView(project.id, locale),
   };
+}
+
+/** The plan in flight (or its outcome), its failure reason in `locale`. */
+function planningView(projectId: number, locale: Locale) {
+  const job = planJob(projectId);
+  return job ? { ...job, error: readStoredMessage(job.error, locale) } : null;
 }
 
 /** A film's `filmLength` (a FILM_LENGTHS key) stored in script_json, keeping what is there. */
@@ -400,17 +466,23 @@ export function picturesPatch(script: unknown, raw: unknown): Prisma.InputJsonVa
 export function assetInput(body: Record<string, unknown>, userId: number, existing: string[] = []) {
   const out: { kind?: 'character' | 'prop' | 'location'; name?: string; description?: string; pictures?: string[] } = {};
   if (body.kind !== undefined) {
-    if (!isAssetKind(body.kind)) throw new StoryError('ประเภทไม่ถูกต้อง');
+    if (!isAssetKind(body.kind)) throw new StoryError({ th: 'ประเภทไม่ถูกต้อง', en: 'Invalid kind.' });
     out.kind = body.kind;
   }
   if (body.name !== undefined) out.name = text(body.name, LIMITS.characterName);
   if (body.description !== undefined) out.description = text(body.description, LIMITS.characterDescription);
   if (body.pictures !== undefined) {
-    if (!Array.isArray(body.pictures)) throw new StoryError('ภาพไม่ถูกต้อง');
+    if (!Array.isArray(body.pictures)) throw new StoryError({ th: 'ภาพไม่ถูกต้อง', en: 'Invalid pictures.' });
     const list = [...new Set(body.pictures.filter((u): u is string => typeof u === 'string' && u !== ''))];
-    if (list.length > MAX_ASSET_PICTURES) throw new StoryError(`ภาพได้สูงสุด ${MAX_ASSET_PICTURES} ภาพต่อรายการ`);
+    if (list.length > MAX_ASSET_PICTURES) {
+      throw new StoryError({ th: `ภาพได้สูงสุด ${MAX_ASSET_PICTURES} ภาพต่อรายการ`, en: `Up to ${MAX_ASSET_PICTURES} pictures per item.` });
+    }
     // This customer's own uploads, or pictures the item already has (one we drew for it).
-    for (const u of list) if (!isOwnUpload(u, userId, 'image') && !existing.includes(u)) throw new StoryError('ภาพไม่ถูกต้อง อัปโหลดใหม่อีกครั้ง', 422);
+    for (const u of list) {
+      if (!isOwnUpload(u, userId, 'image') && !existing.includes(u)) {
+        throw new StoryError({ th: 'ภาพไม่ถูกต้อง อัปโหลดใหม่อีกครั้ง', en: "A picture isn't valid. Please upload it again." }, 422);
+      }
+    }
     out.pictures = list;
   }
   return out;

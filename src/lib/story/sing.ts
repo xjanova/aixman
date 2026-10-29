@@ -7,6 +7,7 @@
  * slice of it under its place in the song, and LatentSync re-dubs the shot's
  * clip to that slice — an ordinary studio order, priced by the voice.
  */
+import type { Msg } from '@/lib/i18n/locale';
 import { SHOT_SIZES } from './cinematic';
 
 export const LIPSYNC_MODEL_KEY = 'latentsync-1.6';
@@ -19,18 +20,31 @@ export const SILENT_MEAN_DB = -45;
 /** An uploaded stem may differ from the song by this much and still line up. */
 export const STEM_TOLERANCE_SECONDS = 2;
 
-export type VoiceWindow = { ok: true; start: number; seconds: number } | { ok: false; message: string };
+/** `message` says why a shot cannot be dubbed, in both languages. */
+export type VoiceWindow = { ok: true; start: number; seconds: number } | { ok: false; message: Msg };
 
 /** The stretch of the vocal a shot mouths: its own place in the song. */
 export function voiceWindow(startSec: number | null, durationSec: number): VoiceWindow {
   if (startSec === null || !Number.isFinite(startSec) || startSec < 0) {
-    return { ok: false, message: 'ช็อตนี้ไม่มีตำแหน่งในเพลง ให้ AI วางช็อตใหม่ก่อน' };
+    return { ok: false, message: { th: 'ช็อตนี้ไม่มีตำแหน่งในเพลง ให้ AI วางช็อตใหม่ก่อน', en: 'This shot has no place in the song. Let AI re-plan the shots first.' } };
   }
   if (!Number.isFinite(durationSec) || durationSec < LIPSYNC_MIN_SECONDS) {
-    return { ok: false, message: `ช็อตสั้นกว่า ${LIPSYNC_MIN_SECONDS} วินาที ลิปซิงก์ไม่ได้` };
+    return {
+      ok: false,
+      message: {
+        th: `ช็อตสั้นกว่า ${LIPSYNC_MIN_SECONDS} วินาที ลิปซิงก์ไม่ได้`,
+        en: `Shots shorter than ${LIPSYNC_MIN_SECONDS} ${LIPSYNC_MIN_SECONDS === 1 ? 'second' : 'seconds'} can't be lip-synced.`,
+      },
+    };
   }
   if (durationSec > LIPSYNC_MAX_SECONDS) {
-    return { ok: false, message: `ช็อตยาวเกิน ${LIPSYNC_MAX_SECONDS} วินาที แบ่งเป็นสองช็อตก่อน` };
+    return {
+      ok: false,
+      message: {
+        th: `ช็อตยาวเกิน ${LIPSYNC_MAX_SECONDS} วินาที แบ่งเป็นสองช็อตก่อน`,
+        en: `This shot is longer than ${LIPSYNC_MAX_SECONDS} seconds. Split it into two shots first.`,
+      },
+    };
   }
   return { ok: true, start: Math.round(startSec * 1000) / 1000, seconds: Math.round(durationSec * 1000) / 1000 };
 }

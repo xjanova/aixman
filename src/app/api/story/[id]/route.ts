@@ -5,7 +5,8 @@ import { LIMITS } from '@/lib/story/cinematic';
 import { StoryError, loadOwnedProject, syncShots } from '@/lib/story/service';
 import { syncDubs } from '@/lib/story/vocals';
 import { syncPictures } from '@/lib/story/keyframes';
-import { editPatch, parseCharacters, picturesPatch, projectSettings, serializeProject, storyErrorReply, text, withFilmLength } from '@/lib/story/http';
+import { STORY_REPLY, editPatch, parseCharacters, picturesPatch, projectSettings, serializeProject, storyErrorReply, storyReply, text, withFilmLength } from '@/lib/story/http';
+import { requestLocale } from '@/lib/i18n/locale';
 
 /**
  * GET    /api/story/[id] — the project with its shots (rendering shots and
@@ -21,13 +22,14 @@ export const dynamic = 'force-dynamic';
 
 type Ctx = { params: Promise<{ id: string }> };
 
-export async function GET(_request: NextRequest, { params }: Ctx) {
+export async function GET(request: NextRequest, { params }: Ctx) {
+  const locale = requestLocale(request);
   const userId = await getCurrentUserId();
-  if (!userId) return NextResponse.json({ error: 'กรุณาเข้าสู่ระบบ' }, { status: 401 });
+  if (!userId) return storyReply(STORY_REPLY.signIn, locale, 401);
   const id = Number((await params).id);
   try {
     let project = await loadOwnedProject(userId, id);
-    if (!project) return NextResponse.json({ error: 'ไม่พบโปรเจกต์' }, { status: 404 });
+    if (!project) return storyReply(STORY_REPLY.projectNotFound, locale, 404);
     if (await syncShots(project)) {
       project = (await loadOwnedProject(userId, id))!;
       if (project.status === 'rendering' && !project.shots.some((s) => s.status === 'rendering')) {
@@ -36,31 +38,36 @@ export async function GET(_request: NextRequest, { params }: Ctx) {
     }
     if (await syncDubs(project)) project = (await loadOwnedProject(userId, id))!;
     if (await syncPictures(project)) project = (await loadOwnedProject(userId, id))!;
-    return NextResponse.json(await serializeProject(project, await isAdmin()));
+    return NextResponse.json(await serializeProject(project, await isAdmin(), locale));
   } catch (error) {
-    return storyErrorReply(error, 'get');
+    return storyErrorReply(error, 'get', locale);
   }
 }
 
 export async function PATCH(request: NextRequest, { params }: Ctx) {
+  const locale = requestLocale(request);
   const userId = await getCurrentUserId();
-  if (!userId) return NextResponse.json({ error: 'กรุณาเข้าสู่ระบบ' }, { status: 401 });
+  if (!userId) return storyReply(STORY_REPLY.signIn, locale, 401);
   const id = Number((await params).id);
   try {
     const project = await loadOwnedProject(userId, id);
-    if (!project) return NextResponse.json({ error: 'ไม่พบโปรเจกต์' }, { status: 404 });
+    if (!project) return storyReply(STORY_REPLY.projectNotFound, locale, 404);
     const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
-    if (!body) throw new StoryError('ข้อมูลไม่ถูกต้อง');
+    if (!body) throw new StoryError(STORY_REPLY.badRequest);
 
     const data: Record<string, unknown> = projectSettings(body);
     if (data.title === '') delete data.title;
     if (project.mode !== 'mv') delete data.mood;
     if (body.brief !== undefined) {
       const brief = text(body.brief, LIMITS.brief);
-      if (!brief) throw new StoryError(project.mode === 'mv' ? 'เนื้อเพลงว่างไม่ได้' : 'เรื่องย่อว่างไม่ได้');
+      if (!brief) {
+        throw new StoryError(
+          project.mode === 'mv' ? { th: 'เนื้อเพลงว่างไม่ได้', en: "The lyrics can't be empty." } : { th: 'เรื่องย่อว่างไม่ได้', en: "The story can't be empty." }
+        );
+      }
       data.brief = brief;
     }
-    const characters = body.characters !== undefined ? parseCharacters(body.characters, userId) : null;
+    const characters = body.characters !== undefined ? parseCharacters(body.characters, userId, locale) : null;
     if (body.edit !== undefined) data.scriptJson = editPatch(project, body.edit);
     if (body.filmLength !== undefined && project.mode === 'film') data.scriptJson = withFilmLength(data.scriptJson ?? project.scriptJson, body.filmLength);
     if (body.pictures !== undefined) data.scriptJson = picturesPatch(data.scriptJson ?? project.scriptJson, body.pictures);
@@ -83,19 +90,20 @@ export async function PATCH(request: NextRequest, { params }: Ctx) {
       }
     });
     const fresh = (await loadOwnedProject(userId, id))!;
-    return NextResponse.json(await serializeProject(fresh, await isAdmin()));
+    return NextResponse.json(await serializeProject(fresh, await isAdmin(), locale));
   } catch (error) {
-    return storyErrorReply(error, 'patch');
+    return storyErrorReply(error, 'patch', locale);
   }
 }
 
-export async function DELETE(_request: NextRequest, { params }: Ctx) {
+export async function DELETE(request: NextRequest, { params }: Ctx) {
+  const locale = requestLocale(request);
   const userId = await getCurrentUserId();
-  if (!userId) return NextResponse.json({ error: 'กรุณาเข้าสู่ระบบ' }, { status: 401 });
+  if (!userId) return storyReply(STORY_REPLY.signIn, locale, 401);
   const id = Number((await params).id);
-  if (!Number.isInteger(id) || id <= 0) return NextResponse.json({ error: 'ไม่พบโปรเจกต์' }, { status: 404 });
+  if (!Number.isInteger(id) || id <= 0) return storyReply(STORY_REPLY.projectNotFound, locale, 404);
   // Characters and shots go with it (ON DELETE CASCADE).
   const r = await prisma.aiStoryProject.deleteMany({ where: { id, userId } });
-  if (r.count === 0) return NextResponse.json({ error: 'ไม่พบโปรเจกต์' }, { status: 404 });
+  if (r.count === 0) return storyReply(STORY_REPLY.projectNotFound, locale, 404);
   return NextResponse.json({ ok: true });
 }

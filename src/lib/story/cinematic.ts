@@ -19,6 +19,8 @@
  *    edit (phase 2) still has to cover them.
  */
 
+import type { Msg } from '@/lib/i18n/locale';
+
 export type StoryMode = 'film' | 'mv';
 
 export const MOVIE_MODEL_KEYS = ['ltx-2.5', 'minimax-h3'] as const;
@@ -51,12 +53,12 @@ export const LIMITS = {
  * the planner picks (4–12 shots); the others are aimed at by planning the
  * story in parts (FILM_PART_SECONDS each) so no single chat call is long.
  */
-export const FILM_LENGTHS: Record<string, { seconds: number | null; label: string }> = {
-  auto: { seconds: null, label: 'สั้น (AI เลือก)' },
-  '60': { seconds: 60, label: '1 นาที' },
-  '180': { seconds: 180, label: '3 นาที' },
-  '300': { seconds: 300, label: '5 นาที' },
-  '600': { seconds: 600, label: '10 นาที' },
+export const FILM_LENGTHS: Record<string, { seconds: number | null; label: Msg }> = {
+  auto: { seconds: null, label: { th: 'สั้น (AI เลือก)', en: 'Short (AI picks)' } },
+  '60': { seconds: 60, label: { th: '1 นาที', en: '1 min' } },
+  '180': { seconds: 180, label: { th: '3 นาที', en: '3 min' } },
+  '300': { seconds: 300, label: { th: '5 นาที', en: '5 min' } },
+  '600': { seconds: 600, label: { th: '10 นาที', en: '10 min' } },
 };
 
 /**
@@ -86,14 +88,15 @@ export function filmLengthKey(seconds: number | null): string {
   return seconds === null ? 'auto' : String(seconds);
 }
 
-export const ASPECTS: Record<string, { width: number; height: number; label: string }> = {
-  '16:9': { width: 1344, height: 768, label: 'แนวนอน 16:9' },
-  '9:16': { width: 768, height: 1344, label: 'แนวตั้ง 9:16' },
-  '1:1': { width: 1024, height: 1024, label: 'จัตุรัส 1:1' },
+export const ASPECTS: Record<string, { width: number; height: number; label: Msg }> = {
+  '16:9': { width: 1344, height: 768, label: { th: 'แนวนอน 16:9', en: 'Landscape 16:9' } },
+  '9:16': { width: 768, height: 1344, label: { th: 'แนวตั้ง 9:16', en: 'Portrait 9:16' } },
+  '1:1': { width: 1024, height: 1024, label: { th: 'จัตุรัส 1:1', en: 'Square 1:1' } },
 };
 
 interface Style {
-  label: string;
+  /** What the page shows. The Thai also goes into the MV planner's prompt, as it always did. */
+  label: Msg;
   /** Visual direction appended to every shot. */
   style: string;
   /** Background score for H3's non_diegetic_music field (film), 'N/A' to leave it out. */
@@ -103,32 +106,32 @@ interface Style {
 /** Film looks (โหมดหนัง). */
 export const LOOKS: Record<string, Style> = {
   film: {
-    label: 'ภาพยนตร์ทั่วไป',
+    label: { th: 'ภาพยนตร์ทั่วไป', en: 'Classic film' },
     style: 'Live-action, cinematic, shot on 35mm film, anamorphic lens, natural film grain, motivated lighting, rich contrast',
     music: 'A restrained orchestral underscore with soft strings and piano, slow tempo.',
   },
   drama: {
-    label: 'ดราม่า',
+    label: { th: 'ดราม่า', en: 'Drama' },
     style: 'Live-action, cinematic drama, soft window light, muted warm colour grade, shallow depth of field, intimate framing',
     music: 'A slow solo piano with sustained cello, quiet dynamics.',
   },
   action: {
-    label: 'แอ็กชัน',
+    label: { th: 'แอ็กชัน', en: 'Action' },
     style: 'Live-action, cinematic action, high contrast teal and orange grade, fast shutter, dynamic composition, sparks and debris',
     music: 'Driving percussion and low brass, fast tempo, rising intensity.',
   },
   thriller: {
-    label: 'ระทึกขวัญ / สยองขวัญ',
+    label: { th: 'ระทึกขวัญ / สยองขวัญ', en: 'Thriller / horror' },
     style: 'Live-action, cinematic thriller, low-key lighting, deep shadows, cold desaturated green-blue grade, slow creeping atmosphere',
     music: 'Low drones, sparse dissonant strings, slow pulse.',
   },
   romance: {
-    label: 'โรแมนติก',
+    label: { th: 'โรแมนติก', en: 'Romance' },
     style: 'Live-action, cinematic romance, golden hour backlight, soft bloom, pastel warm grade, gentle lens flare',
     music: 'A tender acoustic guitar and light strings, medium-slow tempo.',
   },
   anime: {
-    label: 'อนิเมะ',
+    label: { th: 'อนิเมะ', en: 'Anime' },
     style: '2D anime, cinematic, clean line art, painterly backgrounds, soft cel shading, vivid sky',
     music: 'A light orchestral theme with piano and strings, medium tempo.',
   },
@@ -137,56 +140,56 @@ export const LOOKS: Record<string, Style> = {
 /** MV moods (โหมด MV). The song is the score, so no music line. */
 export const MOODS: Record<string, Style & { setting: string; energy: 'calm' | 'mid' | 'high' }> = {
   romantic: {
-    label: 'โรแมนติก หวาน',
+    label: { th: 'โรแมนติก หวาน', en: 'Sweet & romantic' },
     style: 'romantic music video, golden hour backlight, soft bloom, warm pastel grade, floating petals',
     setting: 'a sunlit flower garden and a quiet seaside at dusk',
     energy: 'calm',
     music: 'N/A',
   },
   sad: {
-    label: 'เศร้า อกหัก',
+    label: { th: 'เศร้า อกหัก', en: 'Sad & heartbroken' },
     style: 'melancholic music video, rain on glass, cold blue grade, soft haze, lonely negative space',
     setting: 'a rainy night street with neon reflections and an empty room by the window',
     energy: 'calm',
     music: 'N/A',
   },
   energetic: {
-    label: 'สนุก มันส์',
+    label: { th: 'สนุก มันส์', en: 'Fun & upbeat' },
     style: 'energetic music video, vivid saturated colours, stage lights and lens flares, confetti, high energy',
     setting: 'a concert stage with crowd lights and a colourful city rooftop',
     energy: 'high',
     music: 'N/A',
   },
   dark: {
-    label: 'ดาร์ก ร็อก/เมทัล',
+    label: { th: 'ดาร์ก ร็อก/เมทัล', en: 'Dark rock / metal' },
     style: 'dark rock music video, hard rim light, smoke, sparks and embers, deep crimson and black grade',
     setting: 'a gothic cathedral lit by candles and a burning ruined hall',
     energy: 'high',
     music: 'N/A',
   },
   dreamy: {
-    label: 'ฝัน ละมุน',
+    label: { th: 'ฝัน ละมุน', en: 'Dreamy & soft' },
     style: 'dreamy music video, soft focus, pastel haze, floating particles, slow motion feel',
     setting: 'a misty lake at dawn and a field of tall grass under soft clouds',
     energy: 'calm',
     music: 'N/A',
   },
   retro: {
-    label: 'ย้อนยุค',
+    label: { th: 'ย้อนยุค', en: 'Retro' },
     style: 'retro music video, 1990s film look, warm faded grade, light leaks, VHS softness',
     setting: 'an old Bangkok street with vintage shops and a retro diner',
     energy: 'mid',
     music: 'N/A',
   },
   epic: {
-    label: 'ยิ่งใหญ่ อลังการ',
+    label: { th: 'ยิ่งใหญ่ อลังการ', en: 'Epic & grand' },
     style: 'epic cinematic music video, sweeping vistas, volumetric god rays, dramatic clouds, grand scale',
     setting: 'a mountain cliff above the clouds and an ancient temple at sunset',
     energy: 'high',
     music: 'N/A',
   },
   cute: {
-    label: 'น่ารัก ป๊อป',
+    label: { th: 'น่ารัก ป๊อป', en: 'Cute pop' },
     style: 'cute pop music video, bright candy colours, soft even light, sparkles, playful framing',
     setting: 'a pastel bedroom full of plush toys and a candy-coloured street',
     energy: 'mid',
@@ -194,26 +197,27 @@ export const MOODS: Record<string, Style & { setting: string; energy: 'calm' | '
   },
 };
 
-export const SHOT_SIZES: Record<string, { label: string; en: string; tight: boolean }> = {
-  'extreme-wide': { label: 'ไกลมาก (เปิดฉาก)', en: 'an extreme wide establishing shot', tight: false },
-  wide: { label: 'ไกล', en: 'a wide shot', tight: false },
-  full: { label: 'เต็มตัว', en: 'a full shot', tight: false },
-  medium: { label: 'ครึ่งตัว', en: 'a medium shot', tight: true },
-  'medium-close': { label: 'อก-หัว', en: 'a medium close-up', tight: true },
-  close: { label: 'ใกล้ (หน้า)', en: 'a close-up', tight: true },
-  'extreme-close': { label: 'ใกล้มาก (รายละเอียด)', en: 'an extreme close-up', tight: true },
+/** `label` is what the page shows; `prompt` is the English the video model reads. */
+export const SHOT_SIZES: Record<string, { label: Msg; prompt: string; tight: boolean }> = {
+  'extreme-wide': { label: { th: 'ไกลมาก (เปิดฉาก)', en: 'Extreme wide (opening)' }, prompt: 'an extreme wide establishing shot', tight: false },
+  wide: { label: { th: 'ไกล', en: 'Wide' }, prompt: 'a wide shot', tight: false },
+  full: { label: { th: 'เต็มตัว', en: 'Full body' }, prompt: 'a full shot', tight: false },
+  medium: { label: { th: 'ครึ่งตัว', en: 'Medium (waist up)' }, prompt: 'a medium shot', tight: true },
+  'medium-close': { label: { th: 'อก-หัว', en: 'Medium close-up' }, prompt: 'a medium close-up', tight: true },
+  close: { label: { th: 'ใกล้ (หน้า)', en: 'Close-up (face)' }, prompt: 'a close-up', tight: true },
+  'extreme-close': { label: { th: 'ใกล้มาก (รายละเอียด)', en: 'Extreme close-up (detail)' }, prompt: 'an extreme close-up', tight: true },
 };
 
-export const CAMERA_MOVES: Record<string, { label: string; en: string; push: boolean }> = {
-  static: { label: 'กล้องนิ่ง', en: 'The camera holds a static shot.', push: false },
-  'push-in': { label: 'ดันเข้าช้าๆ', en: 'The camera slowly pushes in.', push: true },
-  'pull-out': { label: 'ถอยออกช้าๆ', en: 'The camera slowly pulls out.', push: false },
-  'pan-left': { label: 'แพนซ้าย', en: 'The camera pans slowly to the left.', push: false },
-  'pan-right': { label: 'แพนขวา', en: 'The camera pans slowly to the right.', push: false },
-  tracking: { label: 'ตามตัวละคร', en: 'A smooth tracking shot follows the subject.', push: false },
-  orbit: { label: 'หมุนรอบ', en: 'The camera arcs slowly around the subject.', push: false },
-  'crane-up': { label: 'เครนขึ้น', en: 'The camera rises slowly on a crane, revealing the scene.', push: false },
-  handheld: { label: 'กล้องมือถือ', en: 'Handheld camera, shaking slightly.', push: false },
+export const CAMERA_MOVES: Record<string, { label: Msg; prompt: string; push: boolean }> = {
+  static: { label: { th: 'กล้องนิ่ง', en: 'Static' }, prompt: 'The camera holds a static shot.', push: false },
+  'push-in': { label: { th: 'ดันเข้าช้าๆ', en: 'Slow push-in' }, prompt: 'The camera slowly pushes in.', push: true },
+  'pull-out': { label: { th: 'ถอยออกช้าๆ', en: 'Slow pull-out' }, prompt: 'The camera slowly pulls out.', push: false },
+  'pan-left': { label: { th: 'แพนซ้าย', en: 'Pan left' }, prompt: 'The camera pans slowly to the left.', push: false },
+  'pan-right': { label: { th: 'แพนขวา', en: 'Pan right' }, prompt: 'The camera pans slowly to the right.', push: false },
+  tracking: { label: { th: 'ตามตัวละคร', en: 'Follow the character' }, prompt: 'A smooth tracking shot follows the subject.', push: false },
+  orbit: { label: { th: 'หมุนรอบ', en: 'Orbit' }, prompt: 'The camera arcs slowly around the subject.', push: false },
+  'crane-up': { label: { th: 'เครนขึ้น', en: 'Crane up' }, prompt: 'The camera rises slowly on a crane, revealing the scene.', push: false },
+  handheld: { label: { th: 'กล้องมือถือ', en: 'Handheld' }, prompt: 'Handheld camera, shaking slightly.', push: false },
 };
 
 export interface CharacterLite {
@@ -630,7 +634,7 @@ export function mvPlannerMessages(input: PlanInput, slots: TimelineSlot[]): { sy
   const system = `You are a music video director. The song is already cut into ${slots.length} timed slots; write ONE shot for each, in order, for an AI video model that renders one shot at a time and knows nothing of the others.
 Return ONLY JSON, no markdown: {"title": string, "shots": [{"characters": [numbers], ${library ? '"location": number|null, "props": [numbers], ' : ''}"size": string, "camera": string, "visual": string}]} with exactly ${slots.length} shots.
 Rules:
-- Mood: ${mood.label} — ${mood.style}. Settings that fit: ${mood.setting}. Build a small visual story that follows the lyrics; repeat a chorus's look when the chorus returns.
+- Mood: ${mood.label.th} — ${mood.style}. Settings that fit: ${mood.setting}. Build a small visual story that follows the lyrics; repeat a chorus's look when the chorus returns.
 - "characters": numbers from the cast of who is visible, the singer FIRST — their photo becomes the shot's first frame, so the shot opens on them facing the camera. Instrumental slots may show no one (scenery, details, the band).
 - Sung slots: the singer performs the line (singing with emotion, mouth moving), in a tight size (medium, medium-close, close) with a calm camera.
 - "size" one of: ${SIZE_KEYS}. "camera" one of: ${MOVE_KEYS}. Never "push-in" on a wide or full shot that opens on a character.
@@ -806,7 +810,7 @@ export function buildShotPrompt(modelKey: string, shot: ShotDraft, ctx: PromptCo
   const line = shot.line.trim();
 
   if (modelKey === 'minimax-h3') {
-    let body = `[Shot 1] ${style.style}, ${size.en} frames the scene. ${opening}${who}${shot.visual} ${move.en}`;
+    let body = `[Shot 1] ${style.style}, ${size.prompt} frames the scene. ${opening}${who}${shot.visual} ${move.prompt}`;
     if (ctx.mode === 'film' && line) {
       const voice = speaker ? `${speaker.name} (S1), ${speaker.description},` : 'A narrator (S1)';
       body += ` ${voice} says: <d>[Thai] ${line}</d>`;
@@ -818,7 +822,7 @@ export function buildShotPrompt(modelKey: string, shot: ShotDraft, ctx: PromptCo
   }
 
   // LTX-2.5 and anything else: one paragraph, speech in quotes.
-  let text = `${style.style}. ${capital(size.en)}. ${opening}${who}${shot.visual} ${move.en}`;
+  let text = `${style.style}. ${capital(size.prompt)}. ${opening}${who}${shot.visual} ${move.prompt}`;
   if (ctx.mode === 'film' && line) {
     const voice = speaker ? `${speaker.name}` : 'A narrator off screen';
     text += ` ${voice} speaks Thai in a natural voice, lips synced to every word, saying: "${line}"`;

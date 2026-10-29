@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId, isAdmin } from '@/lib/auth';
 import { StoryError, idList, loadOwnedProject, movieModels, renderShot } from '@/lib/story/service';
-import { serializeProject, storyErrorReply } from '@/lib/story/http';
+import { STORY_REPLY, serializeProject, storyErrorReply, storyReply } from '@/lib/story/http';
+import { requestLocale } from '@/lib/i18n/locale';
 
 /**
  * POST /api/story/[id]/render {shotIds} — order shots. Each shot is its own
@@ -16,16 +17,17 @@ export const maxDuration = 120;
 const MAX_PER_CALL = 60;
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const locale = requestLocale(request);
   const userId = await getCurrentUserId();
-  if (!userId) return NextResponse.json({ error: 'กรุณาเข้าสู่ระบบ' }, { status: 401 });
+  if (!userId) return storyReply(STORY_REPLY.signIn, locale, 401);
   const id = Number((await params).id);
   const admin = await isAdmin();
   try {
     const project = await loadOwnedProject(userId, id);
-    if (!project) return NextResponse.json({ error: 'ไม่พบโปรเจกต์' }, { status: 404 });
+    if (!project) return storyReply(STORY_REPLY.projectNotFound, locale, 404);
     const body = ((await request.json().catch(() => null)) ?? {}) as Record<string, unknown>;
     const shotIds = [...new Set(idList(body.shotIds))].slice(0, MAX_PER_CALL);
-    if (shotIds.length === 0) throw new StoryError('เลือกช็อตที่จะสร้างก่อน');
+    if (shotIds.length === 0) throw new StoryError({ th: 'เลือกช็อตที่จะสร้างก่อน', en: 'Pick the shots to make first.' });
 
     const models = await movieModels(admin);
     const ordered: number[] = [];
@@ -36,7 +38,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         await renderShot(userId, admin, project, shotId, models);
         ordered.push(shotId);
       } catch (error) {
-        const reply = storyErrorReply(error, 'render');
+        const reply = storyErrorReply(error, 'render', locale);
         stoppedBy = ((await reply.json()) as { error: string }).error;
         stoppedStatus = reply.status;
         break;
@@ -46,8 +48,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: stoppedBy }, { status: stoppedStatus });
     }
     const fresh = (await loadOwnedProject(userId, id))!;
-    return NextResponse.json({ ...(await serializeProject(fresh, admin)), ordered: ordered.length, stoppedBy });
+    return NextResponse.json({ ...(await serializeProject(fresh, admin, locale)), ordered: ordered.length, stoppedBy });
   } catch (error) {
-    return storyErrorReply(error, 'render');
+    return storyErrorReply(error, 'render', locale);
   }
 }

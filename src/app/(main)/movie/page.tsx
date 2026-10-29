@@ -30,6 +30,8 @@ import { loginHref } from "@/lib/safe-callback";
 import { ASPECTS, CAMERA_MOVES, FILM_LENGTHS, LIMITS, LOOKS, MOODS, SHOT_SIZES, safeCamera } from "@/lib/story/cinematic";
 import { CameraPreview } from "@/components/camera-preview/CameraPreview";
 import { isCameraMoveId, isShotSizeId, MOVE_HINTS, SIZE_HINTS } from "@/lib/camera-shots";
+import { useLocale, useT } from "@/lib/i18n/client";
+import { formatCredits, formatDate, formatNumber, type Msg } from "@/lib/i18n/locale";
 
 interface Character {
   id?: number;
@@ -77,7 +79,7 @@ interface Pictures {
   pictureModelId: number | null;
   models: PictureModel[];
   times: Record<string, string>;
-  kinds: Record<AssetKind, { label: string; max: number }>;
+  kinds: Record<AssetKind, { label: string; one: string; max: number }>;
   maxPictures: number;
 }
 interface Shot {
@@ -146,7 +148,7 @@ interface Model {
   key: string;
   name: string;
   orderable: boolean;
-  /** What pictures it takes, in Thai (reference-caps.ts). */
+  /** What pictures it takes, in the visitor's language (reference-caps.ts). */
   references: string;
 }
 interface EditSettings {
@@ -239,23 +241,34 @@ const chip = (on: boolean): React.CSSProperties => ({
   border: on ? "1px solid rgba(216,180,254,0.7)" : "1px solid rgba(255,255,255,0.1)",
 });
 
-const STATUS_LABEL: Record<Shot["status"], { text: string; color: string }> = {
-  pending: { text: "ยังไม่สร้าง", color: "#94a3b8" },
-  rendering: { text: "กำลังสร้าง…", color: "#fbbf24" },
-  done: { text: "เสร็จแล้ว", color: "#34d399" },
-  failed: { text: "ไม่สำเร็จ", color: "#f87171" },
+const STATUS_LABEL: Record<Shot["status"], { text: Msg; color: string }> = {
+  pending: { text: { th: "ยังไม่สร้าง", en: "Not made yet" }, color: "#94a3b8" },
+  rendering: { text: { th: "กำลังสร้าง…", en: "Making…" }, color: "#fbbf24" },
+  done: { text: { th: "เสร็จแล้ว", en: "Done" }, color: "#34d399" },
+  failed: { text: { th: "ไม่สำเร็จ", en: "Failed" }, color: "#f87171" },
 };
 
 const fmtTime = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
+/** An English count with its noun: "1 shot", "3 shots". Thai has no plural. */
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+const RULES_PLANNER: Msg = {
+  th: "ใช้ตัววางช็อตพื้นฐาน (ผู้ช่วย AI ไม่ว่าง) แก้ไขแต่ละช็อตได้ตามต้องการ",
+  en: "Planned by the basic planner (the AI assistant was busy) — edit any shot as you like",
+};
+const FAILED: Msg = { th: "ไม่สำเร็จ", en: "That didn't work" };
+const OFFLINE: Msg = { th: "เชื่อมต่อไม่ได้", en: "Couldn't connect" };
+
 /* Network calls return failures as values — see the React Compiler note in referral/page.tsx. */
-async function getJson<T>(url: string, init?: RequestInit): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
+// The server's error is already in the visitor's language; our own fallbacks are pairs.
+async function getJson<T>(url: string, init?: RequestInit): Promise<{ ok: true; data: T } | { ok: false; error: string | Msg }> {
   try {
     const res = await fetch(url, init);
     const data = await res.json();
-    return res.ok ? { ok: true, data: data as T } : { ok: false, error: String(data.error || "ไม่สำเร็จ") };
+    return res.ok ? { ok: true, data: data as T } : { ok: false, error: data.error ? String(data.error) : FAILED };
   } catch {
-    return { ok: false, error: "เชื่อมต่อไม่ได้" };
+    return { ok: false, error: OFFLINE };
   }
 }
 
@@ -275,6 +288,7 @@ async function uploadFile(file: File, kind: "image" | "audio") {
 
 function CharacterEditor({ value, onChange }: { value: Character[]; onChange: (next: Character[]) => void }) {
   const { toast } = useToast();
+  const t = useT();
   const [uploading, setUploading] = useState<number | null>(null);
   const set = (k: number, patch: Partial<Character>) => onChange(value.map((c, i) => (i === k ? { ...c, ...patch } : c)));
 
@@ -283,7 +297,7 @@ function CharacterEditor({ value, onChange }: { value: Character[]; onChange: (n
     setUploading(k);
     const r = await uploadFile(file, "image");
     setUploading(null);
-    if (!r.ok) toast("error", r.error);
+    if (!r.ok) toast("error", t(r.error));
     else set(k, { referenceUrl: r.data.url });
   };
 
@@ -295,23 +309,26 @@ function CharacterEditor({ value, onChange }: { value: Character[]; onChange: (n
             {c.referenceUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={c.referenceUrl} alt={c.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-            ) : uploading === k ? "กำลังอัปโหลด…" : "อัปโหลดภาพ\nหน้าตรง"}
+            ) : uploading === k ? t("กำลังอัปโหลด…", "Uploading…") : t("อัปโหลดภาพ\nหน้าตรง", "Upload a\nfront-on photo")}
             <input type="file" accept="image/png,image/jpeg,image/webp" style={{ display: "none" }} onChange={(e) => pick(k, e.target.files?.[0])} />
           </label>
           <div style={{ flex: 1, minWidth: 200, display: "flex", flexDirection: "column", gap: 8 }}>
-            <input style={field} maxLength={LIMITS.characterName} placeholder="ชื่อตัวละคร" value={c.name} onChange={(e) => set(k, { name: e.target.value })} />
-            <input style={field} maxLength={LIMITS.characterDescription} placeholder="หน้าตา การแต่งกาย (อังกฤษได้ผลดีที่สุด) เช่น young woman, pink twin tails, red dress" value={c.description} onChange={(e) => set(k, { description: e.target.value })} />
+            <input style={field} maxLength={LIMITS.characterName} placeholder={t("ชื่อตัวละคร", "Character name")} value={c.name} onChange={(e) => set(k, { name: e.target.value })} />
+            <input style={field} maxLength={LIMITS.characterDescription} placeholder={t("หน้าตา การแต่งกาย (อังกฤษได้ผลดีที่สุด) เช่น young woman, pink twin tails, red dress", "Looks and clothing, e.g. young woman, pink twin tails, red dress")} value={c.description} onChange={(e) => set(k, { description: e.target.value })} />
           </div>
-          <button style={{ ...btn, padding: "6px 10px" }} onClick={() => onChange(value.filter((_, i) => i !== k))} title="เอาตัวละครนี้ออก">✕</button>
+          <button style={{ ...btn, padding: "6px 10px" }} onClick={() => onChange(value.filter((_, i) => i !== k))} title={t("เอาตัวละครนี้ออก", "Remove this character")}>✕</button>
         </div>
       ))}
       {value.length < LIMITS.characters && (
         <button style={{ ...btn, alignSelf: "flex-start" }} onClick={() => onChange([...value, { name: "", description: "", referenceUrl: null }])}>
-          + เพิ่มตัวละคร
+          {t("+ เพิ่มตัวละคร", "+ Add character")}
         </button>
       )}
       <div style={{ fontSize: 12, color: "#94a3b8" }}>
-        ภาพตัวละครจะเป็นเฟรมแรกของทุกช็อตที่ตัวละครนั้นนำ หน้าจึงเหมือนเดิมทุกช็อต — ใช้ภาพหน้าตรง เห็นหน้าชัด ระยะครึ่งตัวหรือใกล้กว่า
+        {t(
+          "ภาพตัวละครจะเป็นเฟรมแรกของทุกช็อตที่ตัวละครนั้นนำ หน้าจึงเหมือนเดิมทุกช็อต — ใช้ภาพหน้าตรง เห็นหน้าชัด ระยะครึ่งตัวหรือใกล้กว่า",
+          "A character's picture is the first frame of every shot they lead, so their face stays the same in every shot — use a front-on photo with the face clearly visible, waist-up or closer"
+        )}
       </div>
     </div>
   );
@@ -321,6 +338,8 @@ function CharacterEditor({ value, onChange }: { value: Character[]; onChange: (n
 
 function NewProject({ onCreated }: { onCreated: (id: number) => void }) {
   const { toast } = useToast();
+  const t = useT();
+  const { locale } = useLocale();
   const [mode, setMode] = useState<"film" | "mv">("film");
   const [title, setTitle] = useState("");
   const [brief, setBrief] = useState("");
@@ -350,7 +369,7 @@ function NewProject({ onCreated }: { onCreated: (id: number) => void }) {
     setUploadingSong(true);
     const r = await uploadFile(file, "audio");
     setUploadingSong(false);
-    if (!r.ok) return toast("error", r.error);
+    if (!r.ok) return toast("error", t(r.error));
     setSong({ kind: "upload", url: r.data.url, name: file.name, seconds: r.data.durationSeconds });
   };
 
@@ -362,8 +381,8 @@ function NewProject({ onCreated }: { onCreated: (id: number) => void }) {
 
   const create = async () => {
     if (busy) return;
-    if (mode === "mv" && !song) return toast("error", "เลือกเพลงก่อน");
-    if (!brief.trim()) return toast("error", mode === "mv" ? "ใส่เนื้อเพลงให้ครบก่อน" : "เขียนเรื่องย่อก่อน");
+    if (mode === "mv" && !song) return toast("error", t("เลือกเพลงก่อน", "Pick a song first"));
+    if (!brief.trim()) return toast("error", mode === "mv" ? t("ใส่เนื้อเพลงให้ครบก่อน", "Add the full lyrics first") : t("เขียนเรื่องย่อก่อน", "Write the story first"));
     setBusy(true);
     const r = await getJson<{ id: number }>(
       "/api/story",
@@ -380,28 +399,28 @@ function NewProject({ onCreated }: { onCreated: (id: number) => void }) {
       })
     );
     setBusy(false);
-    if (!r.ok) return toast("error", r.error);
+    if (!r.ok) return toast("error", t(r.error));
     onCreated(r.data.id);
   };
 
   return (
     <div style={{ ...card, display: "flex", flexDirection: "column", gap: 18 }}>
       <div style={{ display: "flex", gap: 8 }}>
-        <button style={chip(mode === "film")} onClick={() => setMode("film")}>🎬 โหมดหนัง</button>
-        <button style={chip(mode === "mv")} onClick={() => setMode("mv")}>🎵 โหมด MV</button>
+        <button style={chip(mode === "film")} onClick={() => setMode("film")}>{t("🎬 โหมดหนัง", "🎬 Film mode")}</button>
+        <button style={chip(mode === "mv")} onClick={() => setMode("mv")}>{t("🎵 โหมด MV", "🎵 MV mode")}</button>
       </div>
 
       <div>
-        <span style={label}>ชื่อโปรเจกต์ (เว้นว่างได้ AI จะตั้งให้)</span>
+        <span style={label}>{t("ชื่อโปรเจกต์ (เว้นว่างได้ AI จะตั้งให้)", "Project name (optional — AI will name it)")}</span>
         <input style={field} maxLength={LIMITS.title} value={title} onChange={(e) => setTitle(e.target.value)} />
       </div>
 
       {mode === "mv" && (
         <div>
-          <span style={label}>เพลง (ยาวไม่เกิน {LIMITS.maxSongSeconds / 60} นาที)</span>
+          <span style={label}>{t(`เพลง (ยาวไม่เกิน ${LIMITS.maxSongSeconds / 60} นาที)`, `Song (up to ${LIMITS.maxSongSeconds / 60} minutes)`)}</span>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
             <label style={{ ...btn, display: "inline-block" }}>
-              {uploadingSong ? "กำลังอัปโหลด…" : "อัปโหลดเพลงเอง"}
+              {uploadingSong ? t("กำลังอัปโหลด…", "Uploading…") : t("อัปโหลดเพลงเอง", "Upload your own song")}
               <input type="file" accept="audio/*" style={{ display: "none" }} onChange={(e) => pickSong(e.target.files?.[0])} />
             </label>
             {song && (
@@ -412,7 +431,7 @@ function NewProject({ onCreated }: { onCreated: (id: number) => void }) {
           </div>
           {songs && songs.length > 0 && (
             <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6, maxHeight: 180, overflowY: "auto" }}>
-              <span style={{ fontSize: 12, color: "#94a3b8" }}>หรือเลือกเพลงที่สร้างบนเว็บ:</span>
+              <span style={{ fontSize: 12, color: "#94a3b8" }}>{t("หรือเลือกเพลงที่สร้างบนเว็บ:", "Or pick a song you made here:")}</span>
               {songs.map((s) => (
                 <button key={s.id} style={{ ...chip(song?.kind === "mine" && song.id === s.id), textAlign: "left" }} onClick={() => chooseMine(s)}>
                   🎵 {s.title}
@@ -426,28 +445,28 @@ function NewProject({ onCreated }: { onCreated: (id: number) => void }) {
       <div>
         <span style={label}>
           {mode === "mv"
-            ? "เนื้อเพลงฉบับเต็ม — ใส่ [Verse] [Chorus] [Solo] ได้ ระบบวางช็อตตามจังหวะเพลง"
-            : "เรื่องย่อหรือบท — ใส่บทพูดใน \"เครื่องหมายคำพูด\" ตัวละครจะพูดเป็นภาษาไทย"}
+            ? t("เนื้อเพลงฉบับเต็ม — ใส่ [Verse] [Chorus] [Solo] ได้ ระบบวางช็อตตามจังหวะเพลง", "Full lyrics — [Verse] [Chorus] [Solo] tags are fine; shots are laid out along the song")
+            : t("เรื่องย่อหรือบท — ใส่บทพูดใน \"เครื่องหมายคำพูด\" ตัวละครจะพูดเป็นภาษาไทย", "Story or script — put spoken lines in \"quotation marks\" and the characters will say them")}
         </span>
         <textarea style={{ ...field, minHeight: 180, resize: "vertical" }} maxLength={LIMITS.brief} value={brief} onChange={(e) => setBrief(e.target.value)} />
-        <div style={{ fontSize: 11, color: "#64748b", textAlign: "right" }}>{brief.length.toLocaleString()} / {LIMITS.brief.toLocaleString()}</div>
+        <div style={{ fontSize: 11, color: "#64748b", textAlign: "right" }}>{formatNumber(brief.length, locale)} / {formatNumber(LIMITS.brief, locale)}</div>
       </div>
 
       {mode === "mv" ? (
         <div>
-          <span style={label}>อารมณ์ MV</span>
+          <span style={label}>{t("อารมณ์ MV", "MV mood")}</span>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {Object.entries(MOODS).map(([key, m]) => (
-              <button key={key} style={chip(mood === key)} onClick={() => setMood(key)}>{m.label}</button>
+              <button key={key} style={chip(mood === key)} onClick={() => setMood(key)}>{t(m.label)}</button>
             ))}
           </div>
         </div>
       ) : (
         <div>
-          <span style={label}>สไตล์ภาพ</span>
+          <span style={label}>{t("สไตล์ภาพ", "Visual style")}</span>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {Object.entries(LOOKS).map(([key, l]) => (
-              <button key={key} style={chip(look === key)} onClick={() => setLook(key)}>{l.label}</button>
+              <button key={key} style={chip(look === key)} onClick={() => setLook(key)}>{t(l.label)}</button>
             ))}
           </div>
         </div>
@@ -455,36 +474,41 @@ function NewProject({ onCreated }: { onCreated: (id: number) => void }) {
 
       {mode === "film" && (
         <div>
-          <span style={label}>ความยาวหนัง</span>
+          <span style={label}>{t("ความยาวหนัง", "Film length")}</span>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {Object.entries(FILM_LENGTHS).map(([key, l]) => (
-              <button key={key} style={chip(filmLength === key)} onClick={() => setFilmLength(key)}>{l.label}</button>
+              <button key={key} style={chip(filmLength === key)} onClick={() => setFilmLength(key)}>{t(l.label)}</button>
             ))}
           </div>
           {FILM_LENGTHS[filmLength]?.seconds && (
             <p style={{ fontSize: 12, color: "#94a3b8", marginTop: 6 }}>
-              ประมาณ {Math.round(FILM_LENGTHS[filmLength].seconds! / 8)} ช็อต · AI แต่งเรื่องเพิ่มจากเรื่องย่อให้ยาวพอ · คิดเครดิตตอนสร้างแต่ละช็อต
+              {t(
+                `ประมาณ ${Math.round(FILM_LENGTHS[filmLength].seconds! / 8)} ช็อต · AI แต่งเรื่องเพิ่มจากเรื่องย่อให้ยาวพอ · คิดเครดิตตอนสร้างแต่ละช็อต`,
+                `About ${Math.round(FILM_LENGTHS[filmLength].seconds! / 8)} shots · AI extends the story to fill the length · credits are charged as each shot is made`
+              )}
             </p>
           )}
         </div>
       )}
 
       <div>
-        <span style={label}>สัดส่วนภาพ</span>
+        <span style={label}>{t("สัดส่วนภาพ", "Aspect ratio")}</span>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {Object.entries(ASPECTS).map(([key, a]) => (
-            <button key={key} style={chip(aspect === key)} onClick={() => setAspect(key)}>{a.label}</button>
+            <button key={key} style={chip(aspect === key)} onClick={() => setAspect(key)}>{t(a.label)}</button>
           ))}
         </div>
       </div>
 
       <div>
-        <span style={label}>{mode === "mv" ? "นักร้อง / ตัวละครใน MV" : "ตัวละคร"}</span>
+        <span style={label}>{mode === "mv" ? t("นักร้อง / ตัวละครใน MV", "Singers / characters in the MV") : t("ตัวละคร", "Characters")}</span>
         <CharacterEditor value={characters} onChange={setCharacters} />
       </div>
 
       <button style={{ ...primary, alignSelf: "flex-start", opacity: busy ? 0.6 : 1 }} disabled={busy} onClick={create}>
-        {busy ? (mode === "mv" ? "กำลังอ่านเพลง…" : "กำลังสร้าง…") : "สร้างโปรเจกต์ (ยังไม่ตัดเครดิต)"}
+        {busy
+          ? mode === "mv" ? t("กำลังอ่านเพลง…", "Reading the song…") : t("กำลังสร้าง…", "Creating…")
+          : t("สร้างโปรเจกต์ (ยังไม่ตัดเครดิต)", "Create project (no credits charged yet)")}
       </button>
     </div>
   );
@@ -498,6 +522,7 @@ function NewProject({ onCreated }: { onCreated: (id: number) => void }) {
  * really get: a push-in that `safeCamera` holds still is shown held still.
  */
 function ShotCameraPreview({ shotSize, camera, ledByCharacter }: { shotSize: string; camera: string; ledByCharacter: boolean }) {
+  const t = useT();
   const used = safeCamera(shotSize, camera, ledByCharacter);
   const move = isCameraMoveId(used) ? used : "static";
   const size = isShotSizeId(shotSize) ? shotSize : undefined;
@@ -510,11 +535,16 @@ function ShotCameraPreview({ shotSize, camera, ledByCharacter }: { shotSize: str
       }} />
       <div style={{ fontSize: 12.5, color: "#94a3b8", lineHeight: 1.6, minWidth: 0, flex: "1 1 180px" }}>
         <div style={{ color: "#e2e8f0" }}>
-          {SHOT_SIZES[shotSize]?.label ?? shotSize} · {CAMERA_MOVES[move]?.label ?? move}
+          {SHOT_SIZES[shotSize] ? t(SHOT_SIZES[shotSize].label) : shotSize} · {CAMERA_MOVES[move] ? t(CAMERA_MOVES[move].label) : move}
         </div>
-        <div>{size ? SIZE_HINTS[size] : ""}{size ? " · " : ""}{MOVE_HINTS[move]}</div>
+        <div>{size ? t(SIZE_HINTS[size]) : ""}{size ? " · " : ""}{t(MOVE_HINTS[move])}</div>
         {used !== camera && (
-          <div style={{ color: "#fbbf24" }}>ช็อตกว้างที่เปิดด้วยตัวละครจะใช้กล้องนิ่งแทนการดันเข้า เพื่อให้หน้าตัวละครไม่เพี้ยน</div>
+          <div style={{ color: "#fbbf24" }}>
+            {t(
+              "ช็อตกว้างที่เปิดด้วยตัวละครจะใช้กล้องนิ่งแทนการดันเข้า เพื่อให้หน้าตัวละครไม่เพี้ยน",
+              "A wide shot that opens on a character keeps the camera still instead of pushing in, so the face doesn't drift"
+            )}
+          </div>
         )}
       </div>
     </div>
@@ -548,6 +578,8 @@ function ShotCard({
   onKeyframe: () => void;
   onKeyframeUse: (use: boolean) => void;
 }) {
+  const t = useT();
+  const { locale } = useLocale();
   const [draft, setDraft] = useState(shot);
   const [saving, setSaving] = useState(false);
   // The server copy the draft started from. A fresh copy (polling, another
@@ -592,12 +624,12 @@ function ShotCard({
     <div style={{ ...card, padding: 16, display: "grid", gridTemplateColumns: "minmax(0,1fr)", gap: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <div style={{ fontWeight: 600 }}>
-          ช็อต {shot.number}
+          {t(`ช็อต ${shot.number}`, `Shot ${shot.number}`)}
           {project.mode === "mv" && shot.startSec !== null && (
             <span style={{ color: "#94a3b8", fontWeight: 400, fontSize: 12 }}> · {fmtTime(shot.startSec)}–{fmtTime(shot.startSec + shot.durationSec)}</span>
           )}
         </div>
-        <span style={{ fontSize: 12, color: st.color }}>{st.text}</span>
+        <span style={{ fontSize: 12, color: st.color }}>{t(st.text)}</span>
       </div>
 
       {shot.mediaUrl && (
@@ -607,31 +639,42 @@ function ShotCard({
         <div style={{ width: 160, aspectRatio: project.aspect.replace(":", " / "), maxHeight: 200, borderRadius: 10, overflow: "hidden", background: "rgba(2,6,23,0.6)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#64748b", textAlign: "center", flexShrink: 0 }}>
           {kf.url ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <a href={kf.url} target="_blank" rel="noreferrer"><img src={kf.url} alt="ภาพเปิดช็อต" style={{ width: "100%", height: "100%", objectFit: "cover" }} /></a>
-          ) : kf.state === "rendering" ? "กำลังสร้างภาพเปิด…" : "ยังไม่มีภาพเปิด"}
+            <a href={kf.url} target="_blank" rel="noreferrer"><img src={kf.url} alt={t("ภาพเปิดช็อต", "Opening picture")} style={{ width: "100%", height: "100%", objectFit: "cover" }} /></a>
+          ) : kf.state === "rendering" ? t("กำลังสร้างภาพเปิด…", "Making the opening picture…") : t("ยังไม่มีภาพเปิด", "No opening picture yet")}
         </div>
         <div style={{ flex: 1, minWidth: 200, display: "flex", flexDirection: "column", gap: 6, fontSize: 12, color: "#94a3b8" }}>
-          <div style={{ fontSize: 13, color: "#e2e8f0", fontWeight: 600 }}>ภาพเปิดช็อต</div>
+          <div style={{ fontSize: 13, color: "#e2e8f0", fontWeight: 600 }}>{t("ภาพเปิดช็อต", "Opening picture")}</div>
           <div>
-            รวมตัวละคร ของ และสถานที่ของช็อตเป็นภาพเดียว แล้วคลิปเริ่มจากภาพนี้
-            {kf.wanted > 0 && keyModel ? ` · ส่งภาพอ้างอิง ${kf.sent}/${kf.wanted} ภาพ (${keyModel.name} ${keyModel.label.replace("รับภาพอ้างอิงได้ ", "รับได้ ")})` : kf.wanted === 0 ? " · ช็อตนี้ยังไม่มีภาพอ้างอิง (ใส่ภาพในคลังก่อน)" : ""}
+            {t("รวมตัวละคร ของ และสถานที่ของช็อตเป็นภาพเดียว แล้วคลิปเริ่มจากภาพนี้", "Puts the shot's characters, props and place into one picture; the clip starts from it")}
+            {kf.wanted > 0 && keyModel
+              ? t(
+                  ` · ส่งภาพอ้างอิง ${kf.sent}/${kf.wanted} ภาพ (${keyModel.name} ${keyModel.label.replace("รับภาพอ้างอิงได้ ", "รับได้ ")})`,
+                  ` · sending ${kf.sent}/${kf.wanted} reference pictures (${keyModel.name} takes up to ${keyModel.refs})`
+                )
+              : kf.wanted === 0
+                ? t(" · ช็อตนี้ยังไม่มีภาพอ้างอิง (ใส่ภาพในคลังก่อน)", " · this shot has no reference pictures yet (add some to the library first)")
+                : ""}
           </div>
           {kf.state === "failed" && kf.error && <div style={{ color: "#fca5a5" }}>{kf.error}</div>}
           {kf.url && (
             <label style={{ display: "flex", gap: 6, alignItems: "center", cursor: "pointer" }}>
               <input type="checkbox" checked={kf.use} disabled={locked} onChange={(e) => onKeyframeUse(e.target.checked)} />
-              ใช้ภาพนี้เป็นเฟรมแรกของคลิป (ปิด = ใช้ภาพตัวละครนำ)
+              {t("ใช้ภาพนี้เป็นเฟรมแรกของคลิป (ปิด = ใช้ภาพตัวละครนำ)", "Use this picture as the clip's first frame (off = the lead character's picture)")}
             </label>
           )}
           <div>
             <button
               style={{ ...btn, padding: "6px 12px", opacity: !keyModel || kf.state === "rendering" || dirty ? 0.5 : 1 }}
               disabled={!keyModel || kf.state === "rendering" || dirty}
-              title={!keyModel ? "ยังไม่มีโมเดลภาพที่รับภาพอ้างอิงเปิดให้ใช้" : dirty ? "บันทึกการแก้ไขก่อน" : undefined}
+              title={
+                !keyModel
+                  ? t("ยังไม่มีโมเดลภาพที่รับภาพอ้างอิงเปิดให้ใช้", "No image model that takes reference pictures is open yet")
+                  : dirty ? t("บันทึกการแก้ไขก่อน", "Save your changes first") : undefined
+              }
               onClick={onKeyframe}
             >
-              {kf.state === "rendering" ? "กำลังสร้าง…" : kf.url ? "🖼 สร้างภาพเปิดใหม่" : "🖼 สร้างภาพเปิด"}
-              {keyModel && ` · ${keyModel.credits} เครดิต`}
+              {kf.state === "rendering" ? t("กำลังสร้าง…", "Making…") : kf.url ? t("🖼 สร้างภาพเปิดใหม่", "🖼 Remake opening picture") : t("🖼 สร้างภาพเปิด", "🖼 Make opening picture")}
+              {keyModel && ` · ${formatCredits(keyModel.credits, locale)}`}
             </button>
           </div>
         </div>
@@ -641,43 +684,45 @@ function ShotCard({
 
       <fieldset disabled={locked} style={{ border: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 10, opacity: locked ? 0.6 : 1 }}>
         <div>
-          <span style={label}>ภาพที่เห็น (อังกฤษได้ผลดีที่สุด)</span>
+          <span style={label}>{t("ภาพที่เห็น (อังกฤษได้ผลดีที่สุด)", "What we see")}</span>
           <textarea style={{ ...field, minHeight: 70, resize: "vertical" }} maxLength={LIMITS.visual} value={draft.visual} onChange={(e) => set({ visual: e.target.value })} />
         </div>
         <div>
-          <span style={label}>{project.mode === "mv" ? "เนื้อเพลงช่วงนี้ (ใช้เป็นข้อมูล ไม่ให้โมเดลร้อง)" : "บทพูด (ภาษาไทย เว้นว่าง = ไม่มีพูด)"}</span>
+          <span style={label}>{project.mode === "mv"
+            ? t("เนื้อเพลงช่วงนี้ (ใช้เป็นข้อมูล ไม่ให้โมเดลร้อง)", "Lyrics for this part (for reference — the model doesn't sing them)")
+            : t("บทพูด (ภาษาไทย เว้นว่าง = ไม่มีพูด)", "Spoken line (leave blank for no dialogue)")}</span>
           <input style={field} maxLength={LIMITS.line} value={draft.line} onChange={(e) => set({ line: e.target.value })} />
         </div>
         {project.mode === "film" && (
           <div>
-            <span style={label}>เสียงประกอบ</span>
-            <input style={field} maxLength={LIMITS.sound} placeholder="เช่น ฝนตก ลมพัด เสียงเทียนไหม้" value={draft.sound} onChange={(e) => set({ sound: e.target.value })} />
+            <span style={label}>{t("เสียงประกอบ", "Sound effects")}</span>
+            <input style={field} maxLength={LIMITS.sound} placeholder={t("เช่น ฝนตก ลมพัด เสียงเทียนไหม้", "e.g. rain, wind, a candle crackling")} value={draft.sound} onChange={(e) => set({ sound: e.target.value })} />
           </div>
         )}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
           <div>
-            <span style={label}>ระยะภาพ</span>
+            <span style={label}>{t("ระยะภาพ", "Shot size")}</span>
             <select style={field} value={draft.shotSize} onChange={(e) => set({ shotSize: e.target.value })}>
-              {Object.entries(SHOT_SIZES).map(([k, s]) => <option key={k} value={k}>{s.label}</option>)}
+              {Object.entries(SHOT_SIZES).map(([k, s]) => <option key={k} value={k}>{t(s.label)}</option>)}
             </select>
           </div>
           <div>
-            <span style={label}>กล้อง</span>
+            <span style={label}>{t("กล้อง", "Camera")}</span>
             <select style={field} value={draft.camera} onChange={(e) => set({ camera: e.target.value })}>
-              {Object.entries(CAMERA_MOVES).map(([k, c]) => <option key={k} value={k}>{c.label}</option>)}
+              {Object.entries(CAMERA_MOVES).map(([k, c]) => <option key={k} value={k}>{t(c.label)}</option>)}
             </select>
           </div>
           <div>
-            <span style={label}>ความยาว (วินาที)</span>
+            <span style={label}>{t("ความยาว (วินาที)", "Length (seconds)")}</span>
             <input style={field} type="number" min={LIMITS.minShotSeconds} max={LIMITS.maxShotSeconds} step={project.mode === "mv" ? 0.5 : 1} value={draft.durationSec} onChange={(e) => set({ durationSec: Number(e.target.value) })} />
           </div>
           <div>
-            <span style={label}>โมเดล</span>
+            <span style={label}>{t("โมเดล", "Model")}</span>
             <select style={field} value={draft.modelId ?? ""} onChange={(e) => set({ modelId: Number(e.target.value) || null })}>
-              <option value="">— เลือก —</option>
+              <option value="">{t("— เลือก —", "— Pick —")}</option>
               {models.map((m) => (
                 <option key={m.id} value={m.id} disabled={!m.orderable}>
-                  {m.name} — {m.references}{m.orderable ? "" : " (ยังไม่เปิด)"}
+                  {m.name} — {m.references}{m.orderable ? "" : t(" (ยังไม่เปิด)", " (not open yet)")}
                 </option>
               ))}
             </select>
@@ -686,7 +731,7 @@ function ShotCard({
         <ShotCameraPreview shotSize={draft.shotSize} camera={draft.camera} ledByCharacter={draft.characterIds.length > 0} />
         {project.characters.length > 0 && (
           <div>
-            <span style={label}>ตัวละครในช็อต (คนแรก = ภาพเฟรมแรก)</span>
+            <span style={label}>{t("ตัวละครในช็อต (คนแรก = ภาพเฟรมแรก)", "Characters in the shot (the first one's picture is the first frame)")}</span>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
               {project.characters.map((c) => (
                 <button key={c.id} type="button" style={chip(draft.characterIds.includes(c.id))} onClick={() => toggleCast(c.id)}>
@@ -695,8 +740,8 @@ function ShotCard({
               ))}
               {project.mode === "film" && draft.line.trim() && (
                 <select style={{ ...field, width: "auto" }} value={draft.speakerId ?? ""} onChange={(e) => set({ speakerId: Number(e.target.value) || null })}>
-                  <option value="">ผู้พูด: ไม่ระบุ</option>
-                  {project.characters.filter((c) => draft.characterIds.includes(c.id)).map((c) => <option key={c.id} value={c.id}>ผู้พูด: {c.name}</option>)}
+                  <option value="">{t("ผู้พูด: ไม่ระบุ", "Speaker: none")}</option>
+                  {project.characters.filter((c) => draft.characterIds.includes(c.id)).map((c) => <option key={c.id} value={c.id}>{t("ผู้พูด: ", "Speaker: ")}{c.name}</option>)}
                 </select>
               )}
             </div>
@@ -704,7 +749,7 @@ function ShotCard({
         )}
         {props.length > 0 && (
           <div>
-            <span style={label}>ของ / อาวุธในช็อต</span>
+            <span style={label}>{t("ของ / อาวุธในช็อต", "Props / weapons in the shot")}</span>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
               {props.map((a) => (
                 <button key={a.id} type="button" style={chip(draft.propIds.includes(a.id))} onClick={() => toggleProp(a.id)}>{a.name}</button>
@@ -714,9 +759,9 @@ function ShotCard({
         )}
         {places.length > 0 && (
           <div>
-            <span style={label}>สถานที่</span>
+            <span style={label}>{t("สถานที่", "Place")}</span>
             <select style={field} value={draft.locationId ?? ""} onChange={(e) => set({ locationId: Number(e.target.value) || null })}>
-              <option value="">{scenePlace ? `ตามฉาก (${scenePlace.name})` : "ไม่ระบุ"}</option>
+              <option value="">{scenePlace ? t(`ตามฉาก (${scenePlace.name})`, `Same as the scene (${scenePlace.name})`) : t("ไม่ระบุ", "None")}</option>
               {places.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </select>
           </div>
@@ -725,20 +770,24 @@ function ShotCard({
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         {dirty && !locked && (
-          <button style={btn} disabled={saving} onClick={save}>{saving ? "กำลังบันทึก…" : "บันทึกการแก้ไข"}</button>
+          <button style={btn} disabled={saving} onClick={save}>{saving ? t("กำลังบันทึก…", "Saving…") : t("บันทึกการแก้ไข", "Save changes")}</button>
         )}
         <button
           style={{ ...primary, opacity: locked || dirty || kfBusy || !model?.orderable ? 0.5 : 1 }}
           disabled={locked || dirty || kfBusy || !model?.orderable}
-          title={dirty ? "บันทึกการแก้ไขก่อน" : kfBusy ? "รอภาพเปิดช็อตเสร็จก่อน คลิปจะได้เริ่มจากภาพนั้น" : undefined}
+          title={
+            dirty
+              ? t("บันทึกการแก้ไขก่อน", "Save your changes first")
+              : kfBusy ? t("รอภาพเปิดช็อตเสร็จก่อน คลิปจะได้เริ่มจากภาพนั้น", "Wait for the opening picture, so the clip can start from it") : undefined
+          }
           onClick={onRender}
         >
-          {shot.status === "done" ? "สร้างใหม่" : shot.status === "failed" ? "ลองอีกครั้ง" : "สร้างช็อตนี้"}
-          {shot.credits !== null && ` · ${shot.credits} เครดิต`}
+          {shot.status === "done" ? t("สร้างใหม่", "Remake") : shot.status === "failed" ? t("ลองอีกครั้ง", "Try again") : t("สร้างช็อตนี้", "Make this shot")}
+          {shot.credits !== null && ` · ${formatCredits(shot.credits, locale)}`}
         </button>
-        {shot.generationId && <Link href="/gallery" style={{ fontSize: 12, color: "#94a3b8" }}>ดูในแกลเลอรี</Link>}
+        {shot.generationId && <Link href="/gallery" style={{ fontSize: 12, color: "#94a3b8" }}>{t("ดูในแกลเลอรี", "View in gallery")}</Link>}
         <span style={{ flex: 1 }} />
-        <button style={{ ...btn, padding: "6px 10px", color: "#fca5a5" }} disabled={locked || kfBusy} onClick={onDelete}>ลบช็อต</button>
+        <button style={{ ...btn, padding: "6px 10px", color: "#fca5a5" }} disabled={locked || kfBusy} onClick={onDelete}>{t("ลบช็อต", "Delete shot")}</button>
       </div>
     </div>
   );
@@ -746,23 +795,29 @@ function ShotCard({
 
 /** One MV shot's lip-sync: its state, the dub, and the button that orders it. */
 function DubRow({ shot, vocals, onLipsync, onDubUse }: { shot: Shot; vocals: Vocals | null; onLipsync: () => void; onDubUse: (use: boolean) => void }) {
+  const t = useT();
+  const { locale } = useLocale();
   const dub = shot.lipsync!;
   const ready = vocals?.state === "done" && vocals.dubbing;
-  const why = dub.blocked ?? (!vocals?.dubbing ? "ตัวลิปซิงก์ยังไม่เปิด" : vocals.state !== "done" ? "แยกเสียงร้องก่อน (ส่วนลิปซิงก์ด้านบน)" : null);
+  const why =
+    dub.blocked ??
+    (!vocals?.dubbing
+      ? t("ตัวลิปซิงก์ยังไม่เปิด", "Lip-sync isn't open yet")
+      : vocals.state !== "done" ? t("แยกเสียงร้องก่อน (ส่วนลิปซิงก์ด้านบน)", "Separate the vocals first (lip-sync section above)") : null);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: 10, borderRadius: 12, background: "rgba(2,6,23,0.4)" }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: 13 }}>
-        <span>🎤 ลิปซิงก์</span>
-        {dub.state === "rendering" && <span style={{ color: "#fbbf24" }}>กำลังทำ… (เปิดเครื่องครั้งแรกอาจนานหลายนาที)</span>}
-        {dub.state === "done" && <span style={{ color: "#34d399" }}>เสร็จแล้ว</span>}
-        {dub.state === "stale" && <span style={{ color: "#fbbf24" }}>ช็อตถูกสร้างใหม่ — คลิปลิปซิงก์เดิมไม่ตรงแล้ว</span>}
-        {dub.state === "failed" && <span style={{ color: "#fca5a5" }}>{dub.error ?? "ไม่สำเร็จ"}</span>}
-        {dub.state === "none" && !dub.suggested && <span style={{ color: "#64748b" }}>ช็อตนี้ไม่ได้แนะนำ (ไม่มีเนื้อร้องหรือมุมกว้าง)</span>}
+        <span>{t("🎤 ลิปซิงก์", "🎤 Lip-sync")}</span>
+        {dub.state === "rendering" && <span style={{ color: "#fbbf24" }}>{t("กำลังทำ… (เปิดเครื่องครั้งแรกอาจนานหลายนาที)", "Working… (the first machine can take several minutes to start)")}</span>}
+        {dub.state === "done" && <span style={{ color: "#34d399" }}>{t("เสร็จแล้ว", "Done")}</span>}
+        {dub.state === "stale" && <span style={{ color: "#fbbf24" }}>{t("ช็อตถูกสร้างใหม่ — คลิปลิปซิงก์เดิมไม่ตรงแล้ว", "The shot was remade — the old lip-sync clip no longer matches")}</span>}
+        {dub.state === "failed" && <span style={{ color: "#fca5a5" }}>{dub.error ?? t("ไม่สำเร็จ", "Failed")}</span>}
+        {dub.state === "none" && !dub.suggested && <span style={{ color: "#64748b" }}>{t("ช็อตนี้ไม่ได้แนะนำ (ไม่มีเนื้อร้องหรือมุมกว้าง)", "Not suggested for this shot (no singing, or a wide angle)")}</span>}
         <span style={{ flex: 1 }} />
         {dub.state !== "rendering" && (
           <button style={{ ...btn, padding: "6px 12px", opacity: ready && !dub.blocked ? 1 : 0.5 }} disabled={!ready || Boolean(dub.blocked)} title={why ?? undefined} onClick={onLipsync}>
-            {dub.state === "none" ? "ลิปซิงก์ช็อตนี้" : "ทำใหม่"}
-            {dub.credits !== null && ` · ${dub.credits} เครดิต`}
+            {dub.state === "none" ? t("ลิปซิงก์ช็อตนี้", "Lip-sync this shot") : t("ทำใหม่", "Redo")}
+            {dub.credits !== null && ` · ${formatCredits(dub.credits, locale)}`}
           </button>
         )}
       </div>
@@ -770,7 +825,9 @@ function DubRow({ shot, vocals, onLipsync, onDubUse }: { shot: Shot; vocals: Voc
       {dub.state === "done" && dub.url && (
         <>
           <video src={dub.url} controls playsInline preload="metadata" style={{ width: "100%", maxHeight: 300, borderRadius: 10, background: "#000" }} />
-          <Toggle on={dub.use} onChange={onDubUse} label="ใช้คลิปลิปซิงก์นี้ตอนตัดต่อ" hint="ปิด = ใช้คลิปเดิมที่ไม่ได้ขยับปากตามเพลง" />
+          <Toggle on={dub.use} onChange={onDubUse} label={t("ใช้คลิปลิปซิงก์นี้ตอนตัดต่อ", "Use this lip-sync clip in the cut")}
+            hint={t("ปิด = ใช้คลิปเดิมที่ไม่ได้ขยับปากตามเพลง", "Off = the original clip, without lips moving to the song")}
+          />
         </>
       )}
     </div>
@@ -798,15 +855,23 @@ const sameEdit = (a: Shot, b: Shot) => JSON.stringify(pickEditable(a)) === JSON.
 // ─── Reference library ──────────────────────────────────────────────────
 
 const KIND_ICON: Record<AssetKind, string> = { character: "🧑", prop: "🗡️", location: "🏞️" };
-const KIND_HINT: Record<AssetKind, string> = {
-  character: "หน้าตา การแต่งกาย (อังกฤษได้ผลดีที่สุด) เช่น young Thai woman, long black hair, red silk dress",
-  prop: "รูปร่าง วัสดุ สี เช่น curved steel sword, gold hilt with a red tassel",
-  location: "บรรยากาศ สถาปัตยกรรม เช่น ruined stone temple in a misty jungle, moss on the steps",
+const KIND_HINT: Record<AssetKind, Msg> = {
+  character: {
+    th: "หน้าตา การแต่งกาย (อังกฤษได้ผลดีที่สุด) เช่น young Thai woman, long black hair, red silk dress",
+    en: "Looks and clothing, e.g. young Thai woman, long black hair, red silk dress",
+  },
+  prop: { th: "รูปร่าง วัสดุ สี เช่น curved steel sword, gold hilt with a red tassel", en: "Shape, material, colour, e.g. curved steel sword, gold hilt with a red tassel" },
+  location: {
+    th: "บรรยากาศ สถาปัตยกรรม เช่น ruined stone temple in a misty jungle, moss on the steps",
+    en: "Atmosphere and architecture, e.g. ruined stone temple in a misty jungle, moss on the steps",
+  },
 };
 
 /** One library item: its pictures, its words, and an AI picture on demand. */
 function AssetCard({ asset, pictures, busy, onAction }: { asset: Asset; pictures: Pictures; busy: string | null; onAction: (body: Record<string, unknown>, key: string) => Promise<boolean> }) {
   const { toast } = useToast();
+  const t = useT();
+  const { locale } = useLocale();
   const [name, setName] = useState(asset.name);
   const [desc, setDesc] = useState(asset.description);
   const [uploading, setUploading] = useState(false);
@@ -821,18 +886,28 @@ function AssetCard({ asset, pictures, busy, onAction }: { asset: Asset; pictures
     setUploading(true);
     const r = await uploadFile(file, "image");
     setUploading(false);
-    if (!r.ok) return toast("error", r.error);
+    if (!r.ok) return toast("error", t(r.error));
     await setPictures([...asset.pictures, r.data.url]);
   };
   const draw = async () => {
-    if (!model) return toast("error", "ยังไม่มีโมเดลภาพเปิดให้ใช้ตอนนี้");
-    if (!desc.trim()) return toast("error", "เขียนคำอธิบายรูปลักษณ์ก่อน AI จึงวาดได้");
-    const angle = asset.pictures.length > 0 ? " (มุมใหม่ ภาพเดิมยังอยู่)" : "";
-    if (!confirm(`ให้ AI วาดภาพ ${asset.name}${angle}? ใช้ ${model.credits} เครดิตด้วย ${model.name} (ถ้าไม่สำเร็จคืนเครดิตอัตโนมัติ)`)) return;
-    if (await onAction({ action: "picture", assetId: asset.id }, `asset-${asset.id}`)) toast("success", "สั่งวาดแล้ว", "ภาพจะขึ้นเองเมื่อเสร็จ");
+    if (!model) return toast("error", t("ยังไม่มีโมเดลภาพเปิดให้ใช้ตอนนี้", "No image model is open right now"));
+    if (!desc.trim()) return toast("error", t("เขียนคำอธิบายรูปลักษณ์ก่อน AI จึงวาดได้", "Describe how it looks first, so AI can draw it"));
+    const angle = asset.pictures.length > 0 ? t(" (มุมใหม่ ภาพเดิมยังอยู่)", " (a new angle; the current pictures stay)") : "";
+    const ask = t(
+      `ให้ AI วาดภาพ ${asset.name}${angle}? ใช้ ${model.credits} เครดิตด้วย ${model.name} (ถ้าไม่สำเร็จคืนเครดิตอัตโนมัติ)`,
+      `Have AI draw ${asset.name}${angle}? Uses ${formatCredits(model.credits, locale)} with ${model.name} (refunded automatically if it fails)`
+    );
+    if (!confirm(ask)) return;
+    if (await onAction({ action: "picture", assetId: asset.id }, `asset-${asset.id}`)) {
+      toast("success", t("สั่งวาดแล้ว", "Drawing ordered"), t("ภาพจะขึ้นเองเมื่อเสร็จ", "The picture appears by itself when it's done"));
+    }
   };
   const remove = async () => {
-    if (!confirm(`ลบ "${asset.name}" ออกจากคลัง? ช็อตและฉากที่ใช้อยู่จะไม่อ้างอิงรายการนี้อีก`)) return;
+    const ask = t(
+      `ลบ "${asset.name}" ออกจากคลัง? ช็อตและฉากที่ใช้อยู่จะไม่อ้างอิงรายการนี้อีก`,
+      `Remove "${asset.name}" from the library? Shots and scenes that use it will no longer refer to it.`
+    );
+    if (!confirm(ask)) return;
     await onAction({ action: "delete", assetId: asset.id }, `asset-${asset.id}`);
   };
 
@@ -843,30 +918,31 @@ function AssetCard({ asset, pictures, busy, onAction }: { asset: Asset; pictures
           <div key={url} style={{ position: "relative", width: 76, height: 76, borderRadius: 10, overflow: "hidden", border: k === 0 ? "2px solid #c084fc" : "1px solid rgba(255,255,255,0.1)" }}>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={url} alt={asset.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-            <button type="button" title="ลบภาพนี้" disabled={busy !== null} onClick={() => confirm("ลบภาพนี้?") && setPictures(asset.pictures.filter((u) => u !== url))} style={{ position: "absolute", top: 2, right: 2, width: 20, height: 20, borderRadius: 10, border: "none", background: "rgba(0,0,0,0.65)", color: "#fff", fontSize: 11, cursor: "pointer" }}>✕</button>
+            <button type="button" title={t("ลบภาพนี้", "Delete this picture")} disabled={busy !== null} onClick={() => confirm(t("ลบภาพนี้?", "Delete this picture?")) && setPictures(asset.pictures.filter((u) => u !== url))} style={{ position: "absolute", top: 2, right: 2, width: 20, height: 20, borderRadius: 10, border: "none", background: "rgba(0,0,0,0.65)", color: "#fff", fontSize: 11, cursor: "pointer" }}>✕</button>
             {k > 0 && (
-              <button type="button" title="ใช้เป็นภาพหลัก" disabled={busy !== null} onClick={() => setPictures([url, ...asset.pictures.filter((u) => u !== url)])} style={{ position: "absolute", bottom: 2, left: 2, padding: "1px 5px", borderRadius: 6, border: "none", background: "rgba(0,0,0,0.65)", color: "#fff", fontSize: 10, cursor: "pointer" }}>★ หลัก</button>
+              <button type="button" title={t("ใช้เป็นภาพหลัก", "Make this the main picture")} disabled={busy !== null} onClick={() => setPictures([url, ...asset.pictures.filter((u) => u !== url)])} style={{ position: "absolute", bottom: 2, left: 2, padding: "1px 5px", borderRadius: 6, border: "none", background: "rgba(0,0,0,0.65)", color: "#fff", fontSize: 10, cursor: "pointer" }}>{t("★ หลัก", "★ Main")}</button>
             )}
           </div>
         ))}
         {!full && (
           <label style={{ width: 76, height: 76, borderRadius: 10, cursor: "pointer", border: "1px dashed rgba(255,255,255,0.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#94a3b8", textAlign: "center" }}>
-            {uploading ? "กำลังอัปโหลด…" : drawing ? "AI กำลังวาด…" : "+ ภาพ"}
+            {uploading ? t("กำลังอัปโหลด…", "Uploading…") : drawing ? t("AI กำลังวาด…", "AI is drawing…") : t("+ ภาพ", "+ Picture")}
             <input type="file" accept="image/png,image/jpeg,image/webp" style={{ display: "none" }} disabled={uploading || busy !== null} onChange={(e) => upload(e.target.files?.[0])} />
           </label>
         )}
       </div>
       <div style={{ flex: 1, minWidth: 220, display: "flex", flexDirection: "column", gap: 8 }}>
-        <input style={field} maxLength={LIMITS.characterName} placeholder="ชื่อ" value={name} onChange={(e) => setName(e.target.value)} />
-        <textarea style={{ ...field, minHeight: 56, resize: "vertical" }} maxLength={LIMITS.characterDescription} placeholder={KIND_HINT[asset.kind]} value={desc} onChange={(e) => setDesc(e.target.value)} />
+        <input style={field} maxLength={LIMITS.characterName} placeholder={t("ชื่อ", "Name")} value={name} onChange={(e) => setName(e.target.value)} />
+        <textarea style={{ ...field, minHeight: 56, resize: "vertical" }} maxLength={LIMITS.characterDescription} placeholder={t(KIND_HINT[asset.kind])} value={desc} onChange={(e) => setDesc(e.target.value)} />
         {asset.image.state === "failed" && asset.image.error && <div style={{ fontSize: 12, color: "#fca5a5" }}>{asset.image.error}</div>}
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {dirty && <button style={{ ...btn, padding: "6px 12px" }} disabled={busy !== null} onClick={() => onAction({ action: "update", assetId: asset.id, name, description: desc }, `asset-${asset.id}`)}>บันทึก</button>}
-          <button style={{ ...btn, padding: "6px 12px", opacity: dirty || drawing || full || !model ? 0.5 : 1 }} disabled={dirty || drawing || full || !model || busy !== null} title={dirty ? "บันทึกก่อน" : full ? `มีภาพครบ ${pictures.maxPictures} ภาพแล้ว` : undefined} onClick={draw}>
-            {drawing ? "AI กำลังวาด…" : asset.pictures.length ? "✨ ให้ AI วาดมุมใหม่" : "✨ ให้ AI วาดภาพ"}{model && ` · ${model.credits} เครดิต`}
+          {dirty && <button style={{ ...btn, padding: "6px 12px" }} disabled={busy !== null} onClick={() => onAction({ action: "update", assetId: asset.id, name, description: desc }, `asset-${asset.id}`)}>{t("บันทึก", "Save")}</button>}
+          <button style={{ ...btn, padding: "6px 12px", opacity: dirty || drawing || full || !model ? 0.5 : 1 }} disabled={dirty || drawing || full || !model || busy !== null} title={dirty ? t("บันทึกก่อน", "Save first") : full ? t(`มีภาพครบ ${pictures.maxPictures} ภาพแล้ว`, `It already has ${pictures.maxPictures} pictures`) : undefined} onClick={draw}>
+            {drawing ? t("AI กำลังวาด…", "AI is drawing…") : asset.pictures.length ? t("✨ ให้ AI วาดมุมใหม่", "✨ Have AI draw a new angle") : t("✨ ให้ AI วาดภาพ", "✨ Have AI draw it")}
+            {model && ` · ${formatCredits(model.credits, locale)}`}
           </button>
           <span style={{ flex: 1 }} />
-          <button style={{ ...btn, padding: "6px 10px", color: "#fca5a5" }} disabled={busy !== null || drawing} onClick={remove}>ลบ</button>
+          <button style={{ ...btn, padding: "6px 10px", color: "#fca5a5" }} disabled={busy !== null || drawing} onClick={remove}>{t("ลบ", "Delete")}</button>
         </div>
       </div>
     </div>
@@ -880,6 +956,8 @@ function LibraryPanel({ view, busy, onAction, onPictures }: {
   onAction: (body: Record<string, unknown>, key: string) => Promise<boolean>;
   onPictures: (patch: Partial<Pick<Pictures, "keyframeModelId" | "pictureModelId">>) => void;
 }) {
+  const t = useT();
+  const { locale } = useLocale();
   const [tab, setTab] = useState<AssetKind>("character");
   const pics = view.pictures;
   const items = view.project.library.filter((a) => a.kind === tab);
@@ -888,31 +966,38 @@ function LibraryPanel({ view, busy, onAction, onPictures }: {
   return (
     <details style={card} open={view.project.library.length === 0 || undefined}>
       <summary style={{ cursor: "pointer", fontSize: 16, fontWeight: 600 }}>
-        📚 คลังอ้างอิง <span style={{ fontSize: 13, color: "#94a3b8", fontWeight: 400 }}>· ตัวละคร {view.project.library.filter((a) => a.kind === "character").length} · ของ {view.project.library.filter((a) => a.kind === "prop").length} · สถานที่ {view.project.library.filter((a) => a.kind === "location").length}</span>
+        📚 {t("คลังอ้างอิง", "Reference library")}{" "}
+        <span style={{ fontSize: 13, color: "#94a3b8", fontWeight: 400 }}>
+          · {t("ตัวละคร", "Characters")} {view.project.library.filter((a) => a.kind === "character").length} · {t("ของ", "Props")}{" "}
+          {view.project.library.filter((a) => a.kind === "prop").length} · {t("สถานที่", "Places")} {view.project.library.filter((a) => a.kind === "location").length}
+        </span>
       </summary>
       <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 12 }}>
         <div style={{ fontSize: 12, color: "#94a3b8" }}>
-          ตัวละคร ของ/อาวุธ และสถานที่ที่ใช้ซ้ำทั้งเรื่อง ใส่ภาพไว้ (อัปโหลดเองหรือให้ AI วาด) แล้วระบบจะส่งภาพเหล่านี้ให้โมเดลรวมเป็น “ภาพเปิดช็อต” — หน้าตา ของ และฉากจึงเหมือนเดิมทุกช็อต รายการละไม่เกิน {pics.maxPictures} ภาพ (ภาพแรก = ภาพหลัก)
+          {t(
+            `ตัวละคร ของ/อาวุธ และสถานที่ที่ใช้ซ้ำทั้งเรื่อง ใส่ภาพไว้ (อัปโหลดเองหรือให้ AI วาด) แล้วระบบจะส่งภาพเหล่านี้ให้โมเดลรวมเป็น “ภาพเปิดช็อต” — หน้าตา ของ และฉากจึงเหมือนเดิมทุกช็อต รายการละไม่เกิน ${pics.maxPictures} ภาพ (ภาพแรก = ภาพหลัก)`,
+            `The characters, props/weapons and places the whole story reuses. Give them pictures (your own uploads, or drawn by AI) and these are sent to the model to compose each shot's “opening picture” — so faces, props and settings stay the same in every shot. Up to ${pics.maxPictures} pictures per item (the first is the main one).`
+          )}
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10 }}>
           <div>
-            <span style={label}>โมเดลรวมภาพเปิดช็อต (ต้องรับภาพอ้างอิงได้)</span>
+            <span style={label}>{t("โมเดลรวมภาพเปิดช็อต (ต้องรับภาพอ้างอิงได้)", "Model that composes opening pictures (must take reference pictures)")}</span>
             <select style={field} value={pics.keyframeModelId ?? ""} disabled={busy !== null} onChange={(e) => onPictures({ keyframeModelId: Number(e.target.value) || null })}>
-              {!hasKeyModel && <option value="">— ยังไม่มีโมเดลที่ใช้ได้ —</option>}
+              {!hasKeyModel && <option value="">{t("— ยังไม่มีโมเดลที่ใช้ได้ —", "— No usable model yet —")}</option>}
               {pics.models.map((m) => (
                 <option key={m.id} value={m.id} disabled={!m.orderable || m.refs === 0}>
-                  {m.name} — {m.label} · {m.credits} เครดิต{m.orderable ? "" : ` (${m.reason})`}
+                  {m.name} — {m.label} · {formatCredits(m.credits, locale)}{m.orderable ? "" : ` (${m.reason})`}
                 </option>
               ))}
             </select>
           </div>
           <div>
-            <span style={label}>โมเดลวาดภาพในคลัง</span>
+            <span style={label}>{t("โมเดลวาดภาพในคลัง", "Model that draws library pictures")}</span>
             <select style={field} value={pics.pictureModelId ?? ""} disabled={busy !== null} onChange={(e) => onPictures({ pictureModelId: Number(e.target.value) || null })}>
-              {pics.pictureModelId === null && <option value="">— ยังไม่มีโมเดลที่ใช้ได้ —</option>}
+              {pics.pictureModelId === null && <option value="">{t("— ยังไม่มีโมเดลที่ใช้ได้ —", "— No usable model yet —")}</option>}
               {pics.models.map((m) => (
                 <option key={m.id} value={m.id} disabled={!m.orderable}>
-                  {m.name} — {m.label} · {m.credits} เครดิต{m.orderable ? "" : ` (${m.reason})`}
+                  {m.name} — {m.label} · {formatCredits(m.credits, locale)}{m.orderable ? "" : ` (${m.reason})`}
                 </option>
               ))}
             </select>
@@ -920,7 +1005,10 @@ function LibraryPanel({ view, busy, onAction, onPictures }: {
         </div>
         {!hasKeyModel && (
           <div style={{ fontSize: 12, color: "#fcd34d" }}>
-            ตอนนี้ยังไม่มีโมเดลภาพที่รับภาพอ้างอิงเปิดให้ใช้ — คลิปจะเริ่มจากภาพตัวละครนำเหมือนเดิม (ของและสถานที่ใช้คำบรรยายแทน)
+            {t(
+              "ตอนนี้ยังไม่มีโมเดลภาพที่รับภาพอ้างอิงเปิดให้ใช้ — คลิปจะเริ่มจากภาพตัวละครนำเหมือนเดิม (ของและสถานที่ใช้คำบรรยายแทน)",
+              "No image model that takes reference pictures is open right now — clips start from the lead character's picture as before (props and places are described in words instead)"
+            )}
           </div>
         )}
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -930,13 +1018,20 @@ function LibraryPanel({ view, busy, onAction, onPictures }: {
             </button>
           ))}
         </div>
-        {items.length === 0 && <div style={{ fontSize: 13, color: "#64748b" }}>ยังไม่มี{kind.label} — เพิ่มเอง หรือกด “✨ ให้ AI แตกช็อต” ให้ AI เสนอสถานที่และของสำคัญของเรื่องให้</div>}
+        {items.length === 0 && (
+          <div style={{ fontSize: 13, color: "#64748b" }}>
+            {t(
+              `ยังไม่มี${kind.label} — เพิ่มเอง หรือกด “✨ ให้ AI แตกช็อต” ให้ AI เสนอสถานที่และของสำคัญของเรื่องให้`,
+              `No ${kind.label.toLowerCase()} yet — add your own, or press “✨ Have AI break it into shots” and AI will suggest the story's key places and props`
+            )}
+          </div>
+        )}
         {items.map((a) => (
           <AssetCard key={`${a.id}:${a.name}:${a.description}`} asset={a} pictures={pics} busy={busy} onAction={onAction} />
         ))}
         {items.length < kind.max && (
           <button style={{ ...btn, alignSelf: "flex-start" }} disabled={busy !== null} onClick={() => onAction({ action: "add", kind: tab, name: "", description: "" }, "asset-add")}>
-            + เพิ่ม{kind.label}
+            {t(`+ เพิ่ม${kind.label}`, `+ Add ${kind.one.toLowerCase()}`)}
           </button>
         )}
       </div>
@@ -949,31 +1044,37 @@ function LibraryPanel({ view, busy, onAction, onPictures }: {
 interface ScopeActions {
   busy: string | null;
   planning: boolean;
-  onPlan: (sceneIds: number[], what: string) => void;
+  onPlan: (sceneIds: number[], what: Msg) => void;
   onKeyframes: (shots: Shot[]) => void;
   onRender: (shots: Shot[]) => void;
 }
+
+const THIS_SCENE: Msg = { th: "ฉากนี้", en: "this scene" };
+const WHOLE_ACT: Msg = { th: "ทั้งองก์", en: "the whole act" };
 
 // A shot whose opening picture is still being made waits for it.
 const renderableOf = (shots: Shot[]) => shots.filter((s) => (s.status === "pending" || s.status === "failed") && s.keyframe.state !== "rendering");
 
 /** The buttons that act on every shot of a scene or an act. */
-function ScopeButtons({ shots, sceneIds, what, actions, hasKeyModel }: { shots: Shot[]; sceneIds: number[]; what: string; actions: ScopeActions; hasKeyModel: boolean }) {
+function ScopeButtons({ shots, sceneIds, what, actions, hasKeyModel }: { shots: Shot[]; sceneIds: number[]; what: Msg; actions: ScopeActions; hasKeyModel: boolean }) {
+  const t = useT();
   const rendering = shots.some((s) => s.status === "rendering");
   const todo = renderableOf(shots);
   const small = { ...btn, padding: "5px 10px", fontSize: 12 };
   return (
     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
       {sceneIds.length > 0 && (
-        <button style={small} disabled={actions.busy !== null || actions.planning || rendering} title={rendering ? "รอช็อตที่กำลังสร้างให้เสร็จก่อน" : undefined} onClick={() => actions.onPlan(sceneIds, what)}>
-          ✨ วางช็อต{what}ใหม่
+        <button style={small} disabled={actions.busy !== null || actions.planning || rendering} title={rendering ? t("รอช็อตที่กำลังสร้างให้เสร็จก่อน", "Wait for the shots being made to finish first") : undefined} onClick={() => actions.onPlan(sceneIds, what)}>
+          {t(`✨ วางช็อต${what.th}ใหม่`, `✨ Re-plan ${what.en}`)}
         </button>
       )}
       {shots.length > 0 && hasKeyModel && (
-        <button style={small} disabled={actions.busy !== null} onClick={() => actions.onKeyframes(shots)}>🖼 ภาพเปิดทั้ง{what}</button>
+        <button style={small} disabled={actions.busy !== null} onClick={() => actions.onKeyframes(shots)}>{t(`🖼 ภาพเปิดทั้ง${what.th}`, `🖼 Opening pictures for ${what.en}`)}</button>
       )}
       {todo.length > 0 && (
-        <button style={small} disabled={actions.busy !== null} onClick={() => actions.onRender(todo)}>🎬 สร้างคลิปที่เหลือ {todo.length} ช็อต</button>
+        <button style={small} disabled={actions.busy !== null} onClick={() => actions.onRender(todo)}>
+          {t(`🎬 สร้างคลิปที่เหลือ ${todo.length} ช็อต`, `🎬 Make the remaining ${plural(todo.length, "clip")}`)}
+        </button>
       )}
     </div>
   );
@@ -990,6 +1091,7 @@ function SceneHeader({ scene, acts, places, times, shots, actions, hasKeyModel, 
   onStructure: (body: Record<string, unknown>) => Promise<boolean>;
   onAddShot: () => void;
 }) {
+  const t = useT();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState({ title: scene.title, summary: scene.summary, locationId: scene.locationId, timeOfDay: scene.timeOfDay, actId: scene.actId });
   const place = places.find((a) => a.id === scene.locationId);
@@ -999,52 +1101,59 @@ function SceneHeader({ scene, acts, places, times, shots, actions, hasKeyModel, 
   };
   const remove = async () => {
     const rendering = shots.some((s) => s.status === "rendering");
-    if (rendering) return alert("มีช็อตในฉากนี้กำลังสร้างอยู่ รอให้เสร็จก่อน");
-    if (!confirm(shots.length ? `ลบฉาก ${scene.number} พร้อมช็อตในฉาก ${shots.length} ช็อต? (คลิปที่สร้างแล้วยังอยู่ในแกลเลอรี)` : `ลบฉาก ${scene.number}?`)) return;
+    if (rendering) return alert(t("มีช็อตในฉากนี้กำลังสร้างอยู่ รอให้เสร็จก่อน", "A shot in this scene is being made. Wait for it to finish first."));
+    const ask = shots.length
+      ? t(
+          `ลบฉาก ${scene.number} พร้อมช็อตในฉาก ${shots.length} ช็อต? (คลิปที่สร้างแล้วยังอยู่ในแกลเลอรี)`,
+          `Delete scene ${scene.number} and its ${plural(shots.length, "shot")}? (Clips already made stay in your gallery.)`
+        )
+      : t(`ลบฉาก ${scene.number}?`, `Delete scene ${scene.number}?`);
+    if (!confirm(ask)) return;
     await onStructure({ action: "delete-scene", sceneId: scene.id, withShots: true });
   };
   return (
     <div style={{ padding: "12px 14px", borderRadius: 14, background: "rgba(168,85,247,0.08)", border: "1px solid rgba(168,85,247,0.2)", display: "flex", flexDirection: "column", gap: 8 }}>
       {editing ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <input style={field} maxLength={200} value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} placeholder="ชื่อฉาก" />
-          <textarea style={{ ...field, minHeight: 60 }} maxLength={1200} value={draft.summary} onChange={(e) => setDraft({ ...draft, summary: e.target.value })} placeholder="เกิดอะไรขึ้นในฉากนี้ (ใช้ตอนให้ AI วางช็อตใหม่)" />
+          <input style={field} maxLength={200} value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} placeholder={t("ชื่อฉาก", "Scene title")} />
+          <textarea style={{ ...field, minHeight: 60 }} maxLength={1200} value={draft.summary} onChange={(e) => setDraft({ ...draft, summary: e.target.value })} placeholder={t("เกิดอะไรขึ้นในฉากนี้ (ใช้ตอนให้ AI วางช็อตใหม่)", "What happens in this scene (used when AI re-plans its shots)")} />
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8 }}>
             <select style={field} value={draft.locationId ?? ""} onChange={(e) => setDraft({ ...draft, locationId: Number(e.target.value) || null })}>
-              <option value="">สถานที่: ไม่ระบุ</option>
-              {places.map((a) => <option key={a.id} value={a.id}>สถานที่: {a.name}</option>)}
+              <option value="">{t("สถานที่: ไม่ระบุ", "Place: none")}</option>
+              {places.map((a) => <option key={a.id} value={a.id}>{t("สถานที่: ", "Place: ")}{a.name}</option>)}
             </select>
             <select style={field} value={draft.timeOfDay ?? ""} onChange={(e) => setDraft({ ...draft, timeOfDay: e.target.value || null })}>
-              <option value="">เวลา: ไม่ระบุ</option>
-              {Object.entries(times).map(([k, t]) => <option key={k} value={k}>เวลา: {t}</option>)}
+              <option value="">{t("เวลา: ไม่ระบุ", "Time: none")}</option>
+              {Object.entries(times).map(([k, time]) => <option key={k} value={k}>{t("เวลา: ", "Time: ")}{time}</option>)}
             </select>
             {acts.length > 0 && (
               <select style={field} value={draft.actId ?? ""} onChange={(e) => setDraft({ ...draft, actId: Number(e.target.value) || null })}>
-                <option value="">องก์: ไม่ระบุ</option>
-                {acts.map((a) => <option key={a.id} value={a.id}>องก์ {a.number}: {a.title}</option>)}
+                <option value="">{t("องก์: ไม่ระบุ", "Act: none")}</option>
+                {acts.map((a) => <option key={a.id} value={a.id}>{t(`องก์ ${a.number}: `, `Act ${a.number}: `)}{a.title}</option>)}
               </select>
             )}
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <button style={primary} disabled={actions.busy !== null} onClick={save}>บันทึกฉาก</button>
-            <button style={btn} onClick={() => setEditing(false)}>ยกเลิก</button>
+            <button style={primary} disabled={actions.busy !== null} onClick={save}>{t("บันทึกฉาก", "Save scene")}</button>
+            <button style={btn} onClick={() => setEditing(false)}>{t("ยกเลิก", "Cancel")}</button>
           </div>
         </div>
       ) : (
         <>
           <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
-            <div style={{ fontWeight: 600 }}>ฉาก {scene.number} · {scene.title}</div>
+            <div style={{ fontWeight: 600 }}>{t(`ฉาก ${scene.number}`, `Scene ${scene.number}`)} · {scene.title}</div>
             <div style={{ fontSize: 12, color: "#94a3b8" }}>
-              {place ? `📍 ${place.name}` : "📍 ไม่ระบุสถานที่"}{scene.timeOfDay ? ` · ${times[scene.timeOfDay] ?? ""}` : ""} · {shots.length} ช็อต {fmtTime(seconds)}
+              {place ? `📍 ${place.name}` : t("📍 ไม่ระบุสถานที่", "📍 No place set")}{scene.timeOfDay ? ` · ${times[scene.timeOfDay] ?? ""}` : ""} ·{" "}
+              {t(`${shots.length} ช็อต`, plural(shots.length, "shot"))} {fmtTime(seconds)}
             </div>
             <span style={{ flex: 1 }} />
-            <button style={{ ...btn, padding: "4px 10px", fontSize: 12 }} onClick={() => setEditing(true)}>✎ แก้ฉาก</button>
-            <button style={{ ...btn, padding: "4px 10px", fontSize: 12, color: "#fca5a5" }} disabled={actions.busy !== null} onClick={remove}>ลบฉาก</button>
+            <button style={{ ...btn, padding: "4px 10px", fontSize: 12 }} onClick={() => setEditing(true)}>{t("✎ แก้ฉาก", "✎ Edit scene")}</button>
+            <button style={{ ...btn, padding: "4px 10px", fontSize: 12, color: "#fca5a5" }} disabled={actions.busy !== null} onClick={remove}>{t("ลบฉาก", "Delete scene")}</button>
           </div>
           {scene.summary && <div style={{ fontSize: 13, color: "#cbd5e1" }}>{scene.summary}</div>}
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-            <ScopeButtons shots={shots} sceneIds={[scene.id]} what="ฉากนี้" actions={actions} hasKeyModel={hasKeyModel} />
-            <button style={{ ...btn, padding: "5px 10px", fontSize: 12 }} disabled={actions.busy !== null} onClick={onAddShot}>+ ช็อตในฉากนี้</button>
+            <ScopeButtons shots={shots} sceneIds={[scene.id]} what={THIS_SCENE} actions={actions} hasKeyModel={hasKeyModel} />
+            <button style={{ ...btn, padding: "5px 10px", fontSize: 12 }} disabled={actions.busy !== null} onClick={onAddShot}>{t("+ ช็อตในฉากนี้", "+ Shot in this scene")}</button>
           </div>
         </>
       )}
@@ -1060,6 +1169,7 @@ function ActHeader({ act, shots, sceneIds, actions, hasKeyModel, onStructure }: 
   hasKeyModel: boolean;
   onStructure: (body: Record<string, unknown>) => Promise<boolean>;
 }) {
+  const t = useT();
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(act.title);
   const [summary, setSummary] = useState(act.summary);
@@ -1071,24 +1181,33 @@ function ActHeader({ act, shots, sceneIds, actions, hasKeyModel, onStructure }: 
       {editing ? (
         <>
           <input style={field} maxLength={200} value={title} onChange={(e) => setTitle(e.target.value)} />
-          <textarea style={{ ...field, minHeight: 56 }} maxLength={1200} value={summary} onChange={(e) => setSummary(e.target.value)} placeholder="สรุปองก์" />
+          <textarea style={{ ...field, minHeight: 56 }} maxLength={1200} value={summary} onChange={(e) => setSummary(e.target.value)} placeholder={t("สรุปองก์", "Act summary")} />
           <div style={{ display: "flex", gap: 8 }}>
-            <button style={primary} disabled={actions.busy !== null} onClick={save}>บันทึกองก์</button>
-            <button style={btn} onClick={() => setEditing(false)}>ยกเลิก</button>
+            <button style={primary} disabled={actions.busy !== null} onClick={save}>{t("บันทึกองก์", "Save act")}</button>
+            <button style={btn} onClick={() => setEditing(false)}>{t("ยกเลิก", "Cancel")}</button>
           </div>
         </>
       ) : (
         <>
           <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
-            <div style={{ fontSize: 17, fontWeight: 700, color: "#7dd3fc" }}>องก์ {act.number} · {act.title}</div>
-            <div style={{ fontSize: 12, color: "#94a3b8" }}>{sceneIds.length} ฉาก · {shots.length} ช็อต · {fmtTime(shots.reduce((n, s) => n + s.durationSec, 0))}</div>
+            <div style={{ fontSize: 17, fontWeight: 700, color: "#7dd3fc" }}>{t(`องก์ ${act.number}`, `Act ${act.number}`)} · {act.title}</div>
+            <div style={{ fontSize: 12, color: "#94a3b8" }}>
+              {t(`${sceneIds.length} ฉาก · ${shots.length} ช็อต`, `${plural(sceneIds.length, "scene")} · ${plural(shots.length, "shot")}`)} ·{" "}
+              {fmtTime(shots.reduce((n, s) => n + s.durationSec, 0))}
+            </div>
             <span style={{ flex: 1 }} />
-            <button style={{ ...btn, padding: "4px 10px", fontSize: 12 }} onClick={() => setEditing(true)}>✎ แก้องก์</button>
-            <button style={{ ...btn, padding: "4px 10px", fontSize: 12 }} disabled={actions.busy !== null} onClick={() => onStructure({ action: "add-scene", actId: act.id })}>+ ฉาก</button>
-            <button style={{ ...btn, padding: "4px 10px", fontSize: 12, color: "#fca5a5" }} disabled={actions.busy !== null} onClick={() => confirm(`ลบองก์ ${act.number}? ฉากและช็อตในองก์ยังอยู่ (ย้ายไปไม่ระบุองก์)`) && onStructure({ action: "delete-act", actId: act.id })}>ลบองก์</button>
+            <button style={{ ...btn, padding: "4px 10px", fontSize: 12 }} onClick={() => setEditing(true)}>{t("✎ แก้องก์", "✎ Edit act")}</button>
+            <button style={{ ...btn, padding: "4px 10px", fontSize: 12 }} disabled={actions.busy !== null} onClick={() => onStructure({ action: "add-scene", actId: act.id })}>{t("+ ฉาก", "+ Scene")}</button>
+            <button style={{ ...btn, padding: "4px 10px", fontSize: 12, color: "#fca5a5" }} disabled={actions.busy !== null} onClick={() =>
+                confirm(t(`ลบองก์ ${act.number}? ฉากและช็อตในองก์ยังอยู่ (ย้ายไปไม่ระบุองก์)`, `Delete act ${act.number}? Its scenes and shots stay (they move out of any act).`)) &&
+                onStructure({ action: "delete-act", actId: act.id })
+              }
+            >
+              {t("ลบองก์", "Delete act")}
+            </button>
           </div>
           {act.summary && <div style={{ fontSize: 13, color: "#cbd5e1" }}>{act.summary}</div>}
-          <ScopeButtons shots={shots} sceneIds={sceneIds} what="ทั้งองก์" actions={actions} hasKeyModel={hasKeyModel} />
+          <ScopeButtons shots={shots} sceneIds={sceneIds} what={WHOLE_ACT} actions={actions} hasKeyModel={hasKeyModel} />
         </>
       )}
     </div>
@@ -1110,11 +1229,12 @@ function Toggle({ on, onChange, label, hint }: { on: boolean; onChange: (v: bool
 }
 
 function Volume({ value, onCommit, disabled }: { value: number; onCommit: (v: number) => void; disabled?: boolean }) {
+  const t = useT();
   const [v, setV] = useState(value);
   const commit = () => v !== value && onCommit(v);
   return (
     <span style={{ display: "inline-flex", gap: 8, alignItems: "center", marginLeft: 26, opacity: disabled ? 0.4 : 1 }}>
-      <span style={{ fontSize: 12, color: "#94a3b8" }}>ความดัง</span>
+      <span style={{ fontSize: 12, color: "#94a3b8" }}>{t("ความดัง", "Volume")}</span>
       <input type="range" min={0} max={1.5} step={0.05} value={v} disabled={disabled} onChange={(e) => setV(Number(e.target.value))} onPointerUp={commit} onKeyUp={commit} onBlur={commit} />
       <span style={{ fontSize: 12, color: "#94a3b8", width: 36 }}>{Math.round(v * 100)}%</span>
     </span>
@@ -1128,6 +1248,8 @@ function FilmPanel({ view, busy, onEdit, onMusic, onAssemble }: {
   onMusic: () => void;
   onAssemble: () => void;
 }) {
+  const t = useT();
+  const { locale } = useLocale();
   const { project, edit, music, film } = view;
   const finished = project.shots.filter((s) => s.status === "done" && s.mediaUrl);
   const done = finished.length;
@@ -1144,78 +1266,83 @@ function FilmPanel({ view, busy, onEdit, onMusic, onAssemble }: {
   });
   return (
     <div style={{ ...card, display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ fontSize: 17, fontWeight: 600 }}>รับงานแบบไหน</div>
+      <div style={{ fontSize: 17, fontWeight: 600 }}>{t("รับงานแบบไหน", "How do you want it?")}</div>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
         <button style={option(delivery === "separate")} onClick={() => setDelivery("separate")}>
-          <div style={{ fontWeight: 600 }}>📁 ไฟล์แยกทีละช็อต</div>
-          <div style={{ fontSize: 12, color: "#94a3b8" }}>ฟรี · นำไปตัดต่อเองในโปรแกรมที่ถนัด</div>
+          <div style={{ fontWeight: 600 }}>{t("📁 ไฟล์แยกทีละช็อต", "📁 A separate file per shot")}</div>
+          <div style={{ fontSize: 12, color: "#94a3b8" }}>{t("ฟรี · นำไปตัดต่อเองในโปรแกรมที่ถนัด", "Free · edit them yourself in your favourite editor")}</div>
         </button>
         <button style={option(delivery === "film")} onClick={() => setDelivery("film")}>
-          <div style={{ fontWeight: 600 }}>🎞️ ตัดต่อเป็นหนังไฟล์เดียว</div>
+          <div style={{ fontWeight: 600 }}>{t("🎞️ ตัดต่อเป็นหนังไฟล์เดียว", "🎞️ Cut into one film file")}</div>
           <div style={{ fontSize: 12, color: "#94a3b8" }}>
-            {film.credits > 0 ? `${film.credits} เครดิต` : done ? "ฟรี" : "คิดตามความยาว"} · ระบบต่อช็อต ใส่เสียง เพลง ซับให้
+            {film.credits > 0 ? formatCredits(film.credits, locale) : done ? t("ฟรี", "Free") : t("คิดตามความยาว", "Priced by length")} ·{" "}
+            {t("ระบบต่อช็อต ใส่เสียง เพลง ซับให้", "We join the shots and add sound, music and subtitles")}
           </div>
         </button>
       </div>
 
       {delivery === "separate" ? (
         done === 0 ? (
-          <div style={{ fontSize: 13, color: "#94a3b8" }}>ยังไม่มีช็อตที่สร้างเสร็จ</div>
+          <div style={{ fontSize: 13, color: "#94a3b8" }}>{t("ยังไม่มีช็อตที่สร้างเสร็จ", "No shots are finished yet")}</div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {finished.map((s) => (
               <div key={s.id} style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13, flexWrap: "wrap" }}>
-                <span style={{ width: 64 }}>ช็อต {s.number}</span>
+                <span style={{ width: 64 }}>{t(`ช็อต ${s.number}`, `Shot ${s.number}`)}</span>
                 <span style={{ color: "#94a3b8", flex: 1, minWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.line || s.visual}</span>
-                <a href={s.mediaUrl!} download={`shot-${String(s.number).padStart(2, "0")}.mp4`} target="_blank" rel="noopener noreferrer" style={{ ...btn, padding: "5px 10px", textDecoration: "none" }}>⬇ ดาวน์โหลด</a>
+                <a href={s.mediaUrl!} download={`shot-${String(s.number).padStart(2, "0")}.mp4`} target="_blank" rel="noopener noreferrer" style={{ ...btn, padding: "5px 10px", textDecoration: "none" }}>{t("⬇ ดาวน์โหลด", "⬇ Download")}</a>
                 {s.lipsync?.state === "done" && s.lipsync.url && (
-                  <a href={s.lipsync.url} download={`shot-${String(s.number).padStart(2, "0")}-lipsync.mp4`} target="_blank" rel="noopener noreferrer" style={{ ...btn, padding: "5px 10px", textDecoration: "none" }}>⬇ ลิปซิงก์</a>
+                  <a href={s.lipsync.url} download={`shot-${String(s.number).padStart(2, "0")}-lipsync.mp4`} target="_blank" rel="noopener noreferrer" style={{ ...btn, padding: "5px 10px", textDecoration: "none" }}>{t("⬇ ลิปซิงก์", "⬇ Lip-sync")}</a>
                 )}
               </div>
             ))}
-            <div style={{ fontSize: 12, color: "#64748b" }}>ไฟล์คือคลิปจากโมเดลตรง ๆ (มีเสียงในคลิป ยังไม่มีซับ/เพลง)</div>
+            <div style={{ fontSize: 12, color: "#64748b" }}>
+              {t("ไฟล์คือคลิปจากโมเดลตรง ๆ (มีเสียงในคลิป ยังไม่มีซับ/เพลง)", "The files are the model's clips as they came (with their own sound, no subtitles or music yet)")}
+            </div>
           </div>
         )
       ) : (<>
-      <div style={{ fontSize: 12, color: "#64748b" }}>เปิด/ปิดได้ทุกอย่าง — ระบบนำช็อตที่เสร็จแล้วมาต่อกันตามลำดับ</div>
+      <div style={{ fontSize: 12, color: "#64748b" }}>{t("เปิด/ปิดได้ทุกอย่าง — ระบบนำช็อตที่เสร็จแล้วมาต่อกันตามลำดับ", "Switch anything on or off — the finished shots are joined in order")}</div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <Toggle on={edit.clipAudio} onChange={(v) => onEdit({ clipAudio: v })} label="เสียงจากคลิป" hint="บทพูดไทยและเสียงบรรยากาศที่โมเดลสร้างมากับภาพ" />
+          <Toggle on={edit.clipAudio} onChange={(v) => onEdit({ clipAudio: v })} label={t("เสียงจากคลิป", "Sound from the clips")} hint={t("บทพูดไทยและเสียงบรรยากาศที่โมเดลสร้างมากับภาพ", "The lines and ambient sound the model made with the picture")} />
           <Volume key={`c${edit.clipVolume}`} value={edit.clipVolume} disabled={!edit.clipAudio} onCommit={(v) => onEdit({ clipVolume: v })} />
           <Toggle
             on={musicOn}
             onChange={(v) => onEdit({ music: v ? (isMv ? "song" : "generate") : "off" })}
-            label={isMv ? "เพลงของ MV" : "ดนตรีประกอบ (สร้างจาก ACE-Step)"}
-            hint={isMv ? "ช็อตวางตามจังหวะเพลงนี้" : "ดนตรีบรรเลงตามสไตล์เรื่อง ยาวเท่าหนัง"}
+            label={isMv ? t("เพลงของ MV", "The MV's song") : t("ดนตรีประกอบ (สร้างจาก ACE-Step)", "Background music (made with ACE-Step)")}
+            hint={isMv ? t("ช็อตวางตามจังหวะเพลงนี้", "The shots follow this song's timing") : t("ดนตรีบรรเลงตามสไตล์เรื่อง ยาวเท่าหนัง", "Instrumental music in the story's style, as long as the film")}
           />
           <Volume key={`m${edit.musicVolume}`} value={edit.musicVolume} disabled={!musicOn} onCommit={(v) => onEdit({ musicVolume: v })} />
           {musicOn && edit.clipAudio && (
-            <Toggle on={edit.duck} onChange={(v) => onEdit({ duck: v })} label="ลดเพลงลงตอนมีเสียงพูด" hint="ให้บทพูดฟังชัด" />
+            <Toggle on={edit.duck} onChange={(v) => onEdit({ duck: v })} label={t("ลดเพลงลงตอนมีเสียงพูด", "Lower the music under dialogue")} hint={t("ให้บทพูดฟังชัด", "So the lines are easy to hear")} />
           )}
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <Toggle on={edit.subtitles} onChange={(v) => onEdit({ subtitles: v })} label={isMv ? "ซับเนื้อเพลง" : "ซับไทย"} hint={isMv ? "จากเนื้อเพลงของแต่ละช็อต" : "จากบทพูดของแต่ละช็อต"} />
-          <Toggle on={edit.coverFakeSubs} onChange={(v) => onEdit({ coverFakeSubs: v })} label="เบลอตัวหนังสือมั่วที่ LTX ใส่มา" hint="เฉพาะช็อตที่สร้างด้วย LTX-2.5" />
-          <Toggle on={edit.transition === "fade"} onChange={(v) => onEdit({ transition: v ? "fade" : "cut" })} label="เฟดระหว่างช็อต" hint="ปิด = ตัดชนตรง ๆ" />
-          <Toggle on={edit.titleCard} onChange={(v) => onEdit({ titleCard: v })} label="ชื่อเรื่องตอนเปิด" hint={project.title} />
+          <Toggle on={edit.subtitles} onChange={(v) => onEdit({ subtitles: v })} label={isMv ? t("ซับเนื้อเพลง", "Lyric subtitles") : t("ซับไทย", "Subtitles")}
+            hint={isMv ? t("จากเนื้อเพลงของแต่ละช็อต", "From each shot's lyrics") : t("จากบทพูดของแต่ละช็อต", "From each shot's lines")}
+          />
+          <Toggle on={edit.coverFakeSubs} onChange={(v) => onEdit({ coverFakeSubs: v })} label={t("เบลอตัวหนังสือมั่วที่ LTX ใส่มา", "Blur the garbled text LTX burns in")} hint={t("เฉพาะช็อตที่สร้างด้วย LTX-2.5", "Only shots made with LTX-2.5")} />
+          <Toggle on={edit.transition === "fade"} onChange={(v) => onEdit({ transition: v ? "fade" : "cut" })} label={t("เฟดระหว่างช็อต", "Fade between shots")} hint={t("ปิด = ตัดชนตรง ๆ", "Off = straight cuts")} />
+          <Toggle on={edit.titleCard} onChange={(v) => onEdit({ titleCard: v })} label={t("ชื่อเรื่องตอนเปิด", "Title card at the start")} hint={project.title} />
         </div>
       </div>
 
       {!isMv && musicOn && (
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: 12, borderRadius: 12, background: "rgba(2,6,23,0.4)" }}>
           {music.status === "done" && music.url && <audio src={music.url} controls preload="none" style={{ flex: 1, minWidth: 220 }} />}
-          {music.status === "rendering" && <span style={{ fontSize: 13, color: "#fbbf24" }}>กำลังสร้างดนตรีประกอบ…</span>}
-          {music.status === "failed" && <span style={{ fontSize: 13, color: "#fca5a5" }}>สร้างดนตรีไม่สำเร็จ (คืนเครดิตแล้ว)</span>}
-          {music.status === "none" && <span style={{ fontSize: 13, color: "#94a3b8" }}>ยังไม่มีดนตรีประกอบ</span>}
-          {music.stale && music.status === "done" && <span style={{ fontSize: 12, color: "#fbbf24" }}>เพลงสั้นกว่าหนังตอนนี้ (จะวนซ้ำ)</span>}
+          {music.status === "rendering" && <span style={{ fontSize: 13, color: "#fbbf24" }}>{t("กำลังสร้างดนตรีประกอบ…", "Making the background music…")}</span>}
+          {music.status === "failed" && <span style={{ fontSize: 13, color: "#fca5a5" }}>{t("สร้างดนตรีไม่สำเร็จ (คืนเครดิตแล้ว)", "Couldn't make the music (credits refunded)")}</span>}
+          {music.status === "none" && <span style={{ fontSize: 13, color: "#94a3b8" }}>{t("ยังไม่มีดนตรีประกอบ", "No background music yet")}</span>}
+          {music.stale && music.status === "done" && <span style={{ fontSize: 12, color: "#fbbf24" }}>{t("เพลงสั้นกว่าหนังตอนนี้ (จะวนซ้ำ)", "The music is shorter than the film now (it will loop)")}</span>}
           {music.status !== "rendering" && (
             <button style={btn} disabled={busy !== null || !music.available || project.shots.length === 0} onClick={onMusic}>
-              {busy === "music" ? "กำลังสั่ง…" : music.status === "none" ? "สร้างดนตรีประกอบ" : "สร้างใหม่"}
-              {music.credits !== null && ` · ${music.credits} เครดิต`}
+              {busy === "music" ? t("กำลังสั่ง…", "Ordering…") : music.status === "none" ? t("สร้างดนตรีประกอบ", "Make background music") : t("สร้างใหม่", "Remake")}
+              {music.credits !== null && ` · ${formatCredits(music.credits, locale)}`}
             </button>
           )}
-          {!music.available && <span style={{ fontSize: 12, color: "#94a3b8" }}>ตัวสร้างเพลงยังไม่เปิด</span>}
+          {!music.available && <span style={{ fontSize: 12, color: "#94a3b8" }}>{t("ตัวสร้างเพลงยังไม่เปิด", "The music maker isn't open yet")}</span>}
         </div>
       )}
 
@@ -1225,16 +1352,16 @@ function FilmPanel({ view, busy, onEdit, onMusic, onAssemble }: {
           disabled={busy !== null || film.status === "assembling" || done === 0}
           onClick={onAssemble}
         >
-          {film.status === "assembling" ? "กำลังตัดต่อ… (ไม่กี่นาที)" : film.status === "done" ? "ตัดต่อใหม่" : "🎬 ตัดต่อเป็นหนัง"}
-          {film.status !== "assembling" && film.credits > 0 && ` · ${film.credits} เครดิต`}
+          {film.status === "assembling" ? t("กำลังตัดต่อ… (ไม่กี่นาที)", "Cutting… (a few minutes)") : film.status === "done" ? t("ตัดต่อใหม่", "Re-cut") : t("🎬 ตัดต่อเป็นหนัง", "🎬 Cut into a film")}
+          {film.status !== "assembling" && film.credits > 0 && ` · ${formatCredits(film.credits, locale)}`}
         </button>
-        <span style={{ fontSize: 12, color: "#94a3b8" }}>ช็อตที่เสร็จ {done} / {project.shots.length}</span>
+        <span style={{ fontSize: 12, color: "#94a3b8" }}>{t("ช็อตที่เสร็จ", "Shots finished")} {done} / {project.shots.length}</span>
       </div>
       {film.error && film.status !== "assembling" && <div style={{ fontSize: 13, color: "#fca5a5" }}>{film.error}</div>}
       {film.status === "done" && film.url && (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <video src={film.url} controls playsInline preload="metadata" style={{ width: "100%", borderRadius: 12, background: "#000" }} />
-          <a href={film.url} download target="_blank" rel="noopener noreferrer" style={{ ...btn, alignSelf: "flex-start", textDecoration: "none" }}>⬇ ดาวน์โหลดหนัง{film.seconds ? ` (${fmtTime(film.seconds)})` : ""}</a>
+          <a href={film.url} download target="_blank" rel="noopener noreferrer" style={{ ...btn, alignSelf: "flex-start", textDecoration: "none" }}>{t("⬇ ดาวน์โหลดหนัง", "⬇ Download the film")}{film.seconds ? ` (${fmtTime(film.seconds)})` : ""}</a>
         </div>
       )}
       </>)}
@@ -1256,6 +1383,8 @@ function SingPanel({ view, busy, onSeparate, onStem, onDubAll, onEdit }: {
   onDubAll: (shots: Shot[]) => void;
   onEdit: (patch: Partial<EditSettings>) => void;
 }) {
+  const t = useT();
+  const { locale } = useLocale();
   const vocals = view.vocals!;
   const shots = view.project.shots;
   const pending = toDub(shots);
@@ -1267,28 +1396,31 @@ function SingPanel({ view, busy, onSeparate, onStem, onDubAll, onEdit }: {
   const canDub = vocals.state === "done" && vocals.dubbing && pending.length > 0 && busy === null;
   return (
     <div style={{ ...card, display: "flex", flexDirection: "column", gap: 12 }}>
-      <div style={{ fontSize: 17, fontWeight: 600 }}>🎤 ลิปซิงก์เสียงร้อง</div>
+      <div style={{ fontSize: 17, fontWeight: 600 }}>{t("🎤 ลิปซิงก์เสียงร้อง", "🎤 Vocal lip-sync")}</div>
       <div style={{ fontSize: 12, color: "#64748b" }}>
-        ให้นักร้องในคลิปขยับปากตรงกับเพลง: ระบบแยกเสียงร้องออกจากเพลง ตัดเฉพาะช่วงของแต่ละช็อต แล้วทำลิปซิงก์ทีละช็อต (คิดเครดิตตามความยาวช็อต ไม่สำเร็จคืนเครดิต) · ได้ผลดีกับช็อตใกล้–ครึ่งตัวที่เห็นหน้าชัดตลอด
+        {t(
+          "ให้นักร้องในคลิปขยับปากตรงกับเพลง: ระบบแยกเสียงร้องออกจากเพลง ตัดเฉพาะช่วงของแต่ละช็อต แล้วทำลิปซิงก์ทีละช็อต (คิดเครดิตตามความยาวช็อต ไม่สำเร็จคืนเครดิต) · ได้ผลดีกับช็อตใกล้–ครึ่งตัวที่เห็นหน้าชัดตลอด",
+          "Make the singers in the clips move their lips with the song: the vocals are separated from the song, each shot's part is cut out, and the shots are lip-synced one by one (credits by shot length, refunded if it fails) · Works best on close-up to waist-up shots where the face is clearly visible throughout"
+        )}
       </div>
 
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: 12, borderRadius: 12, background: "rgba(2,6,23,0.4)" }}>
-        <span style={{ fontSize: 13, fontWeight: 600 }}>1. เสียงร้อง</span>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>{t("1. เสียงร้อง", "1. Vocals")}</span>
         {vocals.state === "done" && vocals.url && <audio src={vocals.url} controls preload="none" style={{ flex: 1, minWidth: 220 }} />}
-        {vocals.state === "done" && <span style={{ fontSize: 12, color: "#94a3b8" }}>{vocals.source === "upload" ? "จากไฟล์ที่อัปโหลด" : "แยกจากเพลงแล้ว"}</span>}
-        {working && <span style={{ fontSize: 13, color: "#fbbf24" }}>กำลังแยกเสียงร้อง… ประมาณ 2–5 นาที ปิดหน้านี้ได้</span>}
-        {vocals.state === "none" && <span style={{ fontSize: 13, color: "#94a3b8" }}>ยังไม่มี</span>}
-        {vocals.state === "stale" && <span style={{ fontSize: 13, color: "#fbbf24" }}>เสียงร้องเป็นของเพลงเดิม — แยกใหม่</span>}
+        {vocals.state === "done" && <span style={{ fontSize: 12, color: "#94a3b8" }}>{vocals.source === "upload" ? t("จากไฟล์ที่อัปโหลด", "From your uploaded file") : t("แยกจากเพลงแล้ว", "Separated from the song")}</span>}
+        {working && <span style={{ fontSize: 13, color: "#fbbf24" }}>{t("กำลังแยกเสียงร้อง… ประมาณ 2–5 นาที ปิดหน้านี้ได้", "Separating the vocals… about 2–5 minutes; you can close this page")}</span>}
+        {vocals.state === "none" && <span style={{ fontSize: 13, color: "#94a3b8" }}>{t("ยังไม่มี", "None yet")}</span>}
+        {vocals.state === "stale" && <span style={{ fontSize: 13, color: "#fbbf24" }}>{t("เสียงร้องเป็นของเพลงเดิม — แยกใหม่", "These vocals are from the old song — separate them again")}</span>}
         {vocals.state === "failed" && vocals.error && <span style={{ fontSize: 13, color: "#fca5a5" }}>{vocals.error}</span>}
         {!working && (
           <>
             {vocals.auto && (
               <button style={btn} disabled={busy !== null} onClick={onSeparate}>
-                {busy === "separate" ? "กำลังเริ่ม…" : vocals.state === "done" ? "แยกใหม่" : "แยกเสียงร้องจากเพลง (ฟรี)"}
+                {busy === "separate" ? t("กำลังเริ่ม…", "Starting…") : vocals.state === "done" ? t("แยกใหม่", "Separate again") : t("แยกเสียงร้องจากเพลง (ฟรี)", "Separate the vocals from the song (free)")}
               </button>
             )}
             <button style={btn} disabled={busy !== null} onClick={() => stemInput.current?.click()}>
-              {busy === "stem" ? "กำลังอัปโหลด…" : "อัปโหลดไฟล์เสียงร้องแยก"}
+              {busy === "stem" ? t("กำลังอัปโหลด…", "Uploading…") : t("อัปโหลดไฟล์เสียงร้องแยก", "Upload a separate vocal file")}
             </button>
             <input
               ref={stemInput}
@@ -1305,22 +1437,23 @@ function SingPanel({ view, busy, onSeparate, onStem, onDubAll, onEdit }: {
         )}
       </div>
       {!vocals.auto && vocals.state !== "done" && (
-        <div style={{ fontSize: 12, color: "#64748b" }}>อัปโหลดแทร็กเสียงร้องล้วน (vocal stem) ของเพลงนี้ ยาวเท่าเพลง</div>
+        <div style={{ fontSize: 12, color: "#64748b" }}>{t("อัปโหลดแทร็กเสียงร้องล้วน (vocal stem) ของเพลงนี้ ยาวเท่าเพลง", "Upload this song's vocals-only track (vocal stem), the same length as the song")}</div>
       )}
 
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-        <span style={{ fontSize: 13, fontWeight: 600 }}>2. ลิปซิงก์</span>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>{t("2. ลิปซิงก์", "2. Lip-sync")}</span>
         <button style={{ ...primary, opacity: canDub ? 1 : 0.5 }} disabled={!canDub} onClick={() => onDubAll(pending)}>
-          {busy === "lipsync" ? "กำลังสั่ง…" : `ลิปซิงก์ช็อตที่ร้อง ${pending.length} ช็อต`}
-          {pending.length > 0 && ` · ${cost.toLocaleString()} เครดิต`}
+          {busy === "lipsync" ? t("กำลังสั่ง…", "Ordering…") : t(`ลิปซิงก์ช็อตที่ร้อง ${pending.length} ช็อต`, `Lip-sync ${plural(pending.length, "singing shot")}`)}
+          {pending.length > 0 && ` · ${formatCredits(cost, locale)}`}
         </button>
         <span style={{ fontSize: 12, color: "#94a3b8" }}>
-          เสร็จ {dubbed} ช็อต{flying > 0 ? ` · กำลังทำ ${flying}` : ""} · เลือกทำ/ไม่ทำทีละช็อตได้ที่การ์ดช็อต
+          {t(`เสร็จ ${dubbed} ช็อต`, `${plural(dubbed, "shot")} done`)}
+          {flying > 0 ? t(` · กำลังทำ ${flying}`, ` · ${flying} in progress`) : ""} · {t("เลือกทำ/ไม่ทำทีละช็อตได้ที่การ์ดช็อต", "Turn it on or off per shot on each shot's card")}
         </span>
       </div>
-      {!vocals.dubbing && <div style={{ fontSize: 12, color: "#94a3b8" }}>ตัวลิปซิงก์ยังไม่เปิดให้ใช้</div>}
+      {!vocals.dubbing && <div style={{ fontSize: 12, color: "#94a3b8" }}>{t("ตัวลิปซิงก์ยังไม่เปิดให้ใช้", "Lip-sync isn't open yet")}</div>}
 
-      <Toggle on={view.edit.lipsync} onChange={(v) => onEdit({ lipsync: v })} label="ใช้คลิปลิปซิงก์ตอนตัดต่อหนัง" hint="ปิด = ตัดต่อจากคลิปเดิมทั้งหมด" />
+      <Toggle on={view.edit.lipsync} onChange={(v) => onEdit({ lipsync: v })} label={t("ใช้คลิปลิปซิงก์ตอนตัดต่อหนัง", "Use the lip-sync clips in the cut")} hint={t("ปิด = ตัดต่อจากคลิปเดิมทั้งหมด", "Off = cut from the original clips only")} />
     </div>
   );
 }
@@ -1329,6 +1462,8 @@ function SingPanel({ view, busy, onSeparate, onStem, onDubAll, onEdit }: {
 
 function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
   const { toast } = useToast();
+  const t = useT();
+  const { locale } = useLocale();
   const [view, setView] = useState<ProjectView | null>(null);
   const [missing, setMissing] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -1351,7 +1486,8 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
     return () => {
       active = false;
     };
-  }, [id]);
+    // The server writes labels and messages in the visitor's language: fetch again when it changes.
+  }, [id, locale]);
 
   // Poll only while something renders; stop when the page goes away.
   const rendering = view?.project.shots.some((s) => s.status === "rendering") ?? false;
@@ -1371,11 +1507,12 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
     lastPlanState.current = planState;
     if (was !== "planning" || !view?.planning) return;
     if (planState === "done") {
-      toast("success", `วางช็อตแล้ว ${view.planning.shots ?? view.project.shots.length} ช็อต`, view.planning.rules ? "ใช้ตัววางช็อตพื้นฐาน (ผู้ช่วย AI ไม่ว่าง) แก้ไขแต่ละช็อตได้ตามต้องการ" : undefined);
+      const n = view.planning.shots ?? view.project.shots.length;
+      toast("success", t(`วางช็อตแล้ว ${n} ช็อต`, `Planned ${plural(n, "shot")}`), view.planning.rules ? t(RULES_PLANNER) : undefined);
     } else if (planState === "failed") {
-      toast("error", view.planning.error ?? "วางช็อตไม่สำเร็จ");
+      toast("error", view.planning.error ?? t("วางช็อตไม่สำเร็จ", "Couldn't plan the shots"));
     }
-  }, [planState, view, toast]);
+  }, [planState, view, toast, t]);
 
   useEffect(() => {
     if (!working) return;
@@ -1393,11 +1530,11 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
   if (missing) {
     return (
       <div style={card}>
-        ไม่พบโปรเจกต์นี้ <button style={btn} onClick={onBack}>กลับ</button>
+        {t("ไม่พบโปรเจกต์นี้", "Project not found")} <button style={btn} onClick={onBack}>{t("กลับ", "Back")}</button>
       </div>
     );
   }
-  if (!view) return <div style={{ ...card, color: "#94a3b8" }}>กำลังโหลด…</div>;
+  if (!view) return <div style={{ ...card, color: "#94a3b8" }}>{t("กำลังโหลด…", "Loading…")}</div>;
   const { project, models } = view;
   const planning = view.planning?.state === "planning";
 
@@ -1407,7 +1544,7 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
     const r = await getJson<T>(url, init);
     setBusy(null);
     if (!r.ok) {
-      toast("error", r.error);
+      toast("error", t(r.error));
       return null;
     }
     return r.data;
@@ -1416,10 +1553,19 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
   const plan = async () => {
     const done = project.shots.filter((s) => s.status === "done").length;
     if (project.shots.length > 0) {
-      const structure = project.scenes.length ? ` องก์และฉากเดิมจะถูกวางใหม่ด้วย (คลังอ้างอิงยังอยู่ครบ)` : "";
+      const structure = project.scenes.length
+        ? t(` องก์และฉากเดิมจะถูกวางใหม่ด้วย (คลังอ้างอิงยังอยู่ครบ)`, " The acts and scenes are re-planned too (the reference library stays as it is).")
+        : "";
+      const shotsNow = plural(project.shots.length, "shot");
       const warn = done > 0
-        ? `ให้ AI วางเรื่องใหม่ทั้งหมด? ช็อตเดิม ${project.shots.length} ช็อตจะถูกแทนที่ (คลิปที่สร้างแล้ว ${done} คลิปยังอยู่ในแกลเลอรี)${structure}`
-        : `ให้ AI วางเรื่องใหม่ทั้งหมด? ช็อตเดิม ${project.shots.length} ช็อตและที่แก้ไว้จะถูกแทนที่${structure}`;
+        ? t(
+            `ให้ AI วางเรื่องใหม่ทั้งหมด? ช็อตเดิม ${project.shots.length} ช็อตจะถูกแทนที่ (คลิปที่สร้างแล้ว ${done} คลิปยังอยู่ในแกลเลอรี)${structure}`,
+            `Have AI re-plan the whole story? The current ${shotsNow} will be replaced (clips already made stay in your gallery).${structure}`
+          )
+        : t(
+            `ให้ AI วางเรื่องใหม่ทั้งหมด? ช็อตเดิม ${project.shots.length} ช็อตและที่แก้ไว้จะถูกแทนที่${structure}`,
+            `Have AI re-plan the whole story? The current ${shotsNow} and your edits will be replaced.${structure}`
+          );
       if (!confirm(warn)) return;
     }
     const data = await act<ProjectView & { planner: "ai" | "rules" }>("plan", `/api/story/${id}/plan`, { method: "POST" });
@@ -1427,17 +1573,25 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
     setView(data);
     if (data.planning?.state === "planning") {
       lastPlanState.current = "planning";
-      return toast("success", project.mode === "mv" ? "AI กำลังวางช็อตตามเพลง" : "AI กำลังแบ่งองก์ ฉาก และวางช็อต", "ใช้เวลาราว 1–3 นาที จะขึ้นเองเมื่อเสร็จ");
+      return toast(
+        "success",
+        project.mode === "mv" ? t("AI กำลังวางช็อตตามเพลง", "AI is laying out shots along the song") : t("AI กำลังแบ่งองก์ ฉาก และวางช็อต", "AI is splitting the story into acts, scenes and shots"),
+        t("ใช้เวลาราว 1–3 นาที จะขึ้นเองเมื่อเสร็จ", "About 1–3 minutes; it appears by itself when done")
+      );
     }
-    toast("success", `วางช็อตแล้ว ${data.project.shots.length} ช็อต`, data.planner === "rules" ? "ใช้ตัววางช็อตพื้นฐาน (ผู้ช่วย AI ไม่ว่าง) แก้ไขแต่ละช็อตได้ตามต้องการ" : undefined);
+    const n = data.project.shots.length;
+    toast("success", t(`วางช็อตแล้ว ${n} ช็อต`, `Planned ${plural(n, "shot")}`), data.planner === "rules" ? t(RULES_PLANNER) : undefined);
   };
 
   const render = async (shots: Shot[]) => {
     const total = shots.reduce((n, s) => n + (s.credits ?? 0), 0);
     const again = shots.filter((s) => s.status === "done").length;
     const msg = shots.length === 1
-      ? `สร้างช็อต ${shots[0].number}? ใช้ ${total} เครดิต${again ? " (สร้างใหม่ทับคลิปเดิม คลิปเดิมยังอยู่ในแกลเลอรี)" : ""}`
-      : `สร้าง ${shots.length} ช็อต? ใช้รวม ${total.toLocaleString()} เครดิต`;
+      ? t(
+          `สร้างช็อต ${shots[0].number}? ใช้ ${formatNumber(total, locale)} เครดิต${again ? " (สร้างใหม่ทับคลิปเดิม คลิปเดิมยังอยู่ในแกลเลอรี)" : ""}`,
+          `Make shot ${shots[0].number}? Uses ${formatCredits(total, locale)}${again ? " (replaces the current clip; the old one stays in your gallery)" : ""}`
+        )
+      : t(`สร้าง ${shots.length} ช็อต? ใช้รวม ${formatNumber(total, locale)} เครดิต`, `Make ${shots.length} shots? Uses ${formatCredits(total, locale)} in total`);
     if (!confirm(msg)) return;
     const data = await act<ProjectView & { ordered: number; stoppedBy: string | null }>(
       "render",
@@ -1446,34 +1600,56 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
     );
     if (!data) return;
     setView(data);
-    if (data.stoppedBy) toast("error", `สั่งได้ ${data.ordered} ช็อต แล้วหยุด`, data.stoppedBy);
-    else toast("success", `สั่งสร้าง ${data.ordered} ช็อตแล้ว`, "เครื่องแรกอาจใช้เวลาเปิดเครื่องสักครู่ ปิดหน้านี้ได้ ผลงานจะอยู่ในแกลเลอรี");
+    if (data.stoppedBy) toast("error", t(`สั่งได้ ${data.ordered} ช็อต แล้วหยุด`, `Ordered ${plural(data.ordered, "shot")}, then stopped`), data.stoppedBy);
+    else {
+      toast(
+        "success",
+        t(`สั่งสร้าง ${data.ordered} ช็อตแล้ว`, `Ordered ${plural(data.ordered, "shot")}`),
+        t("เครื่องแรกอาจใช้เวลาเปิดเครื่องสักครู่ ปิดหน้านี้ได้ ผลงานจะอยู่ในแกลเลอรี", "The first machine may take a moment to start. You can close this page — the results go to your gallery.")
+      );
+    }
   };
 
   // Re-plan some scenes only — a scene, or every scene of an act.
-  const planScope = async (sceneIds: number[], what: string) => {
+  const planScope = async (sceneIds: number[], what: Msg) => {
     const shots = project.shots.filter((s) => s.sceneId !== null && sceneIds.includes(s.sceneId));
     const done = shots.filter((s) => s.status === "done").length;
-    if (!confirm(`ให้ AI วางช็อต${what}ใหม่? ช็อตเดิม ${shots.length} ช็อตจะถูกแทนที่${done ? ` (คลิปที่สร้างแล้ว ${done} คลิปยังอยู่ในแกลเลอรี)` : ""} ส่วนอื่นของเรื่องไม่เปลี่ยน`)) return;
+    const ask = t(
+      `ให้ AI วางช็อต${what.th}ใหม่? ช็อตเดิม ${shots.length} ช็อตจะถูกแทนที่${done ? ` (คลิปที่สร้างแล้ว ${done} คลิปยังอยู่ในแกลเลอรี)` : ""} ส่วนอื่นของเรื่องไม่เปลี่ยน`,
+      `Have AI re-plan ${what.en}? Its ${plural(shots.length, "shot")} will be replaced${done ? " (clips already made stay in your gallery)" : ""}. The rest of the story stays as it is.`
+    );
+    if (!confirm(ask)) return;
     const data = await act<ProjectView>("plan", `/api/story/${id}/plan`, sendJson("POST", { sceneIds }));
     if (!data) return;
     setView(data);
     lastPlanState.current = "planning";
-    toast("success", `AI กำลังวางช็อต${what}ใหม่`, "ใช้เวลาราว 1 นาที");
+    toast("success", t(`AI กำลังวางช็อต${what.th}ใหม่`, `AI is re-planning ${what.en}`), t("ใช้เวลาราว 1 นาที", "About a minute"));
   };
 
   const keyframes = async (shots: Shot[]) => {
     const model = view.pictures.models.find((m) => m.id === view.pictures.keyframeModelId);
-    if (!model) return toast("error", "ยังไม่มีโมเดลภาพที่รับภาพอ้างอิงเปิดให้ใช้");
+    if (!model) return toast("error", t("ยังไม่มีโมเดลภาพที่รับภาพอ้างอิงเปิดให้ใช้", "No image model that takes reference pictures is open yet"));
     const todo = shots.filter((s) => s.keyframe.state !== "rendering");
     if (todo.length === 0) return;
     const again = todo.filter((s) => s.keyframe.url).length;
-    if (!confirm(`สร้างภาพเปิด ${todo.length} ช็อตด้วย ${model.name}? ใช้รวม ${(model.credits * todo.length).toLocaleString()} เครดิต${again ? ` (${again} ช็อตมีภาพเดิมอยู่ จะถูกแทนที่)` : ""}`)) return;
+    const ask = t(
+      `สร้างภาพเปิด ${todo.length} ช็อตด้วย ${model.name}? ใช้รวม ${formatNumber(model.credits * todo.length, locale)} เครดิต${again ? ` (${again} ช็อตมีภาพเดิมอยู่ จะถูกแทนที่)` : ""}`,
+      `Make opening pictures for ${plural(todo.length, "shot")} with ${model.name}? Uses ${formatCredits(model.credits * todo.length, locale)} in total${
+        again ? ` (${plural(again, "shot")} already ${again === 1 ? "has a picture" : "have pictures"}, which will be replaced)` : ""
+      }`
+    );
+    if (!confirm(ask)) return;
     const data = await act<ProjectView & { ordered: number; stoppedBy: string | null }>("keyframes", `/api/story/${id}/keyframes`, sendJson("POST", { shotIds: todo.map((s) => s.id) }));
     if (!data) return;
     setView(data);
-    if (data.stoppedBy) toast("error", `สั่งได้ ${data.ordered} ภาพ แล้วหยุด`, data.stoppedBy);
-    else toast("success", `สั่งสร้างภาพเปิด ${data.ordered} ภาพแล้ว`, "ภาพจะขึ้นเองเมื่อเสร็จ ตรวจภาพก่อนสร้างคลิป");
+    if (data.stoppedBy) toast("error", t(`สั่งได้ ${data.ordered} ภาพ แล้วหยุด`, `Ordered ${plural(data.ordered, "picture")}, then stopped`), data.stoppedBy);
+    else {
+      toast(
+        "success",
+        t(`สั่งสร้างภาพเปิด ${data.ordered} ภาพแล้ว`, `Ordered ${plural(data.ordered, "opening picture")}`),
+        t("ภาพจะขึ้นเองเมื่อเสร็จ ตรวจภาพก่อนสร้างคลิป", "They appear by themselves when done. Check them before making the clips.")
+      );
+    }
   };
 
   const keyframeUse = async (shot: Shot, use: boolean) => {
@@ -1510,7 +1686,7 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
   };
 
   const deleteShot = async (shot: Shot) => {
-    if (!confirm(`ลบช็อต ${shot.number}?`)) return;
+    if (!confirm(t(`ลบช็อต ${shot.number}?`, `Delete shot ${shot.number}?`))) return;
     const data = await act<ProjectView>(`del-${shot.id}`, `/api/story/${id}/shots/${shot.id}`, { method: "DELETE" });
     if (data) setView(data);
   };
@@ -1532,7 +1708,7 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
     if (!data) return;
     setView(data);
     setBrief(null);
-    toast("success", "บันทึกแล้ว");
+    toast("success", t("บันทึกแล้ว", "Saved"));
   };
 
   // A switch takes effect at once on screen and is saved; a refusal puts it back.
@@ -1543,65 +1719,84 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
     if (r.ok) setView(r.data);
     else {
       setView(before);
-      toast("error", r.error);
+      toast("error", t(r.error));
     }
   };
 
   const orderMusic = async () => {
-    const what = view.music.status === "none" ? "สร้างดนตรีประกอบ" : "สร้างดนตรีประกอบใหม่ (เพลงเดิมยังอยู่ในแกลเลอรี)";
-    if (!confirm(`${what}? ใช้ ${view.music.credits ?? "?"} เครดิต`)) return;
+    const what = view.music.status === "none"
+      ? t("สร้างดนตรีประกอบ", "Make background music")
+      : t("สร้างดนตรีประกอบใหม่ (เพลงเดิมยังอยู่ในแกลเลอรี)", "Make new background music (the old track stays in your gallery)");
+    const price = view.music.credits === null ? t("? เครดิต", "? credits") : formatCredits(view.music.credits, locale);
+    if (!confirm(t(`${what}? ใช้ ${price}`, `${what}? Uses ${price}`))) return;
     const data = await act<ProjectView>("music", `/api/story/${id}/music`, { method: "POST" });
     if (data) {
       setView(data);
-      toast("success", "สั่งสร้างดนตรีแล้ว", "เสร็จแล้วจะเล่นได้ในส่วนตัดต่อ");
+      toast("success", t("สั่งสร้างดนตรีแล้ว", "Music ordered"), t("เสร็จแล้วจะเล่นได้ในส่วนตัดต่อ", "Once it's done it plays in the cut section"));
     }
   };
 
   const assemble = async () => {
     const done = project.shots.filter((s) => s.status === "done").length;
-    if (done < project.shots.length && !confirm(`ยังสร้างไม่ครบ — ตัดต่อเฉพาะ ${done} จาก ${project.shots.length} ช็อตที่เสร็จแล้ว?`)) return;
+    const partial = t(
+      `ยังสร้างไม่ครบ — ตัดต่อเฉพาะ ${done} จาก ${project.shots.length} ช็อตที่เสร็จแล้ว?`,
+      `Not every shot is made yet — cut only the ${done} of ${project.shots.length} shots that are finished?`
+    );
+    if (done < project.shots.length && !confirm(partial)) return;
     if (view.edit.music === "generate" && view.music.status !== "done") {
-      return toast("error", "ดนตรีประกอบยังไม่พร้อม", "สร้างดนตรีก่อน หรือปิดดนตรีประกอบ");
+      return toast("error", t("ดนตรีประกอบยังไม่พร้อม", "The background music isn't ready"), t("สร้างดนตรีก่อน หรือปิดดนตรีประกอบ", "Make the music first, or switch background music off"));
     }
-    const cost = view.film.credits > 0 ? `ใช้ ${view.film.credits} เครดิต (ถ้าตัดต่อไม่สำเร็จคืนเครดิตอัตโนมัติ)` : "ไม่เสียเครดิต";
-    if (!confirm(`${view.film.status === "done" ? "ตัดต่อใหม่" : "ตัดต่อเป็นหนัง"}? ${cost}`)) return;
+    const cost = view.film.credits > 0
+      ? t(`ใช้ ${view.film.credits} เครดิต (ถ้าตัดต่อไม่สำเร็จคืนเครดิตอัตโนมัติ)`, `Uses ${formatCredits(view.film.credits, locale)} (refunded automatically if the cut fails)`)
+      : t("ไม่เสียเครดิต", "No credits charged");
+    if (!confirm(`${view.film.status === "done" ? t("ตัดต่อใหม่", "Re-cut") : t("ตัดต่อเป็นหนัง", "Cut into a film")}? ${cost}`)) return;
     const data = await act<ProjectView>("assemble", `/api/story/${id}/assemble`, { method: "POST" });
     if (data) setView(data);
   };
 
   const separate = async () => {
-    if (view.vocals?.state === "done" && !confirm("แยกเสียงร้องใหม่? เสียงร้องเดิมจะถูกแทนที่ (ฟรี)")) return;
+    if (view.vocals?.state === "done" && !confirm(t("แยกเสียงร้องใหม่? เสียงร้องเดิมจะถูกแทนที่ (ฟรี)", "Separate the vocals again? The current vocals will be replaced (free)."))) return;
     const data = await act<ProjectView>("separate", `/api/story/${id}/vocals`, sendJson("POST", { action: "separate" }));
     if (data) {
       setView(data);
-      toast("success", "เริ่มแยกเสียงร้องแล้ว", "ประมาณ 2–5 นาที ปิดหน้านี้ได้");
+      toast("success", t("เริ่มแยกเสียงร้องแล้ว", "Vocal separation started"), t("ประมาณ 2–5 นาที ปิดหน้านี้ได้", "About 2–5 minutes; you can close this page"));
     }
   };
 
   const uploadStem = async (file: File) => {
     if (busy) return;
-    if (view.vocals?.state === "done" && !confirm("ใช้ไฟล์นี้แทนเสียงร้องเดิม?")) return;
+    if (view.vocals?.state === "done" && !confirm(t("ใช้ไฟล์นี้แทนเสียงร้องเดิม?", "Use this file instead of the current vocals?"))) return;
     setBusy("stem");
     const up = await uploadFile(file, "audio");
     setBusy(null);
-    if (!up.ok) return toast("error", up.error);
+    if (!up.ok) return toast("error", t(up.error));
     const data = await act<ProjectView>("stem", `/api/story/${id}/vocals`, sendJson("POST", { uploadUrl: up.data.url }));
     if (data) {
       setView(data);
-      toast("success", "ใช้ไฟล์เสียงร้องนี้แล้ว");
+      toast("success", t("ใช้ไฟล์เสียงร้องนี้แล้ว", "Now using this vocal file"));
     }
   };
 
   const lipsync = async (shots: Shot[]) => {
     const total = shots.reduce((n, s) => n + (s.lipsync?.credits ?? 0), 0);
     const msg = shots.length === 1
-      ? `ลิปซิงก์ช็อต ${shots[0].number}? ใช้ ${total} เครดิต (ถ้าช่วงนี้ไม่มีเสียงร้องจะไม่ทำและไม่เสียเครดิต)`
-      : `ลิปซิงก์ ${shots.length} ช็อต? ใช้รวม ${total.toLocaleString()} เครดิต (ช่วงที่ไม่มีเสียงร้องจะข้ามและไม่เสียเครดิต)`;
+      ? t(
+          `ลิปซิงก์ช็อต ${shots[0].number}? ใช้ ${formatNumber(total, locale)} เครดิต (ถ้าช่วงนี้ไม่มีเสียงร้องจะไม่ทำและไม่เสียเครดิต)`,
+          `Lip-sync shot ${shots[0].number}? Uses ${formatCredits(total, locale)} (if this part has no singing, it's skipped and nothing is charged)`
+        )
+      : t(
+          `ลิปซิงก์ ${shots.length} ช็อต? ใช้รวม ${formatNumber(total, locale)} เครดิต (ช่วงที่ไม่มีเสียงร้องจะข้ามและไม่เสียเครดิต)`,
+          `Lip-sync ${shots.length} shots? Uses ${formatCredits(total, locale)} in total (parts with no singing are skipped and not charged)`
+        );
     if (!confirm(msg)) return;
     const data = await act<ProjectView & { ordered: number }>("lipsync", `/api/story/${id}/lipsync`, sendJson("POST", { shotIds: shots.map((s) => s.id) }));
     if (data) {
       setView(data);
-      toast("success", `กำลังสั่งลิปซิงก์ ${data.ordered} ช็อต`, "เครื่องแรกอาจใช้เวลาเปิดเครื่องสักครู่ ปิดหน้านี้ได้");
+      toast(
+        "success",
+        t(`กำลังสั่งลิปซิงก์ ${data.ordered} ช็อต`, `Ordering lip-sync for ${plural(data.ordered, "shot")}`),
+        t("เครื่องแรกอาจใช้เวลาเปิดเครื่องสักครู่ ปิดหน้านี้ได้", "The first machine may take a moment to start. You can close this page.")
+      );
     }
   };
 
@@ -1611,7 +1806,11 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
   };
 
   const remove = async () => {
-    if (!confirm(`ลบโปรเจกต์ "${project.title}"? สตอรีบอร์ดจะหายถาวร (คลิปที่สร้างแล้วยังอยู่ในแกลเลอรี)`)) return;
+    const ask = t(
+      `ลบโปรเจกต์ "${project.title}"? สตอรีบอร์ดจะหายถาวร (คลิปที่สร้างแล้วยังอยู่ในแกลเลอรี)`,
+      `Delete the project "${project.title}"? The storyboard will be gone for good (clips already made stay in your gallery).`
+    );
+    if (!confirm(ask)) return;
     const data = await act("delete", `/api/story/${id}`, { method: "DELETE" });
     if (data) onBack();
   };
@@ -1673,9 +1872,9 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
             </div>
           );
         })}
-        {loose.length > 0 && project.acts.length > 0 && <div style={{ fontSize: 13, color: "#94a3b8" }}>ฉากที่ไม่อยู่ในองก์ใด</div>}
+        {loose.length > 0 && project.acts.length > 0 && <div style={{ fontSize: 13, color: "#94a3b8" }}>{t("ฉากที่ไม่อยู่ในองก์ใด", "Scenes in no act")}</div>}
         {loose.map(sceneBlock)}
-        {stray.length > 0 && <div style={{ fontSize: 13, color: "#94a3b8" }}>ช็อตที่ยังไม่อยู่ในฉากใด</div>}
+        {stray.length > 0 && <div style={{ fontSize: 13, color: "#94a3b8" }}>{t("ช็อตที่ยังไม่อยู่ในฉากใด", "Shots not in a scene yet")}</div>}
         {stray.map(shotCard)}
       </>
     );
@@ -1685,33 +1884,39 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
   const allCredits = renderable.reduce((n, s) => n + (s.credits ?? 0), 0);
   const doneCount = project.shots.filter((s) => s.status === "done").length;
   const totalSeconds = project.shots.reduce((n, s) => n + s.durationSec, 0);
+  const aspectLabel = ASPECTS[project.aspect]?.label;
+  const styleLabel = project.mode === "mv" ? MOODS[project.mood ?? ""]?.label : LOOKS[project.look]?.label;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <div style={{ ...card, display: "flex", flexDirection: "column", gap: 14 }}>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <button style={btn} onClick={onBack}>← โปรเจกต์ทั้งหมด</button>
+          <button style={btn} onClick={onBack}>{t("← โปรเจกต์ทั้งหมด", "← All projects")}</button>
           <div style={{ fontSize: 20, fontWeight: 600, flex: 1, minWidth: 200 }}>
             {project.mode === "mv" ? "🎵" : "🎬"} {project.title}
           </div>
-          <button style={{ ...btn, color: "#fca5a5" }} disabled={busy !== null} onClick={remove}>ลบโปรเจกต์</button>
+          <button style={{ ...btn, color: "#fca5a5" }} disabled={busy !== null} onClick={remove}>{t("ลบโปรเจกต์", "Delete project")}</button>
         </div>
         <div style={{ fontSize: 13, color: "#94a3b8" }}>
-          {ASPECTS[project.aspect]?.label} · {project.mode === "mv" ? MOODS[project.mood ?? ""]?.label : LOOKS[project.look]?.label}
-          {project.songSeconds ? ` · เพลงยาว ${fmtTime(project.songSeconds)}` : ""}
-          {project.shots.length > 0 && ` · ${project.shots.length} ช็อต รวม ${fmtTime(totalSeconds)} · เสร็จ ${doneCount}`}
+          {aspectLabel && t(aspectLabel)} · {styleLabel && t(styleLabel)}
+          {project.songSeconds ? t(` · เพลงยาว ${fmtTime(project.songSeconds)}`, ` · song ${fmtTime(project.songSeconds)}`) : ""}
+          {project.shots.length > 0 &&
+            t(
+              ` · ${project.shots.length} ช็อต รวม ${fmtTime(totalSeconds)} · เสร็จ ${doneCount}`,
+              ` · ${plural(project.shots.length, "shot")}, ${fmtTime(totalSeconds)} in all · ${doneCount} done`
+            )}
         </div>
         {project.songUrl && <audio src={project.songUrl} controls preload="none" style={{ width: "100%" }} />}
 
         <details>
-          <summary style={{ cursor: "pointer", fontSize: 13, color: "#d8b4fe" }}>แก้{project.mode === "mv" ? "เนื้อเพลง" : "เรื่องย่อ"}</summary>
+          <summary style={{ cursor: "pointer", fontSize: 13, color: "#d8b4fe" }}>{project.mode === "mv" ? t("แก้เนื้อเพลง", "Edit the lyrics") : t("แก้เรื่องย่อ", "Edit the story")}</summary>
           <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 12 }}>
             <textarea style={{ ...field, minHeight: 140, resize: "vertical" }} maxLength={LIMITS.brief} value={brief ?? project.brief} onChange={(e) => setBrief(e.target.value)} />
-            <div style={{ fontSize: 12, color: "#94a3b8" }}>ตัวละคร ของ และสถานที่ แก้ได้ใน “คลังอ้างอิง” ด้านล่าง</div>
+            <div style={{ fontSize: 12, color: "#94a3b8" }}>{t("ตัวละคร ของ และสถานที่ แก้ได้ใน “คลังอ้างอิง” ด้านล่าง", "Characters, props and places are edited in the “Reference library” below")}</div>
             {brief !== null && (
               <div style={{ display: "flex", gap: 8 }}>
-                <button style={primary} disabled={busy !== null} onClick={saveSettings}>บันทึก</button>
-                <button style={btn} onClick={() => setBrief(null)}>ยกเลิก</button>
+                <button style={primary} disabled={busy !== null} onClick={saveSettings}>{t("บันทึก", "Save")}</button>
+                <button style={btn} onClick={() => setBrief(null)}>{t("ยกเลิก", "Cancel")}</button>
               </div>
             )}
           </div>
@@ -1719,32 +1924,46 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
 
         {project.mode === "film" && (
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-            <span style={{ fontSize: 13, color: "#94a3b8" }}>ความยาวที่ให้ AI วาง:</span>
+            <span style={{ fontSize: 13, color: "#94a3b8" }}>{t("ความยาวที่ให้ AI วาง:", "Length for AI to plan:")}</span>
             {Object.entries(FILM_LENGTHS).map(([key, l]) => (
-              <button key={key} style={chip((project.filmLength ?? "auto") === key)} disabled={busy !== null || planning} onClick={() => setFilmLength(key)}>{l.label}</button>
+              <button key={key} style={chip((project.filmLength ?? "auto") === key)} disabled={busy !== null || planning} onClick={() => setFilmLength(key)}>{t(l.label)}</button>
             ))}
           </div>
         )}
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button style={{ ...primary, opacity: busy || rendering || planning ? 0.6 : 1 }} disabled={busy !== null || rendering || planning} onClick={plan} title={rendering ? "รอช็อตที่กำลังสร้างให้เสร็จก่อน" : undefined}>
-            {planning ? "AI กำลังวาง… (1–3 นาที)" : busy === "plan" ? "กำลังส่งให้ AI…" : project.shots.length ? "✨ ให้ AI วางเรื่องใหม่ทั้งหมด" : project.mode === "mv" ? "✨ ให้ AI แตกช็อต" : "✨ ให้ AI แบ่งองก์ ฉาก และช็อต"}
+          <button style={{ ...primary, opacity: busy || rendering || planning ? 0.6 : 1 }} disabled={busy !== null || rendering || planning} onClick={plan} title={rendering ? t("รอช็อตที่กำลังสร้างให้เสร็จก่อน", "Wait for the shots being made to finish first") : undefined}>
+            {planning
+              ? t("AI กำลังวาง… (1–3 นาที)", "AI is planning… (1–3 minutes)")
+              : busy === "plan"
+                ? t("กำลังส่งให้ AI…", "Sending to AI…")
+                : project.shots.length
+                  ? t("✨ ให้ AI วางเรื่องใหม่ทั้งหมด", "✨ Have AI re-plan the whole story")
+                  : project.mode === "mv" ? t("✨ ให้ AI แตกช็อต", "✨ Have AI break it into shots") : t("✨ ให้ AI แบ่งองก์ ฉาก และช็อต", "✨ Have AI split it into acts, scenes and shots")}
           </button>
           {renderable.length > 0 && (
             <button style={btn} disabled={busy !== null} onClick={() => render(renderable)}>
-              {busy === "render" ? "กำลังสั่ง…" : `สร้างช็อตที่เหลือ ${renderable.length} ช็อต · ${allCredits.toLocaleString()} เครดิต`}
+              {busy === "render"
+                ? t("กำลังสั่ง…", "Ordering…")
+                : t(
+                    `สร้างช็อตที่เหลือ ${renderable.length} ช็อต · ${formatNumber(allCredits, locale)} เครดิต`,
+                    `Make the remaining ${plural(renderable.length, "shot")} · ${formatCredits(allCredits, locale)}`
+                  )}
             </button>
           )}
-          <button style={btn} disabled={busy !== null} onClick={addShot}>+ เพิ่มช็อตเอง</button>
+          <button style={btn} disabled={busy !== null} onClick={addShot}>{t("+ เพิ่มช็อตเอง", "+ Add a shot yourself")}</button>
           {project.mode === "film" && (
             <button style={btn} disabled={busy !== null} onClick={() => structureAction(project.acts.length ? { action: "add-act" } : { action: "add-scene" })}>
-              {project.acts.length ? "+ เพิ่มองก์" : "+ เพิ่มฉาก"}
+              {project.acts.length ? t("+ เพิ่มองก์", "+ Add act") : t("+ เพิ่มฉาก", "+ Add scene")}
             </button>
           )}
-          <button style={btn} disabled={busy !== null} onClick={() => load()}>รีเฟรช</button>
+          <button style={btn} disabled={busy !== null} onClick={() => load()}>{t("รีเฟรช", "Refresh")}</button>
         </div>
         <div style={{ fontSize: 12, color: "#64748b" }}>
-          แต่ละช็อตคิดเครดิตตอนกดสร้าง ถ้าสร้างไม่สำเร็จจะคืนเครดิตอัตโนมัติ · ช็อตที่เสร็จแล้วนำไปตัดต่อเป็นหนังไฟล์เดียวได้ด้านล่าง
+          {t(
+            "แต่ละช็อตคิดเครดิตตอนกดสร้าง ถ้าสร้างไม่สำเร็จจะคืนเครดิตอัตโนมัติ · ช็อตที่เสร็จแล้วนำไปตัดต่อเป็นหนังไฟล์เดียวได้ด้านล่าง",
+            "Each shot is charged when you make it, and refunded automatically if it fails · Finished shots can be cut into one film file below"
+          )}
         </div>
       </div>
 
@@ -1760,7 +1979,15 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
 
       {project.shots.length === 0 && project.scenes.length === 0 ? (
         <div style={{ ...card, color: "#94a3b8", textAlign: "center" }}>
-          ยังไม่มีช็อต — กด “✨ ให้ AI {project.mode === "mv" ? "แตกช็อต" : "แบ่งองก์ ฉาก และช็อต"}” ให้ระบบวางให้จาก{project.mode === "mv" ? "เพลงและเนื้อเพลง" : "เรื่องย่อ"} แล้วค่อยแก้ทีละองก์ ทีละฉาก ทีละช็อต
+          {project.mode === "mv"
+            ? t(
+                "ยังไม่มีช็อต — กด “✨ ให้ AI แตกช็อต” ให้ระบบวางให้จากเพลงและเนื้อเพลง แล้วค่อยแก้ทีละองก์ ทีละฉาก ทีละช็อต",
+                "No shots yet — press “✨ Have AI break it into shots” to lay them out from the song and lyrics, then edit act by act, scene by scene, shot by shot"
+              )
+            : t(
+                "ยังไม่มีช็อต — กด “✨ ให้ AI แบ่งองก์ ฉาก และช็อต” ให้ระบบวางให้จากเรื่องย่อ แล้วค่อยแก้ทีละองก์ ทีละฉาก ทีละช็อต",
+                "No shots yet — press “✨ Have AI split it into acts, scenes and shots” to lay them out from your story, then edit act by act, scene by scene, shot by shot"
+              )}
         </div>
       ) : (
         storyboard()
@@ -1782,6 +2009,8 @@ export default function MoviePage() {
 
 function MovieStudio() {
   const { data: session } = useSession();
+  const t = useT();
+  const { locale } = useLocale();
   const router = useRouter();
   const search = useSearchParams();
   const openId = Number(search.get("p")) || null;
@@ -1820,28 +2049,31 @@ function MovieStudio() {
     <>
       <PageHero
         image="/showcase/hero-reel.jpg"
-        eyebrow="· สตูดิโอหนัง & MV"
-        title="เล่าเรื่องเป็น"
-        emphasis="หนังทั้งเรื่อง"
+        eyebrow={t("· สตูดิโอหนัง & MV", "· Film & MV studio")}
+        title={t("เล่าเรื่องเป็น", "Tell your story as")}
+        emphasis={t("หนังทั้งเรื่อง", "a whole film")}
         hue={300}
         size="slim"
-        sub="เขียนเรื่องหรือใส่เพลง → AI แบ่งเป็นองก์ ฉาก และช็อตพร้อมมุมกล้องและบทพูดไทย → ตัวละคร ของ และสถานที่จากคลังอ้างอิงเหมือนเดิมทุกช็อต → แก้และสร้างใหม่ได้ทีละองก์ ทีละฉาก ทีละช็อต"
+        sub={t(
+          "เขียนเรื่องหรือใส่เพลง → AI แบ่งเป็นองก์ ฉาก และช็อตพร้อมมุมกล้องและบทพูดไทย → ตัวละคร ของ และสถานที่จากคลังอ้างอิงเหมือนเดิมทุกช็อต → แก้และสร้างใหม่ได้ทีละองก์ ทีละฉาก ทีละช็อต",
+          "Write a story or bring a song → AI splits it into acts, scenes and shots with camera angles and dialogue → characters, props and places from your reference library stay the same in every shot → edit and remake act by act, scene by scene, shot by shot"
+        )}
       />
       <div style={{ padding: "0 16px 80px", maxWidth: 1000, margin: "0 auto", color: "#f1f5f9", display: "flex", flexDirection: "column", gap: 20 }}>
         {openId ? (
           <ProjectEditor key={openId} id={openId} onBack={() => open(null)} />
         ) : creating ? (
           <>
-            <button style={{ ...btn, alignSelf: "flex-start" }} onClick={() => setCreating(false)}>← กลับ</button>
+            <button style={{ ...btn, alignSelf: "flex-start" }} onClick={() => setCreating(false)}>{t("← กลับ", "← Back")}</button>
             <NewProject onCreated={(id) => open(id)} />
           </>
         ) : (
           <>
-            <button style={{ ...primary, alignSelf: "flex-start" }} onClick={() => setCreating(true)}>+ โปรเจกต์ใหม่</button>
+            <button style={{ ...primary, alignSelf: "flex-start" }} onClick={() => setCreating(true)}>{t("+ โปรเจกต์ใหม่", "+ New project")}</button>
             {projects === null ? (
-              <div style={{ color: "#94a3b8" }}>กำลังโหลด…</div>
+              <div style={{ color: "#94a3b8" }}>{t("กำลังโหลด…", "Loading…")}</div>
             ) : projects.length === 0 ? (
-              <div style={{ ...card, color: "#94a3b8" }}>ยังไม่มีโปรเจกต์ — เริ่มจากเรื่องสั้น ๆ หรือเพลงที่ชอบได้เลย</div>
+              <div style={{ ...card, color: "#94a3b8" }}>{t("ยังไม่มีโปรเจกต์ — เริ่มจากเรื่องสั้น ๆ หรือเพลงที่ชอบได้เลย", "No projects yet — start with a short story or a song you love")}</div>
             ) : (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 14 }}>
                 {projects.map((p) => (
@@ -1855,7 +2087,7 @@ function MovieStudio() {
                     <div style={{ padding: 12 }}>
                       <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.title}</div>
                       <div style={{ fontSize: 12, color: "#94a3b8" }}>
-                        {p.mode === "mv" ? "MV" : "หนัง"} · {p.shots} ช็อต · {new Date(p.updatedAt).toLocaleDateString("th-TH")}
+                        {p.mode === "mv" ? "MV" : t("หนัง", "Film")} · {t(`${p.shots} ช็อต`, plural(p.shots, "shot"))} · {formatDate(p.updatedAt, locale)}
                       </div>
                     </div>
                   </button>
