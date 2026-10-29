@@ -3,6 +3,7 @@ import type { ProviderGenerateParams, ProviderResponse, ProviderSlug } from '@/t
 import { getKieEntry, type KieEntry, type KieOrder, type KieTask } from './kie-catalog';
 import { composeMusicTags, sanitizeMusicParams } from '@/lib/music-style';
 import { sanitizeSunoParams, sunoStemLabels, sunoVocalGender } from './kie-suno';
+import { sunoTrackLyrics } from '@/lib/output-lyrics';
 
 /**
  * KIE.ai — one key for most vendors' image, video, music and lip-sync models.
@@ -274,6 +275,8 @@ export class KieProvider extends BaseProvider {
           resultUrls: urls,
           // Which stem each file is, read from KIE's names before R2 renames them.
           resultLabels: stems ? sunoStemLabels(parseJson(data.resultJson), urls) : undefined,
+          // What each song sings — Suno's own words when the lyrics box was left empty.
+          resultLyrics: stems ? undefined : sunoTrackLyrics([parseJson(data.resultJson), data.response], urls),
           jobId: taskId,
           processingMs: Date.now() - started,
           costUsd: Number.isFinite(consumed) && consumed > 0 ? round6(consumed * USD_PER_KIE_CREDIT) : undefined,

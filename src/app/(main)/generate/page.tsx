@@ -44,6 +44,7 @@ import {
 import { downloadGeneration, extensionOf, saveFavorite } from "@/lib/client-actions";
 import { nextQueueProgress, shownFraction, type QueueProgress, type QueueReading } from "@/lib/queue-progress";
 import { AUDIO_EXT, AudioCover, AudioResult } from "@/components/xdreamer/audio";
+import { SongLyrics } from "@/components/xdreamer/song-lyrics";
 import { AudioTracks, type AudioTrack } from "@/components/xdreamer/audio-tracks";
 import { loadAudio } from "@/components/xdreamer/audio-wave";
 import { AudioTrimmer, coversWhole, cutAudio, initialTrim, trimKey, type TrimRange } from "@/components/xdreamer/audio-trim";
@@ -453,6 +454,8 @@ interface GenerationResult {
   resultUrls?: string[];
   /** A name per file (a stem split's "เสียงร้อง", "กลอง" …). */
   resultLabels?: string[];
+  /** The words each file sings, same order ('' = none). */
+  resultLyrics?: string[];
   thumbnailUrl?: string;
   creditsUsed: number;
   processingMs?: number;
@@ -487,6 +490,7 @@ interface HistoryItem {
   resultUrl?: string;
   resultUrls?: unknown;
   resultLabels?: string[] | null;
+  resultLyrics?: string[] | null;
   thumbnailUrl?: string;
   model?: { name?: string; subcategory?: string | null };
   createdAt: string;
@@ -558,6 +562,7 @@ interface GenerationStatus {
   resultUrl?: string;
   resultUrls?: string[] | string | null;
   resultLabels?: string[] | null;
+  resultLyrics?: string[] | null;
   thumbnailUrl?: string;
   creditsUsed: number;
   processingMs?: number;
@@ -2420,6 +2425,7 @@ export default function GeneratePage() {
             ? (Array.isArray(data.resultUrls) ? data.resultUrls : [data.resultUrl as string])
             : [data.resultUrl as string],
           resultLabels: Array.isArray(data.resultLabels) ? data.resultLabels : undefined,
+          resultLyrics: Array.isArray(data.resultLyrics) ? data.resultLyrics : undefined,
           thumbnailUrl: data.thumbnailUrl,
           creditsUsed: data.creditsUsed, processingMs: data.processingMs,
           expiresAt: data.expiresAt, daysLeft: data.daysLeft,
@@ -2852,6 +2858,7 @@ export default function GeneratePage() {
         ? g.resultUrls.filter((u): u is string => typeof u === "string")
         : g.resultUrl ? [g.resultUrl] : undefined,
       resultLabels: kind === "audio" && Array.isArray(g.resultLabels) ? g.resultLabels : undefined,
+      resultLyrics: kind === "audio" && Array.isArray(g.resultLyrics) ? g.resultLyrics : undefined,
       thumbnailUrl: g.thumbnailUrl,
       creditsUsed: 0,
     });
@@ -4615,6 +4622,11 @@ export default function GeneratePage() {
                       <img src={result.resultUrl} alt={prompt} style={{ width: "100%", borderRadius: 12, maxHeight: 600, objectFit: "contain", margin: "0 auto", display: "block" }} />
                     )}
                   </div>
+                )}
+
+                {/* A song's words: what Suno sang, or the lyrics the customer typed. */}
+                {resultIsAudio && result?.resultLyrics && result.resultLyrics.length > 0 && (
+                  <SongLyrics key={`lyrics-${result.id}`} lyrics={result.resultLyrics} style={{ marginBottom: 14 }} />
                 )}
 
                 {/* Action toolbar */}

@@ -82,6 +82,8 @@ export interface GenerationResult {
   resultUrls?: string[];
   /** A name for each of `resultUrls` (stems), when the order names them. */
   resultLabels?: string[];
+  /** The words each of `resultUrls` sings, when the order is a song with lyrics. */
+  resultLyrics?: string[];
   thumbnailUrl?: string;
   processingMs?: number;
   creditsUsed: number;
@@ -117,6 +119,8 @@ export interface ProviderResponse {
   resultUrls?: string[];
   /** A name for each of `resultUrls`, same order (a stem split's "เสียงร้อง", "กลอง" …). */
   resultLabels?: string[];
+  /** The words each of `resultUrls` sings, same order (Suno's tracks); '' = none. */
+  resultLyrics?: string[];
   error?: string;
   costUsd?: number;
   processingMs?: number;

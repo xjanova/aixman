@@ -7,6 +7,7 @@ import { AccountPoolManager } from './account-pool';
 import { ModelReadiness, TUNING_MESSAGE } from './model-readiness';
 import { persistAssetSafe, isStorageConfigured, keyFromPublicUrl } from '@/lib/storage/r2';
 import { referenceCaps } from '@/lib/reference-caps';
+import { songLyrics } from '@/lib/output-lyrics';
 import type { GenerationRequest, GenerationResult, ProviderResponse, ProviderSlug } from '@/types';
 import { fitFrame } from '@/lib/gpu/frame';
 import { getCatalogEntry, isAdminOnlyPreset, isCommunityOnlyModel, isRetiredCatalogKey, orderNeedsProviderAccount } from '@/lib/gpu/catalog';
@@ -782,6 +783,11 @@ export class GenerationService {
         result.success && result.resultLabels && result.resultLabels.length === result.resultUrls?.length
           ? result.resultLabels
           : null;
+      // A song's words (output-lyrics.ts), kept the same way, only when they line up.
+      const lyrics =
+        result.success && result.resultLyrics && result.resultLyrics.length === result.resultUrls?.length
+          ? result.resultLyrics
+          : null;
 
       // 7. Record result — what the vendor says the order cost when it says
       // (KIE's creditsConsumed), else the row's list price.
@@ -816,12 +822,13 @@ export class GenerationService {
             processingMs: result.processingMs,
             completedAt: new Date(),
             ...routed,
-            ...(labels
+            ...(labels || lyrics
               ? {
                   params: {
                     ...(request.params ?? {}),
                     ...(route ? { route } : {}),
-                    outputLabels: labels,
+                    ...(labels ? { outputLabels: labels } : {}),
+                    ...(lyrics ? { outputLyrics: lyrics } : {}),
                   } as unknown as Prisma.InputJsonValue,
                 }
               : {}),
@@ -852,6 +859,9 @@ export class GenerationService {
           resultUrl: finalUrl,
           resultUrls: finalUrls,
           resultLabels: labels ?? undefined,
+          resultLyrics:
+            songLyrics({ ...(request.params ?? {}), ...(labels ? { outputLabels: labels } : {}), ...(lyrics ? { outputLyrics: lyrics } : {}) }, finalUrls) ??
+            undefined,
           thumbnailUrl: finalUrl,
           processingMs: result.processingMs,
           creditsUsed: requiredCredits,

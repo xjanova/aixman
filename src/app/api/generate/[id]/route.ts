@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { outputLabels } from '@/lib/output-labels';
+import { songLyrics } from '@/lib/output-lyrics';
 import { getCurrentUserId } from '@/lib/auth';
 import prisma from '@/lib/db';
 import { GpuQueue } from '@/lib/services/gpu-queue';
@@ -167,6 +168,8 @@ export async function GET(
     resultUrls: generation.resultUrls,
     // A stem split's file names ("เสียงร้อง", "กลอง" …), same order as resultUrls.
     resultLabels: outputLabels(generation.params, generation.resultUrls),
+    // A song's words, same order as resultUrls (output-lyrics.ts).
+    resultLyrics: generation.type === 'audio' ? songLyrics(generation.params, generation.resultUrls) : null,
     thumbnailUrl: generation.thumbnailUrl,
     creditsUsed: generation.creditsUsed,
     processingMs: generation.processingMs,

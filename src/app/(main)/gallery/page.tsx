@@ -19,6 +19,7 @@ import { useToast } from "@/components/ui/toast-provider";
 import { EmptyState } from "@/components/xdreamer/page-hero";
 import { downloadGeneration, extensionOf, saveFavorite } from "@/lib/client-actions";
 import { AUDIO_EXT, AudioCover } from "@/components/xdreamer/audio";
+import { SongLyrics } from "@/components/xdreamer/song-lyrics";
 import { AquaChordHandoff } from "@/components/xdreamer/aquachord";
 import { ModelViewer } from "@/components/xdreamer/model-viewer";
 import { loginHref } from "@/lib/safe-callback";
@@ -42,6 +43,8 @@ interface Generation {
   status: string;
   prompt: string;
   resultUrl: string;
+  /** A song's words, one per delivered track (output-lyrics.ts). */
+  resultLyrics?: string[] | null;
   thumbnailUrl: string;
   creditsUsed: number;
   /** Credits handed back on a failed generation. */
@@ -499,6 +502,10 @@ export default function GalleryPage() {
             </div>
 
             <p style={{ fontSize: 14, color: "rgba(203,213,225,0.85)", lineHeight: 1.55, margin: "0 0 12px" }}>{selectedItem.prompt}</p>
+
+            {selectedItem.type === "audio" && selectedItem.resultLyrics && selectedItem.resultLyrics.length > 0 && (
+              <SongLyrics key={`lyrics-${selectedItem.id}`} lyrics={selectedItem.resultLyrics} style={{ marginBottom: 14 }} />
+            )}
 
             <div style={{ display: "flex", flexWrap: "wrap", gap: 14, fontSize: 11, color: "#64748b", marginBottom: 18 }}>
               <span>✦ {formatCredits(selectedItem.creditsUsed, locale)}</span>

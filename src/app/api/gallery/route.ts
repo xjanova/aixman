@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { outputLabels } from '@/lib/output-labels';
+import { songLyrics } from '@/lib/output-lyrics';
 import { getCurrentUserId } from '@/lib/auth';
 import prisma from '@/lib/db';
 import { daysUntil } from '@/lib/services/retention';
@@ -120,6 +121,7 @@ export async function GET(request: NextRequest) {
       resultUrl: g.resultUrl,
       resultUrls: g.resultUrls,
       resultLabels: outputLabels(g.params, g.resultUrls),
+      resultLyrics: g.type === 'audio' ? songLyrics(g.params, g.resultUrls) : null,
       thumbnailUrl: g.thumbnailUrl,
       // The picture a 3D model was made from, so the 3D studio can show it
       // while the model is still rendering. Only a stored URL — a still sent
