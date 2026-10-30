@@ -126,6 +126,11 @@ against the free `/api/v1/chat/credit` → encrypted pool row, daily quota 0 →
   and `build()` → `{model, input}`. GenerationService refuses a `kie` row with no
   entry (it would reach KIE as an unknown model after charging). Retire a model by
   moving its key to `RETIRED_KIE_KEYS`; "ซิงก์โมเดล/ราคา" switches its row off.
+- **A new entry gets its row at the next boot**, with no button
+  (`instrumentation.ts` → `addMissingKieRows`, kie-rows.ts): `tuning`, priced at
+  the default markup. That path only inserts, so nothing about an existing row
+  changes until an admin syncs. Don't put `syncKieModels` on a boot or a deploy:
+  it rewrites every row's price.
 - **Price = a credits table**, `defaultParams.kie` (tier × sold length, per voice
   second, per extra picture), written by the sync at twice cost at the cheapest
   package rate. `/api/models` sends `defaultParams` to anyone — **never put USD in
