@@ -1,8 +1,8 @@
 import prisma from '@/lib/db';
-import { Prisma } from '@/generated/prisma/client';
 import { pricingBasis } from '@/lib/services/gpu-stats';
-import { KIE_CATALOG, RETIRED_KIE_KEYS, kiePriceTable } from './kie-catalog';
-import { DEFAULT_KIE_BASIS, kieQuote, pickKieTier, type KieBasis } from './kie-pricing';
+import { KIE_CATALOG, RETIRED_KIE_KEYS } from './kie-catalog';
+import { DEFAULT_KIE_BASIS, type KieBasis } from './kie-pricing';
+import { addMissingKieRows, backfillKieRows, kieNewRowValues, kieRowValues } from './kie-rows';
 
 /**
  * Write the KIE catalogue into `ai_models` — the provider row first, then one
@@ -13,10 +13,10 @@ import { DEFAULT_KIE_BASIS, kieQuote, pickKieTier, type KieBasis } from './kie-p
  * model is featured, its place in the list and its readiness are the admin's
  * after the first run — except that `openNow` puts every row still `tuning`
  * on sale, for an owner who does not want to test thirty models one by one.
+ *
+ * What runs without an admin is `startKieRowBackfill`, which only adds rows
+ * (kie-rows.ts).
  */
-
-/** KIE rows sort before every other provider's (whose rows sit at 0 and up). */
-const SORT_BASE = -1000;
 
 export const KIE_PROVIDER = {
   slug: 'kie',
@@ -88,43 +88,10 @@ export async function syncKieModels(opts: { openNow?: boolean; markup?: number }
   let created = 0;
   let updated = 0;
   for (const [index, entry] of KIE_CATALOG.entries()) {
-    const table = kiePriceTable(entry, basis);
-    const tier = pickKieTier(table, undefined);
-    // The row's own price: the default tier at the shortest length (per
-    // second for a voice- or clip-length model, per thousand characters for
-    // speech) — what the list shows "from".
-    const creditsPerUnit = kieQuote(table, entry.perChars ? { chars: entry.perChars } : {});
-    const costPerUnit = Math.round(entry.usd(tier.id, entry.perChars ?? entry.durations?.[0] ?? 1) * 1e6) / 1e6;
-    // An admin's own keys in defaultParams (e.g. a lower maxReferenceImages) stay.
-    const prior = existing.get(entry.key);
-    const kept = prior && typeof prior === 'object' && !Array.isArray(prior) ? { ...(prior as Record<string, unknown>) } : {};
-    delete kept.kie;
-    const defaultParams = { ...kept, kie: table } as unknown as Prisma.InputJsonValue;
-    const shared = {
-      name: entry.name,
-      description: entry.description,
-      category: entry.category,
-      subcategory: entry.subcategory,
-      unitType: entry.perSecond || entry.durations?.length ? 'per_second' : entry.category === 'image' || entry.category === 'edit' ? 'per_image' : 'per_request',
-      costPerUnit,
-      creditsPerUnit,
-      maxWidth: entry.category === 'image' || entry.category === 'edit' ? 4096 : null,
-      maxHeight: entry.category === 'image' || entry.category === 'edit' ? 4096 : null,
-      maxDuration: entry.maxDuration ?? null,
-      defaultParams,
-      isActive: true,
-    };
+    const shared = kieRowValues(entry, basis, existing.get(entry.key));
     await prisma.aiModel.upsert({
       where: { providerId_modelId: { providerId: provider.id, modelId: entry.key } },
-      create: {
-        providerId: provider.id,
-        modelId: entry.key,
-        ...shared,
-        isFeatured: entry.featured === true,
-        sortOrder: SORT_BASE + index * 10,
-        readiness: opts.openNow ? 'ready' : 'tuning',
-        readinessNote: opts.openNow ? null : 'ยังไม่เคยสร้างงานสำเร็จบนระบบนี้ — รอทดสอบ',
-      },
+      create: { providerId: provider.id, ...shared, ...kieNewRowValues(entry, index, opts.openNow === true) },
       update: shared,
     });
     if (existing.has(entry.key)) updated += 1;
@@ -151,4 +118,9 @@ export async function syncKieModels(opts: { openNow?: boolean; markup?: number }
     : 0;
 
   return { providerId: provider.id, created, updated, retired, opened, basis };
+}
+
+/** Add the rows a deploy's new catalogue entries need (started by instrumentation.ts). */
+export function startKieRowBackfill(): void {
+  backfillKieRows(() => addMissingKieRows(prisma, kieBasis));
 }
