@@ -357,7 +357,9 @@ function localizeOrderError(message: string, t: Translate): string {
   if (/Model not available/i.test(message)) return t("โมเดลนี้ปิดให้บริการชั่วคราว", "This model is temporarily unavailable.");
   if (/temporarily unavailable/i.test(message)) return t("บริการไม่ว่างชั่วคราว ลองใหม่ในอีกสักครู่", "The service is busy right now. Try again in a moment.");
   if (/Prompt is required/i.test(message)) return t("กรุณาพิมพ์ prompt ก่อน", "Please type a prompt first.");
-  if (/Generation failed/i.test(message)) return t("สร้างไม่สำเร็จ ลองใหม่อีกครั้ง", "Generation failed. Please try again.");
+  // Only the server's bare sentence. A failed order's own reason passes through:
+  // matching it anywhere hid every vendor's reason behind "try again".
+  if (/^Generation failed\. Please try again\.$/i.test(message)) return t("สร้างไม่สำเร็จ ลองใหม่อีกครั้ง", "Generation failed. Please try again.");
   return message;
 }
 

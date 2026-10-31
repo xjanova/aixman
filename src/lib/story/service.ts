@@ -34,6 +34,7 @@ import { ASSEMBLE_PRICE_DEFAULTS, musicPrompt, musicSeconds } from './edit';
 import type { Prisma } from '@/generated/prisma/client';
 import type { Locale, Msg } from '@/lib/i18n/locale';
 import { UserMessageError, packMsg, registerStoredMsgs } from '@/lib/i18n/messages';
+import { publicErrorPair } from '@/lib/public-provider';
 
 /**
  * Movie and MV projects: storage, planning, and ordering shots.
@@ -179,7 +180,8 @@ export async function syncShots(project: StoryProjectFull): Promise<boolean> {
     } else if (gen.status === 'failed' || gen.status === 'cancelled') {
       const r = await prisma.aiStoryShot.updateMany({
         where: { id: shot.id, status: 'rendering', visualGenerationId: gen.id },
-        data: { status: 'failed', errorMessage: packMsg(shotFailed(gen.creditsRefunded > 0)) },
+        // The order's own reason; the plain fact only when it left none (a cancelled order).
+        data: { status: 'failed', errorMessage: packMsg(publicErrorPair(gen.errorMessage) ?? shotFailed(gen.creditsRefunded > 0)) },
       });
       changed ||= r.count > 0;
     }

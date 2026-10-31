@@ -9,6 +9,7 @@ import {
   BUSY_MESSAGE,
   publicDefaultParams,
   publicErrorMessage,
+  publicErrorPair,
   publicModelDescription,
   publicModelId,
   publicModelName,
@@ -89,9 +90,44 @@ test('a failed order reads without the vendor, its ids or its account trouble', 
   assert.equal(publicErrorMessage('KIE 402 insufficient credits: top up'), BUSY_MESSAGE);
   assert.equal(publicErrorMessage('KIE 429 rate limit'), BUSY_MESSAGE);
   assert.equal(publicErrorMessage('No available API accounts for this provider. Please try again later.'), BUSY_MESSAGE);
-  assert.equal(publicErrorMessage('KIE generation failed (prompt flagged by safety system)'), 'generation failed (prompt flagged by safety system)');
-  assert.equal(publicErrorMessage('KIE task 7f3a9c1e2b timed out'), 'task timed out');
-  assert.equal(publicErrorMessage('Replicate error: see https://replicate.com/p/abc for details'), 'error: see for details');
+  assert.equal(publicErrorMessage('Replicate error: see https://replicate.com/p/abc for details'), 'สร้างงานไม่สำเร็จ: see for details — คืนเครดิตให้แล้ว');
   assert.equal(publicErrorMessage('ไม่พบใบหน้าในคลิป — คืนเครดิตแล้ว'), 'ไม่พบใบหน้าในคลิป — คืนเครดิตแล้ว');
   assert.equal(publicErrorMessage('KIE'), 'สร้างงานไม่สำเร็จ — คืนเครดิตให้แล้ว');
+  assert.equal(publicErrorMessage('KIE generation failed'), 'สร้างงานไม่สำเร็จ — คืนเครดิตให้แล้ว');
+});
+
+test('a vendor failure tells the customer why, in their language, what to do next', () => {
+  const stored = 'KIE generation failed (413: This audio matches an existing recording in our catalog.)';
+  assert.match(publicErrorMessage(stored, 'th')!, /ตรงกับเพลงที่มีอยู่แล้ว.*เพลงที่คุณแต่งหรืออัดเอง/);
+  assert.match(publicErrorMessage(stored, 'en')!, /matches an existing recording.*wrote or recorded yourself/);
+
+  // Both wordings production has stored for a copyright stop; the audit word alone must not read as a safety stop.
+  assert.match(
+    publicErrorMessage('KIE generation failed (400: Content security audit did not pass. The output audio may be related to copyright restrictions.)')!,
+    /ลิขสิทธิ์/
+  );
+  assert.match(publicErrorMessage('KIE generation failed (prompt flagged by safety system)')!, /ไม่ผ่านการตรวจของระบบ/);
+  assert.match(publicErrorMessage('KIE task 7f3a9c1e2b timed out')!, /นานเกินกำหนด/);
+  assert.match(publicErrorMessage('KIE returned no output')!, /ไม่ส่งผลลัพธ์กลับมา/);
+
+  // A reason not in the list still reaches the customer, as the vendor wrote it.
+  assert.equal(publicErrorMessage('KIE generation failed (500: Voice model overloaded.)'), 'สร้างงานไม่สำเร็จ: Voice model overloaded — คืนเครดิตให้แล้ว');
+  assert.equal(publicErrorMessage('KIE error 422: Bad seed', 'en'), 'Creating failed: Bad seed — your credits have been refunded.');
+  assert.equal(publicErrorMessage('KIE generation failed (Stem (vocals) missing)'), 'สร้างงานไม่สำเร็จ: Stem (vocals) missing — คืนเครดิตให้แล้ว');
+  assert.ok(!/kie/i.test(publicErrorMessage('KIE error 422: kie.ai refused it')!));
+  assert.ok(publicErrorMessage(`KIE generation failed (${'x'.repeat(5000)})`)!.length < 300);
+});
+
+test('our own messages are not mistaken for a vendor failure', () => {
+  // Packed: its English half says "timed out" and must stay ours.
+  const packed = 'งานหมดเวลา\n⟦en⟧ Your order timed out';
+  assert.equal(publicErrorMessage(packed, 'th'), 'งานหมดเวลา');
+  assert.equal(publicErrorMessage(packed, 'en'), 'Your order timed out');
+});
+
+test('a row that stores what the customer reads gets both languages, or nothing to store', () => {
+  assert.equal(publicErrorPair(null), null);
+  const pair = publicErrorPair('KIE generation failed (Voice model overloaded)');
+  assert.equal(pair?.th, 'สร้างงานไม่สำเร็จ: Voice model overloaded — คืนเครดิตให้แล้ว');
+  assert.equal(pair?.en, 'Creating failed: Voice model overloaded — your credits have been refunded.');
 });

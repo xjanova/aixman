@@ -919,6 +919,16 @@ XDREAMER, ≥ 3.0.189) link there. It restates facts from `src/lib/llm/*`,
 `src/lib/mcp/server.ts` and `src/app/api/mcp/route.ts` (forwarded fields,
 aspect ratios, rate limits, error codes): change those, change the page.
 
+## A failed order always says why (owner's rule, 2026-10-31)
+
+Every failure a customer sees carries its reason, never a bare "try again".
+`publicErrorMessage` (`public-provider.ts`) is the one door: a vendor's text
+becomes a reason in their language (`VENDOR_REASONS`, read from the words, since
+codes differ per model) or its own words framed with the refund, without the
+vendor's name, ids or URLs; rented-GPU failures come through `userFacingError`.
+Do not match a failure's text loosely on the page: `/Generation failed/` in
+`localizeOrderError` hid every KIE reason behind "ลองใหม่อีกครั้ง" until this rule.
+
 ## Prompt assistant (✨ in the studio)
 
 `/api/studio/enhance-prompt` → `services/prompt-enhancer.ts`. Order: MiniMax's

@@ -15,6 +15,7 @@ import { LIPSYNC_MODEL_KEY, SILENT_MEAN_DB, meanVolumeDb, minusOneFor, vocalsSta
 import { StoryError, customerMsg, type StoryProjectFull } from './service';
 import type { Msg } from '@/lib/i18n/locale';
 import { packMsg, registerStoredMsgs } from '@/lib/i18n/messages';
+import { publicErrorPair } from '@/lib/public-provider';
 
 /**
  * MV lip-sync, server side: the song's lead vocal (separated here or
@@ -400,8 +401,11 @@ export async function syncDubs(project: StoryProjectFull): Promise<boolean> {
       // LatentSync stops when a frame has no face it can find (input-fault.ts):
       // worth saying, or the customer orders the same shot again. (The Thai in
       // the pattern matches the generation's own stored reason.)
-      const reason = /ใบหน้า|Face not detected/i.test(gen.errorMessage ?? '') ? NO_FACE : DUB_FAILED;
-      const message: Msg = gen.creditsRefunded > 0 ? { th: `${reason.th} ${REFUNDED.th}`, en: `${reason.en} ${REFUNDED.en}` } : reason;
+      const noFace = /ใบหน้า|Face not detected/i.test(gen.errorMessage ?? '');
+      const reason = noFace ? NO_FACE : DUB_FAILED;
+      const stated: Msg = gen.creditsRefunded > 0 ? { th: `${reason.th} ${REFUNDED.th}`, en: `${reason.en} ${REFUNDED.en}` } : reason;
+      // Any other failure says its own reason; the plain fact only when it left none.
+      const message = (!noFace && publicErrorPair(gen.errorMessage)) || stated;
       const r = await prisma.aiStoryShot.updateMany({
         where: { id: shot.id, lipsyncStatus: 'rendering', lipsyncGenerationId: gen.id },
         data: { lipsyncStatus: 'failed', lipsyncError: packMsg(message) },
