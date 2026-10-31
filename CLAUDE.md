@@ -935,11 +935,26 @@ Do not match a failure's text loosely on the page: `/Generation failed/` in
 own **H3-Context-IR API** for self-hosted H3 when a MiniMax key is in the pool
 (H3-Base was trained on its output format and has no substitute) → a chat model
 from the account pool (`auto`: DeepSeek → OpenAI → MiniMax → BytePlus; Pollinations only
-when chosen — it is a third party) → model-aware rules, so it never fails. Free
-to customers, limited per hour (`prompt_enhancer_hourly_limit`); settings and a
-test button live on the same admin page. Thinking models get
+when chosen — it is a third party) → model-aware rules for pictures, video and
+H3. Free to customers, limited per hour (`prompt_enhancer_hourly_limit`);
+settings and a test button live on the same admin page. Thinking models get
 `reasoning_effort: low` — Pollinations' free tier caps output at 1,500 tokens
 and spent all of it reasoning over the H3 brief (empty answer) without it.
+
+When no model answers, the customer is told why (`enhanceFailure` in
+`services/chat-failure.ts`, the classifier `lyricsFailure` also uses; provider
+text stays in the log as `[enhance]`). Rules that rewrote the prompt answer 200
+with `reason`; music, edit and lip-sync have no rules and answer 503 with it.
+
+One press holds `ENHANCE_LIMITS` (12,000 tokens, 60 s per engine) inside
+`ENHANCE_DEADLINE_MS` (90 s for Context-IR and every engine together), short of
+Cloudflare's 100 s. `deepseek-flash` reasons first: at 2,500 tokens, Thai at the
+4,000-character limit got no answer 3 times in 5 and a spoken H3 script came
+back cut, while everyday prompts stayed under 1,000 (measured 2026-10-31).
+`wholeAnswer` refuses a cut answer. **`callChat`'s clock must cover the body:**
+DeepSeek sends headers in under half a second and thinks in the body, so a
+clock stopped by `fetch` resolving never fires. A `chatViaPool` caller with a
+long answer sets its own `timeoutMs`.
 
 The ✨ on the lyrics box (Suno tools except Replace Section) is the same route
 and the same hourly allowance with `tab: 'lyrics'`, through `chatViaPool` and

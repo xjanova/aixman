@@ -351,7 +351,7 @@ export async function planProject(
       slots = songTimeline(input.brief, input.songSeconds);
       if (slots.length === 0) throw new StoryError({ th: 'เพลงสั้นเกินไปหรือไม่มีความยาว — เลือกเพลงใหม่', en: 'The song is too short or has no length. Pick another song.' }, 422);
       const { system, user } = mvPlannerMessages(input, slots);
-      const reply = await chatViaPool(system, user, { maxTokens: 8000, maxChars: 60_000 });
+      const reply = await chatViaPool(system, user, { maxTokens: 8000, maxChars: 60_000, timeoutMs: 120_000 });
       planned = parseMvPlan(reply.text, input, slots);
       engine = reply.engine;
     } else {
@@ -371,7 +371,7 @@ export async function planProject(
         fallbackReason = [fallbackReason, long.fallbackReason].filter(Boolean).join(' | ') || undefined;
       } else {
         const { system, user } = filmPlannerMessages(input);
-        const reply = await chatViaPool(system, user, { maxTokens: 5000, maxChars: 40_000 });
+        const reply = await chatViaPool(system, user, { maxTokens: 5000, maxChars: 40_000, timeoutMs: 120_000 });
         planned = parseFilmPlan(reply.text, input);
         if (planned && input.targetSeconds) planned.shots = fitToTarget(planned.shots, input.targetSeconds);
         engine = reply.engine;

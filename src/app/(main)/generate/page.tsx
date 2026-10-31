@@ -3031,7 +3031,7 @@ export default function GeneratePage() {
         ? { th: "เรียบเรียงด้วย H3-Context-IR ของ MiniMax", en: "Rewritten with MiniMax's H3-Context-IR" }
         : out.source === "llm"
           ? { th: `เรียบเรียงด้วย AI${out.engine ? ` · ${out.engine}` : ""}`, en: `Rewritten by AI${out.engine ? ` · ${out.engine}` : ""}` }
-          : { th: "ปรับแบบพื้นฐาน (ผู้ช่วย AI ยังไม่ได้เชื่อมต่อ)", en: "Basic rewrite (the AI assistant isn't connected yet)" }
+          : { th: `ปรับแบบพื้นฐาน เพราะ${out.reason ?? "AI ไม่พร้อม"}`, en: `Basic rewrite: ${out.reason ?? "the AI isn't available"}` }
     );
   };
 

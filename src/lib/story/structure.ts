@@ -156,6 +156,6 @@ export async function planStructuredFilm(input: StructureInput): Promise<Structu
 /** An MV scene's shots again, on the slots its shots hold now. Null when the model gave nothing usable. */
 export async function planMvSlots(input: StructureInput, slots: TimelineSlot[]): Promise<ShotDraft[] | null> {
   const { system, user } = mvPlannerMessages(input, slots);
-  const reply = await chatViaPool(system, user, { maxTokens: 8000, maxChars: 60_000 });
+  const reply = await chatViaPool(system, user, { maxTokens: 8000, maxChars: 60_000, timeoutMs: 120_000 });
   return parseMvPlan(reply.text, input, slots)?.shots ?? null;
 }

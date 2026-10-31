@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { getCurrentUserId, isAdmin } from '@/lib/auth';
 import { rateLimit } from '@/lib/rate-limit';
+import { enhanceFailure } from '@/lib/services/chat-failure';
 import { chatViaPool, enhancePrompt, getEnhancerConfig, type EnhanceKind } from '@/lib/services/prompt-enhancer';
 import { LYRICS_BRIEF, isDraft, linesChanged, lyricsFailure, lyricsRequest, tagStanzas, tidyLyrics } from '@/lib/lyrics/write';
 import { composeMusicTags, sanitizeMusicParams } from '@/lib/music-style';
@@ -85,12 +86,15 @@ export async function POST(request: NextRequest) {
     lastFrame: typeof body?.lastFrame === 'string' ? body.lastFrame : undefined,
   }, cfg);
 
-  return NextResponse.json({
-    prompt: result.prompt,
-    source: result.source,
-    // Which engine answered is shown to admins only — customers see the text.
-    ...(admin ? { engine: result.engine, fallbackReason: result.fallbackReason ?? null } : {}),
-  });
+  // Which engine answered is shown to admins only — customers see the text.
+  const forAdmin = admin ? { engine: result.engine, fallbackReason: result.fallbackReason ?? null } : {};
+  if (result.source !== 'rules') return NextResponse.json({ prompt: result.prompt, source: result.source, ...forAdmin });
+
+  console.error(`[enhance] ${result.fallbackReason}`);
+  const reason = t(enhanceFailure(result.fallbackReason ?? ''));
+  // Music, edit and lip-sync have no rules: the prompt comes back as it went in.
+  if (result.prompt === prompt) return NextResponse.json({ error: reason, ...forAdmin }, { status: 503 });
+  return NextResponse.json({ prompt: result.prompt, source: result.source, reason, ...forAdmin });
 }
 
 /** The words for `text`, or rough words sorted by rule, and always the reason when the model gave none. */
