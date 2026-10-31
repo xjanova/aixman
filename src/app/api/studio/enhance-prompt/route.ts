@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { getCurrentUserId, isAdmin } from '@/lib/auth';
 import { rateLimit } from '@/lib/rate-limit';
-import { enhancePrompt, getEnhancerConfig, type EnhanceKind } from '@/lib/services/prompt-enhancer';
+import { chatViaPool, enhancePrompt, getEnhancerConfig, type EnhanceKind } from '@/lib/services/prompt-enhancer';
+import { LYRICS_BRIEF, isDraft, linesChanged, lyricsFailure, lyricsRequest, tagStanzas, tidyLyrics } from '@/lib/lyrics/write';
+import { composeMusicTags, sanitizeMusicParams } from '@/lib/music-style';
 import { requestLocale, translator } from '@/lib/i18n/locale';
 
 /**
@@ -12,6 +14,9 @@ import { requestLocale, translator } from '@/lib/i18n/locale';
  * costs us a fraction of a cent, and the limit is what stops it being a free
  * LLM for anyone with an account. The answer goes back into the prompt box,
  * where the customer can read and edit it before ordering.
+ *
+ * `tab: 'lyrics'` is the ✨ on the lyrics box: the same door and the same
+ * hourly allowance, another writer (lyrics/write.ts).
  */
 
 export const dynamic = 'force-dynamic';
@@ -20,6 +25,12 @@ export const maxDuration = 150;
 
 const KINDS: EnhanceKind[] = ['image', 'video', 'audio', 'edit', 'lipsync'];
 const MAX_PROMPT = 4000;
+/**
+ * A thinking model spends most of the tokens before it answers: Thai lyrics
+ * ran dry at 4,000 and took 18–52 s at 16,000 (measured 2026-10-31). The clock
+ * stops short of a proxy's 100 s, so the customer hears why from us.
+ */
+const LYRICS_LIMITS = { maxTokens: 16_000, maxChars: 8000, timeoutMs: 90_000 };
 
 export async function POST(request: NextRequest) {
   const t = translator(requestLocale(request));
@@ -53,6 +64,8 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  if (body?.tab === 'lyrics') return writeLyrics(prompt, body, admin, t);
+
   // The model decides which brief applies (H3 self-host has its own format).
   const modelId = Number(body?.modelId);
   const model = Number.isInteger(modelId) && modelId > 0
@@ -78,4 +91,31 @@ export async function POST(request: NextRequest) {
     // Which engine answered is shown to admins only — customers see the text.
     ...(admin ? { engine: result.engine, fallbackReason: result.fallbackReason ?? null } : {}),
   });
+}
+
+/** The words for `text`, or rough words sorted by rule, and always the reason when the model gave none. */
+async function writeLyrics(text: string, body: Record<string, unknown>, admin: boolean, t: ReturnType<typeof translator>) {
+  const description = typeof body.description === 'string' ? body.description.trim().slice(0, 1000) : '';
+  const style = composeMusicTags(description, sanitizeMusicParams(body.music));
+  let failed: string;
+  try {
+    const reply = await chatViaPool(LYRICS_BRIEF, lyricsRequest({ text, style, continuation: body.sunoTool === 'extend' }), LYRICS_LIMITS);
+    const lyrics = tidyLyrics(reply.text);
+    if (lyrics) {
+      return NextResponse.json({
+        prompt: lyrics,
+        source: 'llm',
+        changed: isDraft(text) ? linesChanged(text, lyrics) : 0,
+        ...(admin ? { engine: reply.engine } : {}),
+      });
+    }
+    failed = `${reply.engine} answered with no song sections`;
+  } catch (error) {
+    failed = (error as Error).message;
+  }
+  console.error(`[lyrics] ${failed}`);
+  const reason = t(lyricsFailure(failed));
+  const sorted = tagStanzas(text);
+  if (sorted) return NextResponse.json({ prompt: sorted, source: 'rules', reason });
+  return NextResponse.json({ error: reason }, { status: 503 });
 }

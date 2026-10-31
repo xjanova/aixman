@@ -931,6 +931,16 @@ test button live on the same admin page. Thinking models get
 `reasoning_effort: low` — Pollinations' free tier caps output at 1,500 tokens
 and spent all of it reasoning over the H3 brief (empty answer) without it.
 
+The ✨ on the lyrics box (Suno tools except Replace Section) is the same route
+and the same hourly allowance with `tab: 'lyrics'`, through `chatViaPool` and
+`lyrics/write.ts`: an idea becomes a whole song, four lines or more (or any
+section tag) count as the customer's words, which stay word for word while the
+rest is written around them. A model's answer with no section tag is refused.
+With no model, rough words are sorted into sections by rule and an idea answers
+503, always with `lyricsFailure`'s reason: a customer is told why, in words that
+name no provider. `deepseek-flash` reasons first, so the 4,000 tokens that
+carry English run dry on Thai (`LYRICS_LIMITS`).
+
 **Studio orders overlap** (tray above the canvas, `MAX_PARALLEL_JOBS` = 3). The
 old page-wide lock was what stopped double orders; now a 1.5 s guard does —
 keep it. A history item opens on the canvas *and* puts its order back on its

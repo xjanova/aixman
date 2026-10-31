@@ -362,7 +362,8 @@ function localizeOrderError(message: string, t: Translate): string {
 }
 
 type EnhanceOutcome =
-  | { ok: true; prompt: string; source: string; engine?: string }
+  /** `reason` says why the model gave nothing; `changed` counts the customer's lines it rewrote. */
+  | { ok: true; prompt: string; source: string; engine?: string; reason?: string; changed?: number }
   | { ok: false; error: string };
 
 /** "✨ ปรับพรอมต์ด้วย AI" — errors as values, like every request helper here. */
@@ -374,9 +375,24 @@ async function requestEnhance(body: Record<string, unknown>, t: Translate): Prom
       body: JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) return { ok: false, error: data.error || t("ปรับพรอมต์ไม่สำเร็จ", "Couldn't improve the prompt") };
+    if (!res.ok) {
+      return {
+        ok: false,
+        // A gateway's error page has no JSON to read, and it still has a reason.
+        error: data.error || (res.status >= 500
+          ? t("เซิร์ฟเวอร์ไม่ตอบกลับในเวลาที่รอ ลองใหม่อีกครั้ง", "The server didn't answer in time. Try again.")
+          : t("ปรับพรอมต์ไม่สำเร็จ", "Couldn't improve the prompt")),
+      };
+    }
     if (typeof data.prompt !== "string" || !data.prompt.trim()) return { ok: false, error: t("AI ไม่ได้ส่งพรอมต์กลับมา", "The AI didn't send a prompt back") };
-    return { ok: true, prompt: data.prompt, source: String(data.source ?? ""), engine: data.engine };
+    return {
+      ok: true,
+      prompt: data.prompt,
+      source: String(data.source ?? ""),
+      engine: data.engine,
+      reason: typeof data.reason === "string" ? data.reason : undefined,
+      changed: Number(data.changed) || 0,
+    };
   } catch {
     return { ok: false, error: t("ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้", "Couldn't reach the server") };
   }
@@ -1765,6 +1781,14 @@ export default function GeneratePage() {
   const [duration, setDuration] = useState(5);
   /** Song lyrics for the music tab; empty asks for an instrumental. */
   const [lyrics, setLyrics] = useState(() => (typeof draft0.lyrics === "string" ? draft0.lyrics.slice(0, 3000) : ""));
+  /**
+   * ✨ on the lyrics box: in flight, and what the last answer replaced. Undo and
+   * the note last only while the box still holds that answer, so an edit or a
+   * reopened order drops them and undo can never throw away newer words.
+   */
+  const [writingLyrics, setWritingLyrics] = useState(false);
+  const [lyricsAi, setLyricsAi] = useState<{ before: string; after: string; note: string } | null>(null);
+  const lyricsAiShown = lyricsAi?.after === lyrics ? lyricsAi : null;
   const [songTitle, setSongTitle] = useState("");
   /**
    * Instrumental switch. Separate from "lyrics are empty" on purpose: a
@@ -2087,6 +2111,11 @@ export default function GeneratePage() {
   /** A Suno tool's own options, or null for every other model. */
   const sunoOpts = musicOpts?.suno ?? null;
   const sunoTool: SunoTool | null = sunoOpts?.tool ?? null;
+  /** What the box and the tool are now, for an answer that took a minute to come back. */
+  const lyricsNowRef = useRef({ lyrics, sunoTool });
+  useEffect(() => {
+    lyricsNowRef.current = { lyrics, sunoTool };
+  });
   /** A stem split has nothing to describe: its prompt box is not drawn. */
   const promptHidden = sunoTool === "stems";
   /** A tool that works on a track may go without words: the track is the instruction. */
@@ -2177,6 +2206,8 @@ export default function GeneratePage() {
   const cannotSubmit =
     runningJobs >= MAX_PARALLEL_JOBS ||
     !selectedModelId ||
+    // Credits would go on the words the AI is about to replace.
+    writingLyrics ||
     selectedModel?.canOrder === false ||
     (tab !== "lipsync" && !videoTool && !promptOptional && !prompt.trim()) ||
     missingStartFrame ||
@@ -3007,6 +3038,49 @@ export default function GeneratePage() {
     setPrompt(promptBeforeEnhance);
     setPromptBeforeEnhance(null);
     setEnhanceNote(null);
+  };
+
+  /** ✨ on the lyrics box: an idea into a whole song, rough words into Suno's form and style. */
+  const handleWriteLyrics = async () => {
+    const words = lyrics.trim();
+    const text = words || prompt.trim();
+    if (!text || writingLyrics) return;
+    const sent = lyrics;
+    setWritingLyrics(true);
+    const out = await requestEnhance({
+      tab: "lyrics",
+      prompt: text,
+      description: words ? prompt.trim() : "",
+      music: musicOpts?.controls ? { ...musicStyle, instrumental: false } : undefined,
+      sunoTool,
+    }, t);
+    setWritingLyrics(false);
+    if (!out.ok) {
+      toast("error", t("แต่งเนื้อไม่สำเร็จ", "Couldn't write the lyrics"), out.error);
+      return;
+    }
+    // A reopened order or another tool took over meanwhile: what stands there stays.
+    if (lyricsNowRef.current.lyrics !== sent || lyricsNowRef.current.sunoTool !== sunoTool) {
+      toast("info", t("ไม่ได้ใส่เนื้อที่ AI แต่ง", "The AI's lyrics weren't put in"), t("เนื้อเพลงหรือเครื่องมือเปลี่ยนไประหว่างรอ กด ✨ ใหม่ได้เลย", "The lyrics or the tool changed while waiting. Tap ✨ again."));
+      return;
+    }
+    const after = out.prompt.slice(0, 3000);
+    setLyrics(after);
+    setLyricsAi({
+      before: sent,
+      after,
+      note: out.source === "rules"
+        ? t(`จัดท่อนแบบพื้นฐาน เพราะ${out.reason ?? "AI ไม่พร้อม"}`, `Sorted into sections by rule: ${out.reason ?? "the AI isn't available"}`)
+        : out.changed
+          ? t(`AI เปลี่ยนคำเดิมของคุณ ${out.changed} บรรทัด ตรวจก่อนสั่ง`, `The AI changed ${out.changed} of your lines. Check them before ordering`)
+          : `${t("เรียบเรียงด้วย AI", "Written by AI")}${out.engine ? ` · ${out.engine}` : ""}`,
+    });
+  };
+
+  const undoWriteLyrics = () => {
+    if (!lyricsAiShown) return;
+    setLyrics(lyricsAiShown.before);
+    setLyricsAi(null);
   };
 
   /** A clip builder phrase goes in as a sentence; a picture one as a comma-joined tag. */
@@ -3955,11 +4029,26 @@ export default function GeneratePage() {
             <Field no={sectionNo(3)} label={sunoTool === "replace" ? t("เนื้อท่อนใหม่", "New words for the part") : t("เนื้อเพลง", "Lyrics")} aside={`${formatNumber(lyrics.length, locale)} / ${formatNumber(3000, locale)}`}>
               <div className="rp-lyrics-tools">
                 {SECTION_TAGS.map((tag) => (
-                  <button key={tag} type="button" className="rp-sectag rp-mono" disabled={instrumentalOn}
+                  <button key={tag} type="button" className="rp-sectag rp-mono" disabled={instrumentalOn || writingLyrics}
                     onClick={() => setLyrics((l) => `${l.replace(/\s*$/, "")}${l.trim() ? "\n\n" : ""}${tag}\n`.slice(0, 3000))}>
                     {tag}
                   </button>
                 ))}
+                {/* Replace Section takes words for the lines picked, not a song in sections. */}
+                {sunoTool && sunoTool !== "replace" && (
+                  <button type="button" className="rp-tool rp-tool-ai" onClick={handleWriteLyrics}
+                    disabled={writingLyrics || instrumentalOn || !(lyrics.trim() || prompt.trim())}
+                    title={t(
+                      "พิมพ์ไอเดียหรือเนื้อร่าง แล้วให้ AI แต่งเติมตามสไตล์ที่เลือกและจัดท่อนตามรูปแบบ Suno แก้ต่อได้ก่อนสั่ง",
+                      "Type an idea or rough lyrics, and the AI completes them in the chosen style and lays them out for Suno. Edit before ordering",
+                    )}>
+                    <span className={writingLyrics ? "xdr-motion" : undefined} style={writingLyrics ? { display: "inline-block", animation: "spin 1.2s linear infinite" } : undefined}>✨</span>
+                    {writingLyrics ? t("กำลังแต่งเนื้อ… (อาจเกิน 1 นาที)", "Writing… (can take over a minute)") : t("แต่งและจัดเนื้อด้วย AI", "Write & arrange with AI")}
+                  </button>
+                )}
+                {lyricsAiShown && !writingLyrics && (
+                  <button type="button" className="rp-tool rp-raised" onClick={undoWriteLyrics}>{t("↶ ใช้ข้อความเดิม", "↶ Use my text")}</button>
+                )}
                 {sunoOpts?.instrumental !== false && (
                   <label className="rp-check">
                     <input type="checkbox" checked={instrumental} onChange={(e) => setInstrumental(e.target.checked)} />
@@ -3969,10 +4058,13 @@ export default function GeneratePage() {
               </div>
               <div className="rp-prompt rp-well" style={{ marginTop: 8 }}>
                 <textarea value={lyrics} onChange={(e) => setLyrics(e.target.value.slice(0, 3000))} onKeyDown={onSubmitKey}
-                  disabled={instrumentalOn} aria-label={t("เนื้อเพลง", "Lyrics")}
+                  disabled={instrumentalOn} readOnly={writingLyrics} aria-label={t("เนื้อเพลง", "Lyrics")}
                   placeholder={t("[Verse]\nเขียนเนื้อร้องที่นี่\n\n[Chorus]\nท่อนฮุกที่อยากให้ติดหู", "[Verse]\nWrite your lyrics here\n\n[Chorus]\nThe hook you want stuck in people's heads")}
                   style={{ minHeight: 220, opacity: instrumentalOn ? 0.45 : 1 }} />
               </div>
+              {lyricsAiShown && (
+                <div style={{ fontSize: 10.5, color: "#a78bfa", marginTop: 6 }}>✦ {lyricsAiShown.note} — {t("แก้ต่อได้ตามใจ", "edit it as you like")}</div>
+              )}
               <div className="rp-note">
                 {instrumentalOn ? t("โหมดบรรเลง — เนื้อร้องที่พิมพ์ไว้จะถูกเก็บไว้เฉย ๆ", "Instrumental — the lyrics you typed are kept, but not sung")
                   : sunoTool === "replace"
