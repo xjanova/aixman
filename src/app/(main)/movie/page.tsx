@@ -181,7 +181,7 @@ interface ProjectView {
   project: Project;
   models: Model[];
   edit: EditSettings;
-  music: { available: boolean; credits: number | null; stale: boolean; status: "none" | "rendering" | "done" | "failed"; url: string | null };
+  music: { available: boolean; credits: number | null; stale: boolean; status: "none" | "rendering" | "done" | "failed"; url: string | null; error: string | null };
   film: { status: "none" | "assembling" | "done"; credits: number; url: string | null; seconds: number | null; error: string | null };
   vocals: Vocals | null;
   pictures: Pictures;
@@ -1353,7 +1353,7 @@ function FilmPanel({ view, busy, onEdit, onMusic, onAssemble }: {
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: 12, borderRadius: 12, background: "rgba(2,6,23,0.4)" }}>
           {music.status === "done" && music.url && <audio src={music.url} controls preload="none" style={{ flex: 1, minWidth: 220 }} />}
           {music.status === "rendering" && <span style={{ fontSize: 13, color: "#fbbf24" }}>{t("กำลังสร้างดนตรีประกอบ…", "Making the background music…")}</span>}
-          {music.status === "failed" && <span style={{ fontSize: 13, color: "#fca5a5" }}>{t("สร้างดนตรีไม่สำเร็จ (คืนเครดิตแล้ว)", "Couldn't make the music (credits refunded)")}</span>}
+          {music.status === "failed" && <span style={{ fontSize: 13, color: "#fca5a5" }}>{music.error ?? t("สร้างดนตรีไม่สำเร็จ (คืนเครดิตแล้ว)", "Couldn't make the music (credits refunded)")}</span>}
           {music.status === "none" && <span style={{ fontSize: 13, color: "#94a3b8" }}>{t("ยังไม่มีดนตรีประกอบ", "No background music yet")}</span>}
           {music.stale && music.status === "done" && <span style={{ fontSize: 12, color: "#fbbf24" }}>{t("เพลงสั้นกว่าหนังตอนนี้ (จะวนซ้ำ)", "The music is shorter than the film now (it will loop)")}</span>}
           {music.status !== "rendering" && (

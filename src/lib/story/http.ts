@@ -25,6 +25,7 @@ import { ASSET_KINDS, MAX_ASSET_PICTURES, TIMES_OF_DAY, assetPictures, isAssetKi
 import { referenceCaps } from '@/lib/reference-caps';
 import { pick, translator, type Locale, type Msg } from '@/lib/i18n/locale';
 import { messageFor, readStoredMessage } from '@/lib/i18n/messages';
+import { publicErrorMessage } from '@/lib/public-provider';
 import { planJob } from './plan-jobs';
 import { dubState, suggestedForLipsync, voiceWindow } from './sing';
 import { demucsPython, lipsyncCredits, lipsyncModel, projectVocalsState } from './vocals';
@@ -290,7 +291,7 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
   const musicGen = musicState
     ? await prisma.aiGeneration.findFirst({
         where: { id: musicState.generationId, userId: project.userId },
-        select: { status: true, resultUrl: true, creditsRefunded: true },
+        select: { status: true, resultUrl: true, creditsRefunded: true, errorMessage: true },
       })
     : null;
   const seconds = filmSeconds(project);
@@ -409,6 +410,7 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
       stale: Boolean(musicState && musicState.seconds < musicSeconds(seconds) - 1),
       status: musicGen ? (musicGen.status === 'completed' && musicGen.resultUrl ? 'done' : ['failed', 'cancelled'].includes(musicGen.status) ? 'failed' : 'rendering') : 'none',
       url: musicGen?.status === 'completed' ? musicGen.resultUrl : null,
+      error: publicErrorMessage(musicGen?.errorMessage, locale),
     },
     vocals: isMv
       ? {
