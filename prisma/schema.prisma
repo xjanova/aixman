@@ -41,6 +41,7 @@ model User {
   aiCredits            AiUserCredit?
   aiGenerations        AiGeneration[]
   aiStoryProjects      AiStoryProject[]
+  aiStorySeries        AiStorySeries[]
   aiFavorites          AiFavorite[]
   aiCreditTransactions AiCreditTransaction[]
   referralsGiven       AiReferral[]  @relation("referrer")
@@ -461,6 +462,10 @@ model AiGeneration {
 model AiStoryProject {
   id            Int      @id @default(autoincrement())
   userId        Int      @map("user_id")
+  // An episode of a series (ซีรีส์ / ละครสั้น), or null for a standalone film.
+  // src/lib/story/series.ts — migration 20261113_story_series.sql.
+  seriesId      Int?     @map("series_id")
+  episodeNumber Int?     @map("episode_number")
   title         String   @db.VarChar(255)
   // The film look (src/lib/story/cinematic.ts LOOKS): colour, lens, music.
   templateKey   String   @default("film") @map("template_key") @db.VarChar(50)
@@ -505,14 +510,57 @@ model AiStoryProject {
   updatedAt     DateTime @updatedAt @map("updated_at")
 
   user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  series     AiStorySeries?     @relation(fields: [seriesId], references: [id], onDelete: SetNull)
   characters AiStoryCharacter[]
   acts       AiStoryAct[]
   scenes     AiStoryScene[]
   shots      AiStoryShot[]
 
+  @@unique([seriesId, episodeNumber])
   @@index([userId, status])
   @@index([status, createdAt])
   @@map("ai_story_projects")
+}
+
+// A series or short drama: one story told over many episodes, each episode an
+// ordinary film project (seriesId + episodeNumber). The series holds what the
+// episodes share — premise, cast, look, frame — and the outline of every
+// episode the AI wrote (bibleJson). src/lib/story/series.ts
+model AiStorySeries {
+  id             Int       @id @default(autoincrement())
+  userId         Int       @map("user_id")
+  title          String    @db.VarChar(255)
+  // What the customer typed: the whole story, the world, who is in it.
+  premise        String    @db.Text
+  // SERIES_FORMATS: short (vertical short drama) | series
+  format         String    @default("short") @db.VarChar(20)
+  // SERIES_GENRES keys
+  genre          String    @default("romance") @db.VarChar(30)
+  language       String    @default("th") @db.VarChar(10)
+  aspectRatio    String    @default("9:16") @map("aspect_ratio") @db.VarChar(10)
+  // The film look every episode starts with (cinematic.ts LOOKS).
+  templateKey    String    @default("drama") @map("template_key") @db.VarChar(50)
+  // Each episode's target length (a FILM_LENGTHS value) and how many there are.
+  episodeSeconds Int       @default(60) @map("episode_seconds")
+  episodeCount   Int       @default(10) @map("episode_count")
+  // The cast the customer gave (name, description, picture) — seeds episode 1's library.
+  castJson       Json?     @map("cast_json")
+  // The outline: logline, characters AI added, and every episode's
+  // title / summary / hook / cliffhanger (parseBible).
+  bibleJson      Json?     @map("bible_json")
+  // draft | planning | ready | failed — while AI writes the outline.
+  status         String    @default("draft") @db.VarChar(20)
+  errorMessage   String?   @map("error_message") @db.Text
+  // When the outline being written was claimed (a stale claim may be retaken).
+  planningAt     DateTime? @map("planning_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  user     User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  episodes AiStoryProject[]
+
+  @@index([userId])
+  @@map("ai_story_series")
 }
 
 // A character that must look the same in every shot it appears in.

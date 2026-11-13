@@ -4,6 +4,7 @@ import {
   LOOKS,
   MOODS,
   SHOT_SIZES,
+  episodeRules,
   extractJson,
   type CharacterLite,
   type PlanInput,
@@ -209,6 +210,19 @@ export function structureMessages(input: StructureInput): { system: string; user
     ? `The film runs about ${Math.round(target / 60)} minute(s): the scenes' "seconds" add up to about ${target}.`
     : 'A short film of 40 to 90 seconds: the scenes\' "seconds" add up to that.';
   const acts = target && target >= 300 ? '3 to 5 acts' : target && target >= 120 ? '2 or 3 acts' : '1 act';
+  // An episode of a series: where it sits, what its first scene opens on and its last stops on.
+  const ep = input.episode;
+  const episode = ep
+    ? [
+        ...episodeRules(ep),
+        `The first scene opens on the episode's hook: ${ep.hook || 'a striking moment of conflict'}.`,
+        ep.number >= ep.count
+          ? `This is the finale: the last scene resolves the story${ep.cliffhanger ? ` and closes on: ${ep.cliffhanger}` : ''}.`
+          : `The last scene stops on the cliffhanger, unresolved: ${ep.cliffhanger || 'a secret revealed or a new threat'}.`,
+      ]
+        .map((line) => `\n- ${line}`)
+        .join('')
+    : '';
   const system = `You are a screenwriter. Break the user's story into acts and scenes before any shot is planned. A scene is one place at one time.
 Return ONLY JSON, no markdown: {"title": string, "acts": [{"title": string, "summary": string, "scenes": [{"title": string, "summary": string, "location": number|string, "time": string, "cast": [numbers], "props": [numbers|strings], "seconds": number}]}], "newLocations": [{"name": string, "description": string}], "newProps": [{"name": string, "description": string}]}
 Rules:
@@ -218,7 +232,7 @@ Rules:
 - "time": one of ${Object.keys(TIMES_OF_DAY).join(', ')}.
 - "cast": numbers from the cast list of who appears. "props": numbers from the prop list, or names of NEW objects that matter to the story (a weapon, a letter, a car) — then also list them in "newProps". Only objects that appear in more than one shot or drive the plot.
 - New places and props: "name" short in the story's language; "description" in English, 15 to 40 words, purely visual (materials, colours, shape, era) so an artist can draw it the same way every time.
-- Invent scenes the story implies when it is short; never contradict it. Never add new characters beyond the cast unless the story names them.`;
+- Invent scenes the story implies when it is short; never contradict it. Never add new characters beyond the cast unless the story names them.${episode}`;
   const user = `Cast:\n${numbered(input.characters, 'No named characters.')}\n\nLocations:\n${numbered(input.locations, 'None yet.')}\n\nProps:\n${numbered(input.props, 'None yet.')}\n\nStory:\n${input.brief}`;
   return { system, user };
 }

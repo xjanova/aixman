@@ -26,6 +26,7 @@ import { referenceCaps } from '@/lib/reference-caps';
 import { pick, translator, type Locale, type Msg } from '@/lib/i18n/locale';
 import { messageFor, readStoredMessage } from '@/lib/i18n/messages';
 import { planJob } from './plan-jobs';
+import { bibleOf, isWritten } from './series';
 import { dubState, suggestedForLipsync, voiceWindow } from './sing';
 import { demucsPython, lipsyncCredits, lipsyncModel, projectVocalsState } from './vocals';
 import type { Prisma } from '@/generated/prisma/client';
@@ -439,6 +440,36 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
           : readStoredMessage(project.errorMessage, locale),
     },
     planning: planningView(project.id, locale),
+    series: await seriesBar(project),
+  };
+}
+
+/**
+ * An episode's place in its series for the bar above the editor: the series,
+ * the episodes either side (made or not), and what this one opens and ends on.
+ */
+async function seriesBar(project: StoryProjectFull) {
+  if (!project.series || project.episodeNumber === null) return null;
+  const n = project.episodeNumber;
+  const siblings = await prisma.aiStoryProject.findMany({
+    where: { seriesId: project.series.id, userId: project.userId, episodeNumber: { in: [n - 1, n + 1] } },
+    select: { id: true, episodeNumber: true },
+  });
+  const bible = bibleOf(project.series.bibleJson);
+  const outline = bible?.episodes[n - 1];
+  const count = project.series.episodeCount;
+  return {
+    id: project.series.id,
+    title: project.series.title,
+    format: project.series.format,
+    episode: n,
+    count,
+    prevId: siblings.find((s) => s.episodeNumber === n - 1)?.id ?? null,
+    nextId: siblings.find((s) => s.episodeNumber === n + 1)?.id ?? null,
+    // The next episode has an outline, so it can be made from here.
+    nextWritten: n < count && isWritten(bible?.episodes[n]),
+    hook: outline?.hook ?? '',
+    cliffhanger: outline?.cliffhanger ?? '',
   };
 }
 

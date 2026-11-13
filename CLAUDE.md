@@ -814,6 +814,8 @@ Code: `src/lib/story/{cinematic,service,http}.ts`, `/api/story/*`.
   them. Shot clips (`generations/…`) still expire with their generation.
 - **Film length** (`FILM_LENGTHS`: auto, 1/3/5/10 min, `script_json.targetSeconds`;
   60 shots, cut ≤ `LIMITS.maxFilmSeconds` 600).
+- **Series / short dramas** reuse all of this per episode — see the section
+  below.
 - **MV timing is ours, not the LLM's:** `songTimeline` lays the lyrics over the
   song's length (read server-side from the file, ≤ 6 min); the planner model
   only writes pictures. Any planner failure falls back to `planFromRules`.
@@ -857,6 +859,57 @@ Code: `src/lib/story/{cinematic,service,http}.ts`, `/api/story/*`.
   claimed. `lipsync_source_url` pins the clip the dub came from: a re-render
   makes it stale and the cut falls back to the clip. The cut uses a dub only
   when `edit.lipsync` and the shot's own `lipsync_use` are on.
+
+## Series & short dramas (ซีรีส์ / ละครสั้น, `/movie?s=<id>`)
+
+One story told over many episodes: a vertical short drama (`format: short`,
+9:16, 1–3 min episodes) or a series (`series`, 16:9, 3–10 min). Code:
+`src/lib/story/series.ts` (pure + `series.test.mts`), `series-service.ts`,
+`/api/story/series/*`, migration `20261113_story_series.sql` — **apply it on
+prod before the code**: it adds `series_id` / `episode_number` to
+`ai_story_projects`, which Prisma names in every project SELECT.
+- **An episode is an ordinary film project** (`series_id` + `episode_number`,
+  unique per series) — acts → scenes → shots, rendered, scored and cut as
+  before. The series (`ai_story_series`) holds what they share: premise, format,
+  genre (`SERIES_GENRES`), look, frame, episode length (a `FILM_LENGTHS` value)
+  and count (2–30), the customer's cast (`cast_json`) and the **bible**
+  (`bible_json`: logline, characters AI added, every episode's title / summary /
+  hook / cliffhanger; `episodes[k]` is episode k + 1, an unwritten one has no
+  title and no summary). Deleting a series keeps its episodes as standalone
+  films (FK `ON DELETE SET NULL`); `/api/story` lists standalone projects only.
+- **The bible is written after the response** (`writeBible` in `after()`),
+  `BIBLE_BATCH` (8) episodes per chat call, each batch reading the ones before
+  and saved as it lands. The writer holds the row with a conditional claim
+  (`status = 'planning'` + `planning_at`, a heartbeat before every chat attempt
+  and on every save, stale after 15 min — `BIBLE_STALE_MS` must stay above one
+  worst-case chat call); every write it makes is conditional on still holding
+  it. Continuing fills empty episodes and **never overwrites one that has an
+  outline** (one the customer typed); `{rewrite: true}` rewrites every episode
+  after the last one made into a film, and a rewrite that wrote nothing ends
+  `failed`, not `ready`. An outline is its title or summary: a hook or
+  cliffhanger alone is cleared (`editEpisodes`, `bibleOf`), and the page only
+  offers Save with one, or with every field empty to delete it. Outline edits
+  (PATCH `episodes`, `logline`, `episodeCount`) are merged onto the row read,
+  so they are written only under the same `updated_at` (optimistic lock;
+  making an episode bumps it) and never under a live writer — 409 otherwise.
+  Free, 10/h per customer.
+- **Making an episode** (`POST /api/story/series/[id]/episodes {episode}`):
+  brief = `episodeBrief` (series' language, ≤ `LIMITS.brief`; the episode before
+  in full, older ones by title), the series' look / frame / length, and the
+  **library of the nearest episode already made** (before it first) copied row
+  by row with every picture, plus any cast member or AI character it lacks
+  (`episodeLibrary`, ≤ 8 characters) — so faces drawn in EP.1 carry into EP.2.
+  Counts against the 50-project limit. Refused while the bible is being written,
+  and while a picture in the source library is still rendering (the copy would
+  keep `rendering` with no job to finish it).
+- **Planner:** an episode's `PlanInput.episode` (`EpisodePlan`, read live from
+  the bible) replaces "open on an establishing shot / end the film" with "open
+  on the hook within 3 s / stop on the cliffhanger, unresolved" (finale:
+  resolve), says which episode it is and how the last one ended, and on 9:16
+  favours medium-to-close sizes (`openingRule`, `endingRule`, `episodeRules` in
+  cinematic.ts; structure step too). A standalone film is planned word for word
+  as before (`series.test.mts` pins its prompt lines).
+- Retention keeps a series' cast pictures (`storyKeepKeys` reads `cast_json`).
 
 ## Thai karaoke (`src/lib/lyrics/`) — our own timing, our own font
 

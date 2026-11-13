@@ -28,6 +28,7 @@ import { PageHero } from "@/components/xdreamer/page-hero";
 import { useToast } from "@/components/ui/toast-provider";
 import { loginHref } from "@/lib/safe-callback";
 import { ASPECTS, CAMERA_MOVES, FILM_LENGTHS, LIMITS, LOOKS, MOODS, SHOT_SIZES, safeCamera } from "@/lib/story/cinematic";
+import { EPISODE_LENGTHS, SERIES_FORMATS, SERIES_GENRES, SERIES_LIMITS, type SeriesFormat } from "@/lib/story/series";
 import { CameraPreview } from "@/components/camera-preview/CameraPreview";
 import { isCameraMoveId, isShotSizeId, MOVE_HINTS, SIZE_HINTS } from "@/lib/camera-shots";
 import { useLocale, useT } from "@/lib/i18n/client";
@@ -187,6 +188,66 @@ interface ProjectView {
   pictures: Pictures;
   /** A plan running after the response, or the last plan's outcome. */
   planning: { state: "planning" | "failed" | "done"; error: string | null; shots: number | null; rules: boolean } | null;
+  /** Set when the project is an episode of a series. */
+  series: EpisodeBarInfo | null;
+}
+interface EpisodeBarInfo {
+  id: number;
+  title: string;
+  format: string;
+  episode: number;
+  count: number;
+  prevId: number | null;
+  nextId: number | null;
+  /** The next episode has an outline, so it can be made from here. */
+  nextWritten: boolean;
+  hook: string;
+  cliffhanger: string;
+}
+interface SeriesRow {
+  id: number;
+  title: string;
+  format: string;
+  genre: string;
+  aspect: string;
+  episodes: number;
+  made: number;
+  planning: boolean;
+  updatedAt: string;
+  cover: string | null;
+}
+interface EpisodeOutline {
+  title: string;
+  summary: string;
+  hook: string;
+  cliffhanger: string;
+}
+interface SeriesEpisode {
+  number: number;
+  outline: EpisodeOutline | null;
+  written: boolean;
+  project: { id: number; title: string; status: string; shots: number; done: number; film: string | null } | null;
+}
+interface SeriesData {
+  id: number;
+  title: string;
+  premise: string;
+  format: string;
+  genre: string;
+  look: string;
+  aspect: string;
+  episodeSeconds: number;
+  episodeCount: number;
+  cast: Character[];
+  logline: string;
+  characters: { name: string; description: string }[];
+  status: "draft" | "planning" | "ready" | "failed";
+  error: string | null;
+  /** Episodes outlined, counted from the first. */
+  written: number;
+  /** The highest episode number made into a film (0 = none). */
+  lastMade: number;
+  episodes: SeriesEpisode[];
 }
 interface ProjectRow {
   id: number;
@@ -1549,7 +1610,7 @@ function SingPanel({ view, busy, onSeparate, onStem, onDubAll, onEdit }: {
 
 // ─── Project editor ─────────────────────────────────────────────────────
 
-function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
+function ProjectEditor({ id, onBack, onOpen, onSeries }: { id: number; onBack: () => void; onOpen: (id: number) => void; onSeries: (id: number) => void }) {
   const { toast } = useToast();
   const t = useT();
   const { locale } = useLocale();
@@ -1626,6 +1687,9 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
   if (!view) return <div style={{ ...card, color: "#94a3b8" }}>{t("กำลังโหลด…", "Loading…")}</div>;
   const { project, models } = view;
   const planning = view.planning?.state === "planning";
+  // An episode goes back to its series; a standalone film to the list.
+  const bar = view.series;
+  const back = bar ? () => onSeries(bar.id) : onBack;
 
   const act = async <T,>(key: string, url: string, init: RequestInit): Promise<T | null> => {
     if (busy) return null;
@@ -1901,7 +1965,14 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
     );
     if (!confirm(ask)) return;
     const data = await act("delete", `/api/story/${id}`, { method: "DELETE" });
-    if (data) onBack();
+    if (data) back();
+  };
+
+  // The next episode of the series, made from its outline and opened here.
+  const makeNext = async () => {
+    if (!bar) return;
+    const data = await act<{ id: number }>("next-episode", `/api/story/series/${bar.id}/episodes`, sendJson("POST", { episode: bar.episode + 1 }));
+    if (data) onOpen(data.id);
   };
 
   const hasKeyModel = view.pictures.models.some((m) => m.id === view.pictures.keyframeModelId);
@@ -1978,9 +2049,10 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      {bar && <EpisodeBar bar={bar} busy={busy !== null} onSeries={() => onSeries(bar.id)} onOpen={onOpen} onMakeNext={makeNext} />}
       <div style={{ ...card, display: "flex", flexDirection: "column", gap: 14 }}>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <button style={btn} onClick={onBack}>{t("← โปรเจกต์ทั้งหมด", "← All projects")}</button>
+          <button style={btn} onClick={back}>{bar ? t("← ทุกตอน", "← All episodes") : t("← โปรเจกต์ทั้งหมด", "← All projects")}</button>
           <div style={{ fontSize: 20, fontWeight: 600, flex: 1, minWidth: 200 }}>
             {project.mode === "mv" ? "🎵" : "🎬"} {project.title}
           </div>
@@ -2085,6 +2157,596 @@ function ProjectEditor({ id, onBack }: { id: number; onBack: () => void }) {
   );
 }
 
+// ─── Series & short dramas ──────────────────────────────────────────────
+
+const formatOf = (key: string) => SERIES_FORMATS[key as SeriesFormat] ?? SERIES_FORMATS.short;
+const formatIcon = (key: string) => (key === "series" ? "📺" : "📱");
+const lengthLabel = (seconds: number) => FILM_LENGTHS[String(seconds)]?.label ?? { th: `${Math.round(seconds / 60)} นาที`, en: `${Math.round(seconds / 60)} min` };
+const clampEpisodes = (n: number) => Math.min(SERIES_LIMITS.maxEpisodes, Math.max(SERIES_LIMITS.minEpisodes, Math.round(n) || SERIES_LIMITS.minEpisodes));
+
+/** An episode's place in its series, above the film editor. */
+function EpisodeBar({ bar, busy, onSeries, onOpen, onMakeNext }: { bar: EpisodeBarInfo; busy: boolean; onSeries: () => void; onOpen: (id: number) => void; onMakeNext: () => void }) {
+  const t = useT();
+  const finale = bar.episode >= bar.count;
+  return (
+    <div style={{ ...card, padding: 14, display: "flex", flexDirection: "column", gap: 8, border: "1px solid rgba(216,180,254,0.3)" }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <button style={btn} onClick={onSeries}>{t("← ทุกตอน", "← All episodes")}</button>
+        <div style={{ flex: 1, minWidth: 160, fontWeight: 600 }}>
+          {formatIcon(bar.format)} {bar.title} · EP.{bar.episode}/{bar.count}
+        </div>
+        {bar.prevId !== null && <button style={btn} onClick={() => onOpen(bar.prevId!)}>◀ EP.{bar.episode - 1}</button>}
+        {bar.nextId !== null ? (
+          <button style={btn} onClick={() => onOpen(bar.nextId!)}>EP.{bar.episode + 1} ▶</button>
+        ) : bar.nextWritten ? (
+          <button style={{ ...primary, opacity: busy ? 0.6 : 1 }} disabled={busy} onClick={onMakeNext}>{t(`🎬 สร้าง EP.${bar.episode + 1}`, `🎬 Make EP.${bar.episode + 1}`)}</button>
+        ) : null}
+      </div>
+      {(bar.hook || bar.cliffhanger) && (
+        <div style={{ fontSize: 12, color: "#cbd5e1", display: "flex", flexDirection: "column", gap: 3 }}>
+          {bar.hook && <div>⚡ {t("เปิดตอนด้วย:", "Opens on:")} {bar.hook}</div>}
+          {bar.cliffhanger && <div>{finale ? "🏁" : "⏸"} {finale ? t("ปิดเรื่องด้วย:", "Closes on:") : t("จบแบบค้างที่:", "Stops on:")} {bar.cliffhanger}</div>}
+          <div style={{ color: "#64748b" }}>{t("AI วางช็อตให้เปิดและจบตามนี้ แก้ได้ที่หน้าซีรีส์", "AI plans the shots to open and end this way — edit it on the series page")}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Pick a number of episodes: − / + and a box to type in, kept in range when it loses focus. */
+function EpisodeCount({ value, onChange }: { value: number; onChange: (n: number) => void }) {
+  return (
+    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+      <button style={btn} onClick={() => onChange(clampEpisodes(value - 1))}>−</button>
+      <input
+        type="number"
+        min={SERIES_LIMITS.minEpisodes}
+        max={SERIES_LIMITS.maxEpisodes}
+        value={Number.isFinite(value) && value > 0 ? value : ""}
+        onChange={(e) => onChange(Number(e.target.value))}
+        onBlur={() => onChange(clampEpisodes(value))}
+        style={{ ...field, width: 80, textAlign: "center" }}
+      />
+      <button style={btn} onClick={() => onChange(clampEpisodes(value + 1))}>+</button>
+    </div>
+  );
+}
+
+function NewSeries({ onCreated }: { onCreated: (id: number) => void }) {
+  const { toast } = useToast();
+  const t = useT();
+  const { locale } = useLocale();
+  const [format, setFormat] = useState<SeriesFormat>("short");
+  const [title, setTitle] = useState("");
+  const [premise, setPremise] = useState("");
+  const [genre, setGenre] = useState("romance");
+  const [look, setLook] = useState(SERIES_GENRES.romance.look);
+  const [episodes, setEpisodes] = useState(SERIES_FORMATS.short.episodeCount);
+  const [seconds, setSeconds] = useState(SERIES_FORMATS.short.episodeSeconds);
+  const [aspect, setAspect] = useState(SERIES_FORMATS.short.aspect);
+  const [characters, setCharacters] = useState<Character[]>([{ name: "", description: "", referenceUrl: null }]);
+  const [busy, setBusy] = useState(false);
+
+  // A format brings its frame, episode length and count; a genre its look. All stay editable.
+  const pickFormat = (f: SeriesFormat) => {
+    setFormat(f);
+    setAspect(SERIES_FORMATS[f].aspect);
+    setSeconds(SERIES_FORMATS[f].episodeSeconds);
+    setEpisodes(SERIES_FORMATS[f].episodeCount);
+  };
+  const pickGenre = (g: string) => {
+    setGenre(g);
+    setLook(SERIES_GENRES[g]?.look ?? "drama");
+  };
+
+  const create = async (plan: boolean) => {
+    if (busy) return;
+    if (!premise.trim()) return toast("error", t("เขียนเรื่องย่อของทั้งเรื่องก่อน", "Write what the whole story is about first"));
+    setBusy(true);
+    const r = await getJson<{ id: number; planning: boolean }>(
+      "/api/story/series",
+      sendJson("POST", {
+        format,
+        title,
+        premise,
+        genre,
+        look,
+        aspect,
+        episodeSeconds: seconds,
+        episodeCount: clampEpisodes(episodes),
+        characters: characters.filter((c) => c.name.trim() || c.referenceUrl),
+        plan,
+      })
+    );
+    setBusy(false);
+    if (!r.ok) return toast("error", t(r.error));
+    if (r.data.planning) {
+      toast("success", t("AI กำลังเขียนโครงเรื่องทุกตอน", "AI is outlining every episode"), t("ใช้เวลาราว 1–5 นาที ตอนต่าง ๆ จะขึ้นมาเองเมื่อเขียนเสร็จ", "About 1–5 minutes; the episodes appear as they are written"));
+    }
+    onCreated(r.data.id);
+  };
+
+  const shotsPerEpisode = Math.max(1, Math.round(seconds / 8));
+  return (
+    <div style={{ ...card, display: "flex", flexDirection: "column", gap: 18 }}>
+      <div>
+        <span style={label}>{t("รูปแบบ", "Format")}</span>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {(Object.keys(SERIES_FORMATS) as SeriesFormat[]).map((f) => (
+            <button key={f} style={chip(format === f)} onClick={() => pickFormat(f)}>{t(SERIES_FORMATS[f].label)}</button>
+          ))}
+        </div>
+        <p style={{ fontSize: 12, color: "#94a3b8", marginTop: 6 }}>{t(SERIES_FORMATS[format].hint)}</p>
+      </div>
+
+      <div>
+        <span style={label}>{t("ชื่อเรื่อง (เว้นว่างได้ AI จะตั้งให้)", "Title (optional — AI will name it)")}</span>
+        <input style={field} maxLength={SERIES_LIMITS.title} value={title} onChange={(e) => setTitle(e.target.value)} />
+      </div>
+
+      <div>
+        <span style={label}>
+          {t(
+            "เรื่องย่อทั้งเรื่อง — ใครเป็นใคร ปมหลักคืออะไร อยากให้จบแบบไหน AI จะแตกเป็นตอน ๆ ให้ แต่ละตอนมีฉากเปิดและปมค้าง",
+            "The whole story — who is who, the main conflict, how you want it to end. AI splits it into episodes, each with an opening hook and a cliffhanger"
+          )}
+        </span>
+        <textarea style={{ ...field, minHeight: 160, resize: "vertical" }} maxLength={SERIES_LIMITS.premise} value={premise} onChange={(e) => setPremise(e.target.value)} />
+        <div style={{ fontSize: 11, color: "#64748b", textAlign: "right" }}>{formatNumber(premise.length, locale)} / {formatNumber(SERIES_LIMITS.premise, locale)}</div>
+      </div>
+
+      <div>
+        <span style={label}>{t("แนวเรื่อง", "Genre")}</span>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {Object.entries(SERIES_GENRES).map(([key, g]) => (
+            <button key={key} style={chip(genre === key)} onClick={() => pickGenre(key)}>{t(g.label)}</button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <span style={label}>{t("สไตล์ภาพ", "Visual style")}</span>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {Object.entries(LOOKS).map(([key, l]) => (
+            <button key={key} style={chip(look === key)} onClick={() => setLook(key)}>{t(l.label)}</button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
+        <div>
+          <span style={label}>{t(`จำนวนตอน (${SERIES_LIMITS.minEpisodes}–${SERIES_LIMITS.maxEpisodes})`, `Episodes (${SERIES_LIMITS.minEpisodes}–${SERIES_LIMITS.maxEpisodes})`)}</span>
+          <EpisodeCount value={episodes} onChange={setEpisodes} />
+        </div>
+        <div>
+          <span style={label}>{t("ความยาวต่อตอน", "Episode length")}</span>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {EPISODE_LENGTHS.map((s) => (
+              <button key={s} style={chip(seconds === s)} onClick={() => setSeconds(s)}>{t(lengthLabel(s))}</button>
+            ))}
+          </div>
+        </div>
+      </div>
+      <p style={{ fontSize: 12, color: "#94a3b8", marginTop: -8 }}>
+        {t(
+          `ตอนละประมาณ ${shotsPerEpisode} ช็อต · สร้างโครงเรื่องและตอนต่าง ๆ ฟรี · คิดเครดิตตอนสร้างแต่ละช็อต`,
+          `About ${plural(shotsPerEpisode, "shot")} an episode · outlines and episodes are free · credits are charged as each shot is made`
+        )}
+      </p>
+
+      <div>
+        <span style={label}>{t("สัดส่วนภาพ", "Aspect ratio")}</span>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {Object.entries(ASPECTS).map(([key, a]) => (
+            <button key={key} style={chip(aspect === key)} onClick={() => setAspect(key)}>{t(a.label)}</button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <span style={label}>{t("นักแสดงหลัก — ใส่ภาพหน้าไว้ หน้าจะเหมือนเดิมทุกตอน (AI เพิ่มตัวละครรองให้เองได้)", "Main cast — add their faces and they stay the same in every episode (AI may add supporting characters)")}</span>
+        <CharacterEditor value={characters} onChange={setCharacters} />
+      </div>
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <button style={{ ...primary, opacity: busy ? 0.6 : 1 }} disabled={busy} onClick={() => create(true)}>
+          {busy ? t("กำลังสร้าง…", "Creating…") : t("✨ สร้างซีรีส์ และให้ AI เขียนโครงเรื่องทุกตอน", "✨ Create the series and have AI outline every episode")}
+        </button>
+        <button style={{ ...btn, opacity: busy ? 0.6 : 1 }} disabled={busy} onClick={() => create(false)}>
+          {t("สร้างแล้วเขียนโครงเรื่องเอง", "Create it and outline it myself")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** One episode of a series: its outline (editable), and the film made of it or the button that makes it. */
+function EpisodeCard({ episode, finale, busy, locked, onOpen, onMake, onSave }: {
+  episode: SeriesEpisode;
+  finale: boolean;
+  busy: string | null;
+  /** AI is writing the outline: nothing may be made or edited. */
+  locked: boolean;
+  onOpen: (id: number) => void;
+  onMake: () => void;
+  onSave: (outline: EpisodeOutline) => Promise<boolean>;
+}) {
+  const t = useT();
+  const o = episode.outline ?? { title: "", summary: "", hook: "", cliffhanger: "" };
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<EpisodeOutline>(o);
+  const p = episode.project;
+  // The server keeps an outline only with a title or summary; a hook or
+  // cliffhanger alone would be thrown away, so it is not offered. All fields
+  // empty is how an outline is deleted.
+  const hasStory = draft.title.trim() !== "" || draft.summary.trim() !== "";
+  const clearing = !hasStory && draft.hook.trim() === "" && draft.cliffhanger.trim() === "";
+  const canSave = hasStory || (clearing && episode.written);
+  const save = async () => {
+    if (!canSave) return;
+    if (await onSave(draft)) setEditing(false);
+  };
+  const startEdit = () => {
+    setDraft(o);
+    setEditing(true);
+  };
+  return (
+    <div style={{ ...card, padding: 16, display: "flex", flexDirection: "column", gap: 8, opacity: episode.written || p ? 1 : 0.75 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{ fontWeight: 700, color: "#d8b4fe" }}>EP.{episode.number}</span>
+        <span style={{ fontWeight: 600, flex: 1, minWidth: 140 }}>{o.title || (episode.written ? "" : t("ยังไม่มีโครงเรื่อง", "No outline yet"))}</span>
+        {finale && <span style={{ fontSize: 11, color: "#fbbf24" }}>{t("ตอนจบ", "Finale")}</span>}
+        {!editing && (
+          <button style={{ ...btn, padding: "6px 10px" }} disabled={locked} onClick={startEdit}>
+            {episode.written ? t("✏️ แก้", "✏️ Edit") : t("✏️ เขียนเอง", "✏️ Write it")}
+          </button>
+        )}
+        {p ? (
+          <button style={primary} onClick={() => onOpen(p.id)}>{t("▶ เปิดตอนนี้", "▶ Open")}</button>
+        ) : episode.written ? (
+          <button style={{ ...primary, opacity: busy || locked ? 0.6 : 1 }} disabled={busy !== null || locked} onClick={onMake}>
+            {busy === `make-${episode.number}` ? t("กำลังสร้าง…", "Creating…") : t("🎬 สร้างตอนนี้", "🎬 Make it")}
+          </button>
+        ) : null}
+      </div>
+      {editing ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <input style={field} maxLength={SERIES_LIMITS.episodeTitle} placeholder={t("ชื่อตอน", "Episode title")} value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} />
+          <textarea style={{ ...field, minHeight: 90, resize: "vertical" }} maxLength={SERIES_LIMITS.episodeSummary} placeholder={t("เกิดอะไรขึ้นในตอนนี้ ใครทำอะไร พูดอะไร", "What happens — who does and says what")} value={draft.summary} onChange={(e) => setDraft({ ...draft, summary: e.target.value })} />
+          <input style={field} maxLength={SERIES_LIMITS.hook} placeholder={t("⚡ ฉากเปิดใน 3 วินาทีแรก", "⚡ The hook in the first 3 seconds")} value={draft.hook} onChange={(e) => setDraft({ ...draft, hook: e.target.value })} />
+          <input style={field} maxLength={SERIES_LIMITS.cliffhanger} placeholder={finale ? t("🏁 ภาพปิดเรื่อง", "🏁 The closing image") : t("⏸ ปมค้างตอนจบ", "⏸ The cliffhanger it stops on")} value={draft.cliffhanger} onChange={(e) => setDraft({ ...draft, cliffhanger: e.target.value })} />
+          {p && <div style={{ fontSize: 11, color: "#94a3b8" }}>{t("ตอนนี้สร้างแล้ว: ฉากเปิดและปมค้างใช้กับการวางช็อตครั้งต่อไป ส่วนเรื่องย่อในหน้าตอนต้องแก้ที่หน้าตอน", "This episode is made: the hook and cliffhanger apply to its next shot plan; its story is edited on the episode's page")}</div>}
+          {!hasStory && !clearing && <div style={{ fontSize: 11, color: "#fbbf24" }}>{t("ใส่ชื่อตอนหรือเรื่องย่อก่อน — ฉากเปิดกับปมค้างอย่างเดียวยังเป็นตอนไม่ได้", "Add a title or what happens first — a hook and cliffhanger alone are not an episode")}</div>}
+          {clearing && episode.written && <div style={{ fontSize: 11, color: "#fbbf24" }}>{t("ทุกช่องว่าง: บันทึกแล้วโครงเรื่องตอนนี้จะถูกลบ", "Every field is empty: saving deletes this episode's outline")}</div>}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button style={{ ...primary, opacity: canSave ? 1 : 0.5 }} disabled={busy !== null || !canSave} onClick={save}>{t("บันทึก", "Save")}</button>
+            <button style={btn} onClick={() => setEditing(false)}>{t("ยกเลิก", "Cancel")}</button>
+          </div>
+        </div>
+      ) : episode.written || o.hook || o.cliffhanger ? (
+        <>
+          {o.summary && <div style={{ fontSize: 13, color: "#cbd5e1", lineHeight: 1.6 }}>{o.summary}</div>}
+          {o.hook && <div style={{ fontSize: 12, color: "#94a3b8" }}>⚡ {o.hook}</div>}
+          {o.cliffhanger && <div style={{ fontSize: 12, color: "#94a3b8" }}>{finale ? "🏁" : "⏸"} {o.cliffhanger}</div>}
+        </>
+      ) : null}
+      {p && (
+        <div style={{ fontSize: 12, color: "#94a3b8" }}>
+          {p.shots === 0
+            ? t("ยังไม่ได้วางช็อต — เปิดตอนแล้วกดให้ AI แตกช็อต", "No shots yet — open it and have AI plan the shots")
+            : t(`ช็อตเสร็จ ${p.done}/${p.shots}`, `${p.done} of ${plural(p.shots, "shot")} done`)}
+          {p.film && <span style={{ color: "#34d399" }}> · {t("🎞 ตัดต่อเป็นตอนแล้ว", "🎞 Episode cut")}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** What the whole series is: premise, logline, cast, look, frame, length and count. */
+function SeriesSettings({ data, busy, onSave, onCancel }: { data: SeriesData; busy: boolean; onSave: (patch: Record<string, unknown>) => Promise<boolean>; onCancel: () => void }) {
+  const t = useT();
+  const { locale } = useLocale();
+  const [title, setTitle] = useState(data.title);
+  const [premise, setPremise] = useState(data.premise);
+  const [logline, setLogline] = useState(data.logline);
+  const [genre, setGenre] = useState(data.genre);
+  const [look, setLook] = useState(data.look);
+  const [aspect, setAspect] = useState(data.aspect);
+  const [seconds, setSeconds] = useState(data.episodeSeconds);
+  const [episodes, setEpisodes] = useState(data.episodeCount);
+  const [cast, setCast] = useState<Character[]>(data.cast.length ? data.cast : [{ name: "", description: "", referenceUrl: null }]);
+  const save = async () => {
+    // Fewer episodes drops the outlines past the new last one.
+    const count = clampEpisodes(episodes);
+    const lost = data.episodes.filter((e) => e.number > count && e.written).length;
+    if (
+      lost > 0 &&
+      !confirm(
+        t(
+          `ลดเหลือ ${count} ตอน? โครงเรื่องของ EP.${count + 1}–${data.episodeCount} (${lost} ตอน) จะถูกลบ`,
+          `Cut it to ${plural(count, "episode")}? The outlines of EP.${count + 1}–${data.episodeCount} (${lost}) will be deleted.`
+        )
+      )
+    ) {
+      return false;
+    }
+    return onSave({
+      title,
+      premise,
+      logline,
+      genre,
+      look,
+      aspect,
+      episodeSeconds: seconds,
+      episodeCount: count,
+      characters: cast.filter((c) => c.name.trim() || c.referenceUrl),
+    });
+  };
+  return (
+    <div style={{ ...card, display: "flex", flexDirection: "column", gap: 16 }}>
+      <div>
+        <span style={label}>{t("ชื่อเรื่อง", "Title")}</span>
+        <input style={field} maxLength={SERIES_LIMITS.title} value={title} onChange={(e) => setTitle(e.target.value)} />
+      </div>
+      <div>
+        <span style={label}>{t("เรื่องย่อทั้งเรื่อง", "The whole story")}</span>
+        <textarea style={{ ...field, minHeight: 120, resize: "vertical" }} maxLength={SERIES_LIMITS.premise} value={premise} onChange={(e) => setPremise(e.target.value)} />
+        <div style={{ fontSize: 11, color: "#64748b", textAlign: "right" }}>{formatNumber(premise.length, locale)} / {formatNumber(SERIES_LIMITS.premise, locale)}</div>
+      </div>
+      <div>
+        <span style={label}>{t("คำโปรยหนึ่งประโยค", "Logline")}</span>
+        <input style={field} maxLength={SERIES_LIMITS.logline} value={logline} onChange={(e) => setLogline(e.target.value)} />
+      </div>
+      <div>
+        <span style={label}>{t("แนวเรื่อง", "Genre")}</span>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {Object.entries(SERIES_GENRES).map(([key, g]) => (
+            <button key={key} style={chip(genre === key)} onClick={() => setGenre(key)}>{t(g.label)}</button>
+          ))}
+        </div>
+      </div>
+      <div>
+        <span style={label}>{t("สไตล์ภาพ · สัดส่วน · ความยาวต่อตอน (ใช้กับตอนที่สร้างหลังจากนี้)", "Visual style · frame · episode length (for episodes made from now on)")}</span>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+          {Object.entries(LOOKS).map(([key, l]) => (
+            <button key={key} style={chip(look === key)} onClick={() => setLook(key)}>{t(l.label)}</button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+          {Object.entries(ASPECTS).map(([key, a]) => (
+            <button key={key} style={chip(aspect === key)} onClick={() => setAspect(key)}>{t(a.label)}</button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {EPISODE_LENGTHS.map((s) => (
+            <button key={s} style={chip(seconds === s)} onClick={() => setSeconds(s)}>{t(lengthLabel(s))}</button>
+          ))}
+        </div>
+      </div>
+      <div>
+        <span style={label}>{t(`จำนวนตอน (ลดได้ไม่ต่ำกว่าตอนที่สร้างแล้ว: ${data.lastMade || SERIES_LIMITS.minEpisodes})`, `Episodes (no fewer than the last one made: ${data.lastMade || SERIES_LIMITS.minEpisodes})`)}</span>
+        <EpisodeCount value={episodes} onChange={setEpisodes} />
+      </div>
+      <div>
+        <span style={label}>{t("นักแสดงหลัก (ตอนที่สร้างแล้วใช้คลังอ้างอิงของตัวเอง ตอนใหม่จะได้คนที่ยังไม่มี)", "Main cast (made episodes keep their own library; new ones get anyone missing)")}</span>
+        <CharacterEditor value={cast} onChange={setCast} />
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button style={{ ...primary, opacity: busy ? 0.6 : 1 }} disabled={busy} onClick={save}>{t("บันทึก", "Save")}</button>
+        <button style={btn} onClick={onCancel}>{t("ยกเลิก", "Cancel")}</button>
+      </div>
+    </div>
+  );
+}
+
+function SeriesEditor({ id, onBack, onOpen }: { id: number; onBack: () => void; onOpen: (id: number) => void }) {
+  const { toast } = useToast();
+  const t = useT();
+  const { locale } = useLocale();
+  const [data, setData] = useState<SeriesData | null>(null);
+  const [missing, setMissing] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [settings, setSettings] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    getJson<{ series: SeriesData }>(`/api/story/series/${id}`).then((r) => {
+      if (!active) return;
+      if (r.ok) setData(r.data.series);
+      else setMissing(true);
+    });
+    return () => {
+      active = false;
+    };
+    // The server writes stored reasons in the visitor's language: fetch again when it changes.
+  }, [id, locale]);
+
+  // Poll only while AI writes the outline; episodes appear batch by batch.
+  const planning = data?.status === "planning";
+  useEffect(() => {
+    if (!planning) return;
+    let active = true;
+    const timer = setInterval(async () => {
+      const r = await getJson<{ series: SeriesData }>(`/api/story/series/${id}`);
+      if (active && r.ok) setData(r.data.series);
+    }, 6000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [planning, id]);
+
+  // Say so when the outline lands.
+  const status = data?.status ?? null;
+  const lastStatus = useRef(status);
+  useEffect(() => {
+    const was = lastStatus.current;
+    lastStatus.current = status;
+    if (was !== "planning" || !data) return;
+    if (status === "ready") toast("success", t(`AI เขียนโครงเรื่องครบ ${data.episodeCount} ตอนแล้ว`, `AI outlined all ${data.episodeCount} episodes`));
+    else if (status === "failed") toast("error", data.error ?? t("เขียนโครงเรื่องไม่สำเร็จ", "Couldn't write the outline"));
+  }, [status, data, toast, t]);
+
+  if (missing) {
+    return (
+      <div style={card}>
+        {t("ไม่พบซีรีส์นี้", "Series not found")} <button style={btn} onClick={onBack}>{t("กลับ", "Back")}</button>
+      </div>
+    );
+  }
+  if (!data) return <div style={{ ...card, color: "#94a3b8" }}>{t("กำลังโหลด…", "Loading…")}</div>;
+
+  const act = async <T,>(key: string, url: string, init: RequestInit): Promise<T | null> => {
+    if (busy) return null;
+    setBusy(key);
+    const r = await getJson<T>(url, init);
+    setBusy(null);
+    if (!r.ok) {
+      toast("error", t(r.error));
+      return null;
+    }
+    return r.data;
+  };
+
+  const firstMissing = data.episodes.find((e) => !e.written)?.number ?? null;
+  const plan = async (rewrite: boolean) => {
+    if (rewrite) {
+      const from = data.lastMade + 1;
+      const ask = data.lastMade > 0
+        ? t(`ให้ AI เขียนโครงเรื่องใหม่ตั้งแต่ EP.${from}? โครงเรื่องเดิมของตอนที่ยังไม่ได้สร้างจะถูกแทนที่ (EP.1–${data.lastMade} ที่สร้างแล้วคงเดิม)`, `Have AI rewrite the outline from EP.${from}? Outlines of episodes not made yet are replaced (EP.1–${data.lastMade}, already made, stay).`)
+        : t("ให้ AI เขียนโครงเรื่องใหม่ทุกตอน? โครงเรื่องเดิมทั้งหมดจะถูกแทนที่", "Have AI rewrite every episode's outline? The current outline is replaced.");
+      if (!confirm(ask)) return;
+    }
+    const r = await act<{ series: SeriesData }>("plan", `/api/story/series/${id}/plan`, sendJson("POST", { rewrite }));
+    if (!r) return;
+    setData(r.series);
+    lastStatus.current = r.series.status;
+    toast("success", t("AI กำลังเขียนโครงเรื่อง", "AI is writing the outline"), t("ตอนต่าง ๆ จะขึ้นมาเองทีละชุดเมื่อเขียนเสร็จ", "Episodes appear batch by batch as they are written"));
+  };
+
+  const patch = async (key: string, body: Record<string, unknown>) => {
+    const r = await act<{ series: SeriesData }>(key, `/api/story/series/${id}`, sendJson("PATCH", body));
+    if (!r) {
+      // Refused because AI started writing or another tab changed it: show what is there now
+      // (the edit form keeps what was typed, to save again).
+      const now = await getJson<{ series: SeriesData }>(`/api/story/series/${id}`);
+      if (now.ok) setData(now.data.series);
+      return false;
+    }
+    setData(r.series);
+    return true;
+  };
+
+  const make = async (n: number) => {
+    const r = await act<{ id: number }>(`make-${n}`, `/api/story/series/${id}/episodes`, sendJson("POST", { episode: n }));
+    if (r) onOpen(r.id);
+  };
+
+  const remove = async () => {
+    const made = data.episodes.filter((e) => e.project).length;
+    const ask = t(
+      `ลบซีรีส์ "${data.title}"? โครงเรื่องทุกตอนจะหายถาวร${made ? ` (ตอนที่สร้างแล้ว ${made} ตอนยังอยู่เป็นโปรเจกต์หนังเดี่ยว)` : ""}`,
+      `Delete the series "${data.title}"? Every episode's outline will be gone for good.${made ? ` (The ${plural(made, "episode")} already made stay, as standalone films.)` : ""}`
+    );
+    if (!confirm(ask)) return;
+    const r = await act("delete", `/api/story/series/${id}`, { method: "DELETE" });
+    if (r) onBack();
+  };
+
+  const genre = SERIES_GENRES[data.genre]?.label;
+  const made = data.episodes.filter((e) => e.project).length;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ ...card, display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <button style={btn} onClick={onBack}>{t("← ทั้งหมด", "← All")}</button>
+          <div style={{ fontSize: 20, fontWeight: 600, flex: 1, minWidth: 200 }}>{formatIcon(data.format)} {data.title}</div>
+          <button style={btn} disabled={planning} onClick={() => setSettings((s) => !s)}>{settings ? t("ปิดการตั้งค่า", "Close settings") : t("⚙️ ตั้งค่าซีรีส์", "⚙️ Series settings")}</button>
+          <button style={{ ...btn, color: "#fca5a5" }} disabled={busy !== null} onClick={remove}>{t("ลบซีรีส์", "Delete series")}</button>
+        </div>
+        <div style={{ fontSize: 13, color: "#94a3b8" }}>
+          {t(formatOf(data.format).label)} · {genre ? t(genre) : data.genre} · {t(`${data.episodeCount} ตอน`, plural(data.episodeCount, "episode"))} · {t(lengthLabel(data.episodeSeconds))}
+          {t(" ต่อตอน", " each")} · {ASPECTS[data.aspect] ? t(ASPECTS[data.aspect].label) : data.aspect}
+          {t(` · สร้างแล้ว ${made} ตอน`, ` · ${made} made`)}
+        </div>
+        {data.logline && <div style={{ fontSize: 14, color: "#e2e8f0", lineHeight: 1.6 }}>“{data.logline}”</div>}
+        {(data.cast.length > 0 || data.characters.length > 0) && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            {data.cast.map((c) => (
+              <span key={`cast-${c.name}`} style={{ display: "inline-flex", gap: 6, alignItems: "center", fontSize: 12, padding: "4px 10px 4px 4px", borderRadius: 999, background: "rgba(255,255,255,0.06)" }}>
+                {c.referenceUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={c.referenceUrl} alt="" style={{ width: 24, height: 24, borderRadius: "50%", objectFit: "cover" }} />
+                ) : (
+                  <span style={{ width: 24, textAlign: "center" }}>👤</span>
+                )}
+                {c.name}
+              </span>
+            ))}
+            {data.characters.map((c) => (
+              <span key={`ai-${c.name}`} title={c.description} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 999, background: "rgba(168,85,247,0.12)", color: "#e9d5ff" }}>
+                ✨ {c.name}
+              </span>
+            ))}
+            {data.characters.length > 0 && (
+              <span style={{ fontSize: 11, color: "#64748b" }}>{t("✨ = ตัวละครที่ AI เพิ่ม วาดภาพได้ในคลังอ้างอิงของตอน", "✨ = added by AI; draw them in an episode's reference library")}</span>
+            )}
+          </div>
+        )}
+
+        {planning ? (
+          <div style={{ fontSize: 13, color: "#fbbf24" }}>
+            {t(`✍️ AI กำลังเขียนโครงเรื่อง… เขียนแล้ว ${data.written}/${data.episodeCount} ตอน`, `✍️ AI is writing the outline… ${data.written} of ${data.episodeCount} episodes done`)}
+          </div>
+        ) : (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {firstMissing !== null && (
+              <button style={{ ...primary, opacity: busy ? 0.6 : 1 }} disabled={busy !== null} onClick={() => plan(false)}>
+                {data.written === 0 && !data.episodes.some((e) => e.written)
+                  ? t("✨ ให้ AI เขียนโครงเรื่องทุกตอน", "✨ Have AI outline every episode")
+                  : t("✨ ให้ AI เขียนต่อ (ตอนที่ยังว่าง)", "✨ AI: write the rest (empty episodes)")}
+              </button>
+            )}
+            {data.episodes.some((e) => e.written) && data.lastMade < data.episodeCount && (
+              <button style={{ ...btn, opacity: busy ? 0.6 : 1 }} disabled={busy !== null} onClick={() => plan(true)}>
+                {data.lastMade > 0 ? t(`↻ ให้ AI เขียนใหม่ตั้งแต่ EP.${data.lastMade + 1}`, `↻ AI: rewrite from EP.${data.lastMade + 1}`) : t("↻ ให้ AI เขียนใหม่ทั้งหมด", "↻ AI: rewrite it all")}
+              </button>
+            )}
+          </div>
+        )}
+        {data.error && !planning && <div style={{ fontSize: 13, color: "#fca5a5" }}>{data.error}</div>}
+      </div>
+
+      {settings && (
+        <SeriesSettings
+          key={`${data.title}:${data.episodeCount}:${data.logline}`}
+          data={data}
+          busy={busy !== null}
+          onSave={async (body) => {
+            const ok = await patch("settings", body);
+            if (ok) setSettings(false);
+            return ok;
+          }}
+          onCancel={() => setSettings(false)}
+        />
+      )}
+
+      {data.episodes.map((e) => (
+        <EpisodeCard
+          key={`${e.number}:${e.outline?.title ?? ""}:${e.outline?.summary ?? ""}:${e.outline?.hook ?? ""}:${e.outline?.cliffhanger ?? ""}`}
+          episode={e}
+          finale={e.number === data.episodeCount}
+          busy={busy}
+          locked={planning}
+          onOpen={onOpen}
+          onMake={() => make(e.number)}
+          onSave={(outline) => patch(`episode-${e.number}`, { episodes: [{ number: e.number, ...outline }] })}
+        />
+      ))}
+    </div>
+  );
+}
+
 // ─── Page ───────────────────────────────────────────────────────────────
 
 // useSearchParams needs a Suspense boundary or the build refuses to prerender.
@@ -2103,6 +2765,7 @@ function MovieStudio() {
   const router = useRouter();
   const search = useSearchParams();
   const openId = Number(search.get("p")) || null;
+  const seriesId = Number(search.get("s")) || null;
   const songId = Number(search.get("song"));
   const songTrack = Number(search.get("track") ?? 0);
   const fromSong =
@@ -2110,32 +2773,40 @@ function MovieStudio() {
       ? { id: songId, track: songTrack }
       : null;
   const [projects, setProjects] = useState<ProjectRow[] | null>(null);
-  const [creating, setCreating] = useState(fromSong !== null);
+  const [seriesList, setSeriesList] = useState<SeriesRow[] | null>(null);
+  const [creating, setCreating] = useState<"project" | "series" | null>(fromSong !== null ? "project" : search.get("new") === "series" ? "series" : null);
 
   useEffect(() => {
     if (session === null) router.push(loginHref());
   }, [session, router]);
 
   const loadList = useCallback(async () => {
-    const r = await getJson<{ projects: ProjectRow[] }>("/api/story");
+    const [r, s] = await Promise.all([getJson<{ projects: ProjectRow[] }>("/api/story"), getJson<{ series: SeriesRow[] }>("/api/story/series")]);
     setProjects(r.ok ? r.data.projects : []);
+    setSeriesList(s.ok ? s.data.series : []);
   }, []);
 
   useEffect(() => {
-    if (!session || openId) return;
+    if (!session || openId || seriesId) return;
     let active = true;
-    getJson<{ projects: ProjectRow[] }>("/api/story").then((r) => {
-      if (active) setProjects(r.ok ? r.data.projects : []);
+    Promise.all([getJson<{ projects: ProjectRow[] }>("/api/story"), getJson<{ series: SeriesRow[] }>("/api/story/series")]).then(([r, s]) => {
+      if (!active) return;
+      setProjects(r.ok ? r.data.projects : []);
+      setSeriesList(s.ok ? s.data.series : []);
     });
     return () => {
       active = false;
     };
-  }, [session, openId]);
+  }, [session, openId, seriesId]);
 
   const open = (id: number | null) => {
-    setCreating(false);
+    setCreating(null);
     router.push(id ? `/movie?p=${id}` : "/movie");
     if (!id) loadList();
+  };
+  const openSeries = (id: number) => {
+    setCreating(null);
+    router.push(`/movie?s=${id}`);
   };
 
   if (!session) return null;
@@ -2150,21 +2821,56 @@ function MovieStudio() {
         hue={300}
         size="slim"
         sub={t(
-          "เขียนเรื่องหรือใส่เพลง → AI แบ่งเป็นองก์ ฉาก และช็อตพร้อมมุมกล้องและบทพูดไทย → ตัวละคร ของ และสถานที่จากคลังอ้างอิงเหมือนเดิมทุกช็อต → แก้และสร้างใหม่ได้ทีละองก์ ทีละฉาก ทีละช็อต",
-          "Write a story or bring a song → AI splits it into acts, scenes and shots with camera angles and dialogue → characters, props and places from your reference library stay the same in every shot → edit and remake act by act, scene by scene, shot by shot"
+          "เขียนเรื่องหรือใส่เพลง → AI แบ่งเป็นองก์ ฉาก และช็อตพร้อมมุมกล้องและบทพูดไทย → ตัวละคร ของ และสถานที่จากคลังอ้างอิงเหมือนเดิมทุกช็อต → แก้และสร้างใหม่ได้ทีละองก์ ทีละฉาก ทีละช็อต · หรือเล่าเป็นละครสั้นแนวตั้งและซีรีส์หลายตอน ทุกตอนเปิดด้วยฉากเด็ดและจบด้วยปมค้าง",
+          "Write a story or bring a song → AI splits it into acts, scenes and shots with camera angles and dialogue → characters, props and places from your reference library stay the same in every shot → edit and remake act by act, scene by scene, shot by shot · or tell it as a vertical short drama or a series, every episode opening on a hook and ending on a cliffhanger"
         )}
       />
       <div style={{ padding: "0 16px 80px", maxWidth: 1000, margin: "0 auto", color: "#f1f5f9", display: "flex", flexDirection: "column", gap: 20 }}>
         {openId ? (
-          <ProjectEditor key={openId} id={openId} onBack={() => open(null)} />
-        ) : creating ? (
+          <ProjectEditor key={openId} id={openId} onBack={() => open(null)} onOpen={(id) => open(id)} onSeries={openSeries} />
+        ) : seriesId ? (
+          <SeriesEditor key={seriesId} id={seriesId} onBack={() => open(null)} onOpen={(id) => open(id)} />
+        ) : creating === "series" ? (
           <>
-            <button style={{ ...btn, alignSelf: "flex-start" }} onClick={() => setCreating(false)}>{t("← กลับ", "← Back")}</button>
+            <button style={{ ...btn, alignSelf: "flex-start" }} onClick={() => setCreating(null)}>{t("← กลับ", "← Back")}</button>
+            <NewSeries onCreated={openSeries} />
+          </>
+        ) : creating === "project" ? (
+          <>
+            <button style={{ ...btn, alignSelf: "flex-start" }} onClick={() => setCreating(null)}>{t("← กลับ", "← Back")}</button>
             <NewProject onCreated={(id) => open(id)} fromSong={fromSong} />
           </>
         ) : (
           <>
-            <button style={{ ...primary, alignSelf: "flex-start" }} onClick={() => setCreating(true)}>{t("+ โปรเจกต์ใหม่", "+ New project")}</button>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button style={primary} onClick={() => setCreating("project")}>{t("+ โปรเจกต์ใหม่", "+ New project")}</button>
+              <button style={primary} onClick={() => setCreating("series")}>{t("📱 ละครสั้น / 📺 ซีรีส์ใหม่", "📱 Short drama / 📺 New series")}</button>
+            </div>
+            {seriesList && seriesList.length > 0 && (
+              <>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0" }}>{t("ซีรีส์และละครสั้น", "Series & short dramas")}</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 14 }}>
+                  {seriesList.map((s) => (
+                    <button key={`series-${s.id}`} onClick={() => openSeries(s.id)} style={{ ...card, padding: 0, overflow: "hidden", cursor: "pointer", color: "#fff", textAlign: "left", fontFamily: "inherit", border: "1px solid rgba(216,180,254,0.2)" }}>
+                      <div style={{ height: 120, background: "rgba(2,6,23,0.6)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 36 }}>
+                        {s.cover ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={s.cover} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                        ) : formatIcon(s.format)}
+                      </div>
+                      <div style={{ padding: 12 }}>
+                        <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.title}</div>
+                        <div style={{ fontSize: 12, color: "#94a3b8" }}>
+                          {t(formatOf(s.format).label)} · {t(`สร้างแล้ว ${s.made}/${s.episodes} ตอน`, `${s.made} of ${plural(s.episodes, "episode")} made`)}
+                        </div>
+                        {s.planning && <div style={{ fontSize: 12, color: "#fbbf24" }}>{t("✍️ AI กำลังเขียนโครงเรื่อง…", "✍️ AI is writing the outline…")}</div>}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0" }}>{t("หนังและ MV", "Films & MVs")}</div>
+              </>
+            )}
             {projects === null ? (
               <div style={{ color: "#94a3b8" }}>{t("กำลังโหลด…", "Loading…")}</div>
             ) : projects.length === 0 ? (

@@ -24,10 +24,12 @@ import {
   renderSeconds,
   songTimeline,
   type CharacterLite,
+  type EpisodePlan,
   type ShotDraft,
   type StoryMode,
   type TimelineSlot,
 } from './cinematic';
+import { bibleOf, episodePlanOf } from './series';
 import { asLite, assetPictures, isAssetKind, spliceScene, type AssetKind, type LibraryAsset, type StructureInput, type StructurePlan } from './library';
 import { planMvSlots, planSceneShots, planStructuredFilm, type SceneBrief } from './structure';
 import { ASSEMBLE_PRICE_DEFAULTS, musicPrompt, musicSeconds } from './edit';
@@ -49,9 +51,14 @@ const projectInclude = {
   acts: { orderBy: { actNumber: 'asc' as const } },
   scenes: { orderBy: { sceneNumber: 'asc' as const } },
   shots: { orderBy: { shotNumber: 'asc' as const } },
+  // An episode's series: its outline tells the planner the hook and the cliffhanger.
+  series: { select: { id: true, title: true, format: true, episodeCount: true, bibleJson: true } },
 };
 
 const ORPHAN_CLAIM_MS = 10 * 60_000;
+
+/** Film and MV projects one customer may keep — a series' episodes count too. */
+export const MAX_STORY_PROJECTS = 50;
 
 export type StoryProjectFull =NonNullable<Awaited<ReturnType<typeof loadOwnedProject>>>;
 
@@ -118,7 +125,15 @@ function planInputOf(project: StoryProjectFull): StructureInput {
     mood: project.mood ?? '',
     songSeconds: Number(project.songSeconds ?? 0),
     targetSeconds: mode === 'film' ? filmTarget(project.scriptJson) : null,
+    episode: episodeOf(project),
   };
+}
+
+/** An episode's place in its series for the planner, or undefined for a standalone film. */
+function episodeOf(project: StoryProjectFull): EpisodePlan | undefined {
+  if (!project.series || project.episodeNumber === null || project.mode !== 'film') return undefined;
+  const { format, episodeCount } = project.series;
+  return episodePlanOf({ format, episodeCount, aspectRatio: project.aspectRatio }, bibleOf(project.series.bibleJson), project.episodeNumber);
 }
 
 export function idList(value: unknown): number[] {

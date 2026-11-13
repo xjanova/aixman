@@ -2,6 +2,7 @@ import prisma from '@/lib/db';
 import { Prisma } from '@/generated/prisma/client';
 import { expiredKaraokeKeys, karaokeObject } from '@/lib/lyrics/karaoke-files';
 import { deleteObjects, keyFromPublicUrl, isStorageConfigured, listObjectKeys, publicUrlOfKey } from '@/lib/storage/r2';
+import { castOf } from '@/lib/story/series';
 
 /**
  * Media retention.
@@ -50,10 +51,12 @@ function sunoOf(params: Record<string, unknown> | null): Record<string, unknown>
  * the project — they are what keeps its faces the same.
  */
 async function storyKeepKeys(): Promise<Set<string>> {
-  const [assets, shots, songs] = await Promise.all([
+  const [assets, shots, songs, series] = await Promise.all([
     prisma.aiStoryCharacter.findMany({ select: { referenceUrl: true, images: true } }),
     prisma.aiStoryShot.findMany({ where: { keyframeUrl: { not: null } }, select: { keyframeUrl: true } }),
     prisma.aiStoryProject.findMany({ where: { songUrl: { not: null } }, select: { songUrl: true } }),
+    // A series' cast pictures seed every episode made later, months on maybe.
+    prisma.aiStorySeries.findMany({ where: { castJson: { not: Prisma.DbNull } }, select: { castJson: true } }),
   ]);
   const keep = new Set<string>();
   const add = (url: unknown) => {
@@ -66,6 +69,7 @@ async function storyKeepKeys(): Promise<Set<string>> {
   }
   for (const s of shots) add(s.keyframeUrl);
   for (const p of songs) add(p.songUrl);
+  for (const s of series) for (const c of castOf(s.castJson)) add(c.referenceUrl);
   return keep;
 }
 

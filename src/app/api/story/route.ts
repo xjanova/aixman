@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserId } from '@/lib/auth';
 import prisma from '@/lib/db';
 import { ASPECTS, LIMITS, LOOKS, MOODS, pickKey } from '@/lib/story/cinematic';
-import { NEW_PROJECT_TITLE, StoryError } from '@/lib/story/service';
+import { MAX_STORY_PROJECTS as MAX_PROJECTS, NEW_PROJECT_TITLE, StoryError } from '@/lib/story/service';
 import { STORY_REPLY, parseCharacters, resolveSong, storyErrorReply, storyReply, text, withFilmLength } from '@/lib/story/http';
 import { pick, requestLocale } from '@/lib/i18n/locale';
 
@@ -16,14 +16,13 @@ import { pick, requestLocale } from '@/lib/i18n/locale';
 
 export const dynamic = 'force-dynamic';
 
-const MAX_PROJECTS = 50;
-
 export async function GET(request: NextRequest) {
   const locale = requestLocale(request);
   const userId = await getCurrentUserId();
   if (!userId) return storyReply(STORY_REPLY.signIn, locale, 401);
   const rows = await prisma.aiStoryProject.findMany({
-    where: { userId },
+    // A series' episodes are listed in their series (/api/story/series).
+    where: { userId, seriesId: null },
     orderBy: { updatedAt: 'desc' },
     take: MAX_PROJECTS,
     select: {
@@ -62,7 +61,14 @@ export async function POST(request: NextRequest) {
 
     const count = await prisma.aiStoryProject.count({ where: { userId } });
     if (count >= MAX_PROJECTS) {
-      throw new StoryError({ th: `มีโปรเจกต์ครบ ${MAX_PROJECTS} อันแล้ว ลบอันเก่าก่อน`, en: `You already have ${MAX_PROJECTS} projects. Delete an old one first.` }, 409);
+      // Series episodes are projects too, though the list here shows only standalone ones.
+      throw new StoryError(
+        {
+          th: `มีโปรเจกต์ครบ ${MAX_PROJECTS} อันแล้ว (นับรวมตอนของซีรีส์ด้วย) ลบอันเก่าก่อน`,
+          en: `You already have ${MAX_PROJECTS} projects (series episodes count too). Delete an old one first.`,
+        },
+        409
+      );
     }
 
     const characters = parseCharacters(body.characters, userId, locale);

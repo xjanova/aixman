@@ -441,6 +441,54 @@ export interface PlanInput {
   /** The library's props and places, numbered for the planner like the cast. */
   props?: CharacterLite[];
   locations?: CharacterLite[];
+  /** Set when the film is an episode of a series (series.ts): what it opens and ends on. */
+  episode?: EpisodePlan;
+}
+
+/**
+ * An episode of a series or short drama, as the planners see it. A short
+ * drama's episode does not open on a slow establishing shot: it grabs the
+ * viewer in its first seconds and stops on a cliffhanger the next one picks up.
+ */
+export interface EpisodePlan {
+  number: number;
+  count: number;
+  /** short = a vertical short drama watched on phones; series = longer episodes. */
+  format: 'short' | 'series';
+  /** The moment the episode opens on, in the story's language ('' = none written). */
+  hook: string;
+  /** The unresolved moment it ends on. */
+  cliffhanger: string;
+  /** How the episode before ended — this one picks it up ('' for the first). */
+  previously: string;
+  /** 9:16: faces and reactions fill a phone screen; wide shots stay rare. */
+  vertical: boolean;
+}
+
+/** The planners' opening rule: an establishing shot for a film, the hook for an episode. */
+export function openingRule(episode: EpisodePlan | undefined, what = 'the film'): string {
+  if (!episode) return `Open ${what} on an establishing shot.`;
+  return `Open the episode on its hook within the first 3 seconds — no slow establishing shot: ${episode.hook || 'a striking moment of conflict'}.`;
+}
+
+/** The planners' closing rule: the end of a film, a cliffhanger, or the series finale. */
+export function endingRule(episode: EpisodePlan | undefined): string {
+  if (!episode) return 'End the film.';
+  if (episode.number >= episode.count) return `This is the finale: resolve the story${episode.cliffhanger ? ` and close on: ${episode.cliffhanger}` : ''}.`;
+  return `End the episode on its cliffhanger, unresolved, cutting at its peak: ${episode.cliffhanger || 'a secret revealed or a new threat'}.`;
+}
+
+/** Extra rules for an episode: where it sits in the series, and the phone frame. */
+export function episodeRules(episode: EpisodePlan | undefined): string[] {
+  if (!episode) return [];
+  const kind = episode.format === 'short' ? 'a vertical short drama watched on phones — fast, emotional, every scene earns its place' : 'a drama series';
+  const lines = [
+    `This is episode ${episode.number} of ${episode.count} of ${kind}.${episode.previously ? ` It picks up straight from how the last episode ended: ${episode.previously}` : ''}`,
+  ];
+  if (episode.vertical) {
+    lines.push('Vertical 9:16 frame: favour medium, medium-close and close sizes on faces and reactions; keep wide shots rare and short, the subject centred.');
+  }
+  return lines;
 }
 
 export function planFromRules(input: PlanInput): ShotDraft[] {
@@ -578,13 +626,23 @@ export function filmPlannerMessages(input: PlanInput, part?: FilmPart): { system
   const seconds = part?.seconds ?? input.targetSeconds ?? null;
   const count = seconds ? Math.min(part?.maxShots ?? LIMITS.shotsFilm, Math.max(1, Math.round(seconds / FILM_AVG_SHOT_SECONDS))) : 0;
   const scenes = part?.scenes?.length ? part.scenes : null;
+  // An episode opens on its hook and stops on its cliffhanger; a film opens wide and ends.
+  const ep = input.episode;
+  const opening = openingRule(ep);
+  const ending = endingRule(ep);
+  const whole = ep ? `the whole episode (${ending})` : 'the whole story with a beginning, middle and end';
+  // A standalone film keeps its prompt word for word, as before series existed.
+  const direct = ep
+    ? `${opening} Vary sizes (wide → medium → close-up) and give every camera move a reason.`
+    : 'Open on an establishing shot; vary sizes (wide → medium → close-up) and give every camera move a reason.';
   const scope = scenes
-    ? `- Write the shots of ${scenes.length === 1 ? 'scene' : 'scenes'} ${scenes.map((sc) => sc.number).join(', ')} only — ${count} shots (never more) adding up to about ${Math.round(part!.seconds)} seconds, in scene order, each tagged with its "scene" number. ${part!.index === 0 ? 'Open the film on an establishing shot.' : 'Continue straight on from what comes before; do not re-introduce the story.'}${part!.index === part!.count - 1 ? ' End the film.' : ' Do not end the film.'} Open each scene on a shot that shows its place. Vary sizes and give every camera move a reason.`
+    ? `- Write the shots of ${scenes.length === 1 ? 'scene' : 'scenes'} ${scenes.map((sc) => sc.number).join(', ')} only — ${count} shots (never more) adding up to about ${Math.round(part!.seconds)} seconds, in scene order, each tagged with its "scene" number. ${part!.index === 0 ? opening : 'Continue straight on from what comes before; do not re-introduce the story.'}${part!.index === part!.count - 1 ? ` ${ending}` : ' Do not end the film.'} Open each scene on a shot that shows its place. Vary sizes and give every camera move a reason.`
     : part
-    ? `- This is part ${part.index + 1} of ${part.count} of a longer film: write ONLY this part's shots — ${count} shots (never more) adding up to about ${Math.round(part.seconds)} seconds, so prefer 8–10 second shots. ${part.index === 0 ? 'Open the film on an establishing shot.' : 'Continue straight on from the part before; do not re-introduce the story.'}${part.index === part.count - 1 ? ' End the film.' : ' Do not end the film; stop where the next part takes over.'} Vary sizes (wide → medium → close-up) and give every camera move a reason.`
+    ? `- This is part ${part.index + 1} of ${part.count} of a longer film: write ONLY this part's shots — ${count} shots (never more) adding up to about ${Math.round(part.seconds)} seconds, so prefer 8–10 second shots. ${part.index === 0 ? opening : 'Continue straight on from the part before; do not re-introduce the story.'}${part.index === part.count - 1 ? ` ${ending}` : ' Do not end the film; stop where the next part takes over.'} Vary sizes (wide → medium → close-up) and give every camera move a reason.`
     : seconds
-      ? `- About ${count} shots adding up to about ${seconds} seconds that tell the whole story with a beginning, middle and end. Open on an establishing shot; vary sizes (wide → medium → close-up) and give every camera move a reason.`
-      : '- 4 to 12 shots that tell the whole story with a beginning, middle and end. Open on an establishing shot; vary sizes (wide → medium → close-up) and give every camera move a reason.';
+      ? `- About ${count} shots adding up to about ${seconds} seconds that tell ${whole}. ${direct}`
+      : `- 4 to 12 shots that tell ${whole}. ${direct}`;
+  const episodeLines = episodeRules(ep).map((line) => `\n- ${line}`).join('');
   const system = `You are a film director and storyboard artist. Turn the user's story into a shot list for an AI video model that renders ONE shot at a time and knows nothing of the other shots.
 Return ONLY JSON, no markdown: {"title": string, "shots": [{${scenes ? '"scene": number, ' : ''}"characters": [numbers], ${input.props?.length ? '"props": [numbers], ' : ''}"speaker": number|null, "duration": 5|8|10, "size": string, "camera": string, "visual": string, "line": string, "sound": string}]}
 Rules:
@@ -593,7 +651,7 @@ ${scope}
 - "size" one of: ${SIZE_KEYS}. "camera" one of: ${MOVE_KEYS}. Never "push-in" on a wide or full shot that opens on a character.
 - "visual": English, 40–80 words, self-contained: the setting, each visible character by name with their look, the action in order, lighting and mood. Look of the film: ${look.style}.
 - "line": words spoken on screen in the story's language (Thai stays Thai, verbatim), at most about 2.5 words per second of "duration"; "" when nobody speaks. "speaker" is that character's number, null otherwise.
-- "sound": English, ambient and physical sounds only, no music, no dialogue.${input.props?.length ? '\n- "props": numbers from the prop list of the objects visible in the shot; describe each one in "visual" the same way every time.' : ''}`;
+- "sound": English, ambient and physical sounds only, no music, no dialogue.${input.props?.length ? '\n- "props": numbers from the prop list of the objects visible in the shot; describe each one in "visual" the same way every time.' : ''}${episodeLines}`;
   const story = scenes
     ? `Whole story:\n${input.brief}\n\nOutline of the film:\n${part!.outline.map((p, k) => `${k + 1}. ${p}`).join('\n')}\n\nWrite these scenes:\n${sceneList(scenes)}`
     : part
@@ -611,9 +669,13 @@ export function filmPartCount(targetSeconds: number | null | undefined): number 
 /** System + user message for a long film's outline: its title and what each part tells. */
 export function filmOutlineMessages(input: PlanInput, parts: number): { system: string; user: string } {
   const target = input.targetSeconds ?? 0;
+  const ep = input.episode;
+  const arc = ep
+    ? `Together the parts tell the whole episode: the first opens on its hook (${ep.hook || 'a striking moment of conflict'}), the last ${ep.number >= ep.count ? 'resolves the story' : `stops on its cliffhanger, unresolved (${ep.cliffhanger || 'a secret revealed or a new threat'})`}`
+    : 'Together the parts tell the whole story with a beginning, middle and end';
   const system = `You are a screenwriter. Expand the user's story into a film of about ${Math.round(target / 60)} minutes, told in ${parts} consecutive parts of about ${Math.round(target / parts)} seconds each.
 Return ONLY JSON, no markdown: {"title": string, "parts": [string]} with exactly ${parts} parts.
-Each part: 2 to 4 sentences, in the story's language, saying what happens in it — places, who is there, what they do and say. Together the parts tell the whole story with a beginning, middle and end; invent scenes the story implies when it is short, never contradict it.`;
+Each part: 2 to 4 sentences, in the story's language, saying what happens in it — places, who is there, what they do and say. ${arc}; invent scenes the story implies when it is short, never contradict it.${episodeRules(ep).map((line) => `\n${line}`).join('')}`;
   return { system, user: `Cast:\n${castList(input.characters)}\n\nStory:\n${input.brief}` };
 }
 
