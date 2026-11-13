@@ -135,6 +135,32 @@ export const LOOKS: Record<string, Style> = {
     style: '2D anime, cinematic, clean line art, painterly backgrounds, soft cel shading, vivid sky',
     music: 'A light orchestral theme with piano and strings, medium tempo.',
   },
+  // Period looks name the era's clothes and places: the style line rides on every shot,
+  // so a story in one of them should stay in that era (see series-templates.ts).
+  wuxia: {
+    label: { th: 'จีนกำลังภายใน', en: 'Chinese wuxia' },
+    style:
+      'Live-action Chinese wuxia period film set in ancient China, flowing hanfu robes, long hair tied up, swords, wooden inns, temple courtyards, bamboo forests and misty mountains, wind-blown fabric, cool jade and ink-wash colour grade',
+    music: 'Guzheng, erhu and bamboo flute over deep drums, sweeping and heroic, medium tempo.',
+  },
+  palace: {
+    label: { th: 'จีนย้อนยุค / วังหลัง', en: 'Chinese period / palace' },
+    style:
+      'Live-action Chinese historical costume drama set in ancient China, embroidered silk hanfu, ornate hairpins, palace halls with red pillars and carved lattice windows, lantern and candle light, rich red and gold colour grade',
+    music: 'A slow guzheng and pipa melody with soft strings, elegant and restrained.',
+  },
+  xianxia: {
+    label: { th: 'จีนเทพเซียน', en: 'Chinese xianxia' },
+    style:
+      'Live-action Chinese xianxia fantasy, flowing white and pastel layered robes, long hair with jade ornaments, celestial halls above a sea of clouds, blossoming trees, glowing spiritual energy, soft ethereal light, pale dreamy colour grade',
+    music: 'An ethereal bamboo flute and guzheng over airy choir pads, slow and floating.',
+  },
+  siam: {
+    label: { th: 'ไทยย้อนยุค', en: 'Thai period' },
+    style:
+      'Live-action Thai period drama set in old Siam of the Ayutthaya era, traditional Thai dress with sabai shoulder cloths and chong kraben, teak stilt houses and floating markets on the river, golden temple spires, warm tropical sunlight, rich gold and teak-brown colour grade',
+    music: 'A gentle Thai classical ensemble with ranat xylophone, khim and bamboo flute, slow and graceful.',
+  },
 };
 
 /** MV moods (โหมด MV). The song is the score, so no music line. */

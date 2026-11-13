@@ -29,6 +29,7 @@ import { useToast } from "@/components/ui/toast-provider";
 import { loginHref } from "@/lib/safe-callback";
 import { ASPECTS, CAMERA_MOVES, FILM_LENGTHS, LIMITS, LOOKS, MOODS, SHOT_SIZES, safeCamera } from "@/lib/story/cinematic";
 import { EPISODE_LENGTHS, SERIES_FORMATS, SERIES_GENRES, SERIES_LIMITS, type SeriesFormat } from "@/lib/story/series";
+import { SERIES_TEMPLATES, templateForm } from "@/lib/story/series-templates";
 import { CameraPreview } from "@/components/camera-preview/CameraPreview";
 import { isCameraMoveId, isShotSizeId, MOVE_HINTS, SIZE_HINTS } from "@/lib/camera-shots";
 import { useLocale, useT } from "@/lib/i18n/client";
@@ -355,19 +356,29 @@ async function uploadFile(file: File, kind: "image" | "audio") {
 
 // ─── Characters ─────────────────────────────────────────────────────────
 
-function CharacterEditor({ value, onChange }: { value: Character[]; onChange: (next: Character[]) => void }) {
+function CharacterEditor({ value, onChange }: { value: Character[]; onChange: (next: Character[] | ((list: Character[]) => Character[])) => void }) {
   const { toast } = useToast();
   const t = useT();
   const [uploading, setUploading] = useState<number | null>(null);
+  // False once the editor is replaced (an example story refilled the cast): an upload still in flight is dropped.
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
   const set = (k: number, patch: Partial<Character>) => onChange(value.map((c, i) => (i === k ? { ...c, ...patch } : c)));
 
   const pick = async (k: number, file: File | undefined) => {
     if (!file) return;
     setUploading(k);
     const r = await uploadFile(file, "image");
+    if (!alive.current) return;
     setUploading(null);
     if (!r.ok) toast("error", t(r.error));
-    else set(k, { referenceUrl: r.data.url });
+    // Onto the list as it is now, so what was typed while the picture uploaded stays.
+    else onChange((list) => list.map((c, i) => (i === k ? { ...c, referenceUrl: r.data.url } : c)));
   };
 
   return (
@@ -2212,6 +2223,10 @@ function EpisodeCount({ value, onChange }: { value: number; onChange: (n: number
   );
 }
 
+/** The cast as it was filled in — blank rows left out — to tell whether it changed. */
+const castKey = (list: Character[]) =>
+  JSON.stringify(list.filter((c) => c.name.trim() || c.description.trim() || c.referenceUrl).map((c) => [c.name.trim(), c.description.trim(), c.referenceUrl]));
+
 function NewSeries({ onCreated }: { onCreated: (id: number) => void }) {
   const { toast } = useToast();
   const t = useT();
@@ -2226,6 +2241,41 @@ function NewSeries({ onCreated }: { onCreated: (id: number) => void }) {
   const [aspect, setAspect] = useState(SERIES_FORMATS.short.aspect);
   const [characters, setCharacters] = useState<Character[]>([{ name: "", description: "", referenceUrl: null }]);
   const [busy, setBusy] = useState(false);
+  const [template, setTemplate] = useState<string | null>(null);
+  // What the last example put in the form (nothing, before any): anything else in it is the customer's own.
+  const [filled, setFilled] = useState({ title: "", premise: "", cast: castKey([]) });
+  const [castEpoch, setCastEpoch] = useState(0);
+
+  // An example story fills the whole form, and every field stays editable after it.
+  const applyTemplate = (key: string) => {
+    const form = templateForm(key, locale);
+    if (!form || busy) return;
+    const own = title.trim() !== filled.title || premise.trim() !== filled.premise || castKey(characters) !== filled.cast;
+    if (
+      own &&
+      !confirm(
+        t(
+          "ใช้เรื่องตัวอย่างนี้แทน? ชื่อเรื่อง เรื่องย่อ และนักแสดงที่กรอกไว้จะถูกแทนที่",
+          "Use this example instead? The title, the story and the cast you filled in will be replaced."
+        )
+      )
+    )
+      return;
+    const cast: Character[] = form.cast.map((c) => ({ ...c, referenceUrl: null }));
+    setTemplate(key);
+    setFormat(form.format);
+    setTitle(form.title);
+    setPremise(form.premise);
+    setGenre(form.genre);
+    setLook(form.look);
+    setAspect(form.aspect);
+    setEpisodes(form.episodeCount);
+    setSeconds(form.episodeSeconds);
+    setCharacters(cast);
+    setFilled({ title: form.title, premise: form.premise, cast: castKey(cast) });
+    // A new editor for the new cast: a face still uploading belonged to the cast it replaces.
+    setCastEpoch((n) => n + 1);
+  };
 
   // A format brings its frame, episode length and count; a genre its look. All stay editable.
   const pickFormat = (f: SeriesFormat) => {
@@ -2267,8 +2317,35 @@ function NewSeries({ onCreated }: { onCreated: (id: number) => void }) {
   };
 
   const shotsPerEpisode = Math.max(1, Math.round(seconds / 8));
+  const picked = SERIES_TEMPLATES.find((x) => x.key === template);
   return (
     <div style={{ ...card, display: "flex", flexDirection: "column", gap: 18 }}>
+      <div>
+        <span style={label}>
+          {t(
+            "เริ่มจากเรื่องตัวอย่าง — กดแล้วแก้ต่อได้ทุกช่อง หรือข้ามไปเขียนเรื่องของคุณเองด้านล่าง",
+            "Start from an example — press one and edit anything, or skip this and write your own story below"
+          )}
+        </span>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {SERIES_TEMPLATES.map((tpl) => (
+            <button key={tpl.key} style={{ ...chip(template === tpl.key), opacity: busy ? 0.6 : 1 }} disabled={busy} title={t(tpl.pitch)} onClick={() => applyTemplate(tpl.key)}>
+              {t(tpl.label)}
+            </button>
+          ))}
+        </div>
+        {picked && (
+          <p style={{ fontSize: 12, color: "#94a3b8", marginTop: 6 }}>
+            {t(picked.title)} — {t(picked.pitch)}
+            {" · "}
+            {t(
+              "นักแสดงในตัวอย่างยังไม่มีภาพหน้า อัปโหลดเองด้านล่าง หรือให้ AI วาดจากคำบรรยายในคลังของตอนที่สร้างก็ได้",
+              "The example's cast has no faces yet — upload them below, or have AI draw them from their descriptions in the library of an episode you make"
+            )}
+          </p>
+        )}
+      </div>
+
       <div>
         <span style={label}>{t("รูปแบบ", "Format")}</span>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -2345,7 +2422,7 @@ function NewSeries({ onCreated }: { onCreated: (id: number) => void }) {
 
       <div>
         <span style={label}>{t("นักแสดงหลัก — ใส่ภาพหน้าไว้ หน้าจะเหมือนเดิมทุกตอน (AI เพิ่มตัวละครรองให้เองได้)", "Main cast — add their faces and they stay the same in every episode (AI may add supporting characters)")}</span>
-        <CharacterEditor value={characters} onChange={setCharacters} />
+        <CharacterEditor key={castEpoch} value={characters} onChange={setCharacters} />
       </div>
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>

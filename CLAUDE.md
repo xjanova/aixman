@@ -910,6 +910,20 @@ prod before the code**: it adds `series_id` / `episode_number` to
   cinematic.ts; structure step too). A standalone film is planned word for word
   as before (`series.test.mts` pins its prompt lines).
 - Retention keeps a series' cast pictures (`storyKeepKeys` reads `cast_json`).
+- **Example stories** (`series-templates.ts`, `SERIES_TEMPLATES` +
+  `series-templates.test.mts`): chips at the top of the new-series form — wuxia,
+  palace intrigue, time travel to ancient China, rebirth revenge, xianxia, time
+  travel to old Siam. One fills the whole form (format, genre, look, count,
+  length, title, the full plot as the premise, a cast by name with English
+  visual descriptions, no pictures) through `templateForm(key, locale)`; it is
+  sent like a story the customer typed, and nothing records which template a
+  series came from. Text the customer wrote is asked about before it is
+  replaced. Plots are our own — never retell a published work.
+- Genres `timetravel`, `wuxia`, `xianxia`, `period` and looks `wuxia`,
+  `palace`, `xianxia`, `siam` (in `LOOKS`, so single films have them too) came
+  with the templates. A period look names its era's clothes and places on
+  **every shot**, so a time-travel premise says the story plays in that era
+  from its first second (today is only heard in what the lead says).
 
 ## Thai karaoke (`src/lib/lyrics/`) — our own timing, our own font
 

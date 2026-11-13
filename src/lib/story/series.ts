@@ -105,9 +105,33 @@ export const SERIES_GENRES: Record<string, GenreInfo> = {
     direction: 'horror: dread that builds, a haunting with rules, sudden scares, a curse to break',
   },
   fantasy: {
-    label: { th: 'แฟนตาซี / ย้อนเวลา', en: 'Fantasy / time travel' },
+    label: { th: 'แฟนตาซี', en: 'Fantasy' },
     look: 'film',
-    direction: 'fantasy or time travel: a lead thrown into another world or era, a rule of magic or fate, a choice between two lives',
+    direction: 'fantasy: a lead thrown into another world, a rule of magic or fate, a choice between two lives',
+  },
+  timetravel: {
+    label: { th: 'ย้อนเวลา / ทะลุมิติ', en: 'Time travel' },
+    look: 'film',
+    direction:
+      "time travel: a lead from today wakes in another era, often in someone else's body, or returns to their own past with every memory; they use what they know to survive and change fate, hide who they really are, and must choose between the life they left and the one they found",
+  },
+  wuxia: {
+    label: { th: 'กำลังภายใน', en: 'Wuxia' },
+    look: 'wuxia',
+    direction:
+      'wuxia, a Chinese martial-arts period drama: the jianghu of rival sects and wandering swordsmen in ancient China, a master and a disciple, a massacre or a stolen manual to avenge, codes of honour and sworn brotherhood, duels that reveal a hidden technique, a traitor inside the sect',
+  },
+  xianxia: {
+    label: { th: 'เทพเซียน', en: 'Xianxia' },
+    look: 'xianxia',
+    direction:
+      'xianxia, a Chinese immortal fantasy: sects on cloud-wrapped peaks, the mortal, immortal and demon realms, a love heaven forbids, trials and tribulations, a sealed power or memory, a sacrifice',
+  },
+  period: {
+    label: { th: 'ย้อนยุค / วังหลัง', en: 'Period / palace' },
+    look: 'palace',
+    direction:
+      'a period court drama: a royal court of consorts, maids, servants and ministers, schemes, poisonings and false accusations, a clever underdog who rises rank by rank, a fight over the succession, love against duty; customs, clothes and speech stay true to the era and country the premise names',
   },
   comedy: {
     label: { th: 'ตลก / ฟีลกู้ด', en: 'Comedy' },
