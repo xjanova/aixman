@@ -20,6 +20,7 @@
  */
 
 import type { Msg } from '@/lib/i18n/locale';
+import { CAMERA_ANGLES, CONTINUITY_NOTE_LIMIT, angleOf } from './angles';
 
 export type StoryMode = 'film' | 'mv';
 
@@ -259,6 +260,8 @@ export interface ShotDraft {
   speakerId: number | null;
   shotSize: string;
   camera: string;
+  angle?: string;
+  continuityNote?: string;
   durationSec: number;
   /** MV only: position in the song. */
   startSec: number | null;
@@ -469,6 +472,7 @@ export interface PlanInput {
   locations?: CharacterLite[];
   /** Set when the film is an episode of a series (series.ts): what it opens and ends on. */
   episode?: EpisodePlan;
+  continuityContext?: string;
 }
 
 /**
@@ -670,13 +674,15 @@ export function filmPlannerMessages(input: PlanInput, part?: FilmPart): { system
       : `- 4 to 12 shots that tell ${whole}. ${direct}`;
   const episodeLines = episodeRules(ep).map((line) => `\n- ${line}`).join('');
   const system = `You are a film director and storyboard artist. Turn the user's story into a shot list for an AI video model that renders ONE shot at a time and knows nothing of the other shots.
-Return ONLY JSON, no markdown: {"title": string, "shots": [{${scenes ? '"scene": number, ' : ''}"characters": [numbers], ${input.props?.length ? '"props": [numbers], ' : ''}"speaker": number|null, "duration": 5|8|10, "size": string, "camera": string, "visual": string, "line": string, "sound": string}]}
+Return ONLY JSON, no markdown: {"title": string, "shots": [{${scenes ? '"scene": number, ' : ''}"characters": [numbers], ${input.props?.length ? '"props": [numbers], ' : ''}"speaker": number|null, "duration": 5|8|10, "size": string, "camera": string, "angle": string, "visual": string, "line": string, "sound": string, "continuity": string}]}
 Rules:
 ${scope}
 - "characters": numbers from the cast list of who is visible, the main face FIRST — that character's photo becomes the shot's first frame, so the shot must open on them, facing the camera or in three-quarter view.
 - "size" one of: ${SIZE_KEYS}. "camera" one of: ${MOVE_KEYS}. Never "push-in" on a wide or full shot that opens on a character.
 - "visual": English, 40–80 words, self-contained: the setting, each visible character by name with their look, the action in order, lighting and mood. Look of the film: ${look.style}.
 - "line": words spoken on screen in the story's language (Thai stays Thai, verbatim), at most about 2.5 words per second of "duration"; "" when nobody speaks. "speaker" is that character's number, null otherwise.
+- Dialogue drives the scene. Exactly ONE speaker and ONE short line per shot. Cut to the listener's reaction, then reverse to the reply; use medium-close/close shots and over-the-shoulder coverage without crossing the 180-degree axis. Keep eyelines, screen direction, clothing, wounds and held props consistent. The speaker must be visible; a null speaker means an off-screen narrator.
+- "angle": one of ${Object.keys(CAMERA_ANGLES).join(', ')}. "continuity": one short sentence in the story's language recording only the state change this shot actually depicts (who learns what, an injury, possession or location change); "" for no change. Do not report future events.
 - "sound": English, ambient and physical sounds only, no music, no dialogue.${input.props?.length ? '\n- "props": numbers from the prop list of the objects visible in the shot; describe each one in "visual" the same way every time.' : ''}${episodeLines}`;
   const story = scenes
     ? `Whole story:\n${input.brief}\n\nOutline of the film:\n${part!.outline.map((p, k) => `${k + 1}. ${p}`).join('\n')}\n\nWrite these scenes:\n${sceneList(scenes)}`
@@ -684,7 +690,7 @@ ${scope}
     ? `Whole story:\n${input.brief}\n\nOutline of the film:\n${part.outline.map((p, k) => `${k + 1}. ${p}`).join('\n')}\n\nWrite part ${part.index + 1}: ${part.summary}`
     : `Story:\n${input.brief}`;
   const props = input.props?.length ? `\n\nProps:\n${propList(input.props)}` : '';
-  return { system, user: `Cast:\n${castList(input.characters)}${props}\n\n${story}` };
+  return { system, user: `Cast:\n${castList(input.characters)}${props}\n\n${story}${input.continuityContext ?? ''}` };
 }
 
 /** How many parts a long film is planned in, or 0 when one call writes it all. */
@@ -702,7 +708,7 @@ export function filmOutlineMessages(input: PlanInput, parts: number): { system: 
   const system = `You are a screenwriter. Expand the user's story into a film of about ${Math.round(target / 60)} minutes, told in ${parts} consecutive parts of about ${Math.round(target / parts)} seconds each.
 Return ONLY JSON, no markdown: {"title": string, "parts": [string]} with exactly ${parts} parts.
 Each part: 2 to 4 sentences, in the story's language, saying what happens in it — places, who is there, what they do and say. ${arc}; invent scenes the story implies when it is short, never contradict it.${episodeRules(ep).map((line) => `\n${line}`).join('')}`;
-  return { system, user: `Cast:\n${castList(input.characters)}\n\nStory:\n${input.brief}` };
+  return { system, user: `Cast:\n${castList(input.characters)}\n\nStory:\n${input.brief}${input.continuityContext ?? ''}` };
 }
 
 /** The outline's title and parts, or null when it did not give `parts` of them. */
@@ -811,6 +817,7 @@ export function parseFilmPlan(text: string, input: PlanInput): { title: string; 
     const shotSize = pickKey(s.size, SHOT_SIZES, 'medium');
     const line = clip(s.line, LIMITS.line);
     const speaker = input.characters[Number(s.speaker) - 1];
+    if (line && speaker && !characterIds.includes(speaker.id)) characterIds.unshift(speaker.id);
     const scene = Number(s.scene);
     return [{
       ...(Number.isInteger(scene) && scene > 0 ? { scene } : {}),
@@ -819,6 +826,8 @@ export function parseFilmPlan(text: string, input: PlanInput): { title: string; 
       speakerId: line && speaker ? speaker.id : null,
       shotSize,
       camera: safeCamera(shotSize, pickKey(s.camera, CAMERA_MOVES, 'static'), characterIds.length > 0),
+      angle: angleOf(s.angle),
+      continuityNote: clip(s.continuity, CONTINUITY_NOTE_LIMIT),
       durationSec: clampSeconds(s.duration, line ? 8 : 5),
       startSec: null,
       visual,
@@ -896,9 +905,10 @@ export function buildShotPrompt(modelKey: string, shot: ShotDraft, ctx: PromptCo
       ? `The shot opens on ${cast[0].name} exactly as in the first frame, keeping the same face, hair and clothes. `
       : '';
   const line = shot.line.trim();
+  const angle = shot.angle ? CAMERA_ANGLES[angleOf(shot.angle)].prompt + ' ' : '';
 
   if (modelKey === 'minimax-h3') {
-    let body = `[Shot 1] ${style.style}, ${size.prompt} frames the scene. ${opening}${who}${shot.visual} ${move.prompt}`;
+    let body = `[Shot 1] ${style.style}, ${size.prompt} frames the scene. ${angle}${opening}${who}${shot.visual} ${move.prompt}`;
     if (ctx.mode === 'film' && line) {
       const voice = speaker ? `${speaker.name} (S1), ${speaker.description},` : 'A narrator (S1)';
       body += ` ${voice} says: <d>[Thai] ${line}</d>`;
@@ -910,7 +920,7 @@ export function buildShotPrompt(modelKey: string, shot: ShotDraft, ctx: PromptCo
   }
 
   // LTX-2.5 and anything else: one paragraph, speech in quotes.
-  let text = `${style.style}. ${capital(size.prompt)}. ${opening}${who}${shot.visual} ${move.prompt}`;
+  let text = `${style.style}. ${capital(size.prompt)}. ${angle}${opening}${who}${shot.visual} ${move.prompt}`;
   if (ctx.mode === 'film' && line) {
     const voice = speaker ? `${speaker.name}` : 'A narrator off screen';
     text += ` ${voice} speaks Thai in a natural voice, lips synced to every word, saying: "${line}"`;

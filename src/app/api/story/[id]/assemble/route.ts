@@ -32,6 +32,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   try {
     const project = await loadOwnedProject(userId, id);
     if (!project) return storyReply(STORY_REPLY.projectNotFound, locale, 404);
+    if (project.seriesId && project.shots.some((s) => s.status !== 'done' || !s.mediaUrl)) throw new StoryError({ th: 'สร้างคลิปทุกช็อตให้เสร็จก่อนแพ็กตอน', en: 'Finish every shot before packaging the episode.' }, 409);
     if (!project.shots.some((s) => s.status === 'done' && s.mediaUrl)) throw new StoryError({ th: 'ยังไม่มีช็อตที่สร้างเสร็จ', en: 'No shots are finished yet.' }, 422);
     if (project.mode === 'film' && dubbingSettings(project.scriptJson).enabled) {
       for (const shot of project.shots.filter((s) => s.status === 'done' && s.mediaUrl)) {

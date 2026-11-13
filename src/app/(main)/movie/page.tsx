@@ -38,6 +38,8 @@ import { KaraokeStage, karaokeProgressText, karaokeWorking, useKaraoke } from "@
 import { KARAOKE_POSITIONS, KARAOKE_THEMES, type KaraokeLook, type KaraokePosition, type KaraokeTheme } from "@/lib/lyrics/karaoke-look";
 
 import { DELIVERIES, ELEVENLABS_VOICES } from "@/lib/story/dubbing";
+import { CAMERA_ANGLES, CONTINUITY_NOTE_LIMIT } from "@/lib/story/angles";
+import { SHOT_EFFECTS, SHOT_SFX, SHOT_TRANSITIONS, shotCut, type ShotCut } from "@/lib/story/finishing";
 
 interface Character {
   id?: number;
@@ -116,6 +118,9 @@ interface Shot {
   sound: string;
   shotSize: string;
   camera: string;
+  angle: string;
+  continuityNote: string;
+  cut: ShotCut;
   durationSec: number;
   startSec: number | null;
   characterIds: number[];
@@ -172,7 +177,10 @@ interface EditSettings {
   duck: boolean;
   subtitles: boolean;
   coverFakeSubs: boolean;
-  transition: "cut" | "fade";
+  transition: "cut" | "fade" | "dissolve";
+  grade: boolean;
+  normalizeAudio: boolean;
+  episodeCards: boolean;
   titleCard: boolean;
   lipsync: boolean;
   /** MV: the lyrics swept word by word as they are sung, instead of plain subtitles. */
@@ -194,7 +202,7 @@ interface ProjectView {
   models: Model[];
   edit: EditSettings;
   music: { available: boolean; credits: number | null; stale: boolean; status: "none" | "rendering" | "done" | "failed"; url: string | null };
-  film: { status: "none" | "assembling" | "done"; credits: number; url: string | null; seconds: number | null; error: string | null };
+  film: { status: "none" | "assembling" | "done"; credits: number; url: string | null; seconds: number | null; error: string | null; packaged?: boolean };
   vocals: Vocals | null;
   dubbing: { enabled: boolean; narratorVoiceId: string; available: boolean; lipsyncAvailable: boolean; deliveries: Record<string, string> } | null;
   pictures: Pictures;
@@ -827,6 +835,10 @@ function ShotCard({
             <input style={field} maxLength={LIMITS.sound} placeholder={t("เช่น ฝนตก ลมพัด เสียงเทียนไหม้", "e.g. rain, wind, a candle crackling")} value={draft.sound} onChange={(e) => set({ sound: e.target.value })} />
           </div>
         )}
+        {project.mode === "film" && <div>
+          <span style={label}>{t("เหตุการณ์ที่ส่งต่อไปตอนถัดไป", "State change for the next episode")}</span>
+          <textarea style={{ ...field, minHeight: 60 }} maxLength={CONTINUITY_NOTE_LIMIT} value={draft.continuityNote ?? ""} onChange={(e) => set({ continuityNote: e.target.value })} placeholder={t("เช่น หลินรู้ว่าตราหยกเป็นของอาจารย์ และเก็บไว้กับตัว", "e.g. Lin discovers the jade seal belongs to her master and keeps it")} />
+        </div>}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
           <div>
             <span style={label}>{t("ระยะภาพ", "Shot size")}</span>
@@ -838,6 +850,12 @@ function ShotCard({
             <span style={label}>{t("กล้อง", "Camera")}</span>
             <select style={field} value={draft.camera} onChange={(e) => set({ camera: e.target.value })}>
               {Object.entries(CAMERA_MOVES).map(([k, c]) => <option key={k} value={k}>{t(c.label)}</option>)}
+            </select>
+          </div>
+          <div>
+            <span style={label}>{t("มุมกล้อง", "Camera angle")}</span>
+            <select style={field} value={draft.angle ?? "eye-level"} onChange={(e) => set({ angle: e.target.value })}>
+              {Object.entries(CAMERA_ANGLES).map(([k, a]) => <option key={k} value={k}>{t(a.label)}</option>)}
             </select>
           </div>
           <div>
@@ -856,6 +874,17 @@ function ShotCard({
             </select>
           </div>
         </div>
+        <details>
+          <summary style={{ cursor: "pointer", color: "#c4b5fd" }}>{t("ตัดต่อช็อตนี้", "Edit this shot")}</summary>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, paddingTop: 10 }}>
+            {([['transition', SHOT_TRANSITIONS, t("รอยต่อเข้าช็อต", "Incoming transition")], ['effect', SHOT_EFFECTS, t("เอฟเฟกต์ภาพ", "Picture effect")], ['sfx', SHOT_SFX, t("เสียงเอฟเฟกต์สังเคราะห์", "Synthesised sound effect")]] as const).map(([key, table, title]) => <label key={key}>
+              <span style={label}>{title}</span><select style={field} value={shotCut(draft.cut)[key]} onChange={(e) => set({ cut: { ...shotCut(draft.cut), [key]: e.target.value } })}>
+                {Object.entries(table).map(([k, text]) => <option key={k} value={k}>{t(text)}</option>)}
+              </select>
+            </label>)}
+            <label><span style={label}>{t("ความดังเอฟเฟกต์", "Effect volume")}</span><input style={field} type="number" min={0} max={1} step={0.05} value={shotCut(draft.cut).sfxVolume} onChange={(e) => set({ cut: { ...shotCut(draft.cut), sfxVolume: Number(e.target.value) } })} /></label>
+          </div>
+        </details>
         <ShotCameraPreview shotSize={draft.shotSize} camera={draft.camera} ledByCharacter={draft.characterIds.length > 0} />
         {project.characters.length > 0 && (
           <div>
@@ -975,6 +1004,9 @@ function pickEditable(s: Shot) {
     sound: s.sound,
     shotSize: s.shotSize,
     camera: s.camera,
+    angle: s.angle,
+    continuityNote: s.continuityNote,
+    cut: s.cut,
     durationSec: s.durationSec,
     characterIds: s.characterIds,
     speakerId: s.speakerId,
@@ -1384,6 +1416,33 @@ function Volume({ value, onCommit, disabled }: { value: number; onCommit: (v: nu
   );
 }
 
+function ShootingPanel({ project }: { project: Project }) {
+  const t = useT();
+  const { toast } = useToast();
+  const [loading, setLoading] = useState(false);
+  const [view, setView] = useState<{ script: string; ledger: string; previous: string } | null>(null);
+  const load = async () => {
+    setLoading(true);
+    const result = await getJson<{ script: string; ledger: string; previous: string }>(`/api/story/${project.id}/script?format=view`);
+    if (result.ok) setView(result.data); else toast("error", t(result.error));
+    setLoading(false);
+  };
+  return <details style={card}>
+    <summary style={{ cursor: "pointer", fontWeight: 600 }}>{t("บทถ่ายทำและความต่อเนื่อง", "Shooting script and continuity")}</summary>
+    <p style={{ color: "#94a3b8", fontSize: 12 }}>{t("อ่านจากบทช็อตล่าสุด สถานะสร้างคลิปไม่ได้ยืนยันว่าเนื้อหาในภาพตรงตามบท", "Reads the latest shot scripts. A rendered status does not verify what appears in the picture.")}</p>
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+      <button style={btn} disabled={loading} onClick={load}>{loading ? t("กำลังโหลด…", "Loading…") : t("ดู / โหลดล่าสุด", "View / refresh")}</button>
+      <a style={{ ...btn, textDecoration: "none" }} href={`/api/story/${project.id}/script`} download>{t("⬇ บทถ่ายทำ TXT", "⬇ Shooting script TXT")}</a>
+    </div>
+    {view && <>
+      <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12, maxHeight: 450, overflow: "auto", marginTop: 12 }}>{view.script}</pre>
+      <h3 style={{ fontSize: 14 }}>{t("ข้อมูลที่ส่งให้ตอนถัดไป", "Ledger for following episodes")}</h3>
+      <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12, maxHeight: 220, overflow: "auto" }}>{view.ledger || t("ยังไม่มีช็อต", "No shots yet")}</pre>
+      {view.previous && <><h3 style={{ fontSize: 14 }}>{t("ข้อมูลที่รับจากตอนก่อน", "Continuity from earlier episodes")}</h3><pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12, maxHeight: 220, overflow: "auto" }}>{view.previous}</pre></>}
+    </>}
+  </details>;
+}
+
 function FilmPanel({ view, busy, onEdit, onMusic, onAssemble }: {
   view: ProjectView;
   busy: string | null;
@@ -1398,6 +1457,7 @@ function FilmPanel({ view, busy, onEdit, onMusic, onAssemble }: {
   const done = finished.length;
   const isMv = project.mode === "mv";
   const musicOn = edit.music !== "off";
+  const incompleteEpisode = Boolean(view.series && done < project.shots.length);
   const [delivery, setDelivery] = useState<"separate" | "film">(film.url ? "film" : "separate");
   const option = (on: boolean): React.CSSProperties => ({
     ...chip(on),
@@ -1471,7 +1531,12 @@ function FilmPanel({ view, busy, onEdit, onMusic, onAssemble }: {
             />
           )}
           <Toggle on={edit.coverFakeSubs} onChange={(v) => onEdit({ coverFakeSubs: v })} label={t("เบลอตัวหนังสือมั่วที่ LTX ใส่มา", "Blur the garbled text LTX burns in")} hint={t("เฉพาะช็อตที่สร้างด้วย LTX-2.5", "Only shots made with LTX-2.5")} />
-          <Toggle on={edit.transition === "fade"} onChange={(v) => onEdit({ transition: v ? "fade" : "cut" })} label={t("เฟดระหว่างช็อต", "Fade between shots")} hint={t("ปิด = ตัดชนตรง ๆ", "Off = straight cuts")} />
+          <label><span style={label}>{t("รอยต่อหลัก", "Default transition")}</span><select style={field} value={edit.transition} onChange={(e) => onEdit({ transition: e.target.value as EditSettings['transition'] })}>
+            {(['cut', 'fade', 'dissolve'] as const).map((k) => <option key={k} value={k}>{t(SHOT_TRANSITIONS[k])}</option>)}
+          </select></label>
+          <Toggle on={edit.grade} onChange={(v) => onEdit({ grade: v })} label={t("คุมสีตามสไตล์เรื่อง", "Grade to the story's look")} />
+          <Toggle on={edit.normalizeAudio} onChange={(v) => onEdit({ normalizeAudio: v })} label={t("ปรับความดังทั้งตอน", "Balance episode loudness")} hint={t("เป้าหมาย −16 LUFS", "Target −16 LUFS")} />
+          {view.series && <Toggle on={edit.episodeCards} onChange={(v) => onEdit({ episodeCards: v })} label={t("ข้อความตอนก่อนและปิดตอน", "Previously and closing captions")} hint={t("วางด้านบนภาพ โดยคงเวลาบทพูด", "Above the picture, keeping dialogue timing")} />}
           <Toggle on={edit.titleCard} onChange={(v) => onEdit({ titleCard: v })} label={t("ชื่อเรื่องตอนเปิด", "Title card at the start")} hint={project.title} />
         </div>
       </div>
@@ -1496,19 +1561,23 @@ function FilmPanel({ view, busy, onEdit, onMusic, onAssemble }: {
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <button
           style={{ ...primary, opacity: busy || film.status === "assembling" || done === 0 ? 0.6 : 1 }}
-          disabled={busy !== null || film.status === "assembling" || done === 0}
+          disabled={busy !== null || film.status === "assembling" || done === 0 || incompleteEpisode}
           onClick={onAssemble}
         >
           {film.status === "assembling" ? t("กำลังตัดต่อ… (ไม่กี่นาที)", "Cutting… (a few minutes)") : film.status === "done" ? t("ตัดต่อใหม่", "Re-cut") : t("🎬 ตัดต่อเป็นหนัง", "🎬 Cut into a film")}
           {film.status !== "assembling" && film.credits > 0 && ` · ${formatCredits(film.credits, locale)}`}
         </button>
         <span style={{ fontSize: 12, color: "#94a3b8" }}>{t("ช็อตที่เสร็จ", "Shots finished")} {done} / {project.shots.length}</span>
+        {incompleteEpisode && <span style={{ fontSize: 12, color: "#fbbf24" }}>{t("สร้างคลิปทุกช็อตให้เสร็จก่อนแพ็กตอน", "Finish every shot before packaging the episode.")}</span>}
       </div>
       {film.error && film.status !== "assembling" && <div style={{ fontSize: 13, color: "#fca5a5" }}>{film.error}</div>}
       {film.status === "done" && film.url && (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <video src={film.url} controls playsInline preload="metadata" style={{ width: "100%", borderRadius: 12, background: "#000" }} />
           <a href={film.url} download target="_blank" rel="noopener noreferrer" style={{ ...btn, alignSelf: "flex-start", textDecoration: "none" }}>{t("⬇ ดาวน์โหลดหนัง", "⬇ Download the film")}{film.seconds ? ` (${fmtTime(film.seconds)})` : ""}</a>
+          {film.packaged && <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {([['srt', t("ซับ SRT", "SRT subtitles")], ['final-script', t("บทของไฟล์นี้", "This cut's script")], ['manifest', t("ข้อมูลแพ็กตอน", "Episode manifest")]] as const).map(([format, title]) => <a key={format} href={`/api/story/${project.id}/script?format=${format}`} download style={{ ...btn, textDecoration: "none" }}>⬇ {title}</a>)}
+          </div>}
         </div>
       )}
       </>)}
@@ -2274,6 +2343,7 @@ function ProjectEditor({ id, onBack, onOpen, onSeries }: { id: number; onBack: (
         </div>
       </div>
 
+      <ShootingPanel project={project} />
       <LibraryPanel view={view} busy={busy} onAction={assetAction} onPictures={setPictures} />
       <ContinuityPanel view={view} busy={busy} onPrepare={(shots) => keyframes(shots, true)} onSettings={async (continuity) => {
         const data = await act<ProjectView>("continuity-settings", `/api/story/${id}`, sendJson("PATCH", { continuity }));

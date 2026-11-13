@@ -5,6 +5,7 @@ import { chatViaPool } from '@/lib/services/prompt-enhancer';
 import { withTargetSeconds } from './cinematic';
 import { MAX_STORY_PROJECTS, StoryError } from './service';
 import { dubbingSettings } from './dubbing';
+import { episodeEdit } from './edit';
 import {
   NEW_SERIES_TITLE,
   SERIES_LIMITS,
@@ -313,7 +314,10 @@ export async function createEpisode(userId: number, series: SeriesFull, n: numbe
         language: series.language,
         templateKey: series.templateKey,
         aspectRatio: series.aspectRatio,
-        scriptJson: withTargetSeconds({ dubbing: dubbingSettings(sourceProject?.scriptJson), continuity: continuitySettings(sourceProject?.scriptJson) }, String(series.episodeSeconds)) as Prisma.InputJsonValue,
+        scriptJson: withTargetSeconds({
+          dubbing: dubbingSettings(sourceProject?.scriptJson), continuity: continuitySettings(sourceProject?.scriptJson),
+          ...episodeEdit(sourceProject?.scriptJson),
+        }, String(series.episodeSeconds)) as Prisma.InputJsonValue,
         characters: {
           create: library.map((s, k) => ({
             kind: s.kind,

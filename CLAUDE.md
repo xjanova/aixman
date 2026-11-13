@@ -928,6 +928,31 @@ Code: `src/lib/story/{cinematic,service,http}.ts`, `/api/story/*`.
 
 ## Series & short dramas (ซีรีส์ / ละครสั้น, `/movie?s=<id>`)
 
+### Shooting scripts and episode finishing (2026-11-14)
+
+- Apply `20261114_story_shooting.sql` after the three November 13 migrations,
+  BEFORE deploying: Prisma reads shot `angle`, `continuity_note`, `cut_json`.
+- `angles.ts` defines camera angles shared by the shot editor, planner, opening
+  image and video prompts. Angle changes invalidate an opening's face approval.
+- `shooting.ts` exports a TXT shooting script and a ledger derived from current
+  shot scripts. `shooting-service.ts` reads up to three earlier episodes LIVE
+  when planning/replanning: newest events get priority, names replace local IDs,
+  rendered takes and unrendered plans are labelled. This is not video analysis.
+- `finishing.ts`: incoming per-shot cut/fade/dissolve/wipe, optional picture
+  effect and synthesised whoosh/impact/chime. Dissolves extend the preceding
+  last frame, leaving every shot boundary and audio cue at its original time.
+  Joins use at most eight inputs per FFmpeg graph. Dialogue never crossfades.
+- Optional look grade, -16 LUFS target and previously/closing overlays are in
+  `script_json.edit`. New series episodes inherit the last episode's edit and
+  score, never its final delivery. Retention keeps the shared score's media.
+- Successful assembly snapshots `script_json.delivery`: video URL, exact SRT,
+  shooting script, shot sources/durations/edit settings. `/api/story/[id]/script`
+  exports current TXT or `?format=srt|final-script|manifest` from that snapshot,
+  so editing the current plan cannot silently change a finished cut's SRT.
+- Optional real-media regression: set `STORY_TEST_FFMPEG` to an FFmpeg binary
+  with libass, then run `finishing-media.test.mts`. It uses synthetic sources,
+  measures the encoded duration and decoded dub boundaries, and cleans its files.
+
 
 One story told over many episodes: a vertical short drama (`format: short`,
 9:16, 1–3 min episodes) or a series (`series`, 16:9, 3–10 min). Code:

@@ -173,6 +173,7 @@ export async function orderKeyframe(
     mood: project.mood ?? '',
     aspect: project.aspectRatio,
     shotSize: shot.shotSize,
+    angle: shot.angle,
     visual: shot.visualPrompt,
     timeOfDay: scene?.timeOfDay ?? null,
     characters: byIds(refsOf.characterIds).filter((a) => a.kind === 'character'),

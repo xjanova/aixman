@@ -3,6 +3,7 @@ import { Prisma } from '@/generated/prisma/client';
 import { expiredKaraokeKeys, karaokeObject } from '@/lib/lyrics/karaoke-files';
 import { deleteObjects, keyFromPublicUrl, isStorageConfigured, listObjectKeys, publicUrlOfKey } from '@/lib/storage/r2';
 import { castOf } from '@/lib/story/series';
+import { parseMusicState } from '@/lib/story/edit';
 
 /**
  * Media retention.
@@ -54,7 +55,7 @@ async function storyKeepKeys(): Promise<Set<string>> {
   const [assets, shots, songs, series] = await Promise.all([
     prisma.aiStoryCharacter.findMany({ select: { referenceUrl: true, images: true } }),
     prisma.aiStoryShot.findMany({ where: { keyframeUrl: { not: null } }, select: { keyframeUrl: true } }),
-    prisma.aiStoryProject.findMany({ where: { songUrl: { not: null } }, select: { songUrl: true } }),
+    prisma.aiStoryProject.findMany({ select: { songUrl: true, scriptJson: true } }),
     // A series' cast pictures seed every episode made later, months on maybe.
     prisma.aiStorySeries.findMany({ where: { castJson: { not: Prisma.DbNull } }, select: { castJson: true } }),
   ]);
@@ -69,6 +70,14 @@ async function storyKeepKeys(): Promise<Set<string>> {
   }
   for (const s of shots) add(s.keyframeUrl);
   for (const p of songs) add(p.songUrl);
+  const musicIds = [...new Set(songs.flatMap((p) => {
+    const state = parseMusicState((p.scriptJson as { music?: unknown } | null)?.music);
+    return state ? [state.generationId] : [];
+  }))];
+  if (musicIds.length) for (const g of await prisma.aiGeneration.findMany({ where: { id: { in: musicIds } }, select: { resultUrl: true, resultUrls: true } })) {
+    add(g.resultUrl);
+    if (Array.isArray(g.resultUrls)) g.resultUrls.forEach(add);
+  }
   for (const s of series) for (const c of castOf(s.castJson)) add(c.referenceUrl);
   return keep;
 }

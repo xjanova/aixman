@@ -12,6 +12,7 @@
  */
 import { ASPECTS, LIMITS, LOOKS, MOODS, type StoryMode } from './cinematic';
 import { DEFAULT_KARAOKE_LOOK, parseKaraokeLook, type KaraokeLook } from '@/lib/lyrics/karaoke-look';
+import { shotCut, type ShotCut } from './finishing';
 
 export type MusicSource = 'off' | 'song' | 'generate';
 
@@ -27,7 +28,10 @@ export interface EditSettings {
   subtitles: boolean;
   /** Blur the band where LTX burns invented subtitles. */
   coverFakeSubs: boolean;
-  transition: 'cut' | 'fade';
+  transition: 'cut' | 'fade' | 'dissolve';
+  grade: boolean;
+  normalizeAudio: boolean;
+  episodeCards: boolean;
   titleCard: boolean;
   /** A finished lip-sync clip may be used for singing or film dialogue. */
   lipsync: boolean;
@@ -51,6 +55,9 @@ export function defaultEdit(mode: StoryMode): EditSettings {
     subtitles: true,
     coverFakeSubs: true,
     transition: mode === 'mv' ? 'cut' : 'fade',
+    grade: false,
+    normalizeAudio: false,
+    episodeCards: false,
     titleCard: mode === 'film',
     lipsync: mode === 'mv',
     karaoke: false,
@@ -81,7 +88,10 @@ export function parseEdit(raw: unknown, mode: StoryMode): EditSettings {
     duck: bool(r.duck, d.duck),
     subtitles: bool(r.subtitles, d.subtitles),
     coverFakeSubs: bool(r.coverFakeSubs, d.coverFakeSubs),
-    transition: r.transition === 'cut' || r.transition === 'fade' ? r.transition : d.transition,
+    transition: r.transition === 'cut' || r.transition === 'fade' || r.transition === 'dissolve' ? r.transition : d.transition,
+    grade: bool(r.grade, d.grade),
+    normalizeAudio: bool(r.normalizeAudio, d.normalizeAudio),
+    episodeCards: mode === 'film' && bool(r.episodeCards, d.episodeCards),
     titleCard: bool(r.titleCard, d.titleCard),
     lipsync: bool(r.lipsync, d.lipsync),
     // Karaoke follows a song's words: an MV only.
@@ -101,6 +111,13 @@ export function parseMusicState(raw: unknown): MusicState | null {
   const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
   const id = Number(r.generationId);
   return Number.isInteger(id) && id > 0 ? { generationId: id, seconds: Number(r.seconds) || 0 } : null;
+}
+
+export function episodeEdit(script: unknown): Record<string, unknown> {
+  const r = (script ?? {}) as Record<string, unknown>;
+  const music = parseMusicState(r.music);
+  return { edit: r.edit ? parseEdit(r.edit, 'film') : { ...defaultEdit('film'), transition: 'dissolve', grade: true, normalizeAudio: true, episodeCards: true, titleCard: false },
+    ...(music ? { music } : {}) };
 }
 
 /** What ACE-Step is asked for: an instrumental in the film's look (no lyrics → instrumental). */
@@ -144,6 +161,7 @@ export interface CutShot {
   /** Rendered by LTX — the model that burns invented subtitles in. */
   burnsSubs: boolean;
   voiceSeconds?: number;
+  cut?: ShotCut;
 }
 
 export interface Cue {
@@ -169,13 +187,22 @@ export function timeline(shots: CutShot[]): { start: number; end: number }[] {
 /** Subtitle cues: one per shot that has words, held for the shot (less its fades). */
 export function subtitleCues(shots: CutShot[], fade: boolean): Cue[] {
   const spans = timeline(shots);
-  const pad = fade ? FADE_SECONDS : 0.05;
   return shots.flatMap((s, k) => {
+    const transition = shotCut(s.cut).transition;
+    const pad = (transition === 'fade' || (transition === 'inherit' && fade)) ? FADE_SECONDS : 0.05;
     const text = s.text.replace(/\s+/g, ' ').trim();
     if (!text) return [];
     if (s.voiceSeconds !== undefined) return [{ start: spans[k].start, end: Math.round((spans[k].start + Math.min(s.seconds, s.voiceSeconds)) * 1000) / 1000, text }];
     return [{ start: spans[k].start + pad, end: Math.max(spans[k].start + pad + 0.5, spans[k].end - pad), text }];
   });
+}
+
+export function buildSrt(cues: Cue[]): string {
+  const stamp = (n: number) => {
+    const ms = Math.round(Math.max(0, n) * 1000);
+    return `${String(Math.floor(ms / 3600000)).padStart(2, '0')}:${String(Math.floor(ms / 60000) % 60).padStart(2, '0')}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')},${String(ms % 1000).padStart(3, '0')}`;
+  };
+  return cues.map((c, k) => `${k + 1}\n${stamp(c.start)} --> ${stamp(c.end)}\n${c.text.replace(/[\r\n]+/g, ' ').replace(/-->/g, '→')}\n`).join('\n');
 }
 
 /** Thai wraps on spaces only; long lines are broken near the middle space. */
@@ -216,7 +243,7 @@ export function assEscape(text: string): string {
  * sat in the band LTX's fake subtitles occupy (so ours cover what is left of
  * them), and the title card when asked for.
  */
-export function buildAss(opts: { aspect: string; cues: Cue[]; title?: string; font: string }): string {
+export function buildAss(opts: { aspect: string; cues: Cue[]; title?: string; font: string; recap?: string; ending?: string; seconds?: number }): string {
   const frame = ASPECTS[opts.aspect] ?? ASPECTS['16:9'];
   const size = Math.round(Math.min(frame.width, frame.height) * 0.072);
   const marginV = Math.round(frame.height * 0.05);
@@ -232,6 +259,7 @@ export function buildAss(opts: { aspect: string; cues: Cue[]; title?: string; fo
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
     `Style: Sub,${opts.font},${size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,${Math.max(2, Math.round(size / 14))},1,2,40,40,${marginV},222`,
     `Style: Title,${opts.font},${Math.round(size * 1.9)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,${Math.max(3, Math.round(size / 8))},2,5,60,60,0,222`,
+    `Style: Card,${opts.font},${Math.round(size * 0.75)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,1,8,50,50,${Math.round(frame.height * 0.1)},222`,
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
@@ -244,6 +272,8 @@ export function buildAss(opts: { aspect: string; cues: Cue[]; title?: string; fo
     const t = wrapLine(assEscape(c.text)).join('\\N');
     lines.push(`Dialogue: 0,${assTime(c.start)},${assTime(c.end)},Sub,,0,0,0,,{\\fad(120,120)}${t}`);
   }
+  if (opts.recap) lines.push(`Dialogue: 2,${assTime(0.3)},${assTime(Math.min(opts.seconds ?? 4.5, 4.5))},Card,,0,0,0,,{\\fad(150,200)}${wrapLine(assEscape(opts.recap), 38).join('\\N')}`);
+  if (opts.ending && opts.seconds) lines.push(`Dialogue: 2,${assTime(Math.max(0, opts.seconds - 2.5))},${assTime(opts.seconds)},Card,,0,0,0,,{\\fad(150,200)}${wrapLine(assEscape(opts.ending), 38).join('\\N')}`);
   return lines.join('\n') + '\n';
 }
 
@@ -277,7 +307,7 @@ export function shotVideoFilter(opts: { aspect: string; seconds: number; cover: 
     // overlay sees the base as main_w/main_h; the crop's own iw/ih are the clip's.
     const ox = b.x.replace(/iw/g, 'main_w').replace(/ih/g, 'main_h');
     const oy = b.y.replace(/ih/g, 'main_h');
-    chain = `split[base][band];[band]crop=w=${b.w}:h=${b.h}:x=${b.x}:y=${b.y},boxblur=20:3[blur];[base][blur]overlay=x=${ox}:y=${oy},`;
+    chain = `split[base][band];[band]crop=w=${b.w}:h=${b.h}:x=${b.x}:y=${b.y},boxblur=luma_radius='min(20,min(w,h)/2)':luma_power=3:chroma_radius='min(10,min(cw,ch)/2)':chroma_power=3[blur];[base][blur]overlay=x=${ox}:y=${oy},`;
   }
   chain += [
     `scale=${f.width}:${f.height}:force_original_aspect_ratio=increase`,

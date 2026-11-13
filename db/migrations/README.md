@@ -11,6 +11,10 @@ would be unsafe (e.g. would drop legacy tables that still hold data).
 
 ## Files
 
+- `20261114_story_shooting.sql` — shot camera angle, continuity event and
+  per-shot finishing settings. Apply after all three November 13 files and
+  before deploying shooting-script/finishing code. All four files are required.
+
 - `20261113_story_series.sql` — series bible and cast plus episode links on
   `ai_story_projects`. Apply before the series code.
 - `20261113b_story_dubbing.sql` — character dialogue delivery, speech order

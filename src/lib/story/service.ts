@@ -35,6 +35,8 @@ import { planMvSlots, planSceneShots, planStructuredFilm, type SceneBrief } from
 import { ASSEMBLE_PRICE_DEFAULTS, musicPrompt, musicSeconds } from './edit';
 import { dubbingSettings, dubShotSeconds, speechBlock, spokenText } from './dubbing';
 import { continuityBlock, endingFrame } from './continuity';
+import { previousEpisodeContext } from './shooting-service';
+import { angleOf } from './angles';
 import { referenceCaps } from '@/lib/reference-caps';
 import type { Prisma } from '@/generated/prisma/client';
 import type { Locale, Msg } from '@/lib/i18n/locale';
@@ -116,7 +118,7 @@ export function characterLites(project: StoryProjectFull): CharacterLite[] {
   return libraryLites(project, 'character');
 }
 
-function planInputOf(project: StoryProjectFull): StructureInput {
+async function planInputOf(project: StoryProjectFull): Promise<StructureInput> {
   const mode = project.mode as StoryMode;
   return {
     mode,
@@ -129,6 +131,7 @@ function planInputOf(project: StoryProjectFull): StructureInput {
     songSeconds: Number(project.songSeconds ?? 0),
     targetSeconds: mode === 'film' ? filmTarget(project.scriptJson) : null,
     episode: episodeOf(project),
+    continuityContext: await previousEpisodeContext(project),
   };
 }
 
@@ -149,6 +152,8 @@ export function shotDraftOf(shot: StoryProjectFull['shots'][number]): ShotDraft 
     speakerId: shot.speakerId,
     shotSize: shot.shotSize,
     camera: shot.camera,
+    angle: angleOf(shot.angle),
+    continuityNote: shot.continuityNote ?? '',
     durationSec: Number(shot.durationSec),
     startSec: shot.startSec === null ? null : Number(shot.startSec),
     visual: shot.visualPrompt,
@@ -321,6 +326,8 @@ function shotData(s: ShotDraft, projectId: number, shotNumber: number, modelId: 
     speakerId: s.speakerId,
     shotSize: s.shotSize,
     camera: s.camera,
+    angle: angleOf(s.angle),
+    continuityNote: s.continuityNote || null,
     sound: s.sound || null,
     modelId,
     startSec: s.startSec,
@@ -355,7 +362,7 @@ export async function planProject(
 ): Promise<{ shots: number; engine: string; fallbackReason?: string }> {
   if (project.shots.some(isBusyShot)) throw new StoryError(BUSY_MESSAGE, 409);
   const mode = project.mode as StoryMode;
-  const input = planInputOf(project);
+  const input = await planInputOf(project);
 
   let planned: { title: string; shots: ShotDraft[] } | null = null;
   let structure: StructurePlan | null = null;
@@ -501,7 +508,7 @@ export async function planScenes(
   if (targets.length === 0) throw new StoryError({ th: 'ไม่พบฉากที่จะวางใหม่', en: "Couldn't find the scenes to re-plan." }, 404);
   const inTargets = (shot: { sceneId: number | null }) => targets.some((t) => t.id === shot.sceneId);
   if (project.shots.some((sh) => inTargets(sh) && isBusyShot(sh))) throw new StoryError(BUSY_MESSAGE, 409);
-  const input = planInputOf(project);
+  const input = await planInputOf(project);
   const mode = project.mode as StoryMode;
   const others = project.shots.filter((sh) => !inTargets(sh)).length;
   const room = Math.max(targets.length, (mode === 'mv' ? LIMITS.shotsMv : LIMITS.shotsFilm) - others);

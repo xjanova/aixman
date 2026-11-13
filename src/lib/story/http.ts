@@ -33,6 +33,8 @@ import { DELIVERIES, deliveryOf, dubbingSettings, dubText, filmDubReady, shotVoi
 import { speechCredits, speechModel } from './dub-service';
 import { CHARACTER_ANGLES, CONTINUITY_LABELS, continuitySettings, continuityState, currentKeyframe, endingFrame, keyframeSignature, missingFaces } from './continuity';
 import type { Prisma } from '@/generated/prisma/client';
+import { angleOf, CONTINUITY_NOTE_LIMIT } from './angles';
+import { shotCut } from './finishing';
 import {
   StoryError,
   assemblePriceSettings,
@@ -239,6 +241,9 @@ export function shotPatch(body: Record<string, unknown>, project: StoryProjectFu
   if (body.line !== undefined) data.narration = text(body.line, LIMITS.line) || null;
   if (body.delivery !== undefined) data.delivery = deliveryOf(body.delivery);
   if (body.sound !== undefined) data.sound = text(body.sound, LIMITS.sound) || null;
+  if (body.angle !== undefined) data.angle = angleOf(body.angle);
+  if (body.continuityNote !== undefined) data.continuityNote = text(body.continuityNote, CONTINUITY_NOTE_LIMIT) || null;
+  if (body.cut !== undefined) data.cutJson = shotCut(body.cut);
   if (body.durationSec !== undefined) {
     const n = Number(body.durationSec);
     if (!Number.isFinite(n)) throw new StoryError({ th: 'ความยาวช็อตไม่ถูกต้อง', en: 'Invalid shot length.' });
@@ -356,6 +361,9 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
           sound: s.sound ?? '',
           shotSize: s.shotSize,
           camera: s.camera,
+          angle: angleOf(s.angle),
+          continuityNote: s.continuityNote ?? '',
+          cut: shotCut(s.cutJson),
           durationSec: Number(s.durationSec),
           startSec: s.startSec === null ? null : Number(s.startSec),
           characterIds: idList(s.characterIds).filter((id) => charById.has(id)),
@@ -460,6 +468,7 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
       credits: admin ? 0 : assemblePrice(readyFilmSeconds(project), price),
       url: project.finalVideoUrl,
       seconds: project.durationSec,
+      packaged: Boolean((script.delivery as { videoUrl?: string } | undefined)?.videoUrl === project.finalVideoUrl && project.finalVideoUrl),
       error:
         project.status === 'assembling' && !assembling
           ? t('การตัดต่อครั้งก่อนค้าง ลองกดตัดต่อใหม่', 'The last cut got stuck. Try cutting the film again.')

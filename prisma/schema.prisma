@@ -660,6 +660,9 @@ model AiStoryShot {
   // Framing and camera move — keys of SHOT_SIZES / CAMERA_MOVES.
   shotSize       String   @default("medium") @map("shot_size") @db.VarChar(30)
   camera         String   @default("static") @db.VarChar(30)
+  angle          String   @default("eye-level") @db.VarChar(30)
+  continuityNote String?  @map("continuity_note") @db.Text
+  cutJson        Json?    @map("cut_json")
   // Ambient and physical sound, in English. No music.
   sound          String?  @db.Text
   /// The video model chosen for this shot (ai_models.id).

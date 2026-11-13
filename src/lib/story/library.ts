@@ -11,6 +11,7 @@ import {
   type StoryMode,
 } from './cinematic';
 import type { Msg } from '@/lib/i18n/locale';
+import { CAMERA_ANGLES, angleOf } from './angles';
 
 /**
  * A project's reference library (characters, props, places), its acts and
@@ -117,6 +118,7 @@ export interface KeyframeContext {
   mood: string;
   aspect: string;
   shotSize: string;
+  angle?: string;
   visual: string;
   timeOfDay: string | null;
   /** Everything visible, pictured or not: named in words too. */
@@ -148,7 +150,7 @@ export function keyframePrompt(refs: PickedRef[], ctx: KeyframeContext): string 
   const when = ctx.timeOfDay ? TIMES_OF_DAY[ctx.timeOfDay]?.prompt : undefined;
   return [
     `One still frame: the opening frame of a film shot, ${frame.width > frame.height ? 'landscape' : frame.width < frame.height ? 'portrait' : 'square'} ${ctx.aspect}.`,
-    `${style.style}. ${capital(size.prompt)}.`,
+    `${style.style}. ${capital(size.prompt)}. ${ctx.angle ? CAMERA_ANGLES[angleOf(ctx.angle)].prompt : ''}`.trim(),
     ...(lines.length ? ['References:', ...lines] : []),
     ...(described.length ? [`Who and what is in it — ${described.join('; ')}.`] : []),
     `The frame: ${ctx.visual.trim()}${when ? ` ${capital(when)}.` : ''}`,
@@ -233,7 +235,7 @@ Rules:
 - "cast": numbers from the cast list of who appears. "props": numbers from the prop list, or names of NEW objects that matter to the story (a weapon, a letter, a car) — then also list them in "newProps". Only objects that appear in more than one shot or drive the plot.
 - New places and props: "name" short in the story's language; "description" in English, 15 to 40 words, purely visual (materials, colours, shape, era) so an artist can draw it the same way every time.
 - Invent scenes the story implies when it is short; never contradict it. Never add new characters beyond the cast unless the story names them.${episode}`;
-  const user = `Cast:\n${numbered(input.characters, 'No named characters.')}\n\nLocations:\n${numbered(input.locations, 'None yet.')}\n\nProps:\n${numbered(input.props, 'None yet.')}\n\nStory:\n${input.brief}`;
+  const user = `Cast:\n${numbered(input.characters, 'No named characters.')}\n\nLocations:\n${numbered(input.locations, 'None yet.')}\n\nProps:\n${numbered(input.props, 'None yet.')}\n\nStory:\n${input.brief}${input.continuityContext ?? ''}`;
   return { system, user };
 }
 

@@ -30,6 +30,7 @@ interface ContinuityShot {
   locationId: number | null;
   visualPrompt: string;
   shotSize: string;
+  angle?: string;
   keyframeStatus: string | null;
   keyframeUrl: string | null;
   keyframeUse: boolean;
@@ -70,7 +71,7 @@ export function keyframeSignature(shot: ContinuityShot, project: ContinuityProje
   const assets = library(project);
   const snapshot = {
     version: 1, mode: project.mode, look: project.templateKey, mood: project.mood, aspect: project.aspectRatio,
-    visual: shot.visualPrompt, size: shot.shotSize, refs,
+    visual: shot.visualPrompt, size: shot.shotSize, angle: shot.angle ?? 'eye-level', refs,
     time: project.scenes.find((s) => s.id === shot.sceneId)?.timeOfDay ?? null,
     assets: relevant.map((id) => assets.find((a) => a.id === id) ?? { id, missing: true }),
   };
