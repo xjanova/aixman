@@ -3,6 +3,7 @@ import { rateLimit } from '@/lib/rate-limit';
 import { chatViaPool } from '@/lib/services/prompt-enhancer';
 import { withTargetSeconds } from './cinematic';
 import { MAX_STORY_PROJECTS, StoryError } from './service';
+import { dubbingSettings } from './dubbing';
 import {
   NEW_SERIES_TITLE,
   SERIES_LIMITS,
@@ -280,6 +281,7 @@ export async function createEpisode(userId: number, series: SeriesFull, n: numbe
   const before = made.filter((e) => e.episodeNumber < n).sort((a, b) => b.episodeNumber - a.episodeNumber)[0];
   const after = made.filter((e) => e.episodeNumber > n).sort((a, b) => a.episodeNumber - b.episodeNumber)[0];
   const source = before ?? after;
+  const sourceProject = source ? await prisma.aiStoryProject.findUnique({ where: { id: source.id }, select: { scriptJson: true } }) : null;
   const rows = source ? await prisma.aiStoryCharacter.findMany({ where: { projectId: source.id }, orderBy: { sortOrder: 'asc' } }) : [];
   // A picture still being drawn lands on that episode's row only: the copy would miss it.
   const drawing = rows.find((r) => r.imageStatus === 'rendering');
@@ -310,7 +312,7 @@ export async function createEpisode(userId: number, series: SeriesFull, n: numbe
         language: series.language,
         templateKey: series.templateKey,
         aspectRatio: series.aspectRatio,
-        scriptJson: withTargetSeconds(null, String(series.episodeSeconds)) as Prisma.InputJsonValue,
+        scriptJson: withTargetSeconds({ dubbing: dubbingSettings(sourceProject?.scriptJson) }, String(series.episodeSeconds)) as Prisma.InputJsonValue,
         characters: {
           create: library.map((s, k) => ({
             kind: s.kind,

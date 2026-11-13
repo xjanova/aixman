@@ -860,7 +860,44 @@ Code: `src/lib/story/{cinematic,service,http}.ts`, `/api/story/*`.
   makes it stale and the cut falls back to the clip. The cut uses a dub only
   when `edit.lipsync` and the shot's own `lipsync_use` are on.
 
+## Character dialogue dubbing (phase 1, 2026-11-13)
+
+- `dubbing.ts` (pure rules), `dub-service.ts` (ordinary speech orders),
+  `POST /api/story/[id]/dubbing {shotIds}`. Apply
+  `db/migrations/20261113b_story_dubbing.sql` **before deploying**; it adds
+  shot `delivery`, `dub_*`, and `lipsync_audio_url`. The earlier series
+  migration is still required too. Shared Laravel tables are untouched.
+- Opt in with `script_json.dubbing.enabled`; narrator voice lives beside it.
+  Characters use the existing `voice_id`, validated against the same 14 voices
+  as `kie/elevenlabs-v3` (`providers/elevenlabs-voices.ts`). Pick voices in
+  the cast form or character library. Series cast voices seed new episodes;
+  the prior episode supplies pictures and the narrator/dubbing settings.
+- One speaker per shot (null = narrator), optional `delivery` emotional tag.
+  Claims pin text, voice and start time before `after()` places the normal,
+  charged/refundable GenerationService order. GET syncs completed audio after
+  the response, at most three downloads per pass, with in-process deduplication
+  (PM2 single instance). Headers determine real duration; audio is copied under
+  `story/` so generation retention cannot expire a paid character dub.
+- Dub first, then render: the slot is audio length + 0.2 s (3–10 s). A longer
+  line keeps its preview but blocks rendering/cutting until shortened or split.
+  A changed line, delivery or voice makes audio stale. Failed/orphaned claims
+  can be retried; a low balance stops the remaining orders. Model readiness
+  and content/credit checks stay in GenerationService.
+- Assembly replaces the clip audio only on speaking shots, plays the dub even
+  with original clip sound off, ducks music, and ends subtitles at the dub's
+  measured duration. This is line timing, not word alignment. Silent shots keep
+  their ambience when clip audio is enabled.
+- Film lip-sync is opt-in (`edit.lipsync`): LatentSync takes the finished clip
+  and the shot's audio directly. Narrator-only shots are excluded. Both clip URL
+  and audio URL pin the result; either changing makes it stale. The MV vocal
+  separation/slicing path is unchanged.
+- Tests: `dubbing.test.mts` (casting, stale audio, duration, subtitles, series),
+  `dubbing-jobs.test.mts` (actual orchestration with mocked DB/provider ports,
+  real WAV parsing, duplicate claims, failures, stale-result protection, and
+  ffmpeg command construction). Neither places paid provider orders.
+
 ## Series & short dramas (ซีรีส์ / ละครสั้น, `/movie?s=<id>`)
+
 
 One story told over many episodes: a vertical short drama (`format: short`,
 9:16, 1–3 min episodes) or a series (`series`, 16:9, 3–10 min). Code:

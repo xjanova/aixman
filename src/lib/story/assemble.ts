@@ -21,6 +21,7 @@ import { buildKaraokeAss } from '@/lib/lyrics/karaoke-ass';
 import { KaraokeError, findKaraoke, type KaraokeDoc } from '@/lib/lyrics/karaoke-job';
 import type { KaraokeTiming } from '@/lib/lyrics/karaoke';
 import { usableDub } from './sing';
+import { dubbingSettings, dubShotSeconds, filmDubReady, speechBlock, spokenText } from './dubbing';
 import type { Msg } from '@/lib/i18n/locale';
 import { packMsg, registerStoredMsgs } from '@/lib/i18n/messages';
 
@@ -188,6 +189,7 @@ async function assemble(projectId: number): Promise<void> {
     where: { id: projectId },
     include: {
       shots: { orderBy: { shotNumber: 'asc' } },
+      characters: true,
     },
   });
   if (!project || project.status !== 'assembling') return;
@@ -196,9 +198,14 @@ async function assemble(projectId: number): Promise<void> {
   const edit = parseEdit(script.edit, mode);
 
   const ready = project.shots.filter((s) => s.status === 'done' && s.mediaUrl);
+  const dubbed = mode === 'film' && dubbingSettings(script).enabled;
+  if (dubbed) for (const s of ready) {
+    const blocked = speechBlock(s, project);
+    if (blocked) throw new StoryJobError(blocked);
+  }
   // A singing shot is cut from its lip-sync dub when the switch is on and the
   // dub was made from the clip the shot has now.
-  const sources = ready.map((s) => (mode === 'mv' && edit.lipsync && usableDub(s) ? s.lipsyncUrl! : s.mediaUrl!));
+  const sources = ready.map((s) => (edit.lipsync && usableDub(s) && (mode === 'mv' || (dubbed && filmDubReady(s, project) && s.lipsyncAudioUrl === s.audioUrl)) ? s.lipsyncUrl! : s.mediaUrl!));
   if (ready.length === 0) throw new StoryJobError(NO_READY_SHOTS);
 
   const modelKeys = new Map(
@@ -206,8 +213,9 @@ async function assemble(projectId: number): Promise<void> {
   );
   const shots: CutShot[] = ready.map((s) => ({
     number: s.shotNumber,
-    seconds: Number(s.durationSec),
-    text: s.narration ?? '',
+    seconds: dubbed && filmDubReady(s, project) ? dubShotSeconds(Number(s.dubSeconds))! : Number(s.durationSec),
+    text: dubbed ? spokenText(s.narration ?? '') : s.narration ?? '',
+    ...(dubbed && filmDubReady(s, project) ? { voiceSeconds: Number(s.dubSeconds) } : {}),
     // A shot whose model is unknown is treated as LTX: covering an empty band costs nothing.
     burnsSubs: modelKeys.get(s.modelId ?? 0) !== 'minimax-h3',
   }));
@@ -242,14 +250,19 @@ async function assemble(projectId: number): Promise<void> {
   const dir = await mkdtemp(path.join(tmpdir(), 'aixman-film-'));
   try {
     const files: string[] = [];
+    const dubs: (string | null)[] = [];
     for (const [k, url] of sources.entries()) {
       files.push(`in_${k}.mp4`);
       await download(url, path.join(dir, files[k]), MAX_INPUT_BYTES, { th: 'คลิปบางช็อต', en: 'some shot clips' });
+      const voice = dubbed && filmDubReady(ready[k], project) ? ready[k].audioUrl : null;
+      dubs.push(voice ? `dub_${k}.bin` : null);
+      if (voice) await download(voice, path.join(dir, dubs[k]!), 20 * 1024 * 1024, { th: 'เสียงพากย์', en: 'the dub' });
     }
     if (musicUrl) await download(musicUrl, path.join(dir, 'music.bin'), MAX_INPUT_BYTES, { th: 'เพลง', en: 'the music' });
     const out = await renderFilm({
       dir,
       files,
+      dubs,
       shots,
       aspect: project.aspectRatio,
       edit,
@@ -277,6 +290,7 @@ async function assemble(projectId: number): Promise<void> {
 export async function renderFilm(opts: {
   dir: string;
   files: string[];
+  dubs?: (string | null)[];
   shots: CutShot[];
   aspect: string;
   edit: EditSettings;
@@ -294,16 +308,18 @@ export async function renderFilm(opts: {
   const list: string[] = [];
   for (const [k, shot] of shots.entries()) {
     const src = opts.files[k];
-    const useClip = edit.clipAudio && (await hasAudio(src, dir));
+    const dub = opts.dubs?.[k];
+    const useClip = !dub && edit.clipAudio && (await hasAudio(src, dir));
     const vf = shotVideoFilter({ aspect: opts.aspect, seconds: shot.seconds, cover: edit.coverFakeSubs && shot.burnsSubs, fade });
     const afade = fade ? `,afade=t=in:st=0:d=${FADE_SECONDS},afade=t=out:st=${Math.max(0, shot.seconds - FADE_SECONDS).toFixed(3)}:d=${FADE_SECONDS}` : '';
-    const audio = useClip ? `[0:a]aresample=48000,aformat=channel_layouts=stereo,apad${afade}[a]` : '[1:a]anull[a]';
+    const audio = dub ? '[1:a]aresample=48000,aformat=channel_layouts=stereo,apad[a]'
+      : useClip ? `[0:a]aresample=48000,aformat=channel_layouts=stereo,volume=${edit.clipVolume},apad${afade}[a]` : '[1:a]anull[a]';
     const seg = `seg_${k}.mp4`;
     await runFfmpeg(
       [
         '-y', '-hide_banner', '-loglevel', 'error',
         '-i', src,
-        '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo',
+        ...(dub ? ['-i', dub] : ['-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo']),
         // A clip a little short of its slot holds its last frame.
         '-filter_complex', `[0:v]tpad=stop_mode=clone:stop_duration=10,${vf}[v];${audio}`,
         '-map', '[v]', '-map', '[a]', '-t', shot.seconds.toFixed(3),
@@ -331,9 +347,9 @@ export async function renderFilm(opts: {
     : buildAss({ aspect: opts.aspect, cues, title: opts.title, font: FONT_NAME });
   if (burnText) await writeFile(path.join(dir, 'film.ass'), ass);
   const mix = mixFilter({
-    clips: edit.clipAudio,
+    clips: edit.clipAudio || Boolean(opts.dubs?.some(Boolean)),
     music: Boolean(opts.music),
-    clipVolume: edit.clipVolume,
+    clipVolume: 1,
     musicVolume: edit.musicVolume,
     duck: edit.duck,
     seconds: total,

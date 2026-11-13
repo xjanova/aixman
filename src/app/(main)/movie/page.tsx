@@ -37,11 +37,14 @@ import { formatCredits, formatDate, formatNumber, type Msg } from "@/lib/i18n/lo
 import { KaraokeStage, karaokeProgressText, karaokeWorking, useKaraoke } from "@/components/xdreamer/karaoke";
 import { KARAOKE_POSITIONS, KARAOKE_THEMES, type KaraokeLook, type KaraokePosition, type KaraokeTheme } from "@/lib/lyrics/karaoke-look";
 
+import { DELIVERIES, ELEVENLABS_VOICES } from "@/lib/story/dubbing";
+
 interface Character {
   id?: number;
   name: string;
   description: string;
   referenceUrl: string | null;
+  voiceId?: string | null;
 }
 type AssetKind = "character" | "prop" | "location";
 interface Asset {
@@ -50,6 +53,7 @@ interface Asset {
   name: string;
   description: string;
   pictures: string[];
+  voiceId: string | null;
   origin: string;
   image: { state: "rendering" | "done" | "failed" | null; error: string | null };
 }
@@ -104,6 +108,8 @@ interface Shot {
   };
   visual: string;
   line: string;
+  delivery: string;
+  speech?: { state: "none" | "rendering" | "done" | "stale" | "failed"; url: string | null; seconds: number | null; voiceId: string | null; error: string | null; blocked: string | null; credits: number | null };
   sound: string;
   shotSize: string;
   camera: string;
@@ -186,6 +192,7 @@ interface ProjectView {
   music: { available: boolean; credits: number | null; stale: boolean; status: "none" | "rendering" | "done" | "failed"; url: string | null };
   film: { status: "none" | "assembling" | "done"; credits: number; url: string | null; seconds: number | null; error: string | null };
   vocals: Vocals | null;
+  dubbing: { enabled: boolean; narratorVoiceId: string; available: boolean; lipsyncAvailable: boolean; deliveries: Record<string, string> } | null;
   pictures: Pictures;
   /** A plan running after the response, or the last plan's outcome. */
   planning: { state: "planning" | "failed" | "done"; error: string | null; shots: number | null; rules: boolean } | null;
@@ -356,6 +363,14 @@ async function uploadFile(file: File, kind: "image" | "audio") {
 
 // ─── Characters ─────────────────────────────────────────────────────────
 
+function VoicePicker({ value, onChange, disabled }: { value: string | null; onChange: (id: string | null) => void; disabled?: boolean }) {
+  const t = useT();
+  return <select aria-label={t("เสียงพากย์ ElevenLabs", "ElevenLabs voice")} style={field} value={value ?? ""} disabled={disabled} onChange={(e) => onChange(e.target.value || null)}>
+    <option value="">{t("— เลือกเสียงพากย์ ElevenLabs —", "— Choose an ElevenLabs voice —")}</option>
+    {ELEVENLABS_VOICES.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+  </select>;
+}
+
 function CharacterEditor({ value, onChange }: { value: Character[]; onChange: (next: Character[] | ((list: Character[]) => Character[])) => void }) {
   const { toast } = useToast();
   const t = useT();
@@ -395,6 +410,7 @@ function CharacterEditor({ value, onChange }: { value: Character[]; onChange: (n
           <div style={{ flex: 1, minWidth: 200, display: "flex", flexDirection: "column", gap: 8 }}>
             <input style={field} maxLength={LIMITS.characterName} placeholder={t("ชื่อตัวละคร", "Character name")} value={c.name} onChange={(e) => set(k, { name: e.target.value })} />
             <input style={field} maxLength={LIMITS.characterDescription} placeholder={t("หน้าตา การแต่งกาย (อังกฤษได้ผลดีที่สุด) เช่น young woman, pink twin tails, red dress", "Looks and clothing, e.g. young woman, pink twin tails, red dress")} value={c.description} onChange={(e) => set(k, { description: e.target.value })} />
+            <VoicePicker value={c.voiceId ?? null} onChange={(voiceId) => set(k, { voiceId })} />
           </div>
           <button style={{ ...btn, padding: "6px 10px" }} onClick={() => onChange(value.filter((_, i) => i !== k))} title={t("เอาตัวละครนี้ออก", "Remove this character")}>✕</button>
         </div>
@@ -768,7 +784,7 @@ function ShotCard({
         </div>
       </div>
       {shot.status === "failed" && shot.error && <div style={{ fontSize: 13, color: "#fca5a5" }}>{shot.error}</div>}
-      {shot.lipsync && shot.status === "done" && <DubRow shot={shot} vocals={vocals} onLipsync={onLipsync} onDubUse={onDubUse} />}
+      {project.mode === "mv" && shot.lipsync && shot.status === "done" && <DubRow shot={shot} vocals={vocals} onLipsync={onLipsync} onDubUse={onDubUse} />}
 
       <fieldset disabled={locked} style={{ border: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 10, opacity: locked ? 0.6 : 1 }}>
         <div>
@@ -828,13 +844,18 @@ function ShotCard({
               ))}
               {project.mode === "film" && draft.line.trim() && (
                 <select style={{ ...field, width: "auto" }} value={draft.speakerId ?? ""} onChange={(e) => set({ speakerId: Number(e.target.value) || null })}>
-                  <option value="">{t("ผู้พูด: ไม่ระบุ", "Speaker: none")}</option>
-                  {project.characters.filter((c) => draft.characterIds.includes(c.id)).map((c) => <option key={c.id} value={c.id}>{t("ผู้พูด: ", "Speaker: ")}{c.name}</option>)}
+                  <option value="">{t("ผู้พูด: ผู้บรรยาย", "Speaker: narrator")}</option>
+                  {project.characters.map((c) => <option key={c.id} value={c.id}>{t("ผู้พูด: ", "Speaker: ")}{c.name}</option>)}
                 </select>
               )}
             </div>
           </div>
         )}
+        {project.mode === "film" && <label style={label}>{t("อารมณ์เสียงพากย์", "Dub delivery")}
+          <select style={field} value={draft.delivery} onChange={(e) => set({ delivery: e.target.value })}>
+            {Object.entries(DELIVERIES).map(([k, v]) => <option key={k} value={k}>{t(v.label)}</option>)}
+          </select>
+        </label>}
         {props.length > 0 && (
           <div>
             <span style={label}>{t("ของ / อาวุธในช็อต", "Props / weapons in the shot")}</span>
@@ -926,6 +947,7 @@ function pickEditable(s: Shot) {
   return {
     visual: s.visual,
     line: s.line,
+    delivery: s.delivery,
     sound: s.sound,
     shotSize: s.shotSize,
     camera: s.camera,
@@ -962,8 +984,9 @@ function AssetCard({ asset, pictures, busy, onAction }: { asset: Asset; pictures
   const { locale } = useLocale();
   const [name, setName] = useState(asset.name);
   const [desc, setDesc] = useState(asset.description);
+  const [voiceId, setVoiceId] = useState(asset.voiceId);
   const [uploading, setUploading] = useState(false);
-  const dirty = name !== asset.name || desc !== asset.description;
+  const dirty = name !== asset.name || desc !== asset.description || voiceId !== asset.voiceId;
   const model = pictures.models.find((m) => m.id === pictures.pictureModelId);
   const drawing = asset.image.state === "rendering";
   const full = asset.pictures.length >= pictures.maxPictures;
@@ -1022,9 +1045,10 @@ function AssetCard({ asset, pictures, busy, onAction }: { asset: Asset; pictures
       <div style={{ flex: 1, minWidth: 220, display: "flex", flexDirection: "column", gap: 8 }}>
         <input style={field} maxLength={LIMITS.characterName} placeholder={t("ชื่อ", "Name")} value={name} onChange={(e) => setName(e.target.value)} />
         <textarea style={{ ...field, minHeight: 56, resize: "vertical" }} maxLength={LIMITS.characterDescription} placeholder={t(KIND_HINT[asset.kind])} value={desc} onChange={(e) => setDesc(e.target.value)} />
+        {asset.kind === "character" && <VoicePicker value={voiceId} onChange={setVoiceId} disabled={busy !== null} />}
         {asset.image.state === "failed" && asset.image.error && <div style={{ fontSize: 12, color: "#fca5a5" }}>{asset.image.error}</div>}
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {dirty && <button style={{ ...btn, padding: "6px 12px" }} disabled={busy !== null} onClick={() => onAction({ action: "update", assetId: asset.id, name, description: desc }, `asset-${asset.id}`)}>{t("บันทึก", "Save")}</button>}
+          {dirty && <button style={{ ...btn, padding: "6px 12px" }} disabled={busy !== null} onClick={() => onAction({ action: "update", assetId: asset.id, name, description: desc, ...(asset.kind === "character" ? { voiceId } : {}) }, `asset-${asset.id}`)}>{t("บันทึก", "Save")}</button>}
           <button style={{ ...btn, padding: "6px 12px", opacity: dirty || drawing || full || !model ? 0.5 : 1 }} disabled={dirty || drawing || full || !model || busy !== null} title={dirty ? t("บันทึกก่อน", "Save first") : full ? t(`มีภาพครบ ${pictures.maxPictures} ภาพแล้ว`, `It already has ${pictures.maxPictures} pictures`) : undefined} onClick={draw}>
             {drawing ? t("AI กำลังวาด…", "AI is drawing…") : asset.pictures.length ? t("✨ ให้ AI วาดมุมใหม่", "✨ Have AI draw a new angle") : t("✨ ให้ AI วาดภาพ", "✨ Have AI draw it")}
             {model && ` · ${formatCredits(model.credits, locale)}`}
@@ -1115,7 +1139,7 @@ function LibraryPanel({ view, busy, onAction, onPictures }: {
           </div>
         )}
         {items.map((a) => (
-          <AssetCard key={`${a.id}:${a.name}:${a.description}`} asset={a} pictures={pics} busy={busy} onAction={onAction} />
+          <AssetCard key={`${a.id}:${a.name}:${a.description}:${a.voiceId}`} asset={a} pictures={pics} busy={busy} onAction={onAction} />
         ))}
         {items.length < kind.max && (
           <button style={{ ...btn, alignSelf: "flex-start" }} disabled={busy !== null} onClick={() => onAction({ action: "add", kind: tab, name: "", description: "" }, "asset-add")}>
@@ -1621,6 +1645,40 @@ function SingPanel({ view, busy, onSeparate, onStem, onDubAll, onEdit }: {
 
 // ─── Project editor ─────────────────────────────────────────────────────
 
+function FilmDubbingPanel({ view, busy, onSettings, onDub, onLipsync, onEdit }: {
+  view: ProjectView; busy: string | null;
+  onSettings: (patch: { enabled?: boolean; narratorVoiceId?: string }) => void;
+  onDub: (shots: Shot[]) => void; onLipsync: (shot: Shot) => void; onEdit: (patch: Partial<EditSettings>) => void;
+}) {
+  const t = useT();
+  const d = view.dubbing!;
+  const lines = view.project.shots.filter((s) => s.line.trim());
+  const pending = lines.filter((s) => s.speech?.state !== "done" && s.speech?.state !== "rendering" && s.speech?.voiceId && s.status !== "rendering" && s.lipsync?.state !== "rendering");
+  const locked = busy !== null || view.film.status === "assembling";
+  return <section style={{ ...card, display: "flex", flexDirection: "column", gap: 12 }}>
+    <h3 style={{ margin: 0 }}>{t("🎙 พากย์ไทยแยกตัวละคร · ElevenLabs V3", "🎙 Character voices · ElevenLabs V3")}</h3>
+    <Toggle on={d.enabled} onChange={(enabled) => !locked && onSettings({ enabled })} label={t("ใช้เสียงพากย์ตามบท", "Use dialogue dubbing")} hint={t("เลือกเสียงในคลังตัวละคร → พากย์ → สร้างคลิป → ตัดต่อพร้อมซับไทย ความยาวช็อตตามเสียงจริง ช็อตที่พากย์จะปิดเสียงเดิม", "Choose voices in the character library → dub → render clips → cut with subtitles. Shots follow the audio length; dubbed shots replace the original sound.")} />
+    <label style={label}>{t("เสียงผู้บรรยาย (ช็อตไม่ระบุผู้พูด)", "Narrator (shots without a speaker)")}
+      <VoicePicker value={d.narratorVoiceId} disabled={locked} onChange={(id) => id && onSettings({ narratorVoiceId: id })} />
+    </label>
+    {!d.available && <div style={{ color: "#fbbf24", fontSize: 13 }}>{t("ElevenLabs V3 ยังไม่เปิดให้ใช้ — ผู้ดูแลต้องทดสอบโมเดลก่อน", "ElevenLabs V3 is not open yet — an admin must test the model first")}</div>}
+    <button style={{ ...primary, alignSelf: "flex-start" }} disabled={locked || !d.enabled || !d.available || !pending.length} onClick={() => onDub(pending)}>{t(`พากย์ช็อตที่ยังขาด ${pending.length} ช็อต`, `Dub ${pending.length} pending shots`)} · {pending.reduce((n, s) => n + (s.speech?.credits ?? 0), 0)} {t("เครดิต", "credits")}</button>
+    {lines.map((s) => <div key={s.id} style={{ display: "flex", flexDirection: "column", gap: 6, borderTop: "1px solid rgba(255,255,255,0.1)", paddingTop: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+        <strong>#{s.number} · {view.project.characters.find((c) => c.id === s.speakerId)?.name ?? t("ผู้บรรยาย", "Narrator")}</strong>
+        <span style={{ color: "#94a3b8", fontSize: 12 }}>{s.speech?.state === "rendering" ? t("กำลังพากย์…", "Dubbing…") : s.speech?.state === "done" ? `${s.speech.seconds?.toFixed(2)} s` : s.speech?.blocked}</span>
+        <button style={btn} disabled={locked || !d.enabled || !d.available || !s.speech?.voiceId || s.speech.state === "rendering" || s.status === "rendering" || s.lipsync?.state === "rendering"} onClick={() => onDub([s])}>{s.speech?.state === "done" ? t("พากย์ใหม่", "Dub again") : t("พากย์", "Dub")} · {s.speech?.credits ?? "—"}</button>
+        {s.status === "done" && s.speakerId !== null && s.lipsync?.suggested && <button style={btn} disabled={locked || !d.lipsyncAvailable || s.speech?.state !== "done" || Boolean(s.speech.blocked) || Boolean(s.lipsync.blocked) || s.lipsync.state === "rendering"} onClick={() => onLipsync(s)}>{t("ลิปซิงก์", "Lip-sync")} · {s.lipsync.credits ?? "—"} · {s.lipsync.state}</button>}
+      </div>
+      <div style={{ fontSize: 13 }}>{s.line}</div>
+      {s.speech?.url && <audio aria-label={`${t("เสียงพากย์ช็อต", "Shot dub")} ${s.number}`} src={s.speech.url} controls preload="none" style={{ maxWidth: "100%" }} />}
+      {(s.speech?.error || s.speech?.state === "done" && s.speech.blocked) && <div style={{ color: "#fca5a5", fontSize: 12 }}>{s.speech.error || s.speech.blocked}</div>}
+      {s.lipsync?.error && <div style={{ color: "#fca5a5", fontSize: 12 }}>{s.lipsync.error}</div>}
+    </div>)}
+    <Toggle on={view.edit.lipsync} onChange={(lipsync) => !locked && onEdit({ lipsync })} label={t("ใช้คลิปลิปซิงก์ตอนตัดต่อ", "Use lip-sync clips in the cut")} hint={t("เหมาะกับช็อตพูดระยะใกล้ที่เห็นหน้าผู้พูดชัด", "Best for tight speaking shots with a clearly visible face")} />
+  </section>;
+}
+
 function ProjectEditor({ id, onBack, onOpen, onSeries }: { id: number; onBack: () => void; onOpen: (id: number) => void; onSeries: (id: number) => void }) {
   const { toast } = useToast();
   const t = useT();
@@ -1658,7 +1716,7 @@ function ProjectEditor({ id, onBack, onOpen, onSeries }: { id: number; onBack: (
     view?.music.status === "rendering" ||
     view?.vocals?.state === "separating" ||
     view?.planning?.state === "planning" ||
-    (view?.project.shots.some((s) => s.lipsync?.state === "rendering" || s.keyframe.state === "rendering") ?? false) ||
+    (view?.project.shots.some((s) => s.speech?.state === "rendering" || s.lipsync?.state === "rendering" || s.keyframe.state === "rendering") ?? false) ||
     (view?.project.library.some((a) => a.image.state === "rendering") ?? false);
   // A long film is planned after the response; say so when it lands.
   const planState = view?.planning?.state ?? null;
@@ -1943,7 +2001,7 @@ function ProjectEditor({ id, onBack, onOpen, onSeries }: { id: number; onBack: (
 
   const lipsync = async (shots: Shot[]) => {
     const total = shots.reduce((n, s) => n + (s.lipsync?.credits ?? 0), 0);
-    const msg = shots.length === 1
+    const msg = project.mode === "film" ? t(`ลิปซิงก์ ${shots.length} ช็อตตามเสียงพากย์? ใช้ ${total} เครดิต`, `Lip-sync ${shots.length} shots to the dub? Uses ${total} credits`) : shots.length === 1
       ? t(
           `ลิปซิงก์ช็อต ${shots[0].number}? ใช้ ${formatNumber(total, locale)} เครดิต (ถ้าช่วงนี้ไม่มีเสียงร้องจะไม่ทำและไม่เสียเครดิต)`,
           `Lip-sync shot ${shots[0].number}? Uses ${formatCredits(total, locale)} (if this part has no singing, it's skipped and nothing is charged)`
@@ -2140,6 +2198,15 @@ function ProjectEditor({ id, onBack, onOpen, onSeries }: { id: number; onBack: (
       </div>
 
       <LibraryPanel view={view} busy={busy} onAction={assetAction} onPictures={setPictures} />
+      {view.dubbing && <FilmDubbingPanel view={view} busy={busy} onSettings={async (dubbing) => {
+        const data = await act<ProjectView>("dubbing-settings", `/api/story/${id}`, sendJson("PATCH", { dubbing }));
+        if (data) setView(data);
+      }} onDub={async (shots) => {
+        const total = shots.reduce((n, s) => n + (s.speech?.credits ?? 0), 0);
+        if (!confirm(t(`พากย์ ${shots.length} ช็อตด้วย ElevenLabs V3? ใช้รวม ${total} เครดิต`, `Dub ${shots.length} shots with ElevenLabs V3? Uses ${total} credits in total`))) return;
+        const data = await act<ProjectView>("speech", `/api/story/${id}/dubbing`, sendJson("POST", { shotIds: shots.map((s) => s.id) }));
+        if (data) setView(data);
+      }} onLipsync={(shot) => lipsync([shot])} onEdit={saveEdit} />}
 
       {project.shots.length > 0 && view.vocals && (
         <SingPanel view={view} busy={busy} onSeparate={separate} onStem={uploadStem} onDubAll={lipsync} onEdit={saveEdit} />

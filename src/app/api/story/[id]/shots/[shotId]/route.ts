@@ -35,7 +35,8 @@ export async function PATCH(request: NextRequest, { params }: Ctx) {
       characterIds: idList(shot.characterIds),
     });
     if (Object.keys(data).length > 0) {
-      const r = await prisma.aiStoryShot.updateMany({ where: { id: shot.id, status: { not: 'rendering' } }, data });
+      const r = await prisma.aiStoryShot.updateMany({ where: { id: shot.id, updatedAt: shot.updatedAt, status: { not: 'rendering' },
+        AND: [{ OR: [{ dubStatus: null }, { dubStatus: { not: 'rendering' } }] }, { OR: [{ lipsyncStatus: null }, { lipsyncStatus: { not: 'rendering' } }] }] }, data });
       if (r.count === 0) throw new StoryError({ th: 'ช็อตนี้กำลังสร้างอยู่ แก้ไขได้เมื่อเสร็จแล้ว', en: "This shot is being made. You can edit it once it's done." }, 409);
     }
     const fresh = (await loadOwnedProject(userId, id))!;
@@ -59,7 +60,11 @@ export async function DELETE(request: NextRequest, { params }: Ctx) {
     await prisma.$transaction(async (tx) => {
       // keyframeStatus is nullable: `not` alone would skip the NULL rows.
       const r = await tx.aiStoryShot.deleteMany({
-        where: { id: shot.id, status: { not: 'rendering' }, OR: [{ keyframeStatus: null }, { keyframeStatus: { not: 'rendering' } }] },
+        where: { id: shot.id, status: { not: 'rendering' }, AND: [
+          { OR: [{ keyframeStatus: null }, { keyframeStatus: { not: 'rendering' } }] },
+          { OR: [{ dubStatus: null }, { dubStatus: { not: 'rendering' } }] },
+          { OR: [{ lipsyncStatus: null }, { lipsyncStatus: { not: 'rendering' } }] },
+        ] },
       });
       if (r.count === 0) {
         throw new StoryError({ th: 'ช็อตนี้หรือภาพเปิดของช็อตกำลังสร้างอยู่ ลบได้เมื่อเสร็จแล้ว', en: "This shot or its opening picture is being made. You can delete it once it's done." }, 409);

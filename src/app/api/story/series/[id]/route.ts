@@ -82,7 +82,7 @@ export async function PATCH(request: NextRequest, { params }: Ctx) {
     if (body.aspect !== undefined) data.aspectRatio = pickKey(body.aspect, ASPECTS, '9:16');
     if (body.episodeSeconds !== undefined) data.episodeSeconds = episodeSecondsOf(body.episodeSeconds, series.episodeSeconds);
     if (body.characters !== undefined) {
-      const cast = parseCharacters(body.characters, userId, locale).map((c) => ({ name: c.name, description: c.description, referenceUrl: c.referenceUrl }));
+      const cast = parseCharacters(body.characters, userId, locale).map((c) => ({ name: c.name, description: c.description, referenceUrl: c.referenceUrl, voiceId: c.voiceId ?? null }));
       data.castJson = cast as unknown as Prisma.InputJsonValue;
     }
 

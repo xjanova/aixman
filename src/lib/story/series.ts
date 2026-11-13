@@ -21,6 +21,7 @@
  */
 
 import type { Msg } from '@/lib/i18n/locale';
+import { voiceIdOf } from './dubbing';
 import { FILM_LENGTHS, LIMITS, extractJson, type EpisodePlan } from './cinematic';
 
 export type SeriesFormat = 'short' | 'series';
@@ -210,6 +211,7 @@ export interface CastMember {
   name: string;
   description: string;
   referenceUrl: string | null;
+  voiceId?: string | null;
 }
 
 const clip = (s: unknown, max: number): string => (typeof s === 'string' ? s.trim().slice(0, max) : '');
@@ -277,6 +279,7 @@ export function castOf(value: unknown): CastMember[] {
         name: clip(c.name, LIMITS.characterName),
         description: clip(c.description, LIMITS.characterDescription),
         referenceUrl: typeof c.referenceUrl === 'string' && c.referenceUrl ? c.referenceUrl : null,
+        voiceId: voiceIdOf(c.voiceId),
       };
     })
     .filter((c) => c.name)
@@ -555,6 +558,10 @@ export interface LibrarySeed {
  */
 export function episodeLibrary(source: LibrarySeed[], cast: CastMember[], characters: SeriesCharacter[]): LibrarySeed[] {
   const out = source.map((s) => ({ ...s }));
+  for (const row of out.filter((s) => s.kind === 'character')) {
+    const voice = voiceIdOf(cast.find((c) => c.name.trim().toLowerCase() === row.name.trim().toLowerCase())?.voiceId);
+    if (voice) row.voiceId = voice;
+  }
   const names = new Set(out.filter((s) => s.kind === 'character').map((s) => s.name.trim().toLowerCase()));
   let people = names.size;
   const add = (seed: LibrarySeed) => {
@@ -565,7 +572,7 @@ export function episodeLibrary(source: LibrarySeed[], cast: CastMember[], charac
     out.push(seed);
   };
   for (const c of cast) {
-    add({ kind: 'character', name: c.name, description: c.description, origin: 'uploaded', referenceUrl: c.referenceUrl, images: null, voiceId: null });
+    add({ kind: 'character', name: c.name, description: c.description, origin: 'uploaded', referenceUrl: c.referenceUrl, images: null, voiceId: voiceIdOf(c.voiceId) });
   }
   for (const c of characters) {
     add({ kind: 'character', name: c.name, description: c.description, origin: 'planned', referenceUrl: null, images: null, voiceId: null });

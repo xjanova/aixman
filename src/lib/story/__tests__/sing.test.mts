@@ -6,7 +6,7 @@
  *
  * What must hold: a dub made from an older clip is never cut into the film;
  * the voice window is the shot's own place in the song and within what
- * LatentSync renders; a film never has the lip-sync switch on.
+ * LatentSync renders; film dialogue lip-sync is opt-in.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -82,8 +82,9 @@ test('a separated vocal has its minus-one beside it; an uploaded stem has none',
   assert.equal(minusOneFor('story/7/31/sing-4-1761700000000.wav'), null);
 });
 
-test('the lip-sync switch is an MV setting: on by default there, never on for a film', () => {
+test('lip-sync is on by default for an MV and opt-in for film dialogue', () => {
   assert.equal(defaultEdit('mv').lipsync, true);
   assert.equal(parseEdit({ lipsync: false }, 'mv').lipsync, false);
-  assert.equal(parseEdit({ lipsync: true }, 'film').lipsync, false);
+  assert.equal(defaultEdit('film').lipsync, false);
+  assert.equal(parseEdit({ lipsync: true }, 'film').lipsync, true);
 });

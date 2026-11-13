@@ -29,6 +29,8 @@ import { planJob } from './plan-jobs';
 import { bibleOf, isWritten } from './series';
 import { dubState, suggestedForLipsync, voiceWindow } from './sing';
 import { demucsPython, lipsyncCredits, lipsyncModel, projectVocalsState } from './vocals';
+import { DELIVERIES, deliveryOf, dubbingSettings, dubText, filmDubReady, shotVoice, speechBlock, speechState, voiceIdOf } from './dubbing';
+import { speechCredits, speechModel } from './dub-service';
 import type { Prisma } from '@/generated/prisma/client';
 import {
   StoryError,
@@ -175,6 +177,7 @@ export interface CharacterInput {
   name: string;
   description: string;
   referenceUrl: string | null;
+  voiceId?: string | null;
 }
 
 /** The characters a form sent; an unnamed one is named in `locale` ("ตัวละคร 2" / "Character 2"). */
@@ -192,11 +195,13 @@ export function parseCharacters(value: unknown, userId: number, locale: Locale =
       throw new StoryError({ th: `ภาพของ ${name} ไม่ถูกต้อง อัปโหลดใหม่อีกครั้ง`, en: `The picture of ${name} isn't valid. Please upload it again.` }, 422);
     }
     const id = Number(c.id);
+    if (c.voiceId && !voiceIdOf(c.voiceId)) throw new StoryError({ th: 'เสียงตัวละครไม่ถูกต้อง', en: 'Invalid character voice.' }, 422);
     return {
       ...(Number.isInteger(id) && id > 0 ? { id } : {}),
       name,
       description: text(c.description, LIMITS.characterDescription),
       referenceUrl: ref,
+      ...(c.voiceId !== undefined ? { voiceId: voiceIdOf(c.voiceId) } : {}),
     };
   });
 }
@@ -231,6 +236,7 @@ export function shotPatch(body: Record<string, unknown>, project: StoryProjectFu
     data.visualPrompt = visual;
   }
   if (body.line !== undefined) data.narration = text(body.line, LIMITS.line) || null;
+  if (body.delivery !== undefined) data.delivery = deliveryOf(body.delivery);
   if (body.sound !== undefined) data.sound = text(body.sound, LIMITS.sound) || null;
   if (body.durationSec !== undefined) {
     const n = Number(body.durationSec);
@@ -272,12 +278,13 @@ export function shotPatch(body: Record<string, unknown>, project: StoryProjectFu
 export async function serializeProject(project: StoryProjectFull, admin: boolean, locale: Locale) {
   const t = translator(locale);
   const isMv = project.mode === 'mv';
-  const [models, score, price, dubber, pictureModels] = await Promise.all([
+  const [models, score, price, dubber, pictureModels, speaker] = await Promise.all([
     movieModels(admin),
     project.mode === 'film' ? musicModel(admin) : null,
     assemblePriceSettings(),
-    isMv ? lipsyncModel(admin) : null,
+    lipsyncModel(admin),
     imageModels(admin),
+    isMv ? null : speechModel(admin),
   ]);
   const cast = project.characters.filter((c) => (c.kind || 'character') === 'character');
   const charById = new Map(cast.map((c) => [c.id, c]));
@@ -311,13 +318,14 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
       status: project.status,
       createdAt: project.createdAt,
       updatedAt: project.updatedAt,
-      characters: cast.map((c) => ({ id: c.id, name: c.name, description: c.description, referenceUrl: c.referenceUrl })),
+      characters: cast.map((c) => ({ id: c.id, name: c.name, description: c.description, referenceUrl: c.referenceUrl, voiceId: c.voiceId })),
       // The whole reference library: characters, props, places, each with its pictures.
       library: project.characters.map((c) => ({
         id: c.id,
         kind: isAssetKind(c.kind) ? c.kind : 'character',
         name: c.name,
         description: c.description,
+        voiceId: c.voiceId,
         pictures: assetPictures(c),
         origin: c.origin,
         image: { state: c.imageStatus, error: c.imageStatus === 'failed' ? readStoredMessage(c.imageError, locale) : null },
@@ -339,6 +347,11 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
           number: s.shotNumber,
           visual: s.visualPrompt,
           line: s.narration ?? '',
+          delivery: s.delivery,
+          ...(!isMv ? { speech: { state: speechState(s, project), url: s.audioUrl, seconds: s.dubSeconds === null ? null : Number(s.dubSeconds),
+            voiceId: shotVoice(s, project), error: readStoredMessage(s.dubError, locale),
+            blocked: speechBlock(s, project) ? t(speechBlock(s, project)!) : null,
+            credits: admin ? 0 : speechCredits(speaker, dubText(s.narration ?? '', s.delivery)) } } : {}),
           sound: s.sound ?? '',
           shotSize: s.shotSize,
           camera: s.camera,
@@ -367,19 +380,19 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
           mediaUrl: s.mediaUrl,
           generationId: s.visualGenerationId,
           error: readStoredMessage(s.errorMessage, locale),
-          ...(isMv
+          ...((isMv || filmDubReady(s, project))
             ? {
                 lipsync: {
-                  state: dubState(s),
+                  state: !isMv && s.lipsyncAudioUrl !== s.audioUrl && s.lipsyncStatus === 'done' ? 'stale' : dubState(s),
                   url: s.lipsyncStatus === 'done' ? s.lipsyncUrl : null,
                   error: s.lipsyncStatus === 'failed' ? readStoredMessage(s.lipsyncError, locale) : null,
                   use: s.lipsyncUse,
                   // Why this shot cannot be dubbed, or null when it can.
                   blocked: (() => {
-                    const w = voiceWindow(s.startSec === null ? null : Number(s.startSec), Number(s.durationSec));
+                    const w = voiceWindow(isMv ? (s.startSec === null ? null : Number(s.startSec)) : 0, Number(isMv ? s.durationSec : s.dubSeconds));
                     return w.ok ? null : t(w.message);
                   })(),
-                  credits: lipsyncCredits(dubber, Number(s.durationSec)),
+                  credits: lipsyncCredits(dubber, Number(isMv ? s.durationSec : s.dubSeconds)),
                   suggested: suggestedForLipsync({ line: s.narration ?? '', characterIds: idList(s.characterIds), shotSize: s.shotSize }),
                 },
               }
@@ -403,6 +416,8 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
       maxPictures: MAX_ASSET_PICTURES,
     },
     edit: parseEdit(script.edit, project.mode as StoryMode),
+    dubbing: isMv ? null : { ...dubbingSettings(script), available: Boolean(speaker?.orderable), lipsyncAvailable: Boolean(dubber?.orderable),
+      deliveries: Object.fromEntries(Object.entries(DELIVERIES).map(([k, v]) => [k, t(v.label)])) },
     music: {
       available: Boolean(score?.orderable),
       credits: musicCredits(score, seconds),
@@ -495,7 +510,11 @@ export function picturesPatch(script: unknown, raw: unknown): Prisma.InputJsonVa
 
 /** A library item from the page, every field checked. */
 export function assetInput(body: Record<string, unknown>, userId: number, existing: string[] = []) {
-  const out: { kind?: 'character' | 'prop' | 'location'; name?: string; description?: string; pictures?: string[] } = {};
+  const out: { kind?: 'character' | 'prop' | 'location'; name?: string; description?: string; pictures?: string[]; voiceId?: string | null } = {};
+  if (body.voiceId !== undefined) {
+    if (body.voiceId && !voiceIdOf(body.voiceId)) throw new StoryError({ th: 'เสียงตัวละครไม่ถูกต้อง', en: 'Invalid character voice.' }, 422);
+    out.voiceId = voiceIdOf(body.voiceId);
+  }
   if (body.kind !== undefined) {
     if (!isAssetKind(body.kind)) throw new StoryError({ th: 'ประเภทไม่ถูกต้อง', en: 'Invalid kind.' });
     out.kind = body.kind;

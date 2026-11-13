@@ -15,6 +15,7 @@ import { LIPSYNC_MODEL_KEY, SILENT_MEAN_DB, meanVolumeDb, minusOneFor, vocalsSta
 import { StoryError, customerMsg, type StoryProjectFull } from './service';
 import type { Msg } from '@/lib/i18n/locale';
 import { packMsg, registerStoredMsgs } from '@/lib/i18n/messages';
+import { filmDubReady } from './dubbing';
 
 /**
  * MV lip-sync, server side: the song's lead vocal (separated here or
@@ -255,21 +256,25 @@ const ORPHAN_CLAIM_MS = 10 * 60_000;
  * Ordering happens after the response (`placeLipsync`).
  */
 export async function claimLipsync(project: StoryProjectFull, shotIds: number[]): Promise<number[]> {
-  if (project.mode !== 'mv') throw new StoryError({ th: 'ลิปซิงก์เสียงร้องใช้ได้เฉพาะโหมด MV', en: 'Vocal lip-sync is only for MV mode.' });
-  if (projectVocalsState(project) !== 'done') {
+  if (project.mode === 'mv' && projectVocalsState(project) !== 'done') {
     throw new StoryError({ th: 'ยังไม่มีเสียงร้องแยก — แยกเสียงร้องหรืออัปโหลดก่อน', en: 'There are no separated vocals yet — separate or upload them first.' }, 409);
   }
   const claimed: number[] = [];
   for (const id of shotIds) {
     const shot = project.shots.find((s) => s.id === id);
     if (!shot || shot.status !== 'done' || !shot.mediaUrl) continue;
-    if (!voiceWindow(shot.startSec === null ? null : Number(shot.startSec), Number(shot.durationSec)).ok) continue;
+    if (shot.dubStatus === 'rendering') continue;
+    if (project.mode === 'film') {
+      if (!filmDubReady(shot, project) || shot.speakerId === null || !Array.isArray(shot.characterIds) || !shot.characterIds.includes(shot.speakerId)) continue;
+      if (!voiceWindow(0, Number(shot.dubSeconds)).ok) continue;
+    } else if (!voiceWindow(shot.startSec === null ? null : Number(shot.startSec), Number(shot.durationSec)).ok) continue;
     const r = await prisma.aiStoryShot.updateMany({
       where: {
         id: shot.id,
         projectId: project.id,
         status: 'done',
         mediaUrl: shot.mediaUrl,
+        updatedAt: shot.updatedAt,
         OR: [
           { lipsyncStatus: null },
           { lipsyncStatus: { not: 'rendering' } },
@@ -277,7 +282,8 @@ export async function claimLipsync(project: StoryProjectFull, shotIds: number[])
           { lipsyncGenerationId: null, updatedAt: { lt: new Date(Date.now() - ORPHAN_CLAIM_MS) } },
         ],
       },
-      data: { lipsyncStatus: 'rendering', lipsyncGenerationId: null, lipsyncSourceUrl: shot.mediaUrl, lipsyncError: null, lipsyncUse: true },
+      data: { lipsyncStatus: 'rendering', lipsyncGenerationId: null, lipsyncSourceUrl: shot.mediaUrl,
+        lipsyncAudioUrl: project.mode === 'film' ? shot.audioUrl : null, lipsyncError: null, lipsyncUse: true },
     });
     if (r.count > 0) claimed.push(shot.id);
   }
@@ -295,11 +301,30 @@ export async function placeLipsync(userId: number, admin: boolean, projectId: nu
       where: { id: { in: ids }, lipsyncStatus: 'rendering', lipsyncGenerationId: null },
       data: { lipsyncStatus: 'failed', lipsyncError: packMsg(message) },
     });
-  const project = await prisma.aiStoryProject.findFirst({ where: { id: projectId, userId }, include: { shots: true } });
+  const project = await prisma.aiStoryProject.findFirst({ where: { id: projectId, userId }, include: { shots: true, characters: true } });
   if (!project) return;
   const model = await lipsyncModel(admin);
   if (!model?.orderable) {
     await fail(shotIds, DUBBER_CLOSED);
+    return;
+  }
+  if (project.mode === 'film') {
+    for (const [k, id] of shotIds.entries()) {
+      const shot = project.shots.find((s) => s.id === id);
+      if (!shot || shot.lipsyncStatus !== 'rendering' || shot.lipsyncGenerationId) continue;
+      if (!filmDubReady(shot, project) || !shot.mediaUrl || shot.lipsyncSourceUrl !== shot.mediaUrl || shot.lipsyncAudioUrl !== shot.audioUrl) {
+        await fail([id], { th: 'บท เสียง หรือคลิปเปลี่ยนแล้ว สั่งลิปซิงก์ใหม่', en: 'The line, audio or clip changed. Order lip-sync again.' });
+        continue;
+      }
+      try {
+        const result = await GenerationService.generate(userId,
+          { modelId: model.id, type: 'video', prompt: '', inputVideo: shot.mediaUrl, inputAudio: shot.audioUrl! }, { isAdmin: admin });
+        await prisma.aiStoryShot.updateMany({ where: { id, lipsyncStatus: 'rendering', lipsyncGenerationId: null, lipsyncSourceUrl: shot.mediaUrl, lipsyncAudioUrl: shot.audioUrl }, data: { lipsyncGenerationId: result.id } });
+      } catch (e) {
+        await fail([id], customerMsg(e));
+        if (generationErrorResponse(e)?.status === 402) { await fail(shotIds.slice(k + 1), customerMsg(e)); break; }
+      }
+    }
     return;
   }
   if (!project.vocalsUrl || project.vocalsStatus !== 'done') {

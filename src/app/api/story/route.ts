@@ -104,6 +104,7 @@ export async function POST(request: NextRequest) {
             description: c.description,
             origin: 'uploaded',
             referenceUrl: c.referenceUrl,
+            voiceId: c.voiceId ?? null,
             sortOrder: k,
           })),
         },

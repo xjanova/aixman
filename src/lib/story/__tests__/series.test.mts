@@ -159,7 +159,7 @@ test('bibleOf and castOf: stored JSON is never trusted', () => {
   assert.deepEqual(b.characters, []);
   assert.equal(b.episodes.length, 2);
   assert.equal(b.episodes[1].summary, 'just a summary');
-  assert.deepEqual(castOf([{ name: 'a', referenceUrl: 7 }, { name: '' }, 'x']), [{ name: 'a', description: '', referenceUrl: null }]);
+  assert.deepEqual(castOf([{ name: 'a', referenceUrl: 7 }, { name: '' }, 'x']), [{ name: 'a', description: '', referenceUrl: null, voiceId: null }]);
   assert.deepEqual(castOf('nope'), []);
 });
 

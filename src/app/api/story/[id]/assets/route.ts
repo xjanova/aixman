@@ -53,6 +53,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             kind,
             name: input.name || `${pick(one, locale)} ${count + 1}`,
             description: input.description ?? '',
+            voiceId: kind === 'character' ? input.voiceId ?? null : null,
             referenceUrl: main ?? null,
             images: extra,
             origin: 'uploaded',
@@ -67,6 +68,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         const data: Record<string, unknown> = {};
         if (input.name) data.name = input.name;
         if (input.description !== undefined) data.description = input.description;
+        if (input.voiceId !== undefined && asset.kind === 'character') {
+          if (project.shots.some((s) => s.speakerId === asset.id && (s.dubStatus === 'rendering' || s.lipsyncStatus === 'rendering' || s.status === 'rendering'))) {
+            throw new StoryError({ th: 'รอสร้างเสียงและช็อตของตัวละครนี้เสร็จก่อน', en: 'Wait for this character’s audio and shots to finish first.' }, 409);
+          }
+          data.voiceId = input.voiceId;
+        }
         if (input.pictures) {
           const [main, ...extra] = input.pictures;
           data.referenceUrl = main ?? null;
@@ -79,6 +86,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       }
       case 'delete': {
         if (!asset) throw new StoryError(NOT_IN_LIBRARY, 404);
+        if (project.shots.some((s) => s.speakerId === asset.id && (s.dubStatus === 'rendering' || s.lipsyncStatus === 'rendering'))) throw new StoryError({ th: 'รอพากย์ตัวละครนี้เสร็จก่อนลบ', en: 'Wait for this character’s dub to finish before removing it.' }, 409);
         // A picture on the way is paid for; it lands on this row.
         if (asset.imageStatus === 'rendering') {
           throw new StoryError({ th: 'AI กำลังวาดภาพรายการนี้อยู่ ลบได้เมื่อเสร็จแล้ว', en: "AI is drawing a picture of this item. You can delete it once that's done." }, 409);

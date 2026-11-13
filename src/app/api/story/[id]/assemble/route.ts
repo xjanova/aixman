@@ -8,6 +8,7 @@ import { StoryJobError } from '@/lib/story/media';
 import { StoryError, assemblePriceSettings, loadOwnedProject, readyFilmSeconds } from '@/lib/story/service';
 import { STORY_REPLY, hourlyLimitReply, serializeProject, storyErrorReply, storyReply } from '@/lib/story/http';
 import { requestLocale } from '@/lib/i18n/locale';
+import { dubbingSettings, speechBlock } from '@/lib/story/dubbing';
 
 /**
  * POST /api/story/[id]/assemble — join the finished shots into one film with
@@ -32,6 +33,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const project = await loadOwnedProject(userId, id);
     if (!project) return storyReply(STORY_REPLY.projectNotFound, locale, 404);
     if (!project.shots.some((s) => s.status === 'done' && s.mediaUrl)) throw new StoryError({ th: 'ยังไม่มีช็อตที่สร้างเสร็จ', en: 'No shots are finished yet.' }, 422);
+    if (project.mode === 'film' && dubbingSettings(project.scriptJson).enabled) {
+      for (const shot of project.shots.filter((s) => s.status === 'done' && s.mediaUrl)) {
+        const blocked = speechBlock(shot, project);
+        if (blocked) throw new StoryError(blocked, 409);
+      }
+    }
     // A karaoke cut needs its timing: refused here, before the charge.
     const edit = parseEdit(((project.scriptJson ?? {}) as Record<string, unknown>).edit, project.mode as StoryMode);
     if (project.mode === 'mv' && edit.karaoke) {

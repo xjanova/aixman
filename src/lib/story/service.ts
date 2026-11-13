@@ -33,6 +33,7 @@ import { bibleOf, episodePlanOf } from './series';
 import { asLite, assetPictures, isAssetKind, spliceScene, type AssetKind, type LibraryAsset, type StructureInput, type StructurePlan } from './library';
 import { planMvSlots, planSceneShots, planStructuredFilm, type SceneBrief } from './structure';
 import { ASSEMBLE_PRICE_DEFAULTS, musicPrompt, musicSeconds } from './edit';
+import { dubbingSettings, dubShotSeconds, speechBlock, spokenText } from './dubbing';
 import type { Prisma } from '@/generated/prisma/client';
 import type { Locale, Msg } from '@/lib/i18n/locale';
 import { UserMessageError, packMsg, registerStoredMsgs } from '@/lib/i18n/messages';
@@ -326,12 +327,12 @@ function shotData(s: ShotDraft, projectId: number, shotNumber: number, modelId: 
 }
 
 export const BUSY_MESSAGE: Msg = {
-  th: 'มีช็อตหรือภาพเปิดช็อตกำลังสร้างอยู่ รอให้เสร็จก่อนแล้วค่อยให้ AI วางช็อตใหม่',
-  en: 'A shot or opening picture is still being made. Wait for it to finish, then let AI re-plan.',
+  th: 'มีช็อต ภาพเปิด หรือเสียงกำลังสร้างอยู่ รอให้เสร็จก่อนแล้วค่อยให้ AI วางช็อตใหม่',
+  en: 'A shot, opening picture or audio is still being made. Wait for it to finish, then let AI re-plan.',
 };
 /** A shot whose clip or opening picture is being made: an order in flight owns it. */
-export const isBusyShot = (s: { status: string; keyframeStatus: string | null }) => s.status === 'rendering' || s.keyframeStatus === 'rendering';
-const BUSY_WHERE = [{ status: 'rendering' }, { keyframeStatus: 'rendering' }];
+export const isBusyShot = (s: { status: string; keyframeStatus: string | null; dubStatus?: string | null; lipsyncStatus?: string | null }) => s.status === 'rendering' || s.keyframeStatus === 'rendering' || s.dubStatus === 'rendering' || s.lipsyncStatus === 'rendering';
+const BUSY_WHERE = [{ status: 'rendering' }, { keyframeStatus: 'rendering' }, { dubStatus: 'rendering' }, { lipsyncStatus: 'rendering' }];
 
 /**
  * Write (or rewrite) the storyboard. A film is cut into acts and scenes first
@@ -598,16 +599,24 @@ export async function renderShot(
   if (shot.keyframeStatus === 'rendering') {
     throw new StoryError({ th: `ช็อต ${shot.shotNumber}: รอภาพเปิดช็อตเสร็จก่อน`, en: `Shot ${shot.shotNumber}: wait for its opening picture to finish first.` }, 409);
   }
+  if (shot.dubStatus === 'rendering' || shot.lipsyncStatus === 'rendering') throw new StoryError({ th: 'รอพากย์หรือลิปซิงก์ช็อตนี้เสร็จก่อน', en: 'Wait for this shot’s dub or lip-sync to finish first.' }, 409);
+  const audioFirst = project.mode === 'film' && dubbingSettings(project.scriptJson).enabled && Boolean(spokenText(shot.narration ?? ''));
+  if (audioFirst) {
+    const blocked = speechBlock(shot, project);
+    if (blocked) throw new StoryError(blocked, 409);
+  }
+  const durationSec = audioFirst ? dubShotSeconds(Number(shot.dubSeconds))! : Number(shot.durationSec);
 
   const claimed = await prisma.aiStoryShot.updateMany({
-    where: { id: shot.id, projectId: project.id, status: { in: ['pending', 'failed', 'done'] } },
+    where: { id: shot.id, projectId: project.id, updatedAt: shot.updatedAt, status: { in: ['pending', 'failed', 'done'] } },
     // Unlinked from the previous order, so a sync meanwhile cannot settle this
     // claim with the old clip.
-    data: { status: 'rendering', errorMessage: null, visualGenerationId: null },
+    data: { status: 'rendering', errorMessage: null, visualGenerationId: null, durationSec },
   });
   if (claimed.count === 0) throw new StoryError({ th: `ช็อต ${shot.shotNumber} กำลังสร้างอยู่แล้ว`, en: `Shot ${shot.shotNumber} is already being made.` }, 409);
 
   const draft = shotDraftOf(shot);
+  draft.durationSec = durationSec;
   // The composed opening picture when the customer keeps it, else the lead's photo.
   const keyframe = shot.keyframeUse && shot.keyframeStatus === 'done' && shot.keyframeUrl ? shot.keyframeUrl : null;
   const lead = project.characters.find((c) => c.id === draft.characterIds[0] && c.kind === 'character');
@@ -679,7 +688,7 @@ export function filmSeconds(project: StoryProjectFull): number {
 
 /** Length of the film the finished shots make — what the cut is priced on. */
 export function readyFilmSeconds(project: StoryProjectFull): number {
-  return project.shots.filter((s) => s.status === 'done' && s.mediaUrl).reduce((n, s) => n + Number(s.durationSec), 0);
+  return project.shots.filter((s) => s.status === 'done' && s.mediaUrl).reduce((n, s) => n + (project.mode === 'film' && dubbingSettings(project.scriptJson).enabled && spokenText(s.narration ?? '') ? dubShotSeconds(Number(s.dubSeconds)) ?? Number(s.durationSec) : Number(s.durationSec)), 0);
 }
 
 export async function assemblePriceSettings(): Promise<{ perMinute: number; minimum: number }> {

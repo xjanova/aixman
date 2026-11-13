@@ -29,7 +29,7 @@ export interface EditSettings {
   coverFakeSubs: boolean;
   transition: 'cut' | 'fade';
   titleCard: boolean;
-  /** MV: a shot with a finished lip-sync dub is cut from the dub (lipsync.ts). */
+  /** A finished lip-sync clip may be used for singing or film dialogue. */
   lipsync: boolean;
   /**
    * MV: the lyrics swept word by word as they are sung (lyrics/karaoke-ass.ts),
@@ -83,8 +83,7 @@ export function parseEdit(raw: unknown, mode: StoryMode): EditSettings {
     coverFakeSubs: bool(r.coverFakeSubs, d.coverFakeSubs),
     transition: r.transition === 'cut' || r.transition === 'fade' ? r.transition : d.transition,
     titleCard: bool(r.titleCard, d.titleCard),
-    // A film has no song for a singer to mouth.
-    lipsync: mode === 'mv' && bool(r.lipsync, d.lipsync),
+    lipsync: bool(r.lipsync, d.lipsync),
     // Karaoke follows a song's words: an MV only.
     karaoke: mode === 'mv' && bool(r.karaoke, d.karaoke),
     karaokeLook: parseKaraokeLook(r.karaokeLook),
@@ -144,6 +143,7 @@ export interface CutShot {
   text: string;
   /** Rendered by LTX — the model that burns invented subtitles in. */
   burnsSubs: boolean;
+  voiceSeconds?: number;
 }
 
 export interface Cue {
@@ -173,6 +173,7 @@ export function subtitleCues(shots: CutShot[], fade: boolean): Cue[] {
   return shots.flatMap((s, k) => {
     const text = s.text.replace(/\s+/g, ' ').trim();
     if (!text) return [];
+    if (s.voiceSeconds !== undefined) return [{ start: spans[k].start, end: Math.round((spans[k].start + Math.min(s.seconds, s.voiceSeconds)) * 1000) / 1000, text }];
     return [{ start: spans[k].start + pad, end: Math.max(spans[k].start + pad + 0.5, spans[k].end - pad), text }];
   });
 }

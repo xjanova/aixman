@@ -671,6 +671,14 @@ model AiStoryShot {
   status         String   @default("pending") @db.VarChar(20)
   mediaUrl       String?  @map("media_url") @db.MediumText
   audioUrl       String?  @map("audio_url") @db.MediumText
+  delivery       String   @default("neutral") @db.VarChar(30)
+  dubStatus      String?  @map("dub_status") @db.VarChar(20)
+  dubGenerationId Int?    @map("dub_generation_id")
+  dubText        String?  @map("dub_text") @db.Text
+  dubVoiceId     String?  @map("dub_voice_id") @db.VarChar(100)
+  dubSeconds     Decimal? @map("dub_seconds") @db.Decimal(8, 3)
+  dubError       String?  @map("dub_error") @db.Text
+  dubStartedAt   DateTime? @map("dub_started_at") @db.DateTime(3)
   // Links back to the generation rows that produced this shot, for cost
   // attribution and so a retry does not re-bill work already paid for.
   visualGenerationId Int? @map("visual_generation_id")
@@ -682,6 +690,7 @@ model AiStoryShot {
   lipsyncGenerationId Int?     @map("lipsync_generation_id")
   lipsyncUrl          String?  @map("lipsync_url") @db.MediumText
   lipsyncSourceUrl    String?  @map("lipsync_source_url") @db.MediumText
+  lipsyncAudioUrl     String?  @map("lipsync_audio_url") @db.MediumText
   lipsyncError        String?  @map("lipsync_error") @db.Text
   lipsyncUse          Boolean  @default(true) @map("lipsync_use")
   // The shot's opening picture, composed from its references by an image

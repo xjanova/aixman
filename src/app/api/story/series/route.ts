@@ -63,7 +63,7 @@ export async function POST(request: NextRequest) {
     const format = isSeriesFormat(body.format) ? body.format : 'short';
     const defaults = SERIES_FORMATS[format];
     const genre = pickKey(body.genre, SERIES_GENRES, 'romance');
-    const cast = parseCharacters(body.characters, userId, locale).map((c) => ({ name: c.name, description: c.description, referenceUrl: c.referenceUrl }));
+    const cast = parseCharacters(body.characters, userId, locale).map((c) => ({ name: c.name, description: c.description, referenceUrl: c.referenceUrl, voiceId: c.voiceId ?? null }));
     // AI writes the outline unless the customer would rather write it.
     const plan = body.plan !== false;
     if (plan && !(await isAdmin())) checkSeriesPlanLimit(userId);

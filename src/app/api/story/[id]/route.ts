@@ -1,10 +1,12 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { getCurrentUserId, isAdmin } from '@/lib/auth';
 import prisma from '@/lib/db';
 import { LIMITS } from '@/lib/story/cinematic';
 import { StoryError, loadOwnedProject, syncShots } from '@/lib/story/service';
 import { syncDubs } from '@/lib/story/vocals';
 import { syncPictures } from '@/lib/story/keyframes';
+import { syncSpeech } from '@/lib/story/dub-service';
+import { dubbingSettings, voiceIdOf } from '@/lib/story/dubbing';
 import { STORY_REPLY, editPatch, parseCharacters, picturesPatch, projectSettings, serializeProject, storyErrorReply, storyReply, text, withFilmLength } from '@/lib/story/http';
 import { requestLocale } from '@/lib/i18n/locale';
 
@@ -19,6 +21,7 @@ import { requestLocale } from '@/lib/i18n/locale';
  */
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 300;
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -38,6 +41,8 @@ export async function GET(request: NextRequest, { params }: Ctx) {
     }
     if (await syncDubs(project)) project = (await loadOwnedProject(userId, id))!;
     if (await syncPictures(project)) project = (await loadOwnedProject(userId, id))!;
+    const speechProject = project;
+    if (speechProject.shots.some((s) => s.dubStatus === 'rendering')) after(() => syncSpeech(speechProject).then(() => {}));
     return NextResponse.json(await serializeProject(project, await isAdmin(), locale));
   } catch (error) {
     return storyErrorReply(error, 'get', locale);
@@ -54,6 +59,9 @@ export async function PATCH(request: NextRequest, { params }: Ctx) {
     if (!project) return storyReply(STORY_REPLY.projectNotFound, locale, 404);
     const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
     if (!body) throw new StoryError(STORY_REPLY.badRequest);
+    if ((body.dubbing !== undefined || body.characters !== undefined) && project.shots.some((s) => s.dubStatus === 'rendering' || s.lipsyncStatus === 'rendering' || s.status === 'rendering')) {
+      throw new StoryError({ th: 'รอช็อตและเสียงสร้างเสร็จก่อนเปลี่ยนเสียงตัวละคร', en: 'Wait for shots and audio to finish before changing character voices.' }, 409);
+    }
 
     const data: Record<string, unknown> = projectSettings(body);
     if (data.title === '') delete data.title;
@@ -71,6 +79,13 @@ export async function PATCH(request: NextRequest, { params }: Ctx) {
     if (body.edit !== undefined) data.scriptJson = editPatch(project, body.edit);
     if (body.filmLength !== undefined && project.mode === 'film') data.scriptJson = withFilmLength(data.scriptJson ?? project.scriptJson, body.filmLength);
     if (body.pictures !== undefined) data.scriptJson = picturesPatch(data.scriptJson ?? project.scriptJson, body.pictures);
+    if (body.dubbing !== undefined && project.mode === 'film') {
+      const patch = body.dubbing as Record<string, unknown>;
+      if (!patch || typeof patch !== 'object') throw new StoryError(STORY_REPLY.badRequest);
+      if (patch.narratorVoiceId !== undefined && !voiceIdOf(patch.narratorVoiceId)) throw new StoryError({ th: 'เสียงผู้บรรยายไม่ถูกต้อง', en: 'Invalid narrator voice.' });
+      const script = (data.scriptJson ?? project.scriptJson ?? {}) as Record<string, unknown>;
+      data.scriptJson = { ...script, dubbing: dubbingSettings({ dubbing: { ...dubbingSettings(script), ...patch } }) };
+    }
 
     await prisma.$transaction(async (tx) => {
       if (Object.keys(data).length > 0) await tx.aiStoryProject.update({ where: { id: project.id }, data });
@@ -84,7 +99,7 @@ export async function PATCH(request: NextRequest, { params }: Ctx) {
         where: { projectId: project.id, kind: 'character', id: { notIn: keep.map((c) => c.id!) } },
       });
       for (const [k, c] of characters.entries()) {
-        const fields = { name: c.name, description: c.description, referenceUrl: c.referenceUrl, sortOrder: k };
+        const fields = { name: c.name, description: c.description, referenceUrl: c.referenceUrl, sortOrder: k, ...(c.voiceId !== undefined ? { voiceId: c.voiceId } : {}) };
         if (c.id && keep.includes(c)) await tx.aiStoryCharacter.update({ where: { id: c.id }, data: fields });
         else await tx.aiStoryCharacter.create({ data: { ...fields, projectId: project.id, origin: 'uploaded' } });
       }
