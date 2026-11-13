@@ -4,6 +4,7 @@ import { chooseModel, imageModels, orderKeyframe, pictureSettings } from '@/lib/
 import { StoryError, idList, loadOwnedProject } from '@/lib/story/service';
 import { STORY_REPLY, serializeProject, storyErrorReply, storyReply } from '@/lib/story/http';
 import { requestLocale } from '@/lib/i18n/locale';
+import { currentKeyframe, keyframeMeta, keyframeReferenceBlock } from '@/lib/story/continuity';
 
 /**
  * POST /api/story/[id]/keyframes {shotIds} — order the shots' opening
@@ -33,12 +34,21 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const model = chooseModel(await imageModels(admin), pictureSettings(project.scriptJson).keyframeModelId, true);
     if (!model) throw new StoryError({ th: 'ยังไม่มีโมเดลภาพที่รับภาพอ้างอิงเปิดให้ใช้ตอนนี้', en: 'No image model that takes reference pictures is available right now.' }, 409);
+    const targets = shotIds.map((shotId) => {
+      const shot = project.shots.find((s) => s.id === shotId);
+      if (!shot) throw new StoryError(STORY_REPLY.shotNotFound, 404);
+      return shot;
+    }).filter((shot) => body.missingOnly !== true || (!currentKeyframe(shot, project) || keyframeMeta(shot.keyframeMeta)?.review === 'flagged'));
+    for (const shot of targets) {
+      const blocked = keyframeReferenceBlock(shot, project, model.refs);
+      if (blocked) throw new StoryError(blocked, 422);
+    }
     let ordered = 0;
     let stoppedBy: string | null = null;
     let stoppedStatus = 0;
-    for (const shotId of shotIds) {
+    for (const shot of targets) {
       try {
-        await orderKeyframe(userId, admin, project, shotId, model);
+        await orderKeyframe(userId, admin, project, shot.id, model);
         ordered++;
       } catch (error) {
         const reply = storyErrorReply(error, 'keyframe', locale);

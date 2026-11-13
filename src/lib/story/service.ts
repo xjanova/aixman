@@ -34,6 +34,8 @@ import { asLite, assetPictures, isAssetKind, spliceScene, type AssetKind, type L
 import { planMvSlots, planSceneShots, planStructuredFilm, type SceneBrief } from './structure';
 import { ASSEMBLE_PRICE_DEFAULTS, musicPrompt, musicSeconds } from './edit';
 import { dubbingSettings, dubShotSeconds, speechBlock, spokenText } from './dubbing';
+import { continuityBlock, endingFrame } from './continuity';
+import { referenceCaps } from '@/lib/reference-caps';
 import type { Prisma } from '@/generated/prisma/client';
 import type { Locale, Msg } from '@/lib/i18n/locale';
 import { UserMessageError, packMsg, registerStoredMsgs } from '@/lib/i18n/messages';
@@ -595,6 +597,8 @@ export async function renderShot(
     throw new StoryError({ th: `ช็อต ${shot.shotNumber}: ${model.name} ยังเปิดให้ใช้ไม่ได้ เลือกโมเดลอื่น`, en: `Shot ${shot.shotNumber}: ${model.name} isn't available yet. Pick another model.` }, 409);
   }
   if (!shot.visualPrompt.trim()) throw new StoryError({ th: `ช็อต ${shot.shotNumber}: ยังไม่มีคำบรรยายภาพ`, en: `Shot ${shot.shotNumber}: describe what it shows first.` }, 422);
+  const faceBlock = continuityBlock(shot, project);
+  if (faceBlock) throw new StoryError(faceBlock, 409);
   // Its opening picture is on the way: the clip would start from the old one.
   if (shot.keyframeStatus === 'rendering') {
     throw new StoryError({ th: `ช็อต ${shot.shotNumber}: รอภาพเปิดช็อตเสร็จก่อน`, en: `Shot ${shot.shotNumber}: wait for its opening picture to finish first.` }, 409);
@@ -621,6 +625,7 @@ export async function renderShot(
   const keyframe = shot.keyframeUse && shot.keyframeStatus === 'done' && shot.keyframeUrl ? shot.keyframeUrl : null;
   const lead = project.characters.find((c) => c.id === draft.characterIds[0] && c.kind === 'character');
   const firstFrame = keyframe ?? lead?.referenceUrl ?? undefined;
+  const end = endingFrame(shot, project, referenceCaps({ providerSlug: 'simplepod', modelId: model.key, category: 'video' }).lastFrame);
   if (!draft.locationId) draft.locationId = project.scenes.find((sc) => sc.id === shot.sceneId)?.locationId ?? null;
   const frame = ASPECTS[project.aspectRatio] ?? ASPECTS['16:9'];
   const prompt = buildShotPrompt(model.key, draft, {
@@ -642,6 +647,7 @@ export async function renderShot(
         type: 'video',
         prompt,
         inputImage: firstFrame,
+        inputImageEnd: end?.url,
         params: { width: frame.width, height: frame.height, aspectRatio: project.aspectRatio, duration: renderSeconds(draft.durationSec) },
       },
       { isAdmin: admin }

@@ -7,6 +7,7 @@ import { syncDubs } from '@/lib/story/vocals';
 import { syncPictures } from '@/lib/story/keyframes';
 import { syncSpeech } from '@/lib/story/dub-service';
 import { dubbingSettings, voiceIdOf } from '@/lib/story/dubbing';
+import { continuitySettings } from '@/lib/story/continuity';
 import { STORY_REPLY, editPatch, parseCharacters, picturesPatch, projectSettings, serializeProject, storyErrorReply, storyReply, text, withFilmLength } from '@/lib/story/http';
 import { requestLocale } from '@/lib/i18n/locale';
 
@@ -59,6 +60,15 @@ export async function PATCH(request: NextRequest, { params }: Ctx) {
     if (!project) return storyReply(STORY_REPLY.projectNotFound, locale, 404);
     const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
     if (!body) throw new StoryError(STORY_REPLY.badRequest);
+    if (body.characters !== undefined && project.characters.some((c) => c.imageStatus === 'rendering')) {
+      throw new StoryError({ th: 'รอภาพตัวละครวาดเสร็จก่อนแก้รายชื่อตัวละคร', en: 'Wait for character pictures to finish before changing the cast.' }, 409);
+    }
+    if (body.continuity !== undefined) {
+      if (!body.continuity || typeof body.continuity !== 'object' || Array.isArray(body.continuity)) throw new StoryError(STORY_REPLY.badRequest);
+      if (project.shots.some((s) => s.status === 'rendering' || s.keyframeStatus === 'rendering')) {
+        throw new StoryError({ th: 'รอภาพและคลิปสร้างเสร็จก่อนเปลี่ยนการตรวจตัวละคร', en: 'Wait for pictures and clips to finish before changing character checks.' }, 409);
+      }
+    }
     if ((body.dubbing !== undefined || body.characters !== undefined) && project.shots.some((s) => s.dubStatus === 'rendering' || s.lipsyncStatus === 'rendering' || s.status === 'rendering')) {
       throw new StoryError({ th: 'รอช็อตและเสียงสร้างเสร็จก่อนเปลี่ยนเสียงตัวละคร', en: 'Wait for shots and audio to finish before changing character voices.' }, 409);
     }
@@ -79,6 +89,10 @@ export async function PATCH(request: NextRequest, { params }: Ctx) {
     if (body.edit !== undefined) data.scriptJson = editPatch(project, body.edit);
     if (body.filmLength !== undefined && project.mode === 'film') data.scriptJson = withFilmLength(data.scriptJson ?? project.scriptJson, body.filmLength);
     if (body.pictures !== undefined) data.scriptJson = picturesPatch(data.scriptJson ?? project.scriptJson, body.pictures);
+    if (body.continuity !== undefined) {
+      const script = (data.scriptJson ?? project.scriptJson ?? {}) as Record<string, unknown>;
+      data.scriptJson = { ...script, continuity: continuitySettings({ continuity: { ...continuitySettings(script), ...body.continuity as object } }) };
+    }
     if (body.dubbing !== undefined && project.mode === 'film') {
       const patch = body.dubbing as Record<string, unknown>;
       if (!patch || typeof patch !== 'object') throw new StoryError(STORY_REPLY.badRequest);
@@ -88,7 +102,10 @@ export async function PATCH(request: NextRequest, { params }: Ctx) {
     }
 
     await prisma.$transaction(async (tx) => {
-      if (Object.keys(data).length > 0) await tx.aiStoryProject.update({ where: { id: project.id }, data });
+      if (Object.keys(data).length > 0) {
+        const updated = await tx.aiStoryProject.updateMany({ where: { id: project.id, updatedAt: project.updatedAt }, data });
+        if (!updated.count) throw new StoryError({ th: 'โปรเจกต์เปลี่ยนแล้ว โหลดใหม่ก่อนบันทึก', en: 'The project changed. Reload before saving.' }, 409);
+      }
       if (!characters) return;
       // Characters keep their ids so the shots that name them still do; one
       // left out is removed (shots simply stop naming it).

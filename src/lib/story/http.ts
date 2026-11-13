@@ -31,6 +31,7 @@ import { dubState, suggestedForLipsync, voiceWindow } from './sing';
 import { demucsPython, lipsyncCredits, lipsyncModel, projectVocalsState } from './vocals';
 import { DELIVERIES, deliveryOf, dubbingSettings, dubText, filmDubReady, shotVoice, speechBlock, speechState, voiceIdOf } from './dubbing';
 import { speechCredits, speechModel } from './dub-service';
+import { CHARACTER_ANGLES, CONTINUITY_LABELS, continuitySettings, continuityState, currentKeyframe, endingFrame, keyframeSignature, missingFaces } from './continuity';
 import type { Prisma } from '@/generated/prisma/client';
 import {
   StoryError,
@@ -369,11 +370,19 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
               url: s.keyframeStatus === 'done' ? s.keyframeUrl : null,
               error: s.keyframeStatus === 'failed' ? readStoredMessage(s.keyframeError, locale) : null,
               use: s.keyframeUse,
+              current: currentKeyframe(s, project),
               // Pictures this shot's references hold, and how many the chosen model will get.
               wanted: referencesWanted(refs, library),
               sent: keyframeModel ? pickReferences(refs, library, keyframeModel.refs).length : 0,
             };
           })(),
+          continuity: {
+            state: continuityState(s, project),
+            label: t(CONTINUITY_LABELS[continuityState(s, project)]),
+            signature: keyframeSignature(s, project),
+            missing: missingFaces(s, project),
+            endShot: endingFrame(s, project, Boolean(model && referenceCaps({ providerSlug: 'simplepod', modelId: model.key, category: 'video' }).lastFrame))?.shotNumber ?? null,
+          },
           modelId: s.modelId,
           credits: shotCredits(model, Number(s.durationSec)),
           status: s.status,
@@ -414,7 +423,9 @@ export async function serializeProject(project: StoryProjectFull, admin: boolean
       times: Object.fromEntries(Object.entries(TIMES_OF_DAY).map(([k, time]) => [k, t(time.label)])),
       kinds: Object.fromEntries(Object.entries(ASSET_KINDS).map(([k, v]) => [k, { label: t(v.label), one: t(v.one), max: v.max }])),
       maxPictures: MAX_ASSET_PICTURES,
+      angles: Object.fromEntries(Object.entries(CHARACTER_ANGLES).map(([key, value]) => [key, t(value.label)])),
     },
+    continuity: continuitySettings(script),
     edit: parseEdit(script.edit, project.mode as StoryMode),
     dubbing: isMv ? null : { ...dubbingSettings(script), available: Boolean(speaker?.orderable), lipsyncAvailable: Boolean(dubber?.orderable),
       deliveries: Object.fromEntries(Object.entries(DELIVERIES).map(([k, v]) => [k, t(v.label)])) },

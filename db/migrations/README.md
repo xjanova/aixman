@@ -11,6 +11,16 @@ would be unsafe (e.g. would drop legacy tables that still hold data).
 
 ## Files
 
+- `20261113_story_series.sql` — series bible and cast plus episode links on
+  `ai_story_projects`. Apply before the series code.
+- `20261113b_story_dubbing.sql` — character dialogue delivery, speech order
+  tracking, measured audio duration and the lip-sync audio source. Apply before
+  the dubbing code.
+- `20261113c_story_continuity.sql` — `ai_story_shots.keyframe_meta`, the opening
+  picture's input signature, reference IDs and human face review. Idempotent;
+  apply before the continuity code. All three November 13 files are required
+  before deploying the pending series/dubbing/continuity commits.
+
 - `20260524_add_ai_referrals.sql` — add `ai_referrals` + `ai_referral_commissions`
   tables that were in `schema.prisma` but never created on prod.
 - `20260619_storage_and_idempotency.sql` — widen generation media columns to

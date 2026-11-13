@@ -4,6 +4,7 @@ import prisma from '@/lib/db';
 import { StoryError, idList, loadOwnedProject, movieModels } from '@/lib/story/service';
 import { STORY_REPLY, serializeProject, shotPatch, storyErrorReply, storyReply } from '@/lib/story/http';
 import { requestLocale } from '@/lib/i18n/locale';
+import { currentKeyframe, keyframeMeta, keyframeSignature, missingFaces } from '@/lib/story/continuity';
 
 /**
  * PATCH  /api/story/[id]/shots/[shotId] — edit one shot.
@@ -34,9 +35,18 @@ export async function PATCH(request: NextRequest, { params }: Ctx) {
       camera: shot.camera,
       characterIds: idList(shot.characterIds),
     });
+    if (body.faceReview !== undefined) {
+      const review = body.faceReview as { status?: unknown; url?: unknown; signature?: unknown } | null;
+      if (Object.keys(body).length !== 1 || !review || !['approved', 'flagged'].includes(String(review.status))) throw new StoryError(STORY_REPLY.badRequest);
+      const signature = keyframeSignature(shot, project);
+      if (!currentKeyframe(shot, project) || !shot.keyframeUse || missingFaces(shot, project).length || review.url !== shot.keyframeUrl || review.signature !== signature) {
+        throw new StoryError({ th: 'ภาพหรือข้อมูลช็อตเปลี่ยนแล้ว โหลดใหม่และตรวจภาพล่าสุด', en: 'The picture or shot changed. Reload and review the latest picture.' }, 409);
+      }
+      data.keyframeMeta = { ...keyframeMeta(shot.keyframeMeta), signature, review: review.status };
+    }
     if (Object.keys(data).length > 0) {
       const r = await prisma.aiStoryShot.updateMany({ where: { id: shot.id, updatedAt: shot.updatedAt, status: { not: 'rendering' },
-        AND: [{ OR: [{ dubStatus: null }, { dubStatus: { not: 'rendering' } }] }, { OR: [{ lipsyncStatus: null }, { lipsyncStatus: { not: 'rendering' } }] }] }, data });
+        AND: [{ OR: [{ keyframeStatus: null }, { keyframeStatus: { not: 'rendering' } }] }, { OR: [{ dubStatus: null }, { dubStatus: { not: 'rendering' } }] }, { OR: [{ lipsyncStatus: null }, { lipsyncStatus: { not: 'rendering' } }] }] }, data });
       if (r.count === 0) throw new StoryError({ th: 'ช็อตนี้กำลังสร้างอยู่ แก้ไขได้เมื่อเสร็จแล้ว', en: "This shot is being made. You can edit it once it's done." }, 409);
     }
     const fresh = (await loadOwnedProject(userId, id))!;

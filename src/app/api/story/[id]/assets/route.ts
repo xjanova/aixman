@@ -64,6 +64,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       }
       case 'update': {
         if (!asset) throw new StoryError(NOT_IN_LIBRARY, 404);
+        if (asset.imageStatus === 'rendering') throw new StoryError({ th: 'รอภาพในคลังวาดเสร็จก่อนแก้ไข', en: 'Wait for the library picture to finish before editing it.' }, 409);
         const input = assetInput(body, userId, assetPictures(asset));
         const data: Record<string, unknown> = {};
         if (input.name) data.name = input.name;
@@ -81,7 +82,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         }
         // A character keeps being a character: shots name it as cast.
         if (input.kind && input.kind !== asset.kind) throw new StoryError({ th: 'เปลี่ยนประเภทไม่ได้ ลบแล้วเพิ่มใหม่แทน', en: "The kind can't be changed. Delete it and add a new one instead." });
-        await prisma.aiStoryCharacter.updateMany({ where: { id: asset.id, projectId: project.id }, data });
+        const updated = await prisma.aiStoryCharacter.updateMany({ where: { id: asset.id, projectId: project.id, updatedAt: asset.updatedAt }, data });
+        if (!updated.count) throw new StoryError({ th: 'รายการนี้เปลี่ยนแล้ว โหลดใหม่ก่อนแก้ไข', en: 'This item changed. Reload before editing it.' }, 409);
         break;
       }
       case 'delete': {
@@ -107,7 +109,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         }
         const model = chooseModel(await imageModels(admin), pictureSettings(project.scriptJson).pictureModelId, false);
         if (!model) throw new StoryError({ th: 'ยังไม่มีโมเดลภาพเปิดให้ใช้ตอนนี้', en: 'No image model is available right now.' }, 409);
-        await orderAssetPicture(userId, admin, project, asset.id, model, text(body.note, 300));
+        await orderAssetPicture(userId, admin, project, asset.id, model, text(body.note, 300), body.angle);
         break;
       }
       default:

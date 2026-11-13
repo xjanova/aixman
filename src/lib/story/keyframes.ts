@@ -1,4 +1,5 @@
 import prisma from '@/lib/db';
+import { randomUUID } from 'node:crypto';
 import { getGpuConfig } from '@/lib/gpu/config';
 import { isCommunityOnlyModel } from '@/lib/gpu/catalog';
 import { isInHouse } from '@/lib/public-provider';
@@ -11,6 +12,7 @@ import { isStorageConfigured } from '@/lib/storage/r2';
 import { ASPECTS, LOOKS, MOODS, type StoryMode } from './cinematic';
 import { MAX_ASSET_PICTURES, keyframePrompt, pickReferences, type LibraryAsset, type ShotRefs } from './library';
 import { StoryError, customerMsg, idList, libraryOf, type StoryProjectFull } from './service';
+import { characterPicturePrompt, keyframeReferenceBlock, keyframeSignature } from './continuity';
 
 /**
  * Opening pictures for shots, and AI pictures for library items — both
@@ -149,17 +151,20 @@ export async function orderKeyframe(
     );
   }
   if (!model.orderable) throw new StoryError(unusable(model), 409);
+  const blocked = keyframeReferenceBlock(shot, project, model.refs);
+  if (blocked) throw new StoryError(blocked, 422);
+  const library = libraryOf(project);
+  const refsOf = shotRefsOf(shot, project);
+  const refs = pickReferences(refsOf, library, model.refs);
+  const claimId = randomUUID();
   const claimed = await prisma.aiStoryShot.updateMany({
-    where: { id: shot.id, projectId: project.id, OR: [{ keyframeStatus: null }, { keyframeStatus: { not: 'rendering' } }] },
-    data: { keyframeStatus: 'rendering', keyframeGenerationId: null, keyframeError: null },
+    where: { id: shot.id, projectId: project.id, updatedAt: shot.updatedAt, status: { not: 'rendering' }, OR: [{ keyframeStatus: null }, { keyframeStatus: { not: 'rendering' } }] },
+    data: { keyframeStatus: 'rendering', keyframeGenerationId: null, keyframeError: null, keyframeMeta: { claimId, signature: keyframeSignature(shot, project), review: 'pending', references: [...new Set(refs.map((r) => r.asset.id))] } },
   });
   if (claimed.count === 0) {
     throw new StoryError({ th: `ภาพเปิดช็อต ${shot.shotNumber} กำลังสร้างอยู่แล้ว`, en: `The opening picture for shot ${shot.shotNumber} is already being made.` }, 409);
   }
 
-  const library = libraryOf(project);
-  const refsOf = shotRefsOf(shot, project);
-  const refs = pickReferences(refsOf, library, model.refs);
   const scene = project.scenes.find((s) => s.id === shot.sceneId);
   const byIds = (ids: number[]) => ids.map((id) => library.find((a) => a.id === id)).filter((a): a is LibraryAsset => Boolean(a));
   const prompt = keyframePrompt(refs, {
@@ -188,12 +193,12 @@ export async function orderKeyframe(
       { isAdmin: admin, deferApi: true }
     );
     await prisma.aiStoryShot.updateMany({
-      where: { id: shot.id, keyframeStatus: 'rendering', keyframeGenerationId: null },
+      where: { id: shot.id, keyframeStatus: 'rendering', keyframeGenerationId: null, keyframeMeta: { path: '$.claimId', equals: claimId } },
       data: { keyframeGenerationId: result.id },
     });
   } catch (error) {
     await prisma.aiStoryShot.updateMany({
-      where: { id: shot.id, keyframeStatus: 'rendering', keyframeGenerationId: null },
+      where: { id: shot.id, keyframeStatus: 'rendering', keyframeGenerationId: null, keyframeMeta: { path: '$.claimId', equals: claimId } },
       data: { keyframeStatus: 'failed', keyframeError: packMsg(customerMsg(error)) },
     });
     throw error;
@@ -207,21 +212,26 @@ export async function orderAssetPicture(
   project: StoryProjectFull,
   assetId: number,
   model: ImageModelOption,
-  note: string
+  note: string,
+  angle: unknown = 'front'
 ): Promise<void> {
   const row = project.characters.find((c) => c.id === assetId);
   if (!row) throw new StoryError({ th: 'ไม่พบรายการนี้ในคลัง', en: "This item isn't in the library." }, 404);
   if (!model.orderable) throw new StoryError(unusable(model), 409);
   const asset = libraryOf(project).find((a) => a.id === assetId)!;
+  if (asset.kind === 'character' && asset.pictures.length > 0 && model.refs === 0) {
+    throw new StoryError({ th: 'วาดมุมใหม่ต้องใช้โมเดลที่รับภาพอ้างอิง เพื่อรักษาหน้าเดิม', en: 'Use a model that takes reference pictures to keep the same face in a new angle.' }, 422);
+  }
   if (asset.pictures.length >= MAX_ASSET_PICTURES) {
     throw new StoryError({ th: `มีภาพครบ ${MAX_ASSET_PICTURES} ภาพแล้ว ลบภาพเดิมก่อน`, en: `This item already has ${MAX_ASSET_PICTURES} pictures. Delete one first.` }, 422);
   }
   if (!asset.description.trim() && !note.trim()) {
     throw new StoryError({ th: 'เขียนคำอธิบายรูปลักษณ์ก่อน AI จึงวาดได้', en: 'Describe how it looks first, so AI can draw it.' }, 422);
   }
+  const claimedAt = new Date();
   const claimed = await prisma.aiStoryCharacter.updateMany({
-    where: { id: assetId, projectId: project.id, OR: [{ imageStatus: null }, { imageStatus: { not: 'rendering' } }] },
-    data: { imageStatus: 'rendering', imageGenerationId: null, imageError: null },
+    where: { id: assetId, projectId: project.id, updatedAt: row.updatedAt, OR: [{ imageStatus: null }, { imageStatus: { not: 'rendering' } }] },
+    data: { imageStatus: 'rendering', imageGenerationId: null, imageError: null, updatedAt: claimedAt },
   });
   if (claimed.count === 0) throw new StoryError({ th: `กำลังวาดภาพของ ${asset.name} อยู่แล้ว`, en: `A picture of ${asset.name} is already being drawn.` }, 409);
 
@@ -230,7 +240,7 @@ export async function orderAssetPicture(
   const style = project.mode === 'mv' ? MOODS[project.mood ?? '']?.style ?? MOODS.romantic.style : LOOKS[project.templateKey]?.style ?? LOOKS.film.style;
   const subject =
     asset.kind === 'character'
-      ? `A character reference sheet photo of ${asset.name}: ${asset.description}. Full body, standing, facing the camera, plain light grey studio background, even soft light.`
+      ? characterPicturePrompt(asset.name, asset.description, angle)
       : asset.kind === 'prop'
         ? `A product reference photo of ${asset.name}: ${asset.description}. The whole object, centred, plain light grey background, even studio light.`
         : `An establishing photo of the place ${asset.name}: ${asset.description}. Wide angle, no people.`;
@@ -255,12 +265,12 @@ export async function orderAssetPicture(
       { isAdmin: admin, deferApi: true }
     );
     await prisma.aiStoryCharacter.updateMany({
-      where: { id: assetId, imageStatus: 'rendering', imageGenerationId: null },
+      where: { id: assetId, imageStatus: 'rendering', imageGenerationId: null, updatedAt: claimedAt },
       data: { imageGenerationId: result.id },
     });
   } catch (error) {
     await prisma.aiStoryCharacter.updateMany({
-      where: { id: assetId, imageStatus: 'rendering', imageGenerationId: null },
+      where: { id: assetId, imageStatus: 'rendering', imageGenerationId: null, updatedAt: claimedAt },
       data: { imageStatus: 'failed', imageError: packMsg(customerMsg(error)) },
     });
     throw error;
@@ -305,7 +315,7 @@ export async function syncPictures(project: StoryProjectFull): Promise<boolean> 
   const orphanShots = project.shots.filter((s) => s.keyframeStatus === 'rendering' && !s.keyframeGenerationId && now - s.updatedAt.getTime() > ORPHAN_CLAIM_MS);
   for (const s of orphanShots) {
     const r = await prisma.aiStoryShot.updateMany({
-      where: { id: s.id, keyframeStatus: 'rendering', keyframeGenerationId: null },
+      where: { id: s.id, keyframeStatus: 'rendering', keyframeGenerationId: null, updatedAt: s.updatedAt },
       data: { keyframeStatus: 'failed', keyframeError: packMsg(KEYFRAME_INCOMPLETE) },
     });
     changed ||= r.count > 0;
@@ -313,7 +323,7 @@ export async function syncPictures(project: StoryProjectFull): Promise<boolean> 
   const orphanAssets = project.characters.filter((c) => c.imageStatus === 'rendering' && !c.imageGenerationId && now - c.updatedAt.getTime() > ORPHAN_CLAIM_MS);
   for (const c of orphanAssets) {
     const r = await prisma.aiStoryCharacter.updateMany({
-      where: { id: c.id, imageStatus: 'rendering', imageGenerationId: null },
+      where: { id: c.id, imageStatus: 'rendering', imageGenerationId: null, updatedAt: c.updatedAt },
       data: { imageStatus: 'failed', imageError: packMsg(PICTURE_INCOMPLETE) },
     });
     changed ||= r.count > 0;

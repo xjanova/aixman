@@ -896,6 +896,36 @@ Code: `src/lib/story/{cinematic,service,http}.ts`, `/api/story/*`.
   real WAV parsing, duplicate claims, failures, stale-result protection, and
   ffmpeg command construction). Neither places paid provider orders.
 
+## Character continuity (phase 2, 2026-11-13)
+
+- `continuity.ts` defines opt-in `script_json.continuity` (`enabled`,
+  `endingFrame`). Apply `20261113c_story_continuity.sql` **before deploying**:
+  it adds nullable `ai_story_shots.keyframe_meta`. Series and dubbing migrations
+  from the same day are also still required. Do not push ahead of the SQL.
+- Library character pictures can be front portraits, three-quarter portraits,
+  profiles or full costume views, one view per image. New angles use the
+  existing pictures and refuse a model that cannot take references. The first
+  picture remains the main identity reference and copies into later episodes.
+- With continuity enabled, rendering first offers to prepare missing character
+  opening pictures (up to 60 per request, ordinary charged/refundable image
+  orders). Every named character must have a reference and fit in the model's
+  reference cap. Clips wait for the customer to compare the picture against
+  the displayed faces and mark it approved; flagged pictures need a remake.
+  **Human review, not an AI face-similarity score.** No paid orders on GET.
+- `keyframe_meta` pins a SHA-256 signature of the composition, relevant library
+  descriptions/pictures, scene light/place, look and aspect, plus which asset
+  references were actually sent. A changed composition invalidates approval;
+  dialogue, audio length and unrelated library items do not. A review sends
+  the picture URL and signature; stale tabs and busy shots cannot approve it.
+  Old pictures without metadata must be remade when checks are enabled.
+- Optional ending anchor: the immediately next shot's approved opening picture,
+  only with the same scene and cast and a video model supporting a last frame.
+  The order uses `inputImageEnd`; no frame extraction or AI face verification.
+  New series episodes inherit the source episode's continuity settings.
+- Tests: `continuity.test.mts` (invalidation, references, review states, anchors),
+  `continuity-jobs.test.mts` (real orchestration with mocked DB/provider: double
+  claims, pre-charge refusals, failed order release, first/last frame wiring).
+
 ## Series & short dramas (ซีรีส์ / ละครสั้น, `/movie?s=<id>`)
 
 

@@ -700,6 +700,7 @@ model AiStoryShot {
   keyframeUrl          String?  @map("keyframe_url") @db.MediumText
   keyframeError        String?  @map("keyframe_error") @db.Text
   keyframeUse          Boolean  @default(true) @map("keyframe_use")
+  keyframeMeta         Json?    @map("keyframe_meta")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 

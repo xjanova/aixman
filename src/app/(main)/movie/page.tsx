@@ -83,6 +83,7 @@ interface PictureModel {
   credits: number;
 }
 interface Pictures {
+  angles?: Record<string, string>;
   keyframeModelId: number | null;
   pictureModelId: number | null;
   models: PictureModel[];
@@ -103,10 +104,12 @@ interface Shot {
     url: string | null;
     error: string | null;
     use: boolean;
+    current?: boolean;
     wanted: number;
     sent: number;
   };
   visual: string;
+  continuity?: { state: string; label: string; signature: string; missing: string[]; endShot: number | null };
   line: string;
   delivery: string;
   speech?: { state: "none" | "rendering" | "done" | "stale" | "failed"; url: string | null; seconds: number | null; voiceId: string | null; error: string | null; blocked: string | null; credits: number | null };
@@ -186,6 +189,7 @@ interface Vocals {
   dubbing: boolean;
 }
 interface ProjectView {
+  continuity?: { enabled: boolean; endingFrame: boolean };
   project: Project;
   models: Model[];
   edit: EditSettings;
@@ -668,6 +672,7 @@ function ShotCard({
   pictures,
   onKeyframe,
   onKeyframeUse,
+  onFaceReview,
 }: {
   shot: Shot;
   project: Project;
@@ -681,6 +686,7 @@ function ShotCard({
   pictures: Pictures;
   onKeyframe: () => void;
   onKeyframeUse: (use: boolean) => void;
+  onFaceReview: (status: "approved" | "flagged") => Promise<void>;
 }) {
   const t = useT();
   const { locale } = useLocale();
@@ -703,7 +709,7 @@ function ShotCard({
   }, [shot, draft]);
   const dirty = !sameEdit(draft, shot);
 
-  const locked = shot.status === "rendering";
+  const locked = shot.status === "rendering" || shot.speech?.state === "rendering" || shot.lipsync?.state === "rendering";
   const set = (patch: Partial<Shot>) => setDraft((d) => ({ ...d, ...patch }));
   const save = async () => {
     setSaving(true);
@@ -760,6 +766,24 @@ function ShotCard({
                 : ""}
           </div>
           {kf.state === "failed" && kf.error && <div style={{ color: "#fca5a5" }}>{kf.error}</div>}
+          {shot.continuity && !["off", "none"].includes(shot.continuity.state) && <>
+            <div style={{ color: shot.continuity.state === "approved" ? "#86efac" : "#fbbf24" }}>{shot.continuity.label}</div>
+            {shot.continuity.missing.length > 0 && <div>{t("ยังไม่มีภาพอ้างอิง: ", "Missing references: ")}{shot.continuity.missing.join(", ")}</div>}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {project.library.filter((a) => a.kind === "character" && shot.characterIds.includes(a.id)).map((a) => <div key={a.id} style={{ width: 72, fontSize: 11 }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                {a.pictures[0] && <img src={a.pictures[0]} alt={a.name} style={{ width: 72, height: 72, borderRadius: 8, objectFit: "cover" }} />}
+                <div>{a.name}</div>
+              </div>)}
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {(["approved", "flagged"] as const).map((status) => <button key={status} style={{ ...btn, padding: "6px 10px" }} disabled={locked || kfBusy || saving || dirty || !kf.current || !kf.use || shot.continuity!.missing.length > 0} onClick={async () => {
+                setSaving(true);
+                await onFaceReview(status).finally(() => setSaving(false));
+              }}>{status === "approved" ? t("✓ หน้าตรง ผ่าน", "✓ Faces match") : t("⚑ หน้าเพี้ยน", "⚑ Face drift")}</button>)}
+            </div>
+            {shot.continuity.endShot !== null && <div>{t(`ใช้ภาพเปิดช็อต ${shot.continuity.endShot} เป็นเฟรมท้าย`, `Uses shot ${shot.continuity.endShot}'s opening picture as the ending frame`)}</div>}
+          </>}
           {kf.url && (
             <label style={{ display: "flex", gap: 6, alignItems: "center", cursor: "pointer" }}>
               <input type="checkbox" checked={kf.use} disabled={locked} onChange={(e) => onKeyframeUse(e.target.checked)} />
@@ -985,6 +1009,7 @@ function AssetCard({ asset, pictures, busy, onAction }: { asset: Asset; pictures
   const [name, setName] = useState(asset.name);
   const [desc, setDesc] = useState(asset.description);
   const [voiceId, setVoiceId] = useState(asset.voiceId);
+  const [pictureAngle, setPictureAngle] = useState("front");
   const [uploading, setUploading] = useState(false);
   const dirty = name !== asset.name || desc !== asset.description || voiceId !== asset.voiceId;
   const model = pictures.models.find((m) => m.id === pictures.pictureModelId);
@@ -1009,7 +1034,7 @@ function AssetCard({ asset, pictures, busy, onAction }: { asset: Asset; pictures
       `Have AI draw ${asset.name}${angle}? Uses ${formatCredits(model.credits, locale)} with ${model.name} (refunded automatically if it fails)`
     );
     if (!confirm(ask)) return;
-    if (await onAction({ action: "picture", assetId: asset.id }, `asset-${asset.id}`)) {
+    if (await onAction({ action: "picture", assetId: asset.id, ...(asset.kind === "character" ? { angle: pictureAngle } : {}) }, `asset-${asset.id}`)) {
       toast("success", t("สั่งวาดแล้ว", "Drawing ordered"), t("ภาพจะขึ้นเองเมื่อเสร็จ", "The picture appears by itself when it's done"));
     }
   };
@@ -1046,6 +1071,12 @@ function AssetCard({ asset, pictures, busy, onAction }: { asset: Asset; pictures
         <input style={field} maxLength={LIMITS.characterName} placeholder={t("ชื่อ", "Name")} value={name} onChange={(e) => setName(e.target.value)} />
         <textarea style={{ ...field, minHeight: 56, resize: "vertical" }} maxLength={LIMITS.characterDescription} placeholder={t(KIND_HINT[asset.kind])} value={desc} onChange={(e) => setDesc(e.target.value)} />
         {asset.kind === "character" && <VoicePicker value={voiceId} onChange={setVoiceId} disabled={busy !== null} />}
+        {asset.kind === "character" && pictures.angles && <label style={label}>
+          {t("มุมภาพอ้างอิงตัวละคร", "Character reference angle")}
+          <select aria-label={t("มุมภาพอ้างอิงตัวละคร", "Character reference angle")} style={field} value={pictureAngle} disabled={busy !== null || drawing} onChange={(e) => setPictureAngle(e.target.value)}>
+            {Object.entries(pictures.angles).map(([key, text]) => <option key={key} value={key}>{text}</option>)}
+          </select>
+        </label>}
         {asset.image.state === "failed" && asset.image.error && <div style={{ fontSize: 12, color: "#fca5a5" }}>{asset.image.error}</div>}
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {dirty && <button style={{ ...btn, padding: "6px 12px" }} disabled={busy !== null} onClick={() => onAction({ action: "update", assetId: asset.id, name, description: desc, ...(asset.kind === "character" ? { voiceId } : {}) }, `asset-${asset.id}`)}>{t("บันทึก", "Save")}</button>}
@@ -1645,6 +1676,39 @@ function SingPanel({ view, busy, onSeparate, onStem, onDubAll, onEdit }: {
 
 // ─── Project editor ─────────────────────────────────────────────────────
 
+function ContinuityPanel({ view, busy, onSettings, onPrepare }: {
+  view: ProjectView; busy: string | null;
+  onSettings: (patch: { enabled?: boolean; endingFrame?: boolean }) => void;
+  onPrepare: (shots: Shot[]) => void;
+}) {
+  const t = useT();
+  if (!view.continuity) return null;
+  const settings = view.continuity;
+  const characters = view.project.shots.filter((s) => s.characterIds.length > 0);
+  const todo = characters.filter((s) => s.status !== "rendering" && s.keyframe.state !== "rendering" && (!s.keyframe.current || s.continuity?.state === "flagged")).slice(0, 60);
+  const approved = characters.filter((s) => s.continuity?.state === "approved").length;
+  const locked = busy !== null || view.project.shots.some((s) => s.status === "rendering" || s.keyframe.state === "rendering");
+  return <div style={{ ...card, display: "flex", flexDirection: "column", gap: 10 }}>
+    <h3 style={{ margin: 0 }}>{t("🧑 รักษาหน้าตัวละคร", "🧑 Character continuity")}</h3>
+    <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <input type="checkbox" checked={settings.enabled} disabled={locked} onChange={(e) => onSettings({ enabled: e.target.checked })} />
+      {t("เตรียมและตรวจภาพตัวละครก่อนสร้างคลิป", "Prepare and review character pictures before rendering")}
+    </label>
+    <div style={{ fontSize: 12, color: "#94a3b8" }}>{t("ใส่ภาพหน้าตรงเป็นภาพหลัก วาดมุมเพิ่มในคลังได้ เมื่อกดสร้างคลิป ระบบจะเตรียมภาพเปิดที่ขาดให้ก่อน จากนั้นเทียบหน้าและกดผ่านทีละช็อต ระบบยังไม่ตรวจใบหน้าด้วย AI", "Use a front portrait as the main reference and add angles in the library. Rendering first prepares missing opening pictures. Compare faces and approve each shot. Faces are reviewed by you; there is no AI face check yet.")}</div>
+    {settings.enabled && <>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <button style={btn} disabled={locked || !todo.length} onClick={() => onPrepare(todo)}>{t(`🖼 เตรียมภาพเปิดที่ขาด ${todo.length} ช็อต`, `🖼 Prepare ${todo.length} missing opening pictures`)}</button>
+        <span style={{ color: "#94a3b8", fontSize: 12 }}>{t(`ตรวจผ่าน ${approved}/${characters.length} ช็อต`, `${approved}/${characters.length} character shots approved`)}</span>
+      </div>
+      <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input type="checkbox" checked={settings.endingFrame} disabled={locked} onChange={(e) => onSettings({ endingFrame: e.target.checked })} />
+        {t("ใช้ภาพเปิดช็อตถัดไปเป็นเฟรมท้าย เมื่ออยู่ฉากเดียวกันและมีตัวละครชุดเดียวกัน", "Use the next opening picture as an ending frame for the same scene and cast")}
+      </label>
+      <div style={{ color: "#64748b", fontSize: 12 }}>{t("ใช้เฉพาะโมเดลที่รับเฟรมท้าย และภาพทั้งสองผ่านการตรวจแล้ว ควรปิดเมื่อต้องการตัดสลับมุมทันที", "Only used when the model takes an ending frame and both pictures are approved. Turn off for a hard camera cut.")}</div>
+    </>}
+  </div>;
+}
+
 function FilmDubbingPanel({ view, busy, onSettings, onDub, onLipsync, onEdit }: {
   view: ProjectView; busy: string | null;
   onSettings: (patch: { enabled?: boolean; narratorVoiceId?: string }) => void;
@@ -1806,6 +1870,14 @@ function ProjectEditor({ id, onBack, onOpen, onSeries }: { id: number; onBack: (
   };
 
   const render = async (shots: Shot[]) => {
+    if (view.continuity?.enabled) {
+      const blocked = shots.filter((s) => s.continuity && !["approved", "none"].includes(s.continuity.state));
+      const missing = [...new Set(blocked.flatMap((s) => s.continuity?.missing ?? []))];
+      if (missing.length) return toast("error", t("เพิ่มภาพอ้างอิงตัวละครก่อน", "Add character reference pictures first"), missing.join(", "));
+      const prepare = blocked.filter((s) => s.keyframe.state !== "rendering" && (!s.keyframe.current || s.continuity?.state === "flagged"));
+      if (prepare.length) return keyframes(prepare, true);
+      if (blocked.length) return toast("error", t("ตรวจภาพเปิดช็อตก่อนสร้างคลิป", "Review opening pictures before rendering"), blocked[0].continuity?.label);
+    }
     const total = shots.reduce((n, s) => n + (s.credits ?? 0), 0);
     const again = shots.filter((s) => s.status === "done").length;
     const msg = shots.length === 1
@@ -1848,10 +1920,10 @@ function ProjectEditor({ id, onBack, onOpen, onSeries }: { id: number; onBack: (
     toast("success", t(`AI กำลังวางช็อต${what.th}ใหม่`, `AI is re-planning ${what.en}`), t("ใช้เวลาราว 1 นาที", "About a minute"));
   };
 
-  const keyframes = async (shots: Shot[]) => {
+  const keyframes = async (shots: Shot[], missingOnly = false) => {
     const model = view.pictures.models.find((m) => m.id === view.pictures.keyframeModelId);
     if (!model) return toast("error", t("ยังไม่มีโมเดลภาพที่รับภาพอ้างอิงเปิดให้ใช้", "No image model that takes reference pictures is open yet"));
-    const todo = shots.filter((s) => s.keyframe.state !== "rendering");
+    const todo = shots.filter((s) => s.status !== "rendering" && s.keyframe.state !== "rendering" && (!missingOnly || !s.keyframe.current || s.continuity?.state === "flagged")).slice(0, 60);
     if (todo.length === 0) return;
     const again = todo.filter((s) => s.keyframe.url).length;
     const ask = t(
@@ -1861,7 +1933,7 @@ function ProjectEditor({ id, onBack, onOpen, onSeries }: { id: number; onBack: (
       }`
     );
     if (!confirm(ask)) return;
-    const data = await act<ProjectView & { ordered: number; stoppedBy: string | null }>("keyframes", `/api/story/${id}/keyframes`, sendJson("POST", { shotIds: todo.map((s) => s.id) }));
+    const data = await act<ProjectView & { ordered: number; stoppedBy: string | null }>("keyframes", `/api/story/${id}/keyframes`, sendJson("POST", { shotIds: todo.map((s) => s.id), missingOnly }));
     if (!data) return;
     setView(data);
     if (data.stoppedBy) toast("error", t(`สั่งได้ ${data.ordered} ภาพ แล้วหยุด`, `Ordered ${plural(data.ordered, "picture")}, then stopped`), data.stoppedBy);
@@ -2061,6 +2133,11 @@ function ProjectEditor({ id, onBack, onOpen, onSeries }: { id: number; onBack: (
       pictures={view.pictures}
       onKeyframe={() => keyframes([s])}
       onKeyframeUse={(use) => keyframeUse(s, use)}
+      onFaceReview={async (status) => {
+        const data = await act<ProjectView>(`review-${s.id}`, `/api/story/${id}/shots/${s.id}`, sendJson("PATCH", { faceReview: { status, url: s.keyframe.url, signature: s.continuity?.signature } }));
+        if (data) setView(data);
+        else await load();
+      }}
     />
   );
   const places = project.library.filter((a) => a.kind === "location");
@@ -2198,6 +2275,10 @@ function ProjectEditor({ id, onBack, onOpen, onSeries }: { id: number; onBack: (
       </div>
 
       <LibraryPanel view={view} busy={busy} onAction={assetAction} onPictures={setPictures} />
+      <ContinuityPanel view={view} busy={busy} onPrepare={(shots) => keyframes(shots, true)} onSettings={async (continuity) => {
+        const data = await act<ProjectView>("continuity-settings", `/api/story/${id}`, sendJson("PATCH", { continuity }));
+        if (data) setView(data);
+      }} />
       {view.dubbing && <FilmDubbingPanel view={view} busy={busy} onSettings={async (dubbing) => {
         const data = await act<ProjectView>("dubbing-settings", `/api/story/${id}`, sendJson("PATCH", { dubbing }));
         if (data) setView(data);
