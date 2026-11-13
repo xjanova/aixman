@@ -18,7 +18,9 @@ import { isAcceptedFrameSource } from '@/lib/gpu/frame-input';
  *     BytePlus ModelArk — all OpenAI-compatible), or keyless Pollinations if
  *     an admin chose it, following the official prompting guide for H3 and a
  *     model-aware brief for everything else.
- *  3. Rules that need no model at all, so the button always does something.
+ *  3. Rules that need no model at all, for pictures, video and H3. The route
+ *     tells the customer why it came to that, and music, edit and lip-sync have
+ *     no rules, so for those it answers with the reason alone.
  *
  * The customer sees the result in the prompt box and can edit it before
  * ordering — nothing is rewritten behind their back.
@@ -48,7 +50,7 @@ export interface EnhanceResult {
   source: 'context-ir' | 'llm' | 'rules';
   /** Which engine, for the admin test and the studio's small print. */
   engine: string;
-  /** Why an earlier, better engine was skipped (admin test only). */
+  /** Why an earlier, better engine was skipped. Names providers: admins and the log only. */
   fallbackReason?: string;
 }
 
@@ -122,7 +124,22 @@ function chatUrl(provider: LlmProvider, endpoint?: string): string {
 }
 
 const LLM_TIMEOUT_MS = 45_000;
-const CONTEXT_IR_TIMEOUT_MS = 120_000;
+/**
+ * One press of ✨. `deepseek-flash` thinks before it answers: an everyday prompt
+ * takes under 1,000 tokens and 8 s, but at the old 2,500 a long Thai prompt came
+ * back with nothing 3 times in 5 and a spoken H3 script stopped half-way. The
+ * hardest cases never passed 5,872 tokens and 27 s in 54 tries given 8,000 or
+ * more (measured 2026-10-31). At its fastest, 220 tokens a second, the two
+ * limits run out at about the same moment.
+ */
+const ENHANCE_LIMITS = { maxTokens: 12_000, timeoutMs: 60_000, wholeAnswer: true };
+/**
+ * All of one press, Context-IR and every engine together. A proxy cuts the
+ * request at 100 s, and then the customer hears nothing from us.
+ */
+const ENHANCE_DEADLINE_MS = 90_000;
+/** With less left than this, another engine is not worth starting. */
+const ENGINE_MIN_MS = 5_000;
 const MAX_OUTPUT_CHARS = 8000;
 
 export async function getEnhancerConfig(): Promise<EnhancerConfig> {
@@ -311,8 +328,10 @@ interface ChatLimits {
   maxTokens?: number;
   /** Characters of answer kept. */
   maxChars?: number;
-  /** How long one engine may take; LLM_TIMEOUT_MS when unset. A long answer needs longer. */
+  /** How long one engine may take, reading the answer included; LLM_TIMEOUT_MS when unset. A long answer needs longer. */
   timeoutMs?: number;
+  /** An answer the token limit cut short counts as no answer. */
+  wholeAnswer?: boolean;
 }
 
 async function callChat(provider: LlmProvider, model: string, system: string, user: string, limits: ChatLimits = {}): Promise<string> {
@@ -344,8 +363,10 @@ async function callChat(provider: LlmProvider, model: string, system: string, us
     body.reasoning_effort = 'low';
   }
 
-  const res = await withTimeout(limits.timeoutMs ?? LLM_TIMEOUT_MS, (signal) =>
-    fetch(url, {
+  // The body is read inside the clock: DeepSeek sends its headers in under half
+  // a second and does all its thinking in the body.
+  const { res, text } = await withTimeout(limits.timeoutMs ?? LLM_TIMEOUT_MS, async (signal) => {
+    const reply = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -354,9 +375,9 @@ async function callChat(provider: LlmProvider, model: string, system: string, us
       body: JSON.stringify(body),
       signal,
       cache: 'no-store',
-    })
-  );
-  const text = await res.text();
+    });
+    return { res: reply, text: await reply.text() };
+  });
   if (!res.ok) throw new Error(`${provider} HTTP ${res.status}: ${text.slice(0, 200)}`);
   type ChatReply = {
     choices?: { finish_reason?: string; message?: { content?: string } }[];
@@ -374,13 +395,15 @@ async function callChat(provider: LlmProvider, model: string, system: string, us
   }
   const content = data && typeof data === 'object' ? (data.choices?.[0]?.message?.content ?? '') : text;
   const out = cleanOutput(content, limits.maxChars);
+  const cut = data?.choices?.[0]?.finish_reason === 'length';
   if (!out) {
     throw new Error(
-      data?.choices?.[0]?.finish_reason === 'length'
+      cut
         ? `${provider} ran out of tokens while reasoning and gave no answer — try another model`
         : `${provider} returned an empty answer`
     );
   }
+  if (cut && limits.wholeAnswer) throw new Error(`${provider} ran out of tokens and cut its answer short`);
   return out;
 }
 
@@ -389,7 +412,7 @@ async function callChat(provider: LlmProvider, model: string, system: string, us
  * it has `task.content.prompt`. Takes the frames too, which no other engine
  * here can see.
  */
-async function callContextIr(req: EnhanceRequest): Promise<string> {
+async function callContextIr(req: EnhanceRequest, timeoutMs: number): Promise<string> {
   const account = await accountFor('minimax');
   if (!account) throw new Error('no active MiniMax key in the account pool');
   const base = (account.apiEndpoint || 'https://api.minimax.io').replace(/\/+$/, '').replace(/\/v1$/, '');
@@ -404,7 +427,7 @@ async function callContextIr(req: EnhanceRequest): Promise<string> {
   }
   const ratio = ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'].includes(req.aspectRatio ?? '') ? req.aspectRatio : 'adaptive';
 
-  return withTimeout(CONTEXT_IR_TIMEOUT_MS, async (signal) => {
+  return withTimeout(timeoutMs, async (signal) => {
     const created = await fetch(`${base}/v2/h3_context_ir`, {
       method: 'POST',
       headers,
@@ -507,11 +530,12 @@ export async function chatViaPool(
 export async function enhancePrompt(req: EnhanceRequest, cfgIn?: EnhancerConfig): Promise<EnhanceResult> {
   const cfg = cfgIn ?? (await getEnhancerConfig());
   const reasons: string[] = [];
+  const deadline = Date.now() + ENHANCE_DEADLINE_MS;
 
   if (cfg.provider !== 'off') {
     if (isSelfHostedH3(req) && cfg.h3ContextIr) {
       try {
-        return { prompt: await callContextIr(req), source: 'context-ir', engine: 'MiniMax H3-Context-IR' };
+        return { prompt: await callContextIr(req, ENHANCE_DEADLINE_MS), source: 'context-ir', engine: 'MiniMax H3-Context-IR' };
       } catch (error) {
         reasons.push(`Context-IR: ${(error as Error).message}`);
       }
@@ -521,8 +545,14 @@ export async function enhancePrompt(req: EnhanceRequest, cfgIn?: EnhancerConfig)
     const system = briefFor(req, cfg);
     for (const provider of order) {
       const model = cfg.model && cfg.provider !== 'auto' ? cfg.model : DEFAULT_MODEL[provider];
+      const left = deadline - Date.now();
+      if (left < ENGINE_MIN_MS) {
+        reasons.push(`${provider}: timed out, the press has no time left`);
+        continue;
+      }
       try {
-        const prompt = await callChat(provider, model, system, req.prompt);
+        const limits = { ...ENHANCE_LIMITS, timeoutMs: Math.min(ENHANCE_LIMITS.timeoutMs, left) };
+        const prompt = await callChat(provider, model, system, req.prompt, limits);
         return { prompt, source: 'llm', engine: `${provider} · ${model}`, fallbackReason: reasons.join(' | ') || undefined };
       } catch (error) {
         reasons.push(`${provider}: ${(error as Error).message}`);

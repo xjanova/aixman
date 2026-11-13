@@ -1835,12 +1835,19 @@ const FAILURE = {
   saveFailed: { th: 'บันทึกไฟล์ผลลัพธ์ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง', en: 'The result couldn’t be saved. Please try again.' },
   busy: { th: 'ระบบไม่ว่างอยู่ในขณะนี้ กรุณาลองใหม่ภายหลัง', en: 'We’re busy right now. Please try again later.' },
   queueFull: { th: 'คิวเต็มอยู่ในขณะนี้ กรุณาลองใหม่ภายหลัง', en: 'The queue is full right now. Please try again later.' },
-  failed: { th: 'สร้างผลงานไม่สำเร็จ กรุณาลองใหม่อีกครั้ง', en: 'Creating failed. Please try again.' },
+  // What is left is the model's own fault: says so, because "please try again"
+  // alone told the customer nothing (11 of 21 failures on 2026-10-31).
+  failed: {
+    th: 'ระบบประมวลผลของโมเดลนี้ขัดข้อง ไม่ได้เกิดจากคำสั่งของคุณ ลองใหม่อีกครั้งหรือเลือกโมเดลอื่น',
+    en: 'This model’s processing broke down; your order wasn’t the cause. Try again or pick another model.',
+  },
 } satisfies Record<string, Msg>;
 const REFUNDED: Msg = { th: '(คืนเครดิตแล้ว)', en: '(credits refunded)' };
+/** `FAILURE.failed` as older rows hold it. */
+const FAILED_BEFORE: Msg = { th: 'สร้างผลงานไม่สำเร็จ กรุณาลองใหม่อีกครั้ง', en: 'Creating failed. Please try again.' };
 
 // Rows failed before messages were stored in both languages hold "<Thai> (คืนเครดิตแล้ว)".
-registerStoredMsgs(...Object.values(FAILURE), RENDERING_PAUSED_MSG, REFUNDED);
+registerStoredMsgs(...Object.values(FAILURE), FAILED_BEFORE, RENDERING_PAUSED_MSG, REFUNDED);
 
 /**
  * Translate an internal failure into what the customer reads, in both

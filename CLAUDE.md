@@ -126,6 +126,11 @@ against the free `/api/v1/chat/credit` → encrypted pool row, daily quota 0 →
   and `build()` → `{model, input}`. GenerationService refuses a `kie` row with no
   entry (it would reach KIE as an unknown model after charging). Retire a model by
   moving its key to `RETIRED_KIE_KEYS`; "ซิงก์โมเดล/ราคา" switches its row off.
+- **A new entry gets its row at the next boot**, with no button
+  (`instrumentation.ts` → `addMissingKieRows`, kie-rows.ts): `tuning`, priced at
+  the default markup. That path only inserts, so nothing about an existing row
+  changes until an admin syncs. Don't put `syncKieModels` on a boot or a deploy:
+  it rewrites every row's price.
 - **Price = a credits table**, `defaultParams.kie` (tier × sold length, per voice
   second, per extra picture), written by the sync at twice cost at the cheapest
   package rate. `/api/models` sends `defaultParams` to anyone — **never put USD in
@@ -1073,17 +1078,52 @@ XDREAMER, ≥ 3.0.189) link there. It restates facts from `src/lib/llm/*`,
 `src/lib/mcp/server.ts` and `src/app/api/mcp/route.ts` (forwarded fields,
 aspect ratios, rate limits, error codes): change those, change the page.
 
+## A failed order always says why (owner's rule, 2026-10-31)
+
+Every failure a customer sees carries its reason, never a bare "try again".
+`publicErrorMessage` (`public-provider.ts`) is the one door: a vendor's text
+becomes a reason in their language (`VENDOR_REASONS`, read from the words, since
+codes differ per model) or its own words framed with the refund, without the
+vendor's name, ids or URLs; rented-GPU failures come through `userFacingError`.
+Do not match a failure's text loosely on the page: `/Generation failed/` in
+`localizeOrderError` hid every KIE reason behind "ลองใหม่อีกครั้ง" until this rule.
+
 ## Prompt assistant (✨ in the studio)
 
 `/api/studio/enhance-prompt` → `services/prompt-enhancer.ts`. Order: MiniMax's
 own **H3-Context-IR API** for self-hosted H3 when a MiniMax key is in the pool
 (H3-Base was trained on its output format and has no substitute) → a chat model
 from the account pool (`auto`: DeepSeek → OpenAI → MiniMax → BytePlus; Pollinations only
-when chosen — it is a third party) → model-aware rules, so it never fails. Free
-to customers, limited per hour (`prompt_enhancer_hourly_limit`); settings and a
-test button live on the same admin page. Thinking models get
+when chosen — it is a third party) → model-aware rules for pictures, video and
+H3. Free to customers, limited per hour (`prompt_enhancer_hourly_limit`);
+settings and a test button live on the same admin page. Thinking models get
 `reasoning_effort: low` — Pollinations' free tier caps output at 1,500 tokens
 and spent all of it reasoning over the H3 brief (empty answer) without it.
+
+When no model answers, the customer is told why (`enhanceFailure` in
+`services/chat-failure.ts`, the classifier `lyricsFailure` also uses; provider
+text stays in the log as `[enhance]`). Rules that rewrote the prompt answer 200
+with `reason`; music, edit and lip-sync have no rules and answer 503 with it.
+
+One press holds `ENHANCE_LIMITS` (12,000 tokens, 60 s per engine) inside
+`ENHANCE_DEADLINE_MS` (90 s for Context-IR and every engine together), short of
+Cloudflare's 100 s. `deepseek-flash` reasons first: at 2,500 tokens, Thai at the
+4,000-character limit got no answer 3 times in 5 and a spoken H3 script came
+back cut, while everyday prompts stayed under 1,000 (measured 2026-10-31).
+`wholeAnswer` refuses a cut answer. **`callChat`'s clock must cover the body:**
+DeepSeek sends headers in under half a second and thinks in the body, so a
+clock stopped by `fetch` resolving never fires. A `chatViaPool` caller with a
+long answer sets its own `timeoutMs`.
+
+The ✨ on the lyrics box (Suno tools except Replace Section) is the same route
+and the same hourly allowance with `tab: 'lyrics'`, through `chatViaPool` and
+`lyrics/write.ts`: an idea becomes a whole song, four lines or more (or any
+section tag) count as the customer's words, which stay word for word while the
+rest is written around them. A model's answer with no section tag is refused.
+With no model, rough words are sorted into sections by rule and an idea answers
+503, always with `lyricsFailure`'s reason: a customer is told why, in words that
+name no provider. `deepseek-flash` reasons first, so the 4,000 tokens that
+carry English run dry on Thai (`LYRICS_LIMITS`).
 
 **Studio orders overlap** (tray above the canvas, `MAX_PARALLEL_JOBS` = 3). The
 old page-wide lock was what stopped double orders; now a 1.5 s guard does —

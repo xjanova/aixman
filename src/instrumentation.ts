@@ -7,6 +7,11 @@
  * bound, and without the API order sweep an order cut off by a restart stays
  * charged and spinning. The matching /api/cron/* routes remain available for external
  * scheduling.
+ *
+ * It also adds the KIE rows a deploy's new catalogue entries need. That belongs
+ * here and not in auto-deploy.yml: the app that knows the catalogue is the one
+ * starting, the rows cannot exist before the code that serves them, and nothing
+ * in the deploy can fail over it.
  */
 export async function register() {
   // The edge runtime has no timers that survive a request, and this must not
@@ -33,5 +38,11 @@ export async function register() {
     startApiOrderSweep();
   } catch (error) {
     console.error('[api-orders] could not start the sweep:', (error as Error).message);
+  }
+  try {
+    const { startKieRowBackfill } = await import('@/lib/providers/kie-sync');
+    startKieRowBackfill();
+  } catch (error) {
+    console.error('[kie] could not start the row backfill:', (error as Error).message);
   }
 }

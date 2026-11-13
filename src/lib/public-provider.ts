@@ -109,16 +109,71 @@ registerStoredMsgs(BUSY_MSG, FAILED_MSG);
 export const BUSY_MESSAGE = BUSY_MSG.th;
 
 /**
- * A failed order's message as the customer may read it, in `locale`. Our own
- * refusals pass through (stored in both languages, or a known Thai one); a
- * vendor's message keeps its reason (a refused prompt says why) with the
- * vendor's name, task ids and URLs taken out, and an account problem of ours
- * becomes a plain "busy".
+ * Why a vendor failed an order, in words a customer can act on. Read from its
+ * text, not its code: one number means different things per model (413 from
+ * Suno's Cover is a fingerprint match, not "too large"). First match wins, so
+ * the narrower reasons come first. Written from what production has stored.
+ */
+const VENDOR_REASONS: { says: RegExp; msg: Msg }[] = [
+  {
+    says: /matches an existing recording/i,
+    msg: {
+      th: 'ไฟล์เสียงนี้ตรงกับเพลงที่มีอยู่แล้วในฐานข้อมูลเพลง จึงนำมาทำต่อไม่ได้ ลองใช้เพลงที่คุณแต่งหรืออัดเอง — คืนเครดิตให้แล้ว',
+      en: 'This audio matches an existing recording, so it can’t be used. Try a song you wrote or recorded yourself — your credits have been refunded.',
+    },
+  },
+  {
+    says: /copyright/i,
+    msg: {
+      th: 'เพลงที่ได้ไม่ผ่านการตรวจลิขสิทธิ์ ลองเปลี่ยนเนื้อเพลงหรือสไตล์แล้วสั่งใหม่ — คืนเครดิตให้แล้ว',
+      en: 'The result didn’t pass the copyright check. Change the lyrics or the style and order again — your credits have been refunded.',
+    },
+  },
+  {
+    says: /flagged|sensitive|moderation|safety|nsfw|content (?:policy|security)/i,
+    msg: {
+      th: 'เนื้อหาไม่ผ่านการตรวจของระบบ ลองปรับข้อความหรือไฟล์ที่ใส่แล้วสั่งใหม่ — คืนเครดิตให้แล้ว',
+      en: 'The content didn’t pass the safety check. Change the text or the file and order again — your credits have been refunded.',
+    },
+  },
+  {
+    says: /timed? ?out/i,
+    msg: {
+      th: 'ใช้เวลาสร้างนานเกินกำหนด ลองสั่งใหม่อีกครั้ง — คืนเครดิตให้แล้ว',
+      en: 'It took longer than allowed. Please order again — your credits have been refunded.',
+    },
+  },
+  {
+    says: /no output/i,
+    msg: {
+      th: 'ระบบสร้างงานไม่ส่งผลลัพธ์กลับมา ลองสั่งใหม่อีกครั้ง — คืนเครดิตให้แล้ว',
+      en: 'No result came back. Please order again — your credits have been refunded.',
+    },
+  },
+];
+
+/** The reason inside a vendor's wording: "generation failed (413: reason)", "error 422: reason". */
+function vendorReason(text: string): string {
+  const wrapped = text.match(/^generation failed\s*\((?:\d{3}\s*:\s*)?([\s\S]*)\)$/i);
+  const reason = wrapped ? wrapped[1] : text.replace(/^(?:generation failed|error)\b[\s:]*(?:\d{3}\b[\s:]*)?/i, '');
+  return reason.replace(/[.\s]+$/, '').slice(0, 200);
+}
+
+/**
+ * A failed order's message as the customer may read it, in `locale`. They are
+ * always told why. Our own refusals pass through (stored in both languages, or
+ * a known Thai one); a vendor's failure becomes its reason in their language
+ * (`VENDOR_REASONS`), or its own words with its name, task ids and URLs taken
+ * out; and an account problem of ours becomes a plain "busy".
  */
 export function publicErrorMessage(stored: string | null | undefined, locale: Locale = 'th'): string | null {
   if (!stored) return null;
   const message = readStoredMessage(stored, locale) ?? stored;
   if (ACCOUNT_TROUBLE.test(message)) return pick(BUSY_MSG, locale);
+  // Every message of ours holds Thai; a vendor writes English.
+  const ours = /[฀-๿]/.test(stored);
+  const known = ours ? undefined : VENDOR_REASONS.find((r) => r.says.test(message));
+  if (known) return pick(known.msg, locale);
   const cleaned = message
     .replace(/https?:\/\/\S+/gi, '')
     .replace(/\btask\s+[\w-]{6,}/gi, 'task')
@@ -127,5 +182,15 @@ export function publicErrorMessage(stored: string | null | undefined, locale: Lo
     .replace(/\s{2,}/g, ' ')
     .replace(/^[\s:·,-]+/, '')
     .trim();
-  return cleaned || pick(FAILED_MSG, locale);
+  if (ours) return cleaned || pick(FAILED_MSG, locale);
+  const reason = vendorReason(cleaned);
+  if (!reason) return pick(FAILED_MSG, locale);
+  return pick({ th: `สร้างงานไม่สำเร็จ: ${reason} — คืนเครดิตให้แล้ว`, en: `Creating failed: ${reason} — your credits have been refunded.` }, locale);
+}
+
+/** `publicErrorMessage` in both languages, for a row that stores what the customer reads. */
+export function publicErrorPair(stored: string | null | undefined): Msg | null {
+  const th = publicErrorMessage(stored, 'th');
+  const en = publicErrorMessage(stored, 'en');
+  return th && en ? { th, en } : null;
 }

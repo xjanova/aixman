@@ -41,6 +41,7 @@ import { referenceCaps } from '@/lib/reference-caps';
 import type { Prisma } from '@/generated/prisma/client';
 import type { Locale, Msg } from '@/lib/i18n/locale';
 import { UserMessageError, packMsg, registerStoredMsgs } from '@/lib/i18n/messages';
+import { publicErrorPair } from '@/lib/public-provider';
 
 /**
  * Movie and MV projects: storage, planning, and ordering shots.
@@ -202,7 +203,8 @@ export async function syncShots(project: StoryProjectFull): Promise<boolean> {
     } else if (gen.status === 'failed' || gen.status === 'cancelled') {
       const r = await prisma.aiStoryShot.updateMany({
         where: { id: shot.id, status: 'rendering', visualGenerationId: gen.id },
-        data: { status: 'failed', errorMessage: packMsg(shotFailed(gen.creditsRefunded > 0)) },
+        // The order's own reason; the plain fact only when it left none (a cancelled order).
+        data: { status: 'failed', errorMessage: packMsg(publicErrorPair(gen.errorMessage) ?? shotFailed(gen.creditsRefunded > 0)) },
       });
       changed ||= r.count > 0;
     }
@@ -374,7 +376,7 @@ export async function planProject(
       slots = songTimeline(input.brief, input.songSeconds);
       if (slots.length === 0) throw new StoryError({ th: 'เพลงสั้นเกินไปหรือไม่มีความยาว — เลือกเพลงใหม่', en: 'The song is too short or has no length. Pick another song.' }, 422);
       const { system, user } = mvPlannerMessages(input, slots);
-      const reply = await chatViaPool(system, user, { maxTokens: 8000, maxChars: 60_000 });
+      const reply = await chatViaPool(system, user, { maxTokens: 8000, maxChars: 60_000, timeoutMs: 120_000 });
       planned = parseMvPlan(reply.text, input, slots);
       engine = reply.engine;
     } else {
@@ -394,7 +396,7 @@ export async function planProject(
         fallbackReason = [fallbackReason, long.fallbackReason].filter(Boolean).join(' | ') || undefined;
       } else {
         const { system, user } = filmPlannerMessages(input);
-        const reply = await chatViaPool(system, user, { maxTokens: 5000, maxChars: 40_000 });
+        const reply = await chatViaPool(system, user, { maxTokens: 5000, maxChars: 40_000, timeoutMs: 120_000 });
         planned = parseFilmPlan(reply.text, input);
         if (planned && input.targetSeconds) planned.shots = fitToTarget(planned.shots, input.targetSeconds);
         engine = reply.engine;

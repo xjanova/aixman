@@ -252,7 +252,7 @@ function localizeError(message: string): Shown {
   if (credits) return notEnoughCredits(credits[1], credits[2]);
   if (/Model not available/i.test(message)) return { th: "บริการสร้างโมเดล 3D ปิดชั่วคราว", en: "3D model creation is paused for now." };
   if (/temporarily unavailable/i.test(message)) return { th: "บริการไม่ว่างชั่วคราว ลองใหม่ในอีกสักครู่", en: "The service is busy right now. Please try again in a moment." };
-  if (/Generation failed/i.test(message) || !message) return { th: "ส่งงานไม่สำเร็จ ลองใหม่อีกครั้ง", en: "Couldn't send the job. Please try again." };
+  if (/^Generation failed\. Please try again\.$/i.test(message) || !message) return { th: "ส่งงานไม่สำเร็จ ลองใหม่อีกครั้ง", en: "Couldn't send the job. Please try again." };
   return message;
 }
 

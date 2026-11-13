@@ -45,20 +45,54 @@ jobs:
           fi
           echo "SSH secrets configured"
 
-      - name: Deploy via SSH (git pull + build + pm2)
-        uses: appleboy/ssh-action@v1
+      # Never pass a secret through ssh-action's `envs:`. It prepends them to the
+      # script as `export KEY='value'` lines and sends the lot as the SSH exec
+      # command, so sshd runs `bash -c '<script>'` and the values can be read from
+      # ps for the whole deploy, on a server shared with other sites. Plain ssh
+      # carries them on stdin, which no command line sees. The deploy script reads
+      # this file and deletes it before it does anything else.
+      - name: Send secrets to the server over stdin
+        timeout-minutes: 2
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT || 22 }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          eval "$(ssh-agent -s)" > /dev/null
+          trap 'ssh-agent -k > /dev/null' EXIT
+          printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -q -
+          printf '%s\0%s\0' "$DATABASE_URL" "$AUTH_SECRET" | ssh -T -p "$SSH_PORT" \
+            -o BatchMode=yes -o ConnectTimeout=30 \
+            -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR \
+            "$SSH_USER@$SSH_HOST" 'umask 077 && cat > "$HOME/.aixman-deploy-secrets"'
+
+      - name: Deploy via SSH (git pull + build + pm2)
+        uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
           command_timeout: 10m
-          envs: DATABASE_URL,AUTH_SECRET
           script: |
             set -e
+
+            # DATABASE_URL and AUTH_SECRET from the step above. Exported because
+            # the build and the first `pm2 start` have always inherited them.
+            SECRETS_FILE="$HOME/.aixman-deploy-secrets"
+            DATABASE_URL=""
+            AUTH_SECRET=""
+            if [ -f "$SECRETS_FILE" ]; then
+              {
+                IFS= read -r -d '' DATABASE_URL || true
+                IFS= read -r -d '' AUTH_SECRET || true
+              } < "$SECRETS_FILE"
+              rm -f "$SECRETS_FILE"
+            fi
+            export DATABASE_URL AUTH_SECRET
 
             # Configuration
             DEPLOY_PATH="/home/admin/domains/ai.xman4289.com"
@@ -87,15 +121,30 @@ jobs:
             grep -q '^NEXT_PUBLIC_APP_URL=' .env && sed -i 's|^NEXT_PUBLIC_APP_URL=.*|NEXT_PUBLIC_APP_URL=https://ai.xman4289.com|' .env || echo 'NEXT_PUBLIC_APP_URL=https://ai.xman4289.com' >> .env
             grep -q '^AUTH_TRUST_HOST=' .env || echo 'AUTH_TRUST_HOST=true' >> .env
 
+            # Replace KEY=... in .env, or append it. Shell builtins only: a value in
+            # a `sed` expression is on sed's command line, where ps shows it too.
+            set_env_secret() (
+              umask 077
+              found=""
+              while IFS= read -r line || [ -n "$line" ]; do
+                case "$line" in
+                  "$1="*) printf '%s=%s\n' "$1" "$2"; found=1 ;;
+                  *) printf '%s\n' "$line" ;;
+                esac
+              done < .env > .env.tmp
+              [ -n "$found" ] || printf '%s=%s\n' "$1" "$2" >> .env.tmp
+              mv .env.tmp .env
+            )
+
             # Set AUTH_SECRET from GitHub secret
             if [ -n "$AUTH_SECRET" ]; then
-              grep -q '^AUTH_SECRET=' .env && sed -i "s|^AUTH_SECRET=.*|AUTH_SECRET=${AUTH_SECRET}|" .env || echo "AUTH_SECRET=${AUTH_SECRET}" >> .env
-              grep -q '^NEXTAUTH_SECRET=' .env && sed -i "s|^NEXTAUTH_SECRET=.*|NEXTAUTH_SECRET=${AUTH_SECRET}|" .env || echo "NEXTAUTH_SECRET=${AUTH_SECRET}" >> .env
+              set_env_secret AUTH_SECRET "$AUTH_SECRET"
+              set_env_secret NEXTAUTH_SECRET "$AUTH_SECRET"
             fi
 
             # Set DATABASE_URL from GitHub secret or derive from xmanstudio .env
             if [ -n "$DATABASE_URL" ]; then
-              grep -q '^DATABASE_URL=' .env && sed -i "s|^DATABASE_URL=.*|DATABASE_URL=${DATABASE_URL}|" .env || echo "DATABASE_URL=${DATABASE_URL}" >> .env
+              set_env_secret DATABASE_URL "$DATABASE_URL"
             elif ! grep -q '^DATABASE_URL=' .env; then
               # Read DB credentials from xmanstudio's .env (same server, shared DB)
               XMAN_ENV="/home/admin/domains/xman4289.com/.env"
@@ -154,9 +203,12 @@ jobs:
             # KIE and fal jobs are collected after a restart and are not waited
             # for. Three minutes at most, then restart anyway; an app without
             # the endpoint (or not answering) is restarted at once.
+            # The secret is required even here (`next start` fills in
+            # X-Forwarded-For, so a local request looks proxied and gets 401), and
+            # it reaches curl on stdin to stay off curl's command line.
             CRON_SECRET_VALUE=$(grep -E '^CRON_SECRET=' .env | head -1 | cut -d= -f2- | sed -E 's/^"//; s/"$//')
             for i in $(seq 1 18); do
-              LEFT=$(curl -s --max-time 5 -H "Authorization: Bearer ${CRON_SECRET_VALUE}" http://127.0.0.1:3001/api/cron/in-flight | sed -nE 's/.*"unrecoverable":([0-9]+).*/\1/p')
+              LEFT=$(printf 'Authorization: Bearer %s\n' "$CRON_SECRET_VALUE" | curl -s --max-time 5 -H @- http://127.0.0.1:3001/api/cron/in-flight | sed -nE 's/.*"unrecoverable":([0-9]+).*/\1/p')
               if [ -z "$LEFT" ]; then echo "In-flight check unavailable — restarting now"; break; fi
               if [ "$LEFT" = "0" ]; then echo "No running order would be lost — restarting"; break; fi
               echo "Waiting for ${LEFT} running order(s) to finish before restart ($i/18)"
@@ -186,6 +238,19 @@ jobs:
             fi
 
             echo "Deployment completed successfully!"
+
+      # The deploy script deletes the file as it starts. This is for a run that
+      # stopped before the script got that far.
+      - name: Remove secrets file from the server
+        if: always()
+        continue-on-error: true
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: rm -f "$HOME/.aixman-deploy-secrets"
 
       - name: Health Check
         run: |
